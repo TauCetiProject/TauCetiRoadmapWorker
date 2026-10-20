@@ -106,11 +106,19 @@ Agents fetch what they need themselves, within rules:
 - The fetch cache lives under `~/.local/state/tauceti/projects/<project>/sources/` with the
   same per-project layout TauCetiTools uses; a hash-named text extraction sits beside each
   PDF so that reviewers can quote locators by line.
+- Sources are never stored in any repository: not the board, not the packages tree, not a
+  pull request, not an issue attachment. The cache under the operator's state directory is
+  the only copy; the manifest carries the hash, the locator scheme and the licence class, and
+  reports quote locators, never passages. A gate refuses any PDF, DjVu, PostScript or large
+  extracted-text file in a board or content submission.
 - When a cited source is unavailable or a reviewer needs a text the manifest does not have,
   the lane sets the job to `needs-references` with a comment naming exactly what is missing
   (author, title, year, which statement it is needed for). The job stays parked until a human
-  attaches a file to the board, names an alternative legal source, or waives the citation.
-  Humans see these requests in the dashboard and in a weekly digest issue.
+  answers on the job issue with one of: `source: KEY <DOI, arXiv id or URL>` (an alternative
+  legal source the worker fetches itself), `local: KEY <file name>` (the operator who resumes
+  the job must hold that file in a configured local sources directory; nothing is uploaded),
+  or `waive: KEY` (cite by locator only). Humans see these requests in the dashboard and in a
+  weekly digest issue.
 - Image-only scans go through the OCR recipe the maintainer already uses (uv venv +
   RapidOCR) inside the sources service.
 
