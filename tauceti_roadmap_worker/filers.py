@@ -51,12 +51,13 @@ def _board_file(ctx) -> tuple[dict, str | None]:
         return {}, None
 
 
-def team_members(ctx, team: str, now: float | None = None) -> tuple[set[str] | None, str]:
-    """(logins, where they came from) for `org/slug`, or (None, why not)."""
+def team_members(ctx, team: str, now: float | None = None, fresh: bool = False) -> tuple[set[str] | None, str]:
+    """(logins, where they came from) for `org/slug`, or (None, why not). `fresh` skips the
+    hour-long cache and reads the API (publishing the list when it can)."""
     now = time.time() if now is None else now
     cache = _read_cache(ctx.state)
     entry = cache.get(team) or {}
-    if entry and now - float(entry.get("at", 0)) < CACHE_SECONDS:
+    if entry and not fresh and now - float(entry.get("at", 0)) < CACHE_SECONDS:
         return {m.lower() for m in entry.get("members", [])}, "cache"
     org, _, slug = team.partition("/")
     try:
@@ -90,6 +91,18 @@ def publish(ctx, team: str, members: list[str]) -> None:
         ctx.gh.write("PUT", f"repos/{ctx.cfg.repositories.board_repo()}/contents/{BOARD_FILE}", payload)
     except GHError:
         pass
+
+
+def refresh(ctx) -> list[str]:
+    """Read every configured team through the API and publish `board/filers.json` when it changed,
+    whether or not a target is waiting (so a token that cannot read the team always has a list)."""
+    out = []
+    for entry in ctx.cfg.board.target_filers:
+        if entry.startswith("team:"):
+            members, where = team_members(ctx, entry[5:], fresh=True)
+            out.append(f"filers {entry[5:]}: {len(members)} member(s) ({where})" if members is not None
+                       else f"filers {entry[5:]}: {where}")
+    return out
 
 
 def allowed(ctx, login: str) -> tuple[bool | None, str]:

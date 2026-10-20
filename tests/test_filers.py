@@ -107,3 +107,16 @@ def test_the_cli_refuses_a_login_that_may_not_file(cfg, tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_bot_context", lambda args, c, dry: ctx(c, GH(members=["chris"]), tmp_path))
     with pytest.raises(SystemExit, match="Targets are filed by members of the TauCetiProject humans team"):
         cli.main(["targets", "file", "--statement", "s", "--why", "w", "--name", "Alpha"])
+
+
+def test_every_sync_that_can_read_the_team_publishes_the_list(cfg, tmp_path):
+    gh = GH(members=["chris", "dana"])
+    assert filers.refresh(ctx(cfg, gh, tmp_path)) == ["filers TauCetiProject/humans: 2 member(s) (api)"]
+    [put] = [p for m, path, p in gh.writes if path.endswith("contents/board/filers.json")]
+    gh.files["board/filers.json"] = base64.b64decode(put["content"]).decode()
+    gh.writes.clear()
+    filers.refresh(ctx(cfg, gh, tmp_path))
+    assert gh.writes == []                                   # unchanged: no write
+    denied = GH(members=None)
+    assert filers.refresh(ctx(cfg, denied, tmp_path))[0].startswith("filers TauCetiProject/humans: 2 member(s) (cache")
+    assert denied.writes == []

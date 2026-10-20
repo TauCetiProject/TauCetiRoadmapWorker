@@ -562,7 +562,8 @@ def board_cmd(args) -> int:
         print(explorer.summary(steps))
         return 0
     if args.action == "sync":
-        for line in (intake.sync_targets(ctx) + intake.sync_states(ctx, shared) + intake.sync_expired(ctx, shared)
+        for line in (filers.refresh(ctx) + intake.sync_targets(ctx) + intake.sync_states(ctx, shared)
+                     + intake.sync_expired(ctx, shared)
                      + intake.sync_leases(ctx, shared) + intake.sync_pull_requests(ctx)):
             print(line)
         return 0
