@@ -36,7 +36,8 @@ TRANSIENT = re.compile(r"Request timed out|ECONNRESET|socket hang up|fetch faile
 RESET = re.compile(r"resets?\s+(?:at\s+)?(?:(?P<mon>[A-Z][a-z]{2})\s+(?P<day>\d{1,2}),?\s+(?:at\s+)?)?"
                    r"(?P<hour>\d{1,2})(?::(?P<min>\d{2}))?\s*(?P<ampm>am|pm)\s*(?:\((?P<tz>[^)]+)\))?", re.I)
 PASS_ENV = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TERM", "TMPDIR", "SSL_CERT_FILE", "ELAN_HOME",
-            "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR")
+            "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+            "TAUCETI_PROJECT_STATE")
 AGENT_ENV = {"codex": ("CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"),
              "claude": ("CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY")}
 

@@ -253,7 +253,7 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
             return []
         return [new_job(rt, after=[job.id], independent_of=[job.id], requires_agent=agent,
                         inputs={"pr": outcome.pr, "operator": outcome.operator})
-                for rt, agent in zip(redteam_passes(name, 1, len(redteam_agents)), redteam_agents)]
+                for rt, agent in zip(redteam_passes(name, 1, len(redteam_agents)), redteam_agents, strict=True)]
     if job.kind == "redteam":
         if not outcome.round_complete:
             return []
@@ -269,7 +269,7 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
         return [new_job(rt, after=[fix_id], independent_of=[make_id("port", name), fix_id], requires_agent=agent,
                         inputs={"pr": job.inputs.get("pr"), "operator": job.inputs.get("operator", ""),
                                 "previous": job.inputs.get("reviews", []), "repair": fix_id})
-                for rt, agent in zip(redteam_passes(name, j.round + 1, len(redteam_agents)), redteam_agents)]
+                for rt, agent in zip(redteam_passes(name, j.round + 1, len(redteam_agents)), redteam_agents, strict=True)]
     return []
 
 
@@ -438,7 +438,7 @@ def parse_target_form(body: str) -> dict[str, str]:
     The values are untrusted text: they are quoted into briefs as data, never as instructions."""
     out = {}
     parts = re.split(r"^###\s+(.+?)\s*$", body or "", flags=re.M)
-    for label, value in zip(parts[1::2], parts[2::2]):
+    for label, value in zip(parts[1::2], parts[2::2], strict=True):
         key = FORM_FIELDS.get(label.strip().lower())
         value = re.sub(r"<!--.*?-->", "", value, flags=re.S).strip()
         if key and value and value != "_No response_":
