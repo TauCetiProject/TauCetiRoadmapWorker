@@ -187,14 +187,18 @@ with the same renderer; it never states a position number. The paragraph reads
     **Merge order.** #a (Name) → #b (Name) → **this pull request** (#n). It depends on no other author's open pull request. Roadmaps already on main are not listed.
 
 (or "No open pull request of ours must merge before this one; **this pull request** (#n) can merge
-as soon as it is approved." when no open roadmap pull request of the project must come first). The
-chain is the transitive closure of the roadmap's suppliers among those pull requests, in merge-order
-rank. Other authors' pull requests are read from the content repository: an open pull request the
-port lane did not open counts when it adds a roadmap folder that is not on main and the README cites
-that roadmap as a supplier; it is listed as `#248 (LFunctions, roed-math)` in "It also depends on
-other authors' pull requests that add roadmaps it cites, which must merge first: ...". When those
-pull requests cannot be read the sentence is left out, never replaced by "no other author's".
-A roadmap missing from the merge order gets no paragraph.
+as soon as it is approved." when none of ours must come first). A pull request is ours when the
+port lane opened it, or when the merge order names a roadmap folder it adds and one of the
+project's operators opened it: a login in `[board] operators` (default: the running login) or one
+the claims namespace records. So pull requests an operator opened by hand or with other tools are
+links of the chain, which is the transitive closure of the roadmap's suppliers among ours, in
+merge-order rank (a pull request that adds several roadmaps appears once). Every other open pull
+request that adds a roadmap folder not on main is another author's, and counts when the README cites
+that roadmap as a supplier: it is listed as `#248 (LFunctions, roed-math)` in "It also depends on
+other authors' pull requests that add roadmaps it cites, which must merge first: ...". When the
+open pull requests cannot be read, no paragraph is written (`merge-order` says so; the port lane
+names it in its summary). A roadmap missing from the merge order gets no paragraph, and only the
+port lane's pull requests get one from the tool.
 
 Only the operator who opened a pull request can push to its branch, so the fix rounds on a board
 pull request and the gate rounds on a roadmap pull request name that operator (`requires_operator`).

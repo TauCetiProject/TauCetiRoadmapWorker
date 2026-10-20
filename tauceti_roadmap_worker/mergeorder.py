@@ -8,13 +8,17 @@ carries a position number. The paragraph sits between `<!-- merge-order -->` mar
 refresh is idempotent; a description read that looks like an API error is never overwritten. The
 port lane writes the paragraph of the pull request it opens with the same renderer (`paragraph_for`).
 
-Other authors' pull requests are read from the content repository: every open pull request the
-port lane did not open that adds a roadmap folder not on main (neither in the active nor in the
-completed folder), the ready one before drafts and then the lowest number when several add the
-same folder. A roadmap counts when the README cites it as a supplier (the clauses `depgraph.units`
-reads). Their changed files are cached by head in `other-prs.json`; pull request numbers in
-`dropped-external.txt` never count (the citing roadmap localises what it needs instead). When the
-pull requests cannot be read, the paragraph says nothing about other authors.
+A pull request is ours when the port lane opened it (its marker), or when the merge order names a
+roadmap folder it adds and one of the project's operators opened it: a login in `[board] operators`
+(default: the running login) or one the claims namespace records. Ours are the chain's links (with
+their READMEs, read at their heads, for the transitive closure); only the port lane's get a paragraph
+written by this module. Every other open pull request that adds a roadmap folder not on main
+(neither in the active nor in the completed folder) is another author's, the ready one before
+drafts and then the lowest number when several add the same folder, and counts when the README
+cites that roadmap as a supplier (the clauses `depgraph.units` reads). Changed files and READMEs are
+cached by head in `other-prs.json`; pull request numbers in `dropped-external.txt` never count (the
+citing roadmap localises what it needs instead). When the open pull requests cannot be read, no
+paragraph is written: neither the chain nor the other authors' clause could be stated.
 
 Inputs that used to be files in /tmp are in the project state directory: `stacks.toml` (child =
 parent, for stacked pull requests), `external-deps.json` (dependencies the scan cannot see,
@@ -27,7 +31,9 @@ whole-pull-request order between them, and the stage-level graph between them is
 from __future__ import annotations
 
 import json
+import subprocess
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import depgraph
@@ -96,9 +102,35 @@ def added_folders(files: list[dict], active_dir: str) -> list[str]:
                    and parts[0] == active_dir and parts[-1] == "README.md"})
 
 
-def other_roadmap_prs(ctx, ours: set[int]) -> dict[str, tuple[int, str]] | None:
-    """Roadmap -> (pull request, author) for the open pull requests not in `ours` that add a roadmap
-    folder not on main, or None when the pull requests or main cannot be read."""
+def operators(ctx) -> set[str]:
+    """The project's operators, lower-cased: `[board] operators` (default: the running login) and
+    every login the claims namespace records (when it can be read)."""
+    from . import claims
+    cfg = ctx.cfg
+    names = {x.lower() for x in (cfg.board.operators or [getattr(ctx, "operator", "")]) if x}
+    if cfg.repositories.claims:
+        shared = claims.Claims(repo=cfg.repositories.claims,
+                               gitdir=ctx.state / "claims" / (cfg.repositories.claims.replace("/", "__") + ".git"),
+                               owner="merge-order", operator="", project=cfg.project.name)
+        try:
+            names |= {x.lower() for x in shared.operators()}
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return names
+
+
+@dataclass
+class Survey:
+    """The open pull requests besides the port lane's: ours (operator-opened, in the merge order)
+    as {pr, name, names}, with their READMEs, and other authors' roadmaps -> (pr, author)."""
+    members: list[dict]
+    readmes: dict[str, str]
+    others: dict[str, tuple[int, str]]
+
+
+def survey(ctx, ours: set[int], order: list[str], logins: set[str] | None = None) -> Survey | None:
+    """Read the open pull requests not in `ours` (the port lane's), or None when they, their files
+    or main cannot be read."""
     cfg, repo = ctx.cfg, ctx.cfg.repositories.content
     main = on_main(ctx)
     if main is None:
@@ -107,34 +139,50 @@ def other_roadmap_prs(ctx, ours: set[int]) -> dict[str, tuple[int, str]] | None:
         items = ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True)
     except GHError:
         return None
+    logins = operators(ctx) if logins is None else logins
+    rank = {n: i for i, n in enumerate(order)}
     path = ctx.state / "other-prs.json"
     try:
         cache = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         cache = {}
-    dropped, seen, candidates = _numbers(ctx.state / "dropped-external.txt"), {}, {}
+    cache = cache if isinstance(cache, dict) else {}
+    dropped, seen, candidates, members, readmes = _numbers(ctx.state / "dropped-external.txt"), {}, {}, [], {}
     for pr in items:
         number = int(pr["number"])
         if number in ours or number in dropped:
             continue
-        head = pr.get("head", {}).get("sha", "")
-        entry = cache.get(str(number)) if isinstance(cache, dict) else None
+        head, login = pr.get("head", {}).get("sha", ""), pr.get("user", {}).get("login", "")
+        entry = cache.get(str(number))
         if not isinstance(entry, dict) or entry.get("head") != head:
             try:
                 files = ctx.gh.api(f"repos/{repo}/pulls/{number}/files?per_page=100", paginate=True)
             except GHError:
                 return None
-            entry = {"head": head, "folders": added_folders(files, cfg.roadmap.active_dir)}
+            entry = {"head": head, "folders": added_folders(files, cfg.roadmap.active_dir), "readmes": {}}
+        new = sorted((f for f in entry["folders"] if f not in main), key=lambda f: (rank.get(f, len(rank)), f))
+        mine = [f for f in new if f in rank]
+        if mine and login.lower() in logins:
+            texts = entry.setdefault("readmes", {})
+            for name in mine:
+                if name not in texts:
+                    try:
+                        texts[name] = ctx.gh.raw_file(repo, f"{cfg.roadmap.active_dir}/{name}/README.md", ref=head)
+                    except GHError:
+                        return None
+                readmes[name] = texts[name]
+            members.append({"pr": number, "name": mine[0], "names": mine, "owner": login})
+        else:
+            for folder in new:
+                candidates.setdefault(folder, []).append((bool(pr.get("draft")), number, login))
         seen[str(number)] = entry
-        for folder in entry["folders"]:
-            if folder not in main:
-                candidates.setdefault(folder, []).append((bool(pr.get("draft")), number, pr.get("user", {}).get("login", "")))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(seen, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     except OSError:
         pass
-    return {folder: (best[1], best[2]) for folder, found in candidates.items() for best in [min(found)]}
+    others = {folder: (best[1], best[2]) for folder, found in candidates.items() for best in [min(found)]}
+    return Survey(members, readmes, others)
 
 
 def cited(name: str, readme: str, others: dict[str, tuple[int, str]]) -> dict[str, list]:
@@ -143,15 +191,12 @@ def cited(name: str, readme: str, others: dict[str, tuple[int, str]]) -> dict[st
     return {s: list(others[s]) for s in edges.get(name, {}) if s in others}
 
 
-def externals(ctx, prs: list[dict], readmes: dict[str, str]) -> dict[str, dict[str, list]]:
-    """Other authors' pull requests each of `prs` depends on ({"<pr>": {roadmap: [pr, author]}}): the
-    scan of the content repository plus `external-deps.json`. A pull request has no key when its
-    dependencies are unknown (the scan failed and the file does not list it, or its README is
-    missing)."""
-    recorded = _external(ctx.state)
-    others = other_roadmap_prs(ctx, {int(p["pr"]) for p in prs})
-    if others is None:
-        return recorded
+def externals(state: Path, prs: list[dict], readmes: dict[str, str],
+              others: dict[str, tuple[int, str]]) -> dict[str, dict[str, list]]:
+    """Other authors' pull requests each of `prs` depends on ({"<pr>": {roadmap: [pr, author]}}): what
+    the README cites among `others`, plus `external-deps.json`. A pull request whose README is
+    missing has no key (unknown), unless the file lists it."""
+    recorded = _external(state)
     out = dict(recorded)
     for p in prs:
         if p["name"] in readmes:
@@ -169,17 +214,27 @@ def _mutual(state: Path) -> set[tuple[int, int]]:
 
 
 def plan(prs: list[dict], readmes: dict[str, str], order: list[str], main_extended: set[str],
-         stacks: dict[int, int], external: dict, mutual: set[tuple[int, int]]) -> dict[int, str]:
-    """The paragraph for each open pull request (pure, given the inputs). A pull request whose
-    roadmap is not in the merge order, or whose README was not read, gets none."""
+         stacks: dict[int, int], external: dict, mutual: set[tuple[int, int]],
+         members: list[dict] | tuple = ()) -> dict[int, str]:
+    """The paragraph for each of `prs` (pure, given the inputs). `members` are ours too (links of
+    the chain, one per pull request even when it adds several roadmaps) but get no paragraph. A pull
+    request whose roadmap is not in the merge order, or whose README was not read, gets none."""
     edges = depgraph.supplier_edges(readmes, set(order), main_extended)
     name2pr = {p["name"]: p["pr"] for p in prs}
     pr2name = {v: k for k, v in name2pr.items()}
+    for m in members:
+        pr2name.setdefault(m["pr"], m["name"])
+        for n in m.get("names") or [m["name"]]:
+            name2pr.setdefault(n, m["pr"])
     out = {}
     for p in prs:
         if p["name"] not in order or p["name"] not in readmes:
             continue
-        chain = [(name2pr[n], n) for n in depgraph.merge_chain(p["name"], edges, order, set(name2pr))]
+        chain: list[tuple[int, str]] = []
+        for n in depgraph.merge_chain(p["name"], edges, order, set(name2pr)):
+            q = name2pr[n]
+            if q != p["pr"] and q not in [c for c, _ in chain]:
+                chain.append((q, pr2name[q]))
         parent = stacks.get(p["pr"])
         if parent in pr2name and parent not in [c for c, _ in chain]:
             chain.insert(0, (parent, pr2name[parent]))
@@ -193,15 +248,26 @@ def plan(prs: list[dict], readmes: dict[str, str], order: list[str], main_extend
     return out
 
 
-def paragraph_for(ctx, new: dict, readme: str, prs: list[dict], order: list[str]) -> str:
+def paragraphs(ctx, prs: list[dict], readmes: dict[str, str], order: list[str]) -> dict[int, str] | None:
+    """The paragraph of each of the port lane's `prs` (whose READMEs are `readmes`), or None when the
+    other open pull requests cannot be read."""
+    found = survey(ctx, {int(p["pr"]) for p in prs}, order)
+    if found is None:
+        return None
+    every = {**found.readmes, **readmes}
+    return plan(prs, every, order, set(ctx.cfg.roadmap.main_extended), _stacks(ctx.state),
+                externals(ctx.state, prs, readmes, found.others), _mutual(ctx.state), found.members)
+
+
+def paragraph_for(ctx, new: dict, readme: str, prs: list[dict], order: list[str]) -> str | None:
     """The paragraph of a pull request the port lane just opened (`new` = {pr, name}), by the same
-    renderer as `refresh`, or '' when its roadmap is not in the merge order."""
+    renderer as `refresh`: '' when its roadmap is not in the merge order, None when the open pull
+    requests cannot be read."""
     from .lanes.base import sibling_readmes
-    cfg = ctx.cfg
     everyone = [p for p in prs if p["pr"] != new["pr"] and p["name"] != new["name"]] + [new]
-    readmes = {**sibling_readmes(ctx.state, cfg.roadmap.active_dir, everyone), new["name"]: readme}
-    return plan(everyone, readmes, order, set(cfg.roadmap.main_extended), _stacks(ctx.state),
-                externals(ctx, everyone, readmes), _mutual(ctx.state)).get(new["pr"], "")
+    readmes = {**sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, everyone), new["name"]: readme}
+    found = paragraphs(ctx, everyone, readmes, order)
+    return None if found is None else found.get(new["pr"], "")
 
 
 def refresh(ctx, only: set[int] | None = None, listing: bool = False) -> list[str]:
@@ -210,13 +276,14 @@ def refresh(ctx, only: set[int] | None = None, listing: bool = False) -> list[st
     prs = open_roadmap_prs(ctx)
     sibling_checkouts(ctx, prs)
     readmes = sibling_readmes(ctx.state, cfg.roadmap.active_dir, prs)
-    paragraphs = plan(prs, readmes, _order(ctx), set(cfg.roadmap.main_extended), _stacks(ctx.state),
-                      externals(ctx, prs, readmes), _mutual(ctx.state))
+    written = paragraphs(ctx, prs, readmes, _order(ctx))
+    if written is None:
+        return ["the open pull requests could not be read; no merge-order paragraph written"]
     lines = []
     for p in prs:
         if only and p["pr"] not in only:
             continue
-        para = paragraphs.get(p["pr"])
+        para = written.get(p["pr"])
         if not para:
             why = "not in the merge order" if p["name"] in readmes else "its README could not be read"
             lines.append(f"#{p['pr']} {p['name']}: {why}; skipped")

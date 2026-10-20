@@ -216,6 +216,27 @@ class Claims:
         out = self._git("ls-remote", "origin", f"{NS}/{prefix}*")
         return [line.split()[1][len(NS) + 1:] for line in out.stdout.splitlines() if len(line.split()) == 2]
 
+    def operators(self) -> set[str]:
+        """Every operator login a lease or author record of this project names: one listing, one
+        fetch, one local read."""
+        self.ensure_repo()
+        prefix = f"{NS}/roadmap/{self.project}/"
+        listed = self._git("ls-remote", "origin", f"{prefix}*")
+        oids = [line.split()[0] for line in listed.stdout.splitlines() if len(line.split()) == 2]
+        if not oids:
+            return set()
+        self._git("fetch", "-q", "--no-tags", "origin", f"+{prefix}*:{prefix}*")
+        out = self._git("log", "--no-walk=unsorted", "--format=%B%x1e", "--stdin", stdin="\n".join(oids) + "\n")
+        logins = set()
+        for message in out.stdout.split("\x1e"):
+            try:
+                lease = json.loads(message.strip() or "{}")
+            except ValueError:
+                continue
+            if isinstance(lease, dict) and lease.get("operator"):
+                logins.add(str(lease["operator"]))
+        return logins
+
     # -- authorship --
     def record_author(self, job_id: str, agent: str = "", model: str = "") -> int:
         return self.acquire(author_key(self.project, job_id), AUTHOR_TTL,

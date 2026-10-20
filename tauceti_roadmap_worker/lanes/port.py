@@ -140,6 +140,8 @@ class PortLane(Lane):
         number is known only once it is open); '' when written, else why not."""
         from ..mergeorder import paragraph_for
         para = paragraph_for(ctx, new, readme, prs, order)
+        if para is None:
+            return f" (the open pull requests could not be read: no merge-order paragraph; run merge-order --pr {new['pr']})"
         if not para:
             return " (not in the merge order: no merge-order paragraph)"
         text = depgraph.apply_paragraph(body, para) or body.rstrip() + "\n\n" + para + "\n"

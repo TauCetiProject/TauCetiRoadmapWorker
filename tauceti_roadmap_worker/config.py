@@ -69,6 +69,10 @@ class Board:
     intention_labels: list[str] = field(default_factory=lambda: ["intention"])
     # Who may file targets: logins, or teams as "team:<org>/<slug>". Empty: anyone.
     target_filers: list[str] = field(default_factory=list)
+    # The project's operators, besides every login the claims namespace records (empty: the running
+    # login). Their open roadmap pull requests in the merge order count as ours in a "Merge order"
+    # paragraph, whoever opened them and however.
+    operators: list[str] = field(default_factory=list)
 
 
 @dataclass

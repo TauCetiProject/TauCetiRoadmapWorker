@@ -54,6 +54,10 @@ intention_labels = ["intention"]
 # Who may file targets: logins, or teams as "team:<org>/<slug>" (empty: anyone). `board sync` closes a
 # target issue from anyone else with one comment and the `not-a-filer` label; `targets file` refuses.
 target_filers = ["team:TauCetiProject/humans", "roed-math"]
+# The project's operators besides every login the claims namespace records (empty: the running
+# login). An open roadmap pull request one of them opened counts as ours in a "Merge order"
+# paragraph when the merge order names its roadmap, even if no worker opened it.
+operators = []
 
 [roadmap]
 # Active roadmap folders in the content repository, and where completed ones live.
