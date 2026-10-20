@@ -175,8 +175,8 @@ def test_extract_plain_text_and_unknown_kinds(tmp_path):
     (tmp_path / "a.text").write_text("Theorem 1.\nProof.")
     e = extract(tmp_path / "a.text", "text")
     assert e.pages == ["Theorem 1.\nProof."] and e.method == "plain text"
-    (tmp_path / "b.ps").write_bytes(b"%!PS")
-    assert extract(tmp_path / "b.ps", "ps").note.startswith("no text extractor")
+    (tmp_path / "b.bin").write_bytes(b"\x00\x01")
+    assert extract(tmp_path / "b.bin", "bin").note.startswith("no text extractor")
 
 
 @pytest.mark.skipif(not shutil.which("pdftotext"), reason="poppler's pdftotext is not installed")

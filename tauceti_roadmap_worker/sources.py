@@ -43,12 +43,15 @@ refuse them in every submission).
 from __future__ import annotations
 
 import datetime as dt
+import gzip
 import hashlib
 import html.parser
+import io
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -433,6 +436,72 @@ def cached_file(root: Path, sha256: str) -> Path | None:
     return None
 
 
+GZIP_MAGIC = b"\x1f\x8b"
+UNZIP_LIMIT = 512 << 20
+
+
+def unwrap(data: bytes) -> bytes:
+    """A gzip-compressed body (an author page's `paper.ps.gz`) decompressed; anything else as it is.
+    The cache keeps, and the manifest hashes, the document itself."""
+    if not data.startswith(GZIP_MAGIC):
+        return data
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(data)) as f:
+            out = f.read(UNZIP_LIMIT + 1)
+    except (OSError, EOFError):
+        return data
+    return data if len(out) > UNZIP_LIMIT else out
+
+
+def ghostscript() -> str | None:
+    return shutil.which("gs")
+
+
+GLYPH_NAME = re.compile(r"/[A-Za-z][A-Za-z0-9.]*|\bg\d{1,4}\b|\bcid\d+\b|\bC\d{2,3}\b")
+
+
+def garbled(pages: list[str]) -> bool:
+    """A text layer of glyph names rather than words (as dvips Type 3 fonts give): few letters, or
+    many `/name` and `g12`-like tokens."""
+    text = " ".join(pages)
+    tokens = text.split()
+    if len(tokens) < 50:
+        return False
+    letters = sum(c.isalpha() for c in text)
+    visible = sum(not c.isspace() for c in text)
+    names = len(GLYPH_NAME.findall(text))
+    return visible > 0 and (letters / visible < 0.45 or names > 0.2 * len(tokens))
+
+
+def gs_pdf(path: Path, out: Path) -> bool:
+    """PostScript or PDF rendered to a fresh PDF by Ghostscript (`-sDEVICE=pdfwrite`)."""
+    exe = ghostscript()
+    if not exe:
+        return False
+    try:
+        done = subprocess.run([exe, "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pdfwrite",
+                               f"-sOutputFile={out}", str(path)], capture_output=True, timeout=1800, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.returncode == 0 and out.is_file() and out.stat().st_size > 0
+
+
+def gs_ocr_pages(path: Path, dpi: int = 300) -> list[str]:
+    """OCR of every page, rendered by Ghostscript (`-sDEVICE=pnggray`) and recognised by RapidOCR."""
+    numpy, _pdfium, RapidOCR = _ocr_modules()
+    from PIL import Image
+    exe = ghostscript()
+    if not exe:
+        raise OcrUnavailable("needs Ghostscript (gs) to render the pages")
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run([exe, "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pnggray", f"-r{dpi}",
+                        f"-sOutputFile={tmp}/page-%04d.png", str(path)], capture_output=True, timeout=3600, check=True)
+        engine = RapidOCR()
+        return ["\n".join(group_ocr_lines(_ocr_items(engine(numpy.array(Image.open(png).convert("RGB")))),
+                                            scale=dpi / 300))
+                for png in sorted(Path(tmp).glob("page-*.png"))]
+
+
 def sniff(data: bytes, content_type: str = "") -> str:
     """The kind of a downloaded body: pdf, djvu, ps, html, text or bin (by content, not by name)."""
     head = data[:1024]
@@ -548,12 +617,39 @@ def extract(path: Path, kind: str, *, ocr: bool = False, ocr_dpi: int = 300, min
     """Text of a cached source, page by page. PDFs go through `pdftotext -layout` (else pypdf); an
     image-only PDF goes through OCR when it is enabled and installed, and says so otherwise."""
     path = Path(path)
+    if kind == "ps":
+        # PostScript: Ghostscript renders it to PDF, which is then read like any PDF.
+        if not ghostscript():
+            return Extraction([], "none", "needs Ghostscript (gs) to read PostScript: install ghostscript")
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "rendered.pdf"
+            if not gs_pdf(path, pdf):
+                return Extraction([], "none", "Ghostscript could not render the PostScript file")
+            result = extract(pdf, "pdf", ocr=ocr, ocr_dpi=ocr_dpi, min_chars=min_chars)
+            result.method = "Ghostscript pdfwrite, " + result.method
+            return result
     if kind == "pdf":
         pages, method = pdf_pages_pdftotext(path), "pdftotext -layout"
         if pages is None:
             pages, method = pdf_pages_pypdf(path), "pypdf"
         if pages is None:
             return Extraction([], "none", "no PDF text extractor: install poppler-utils (pdftotext) or the `pdf` extra")
+        if garbled(pages):
+            # A text layer of glyph names (dvips Type 3 fonts): re-rendered, else recognised.
+            with tempfile.TemporaryDirectory() as tmp:
+                again = Path(tmp) / "rendered.pdf"
+                if gs_pdf(path, again):
+                    better = pdf_pages_pdftotext(again) or pdf_pages_pypdf(again)
+                    if better and not garbled(better):
+                        return Extraction(better, "Ghostscript pdfwrite, pdftotext -layout")
+            if not ocr:
+                return Extraction(pages, method, "the text layer is glyph names, not words: enable [sources] ocr "
+                                                 "(with Ghostscript) to recognise the pages")
+            try:
+                return Extraction(gs_ocr_pages(path, ocr_dpi), f"OCR (Ghostscript pnggray, RapidOCR, {ocr_dpi} dpi)",
+                                  "the text layer was glyph names, not words")
+            except (OcrUnavailable, OSError, subprocess.SubprocessError) as exc:
+                return Extraction(pages, method, f"the text layer is glyph names, not words; {exc}")
         result = Extraction(pages, method)
         if image_only(pages, min_chars):
             scanned = sum(1 for p in pages if len("".join(p.split())) < min_chars)

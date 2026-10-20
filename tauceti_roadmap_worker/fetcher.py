@@ -644,7 +644,7 @@ class Fetcher:
         """(data, kind, final URL, licence class) of a candidate, or None with the reason recorded."""
         if cand.local:
             try:
-                data = cand.local.read_bytes()
+                data = sources.unwrap(cand.local.read_bytes())
             except OSError as exc:
                 tried.append(f"{cand.via}: {exc}")
                 return None
@@ -666,6 +666,7 @@ class Fetcher:
             return None
         try:
             r = self.client.get(cand.url)
+            r.body = sources.unwrap(r.body)                 # `paper.ps.gz` from an author's page
             kind = sources.sniff(r.body, r.header("content-type"))
             if kind == "html" and cand.landing:
                 cls = vouched(r.url) or self.client.classify(r.url)
@@ -681,6 +682,7 @@ class Fetcher:
                     return None
                 landing_url = r.url
                 r = self.client.get(pdf)
+                r.body = sources.unwrap(r.body)
                 kind = sources.sniff(r.body, r.header("content-type"))
                 if kind == "html":
                     paywall.append(f"{pdf} (linked from {landing_url}) returned a web page, not the text: "
@@ -694,6 +696,10 @@ class Fetcher:
         if kind not in DOCUMENT_KINDS:
             tried.append(f"{cand.via} {r.url}: returned {'a web page' if kind == 'html' else 'an unrecognised file'}, "
                          "not a document")
+            return None
+        if kind == "ps" and not sources.ghostscript():
+            tried.append(f"{cand.via} {r.url}: a PostScript file, which needs Ghostscript (gs) to read: install "
+                         "ghostscript on this host and fetch again")
             return None
         cls = vouched(r.url) or self.client.classify(r.url)
         if cls in ("unknown", "denied"):
@@ -780,10 +786,11 @@ class Fetcher:
                         # Not gone: another operator holds it, and it never travels; no request.
                         out.append(Available(sid, label, None, needs_local(s.get("local_name") or sid)))
                         continue
-                    data = local.read_bytes()
+                    data = sources.unwrap(local.read_bytes())
                     _, txt, _ = self.keep(data, sources.sniff(data), f"local text {local.name}", sha)
                 elif s.get("fetched_from"):
                     r = self.client.get(s["fetched_from"])
+                    r.body = sources.unwrap(r.body)
                     _, txt, _ = self.keep(r.body, sources.sniff(r.body, r.header("content-type")), s["fetched_from"], sha)
                 else:
                     out.append(Available(sid, label, None, "no fetched_from to download it from", True))
@@ -802,7 +809,7 @@ class Fetcher:
         local = local_by_name(self.cfg.local_dirs, name)
         if not local:
             return Available(sid, label, None, needs_local(name or sid))
-        data = local.read_bytes()
+        data = sources.unwrap(local.read_bytes())
         path, txt, _ = self.keep(data, sources.sniff(data), f"local text {local.name}")
         return Available(sid, label, txt, sha256=path.name.split(".", 1)[0])
 

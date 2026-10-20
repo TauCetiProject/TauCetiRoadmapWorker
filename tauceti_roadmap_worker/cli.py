@@ -174,6 +174,10 @@ def doctor(args) -> int:
         pdf = shutil.which("pdftotext")
         add((OK, "pdf text", pdf) if pdf else (WARN, "pdf text", "pdftotext not found: install poppler-utils, "
                                                                   "or the `pdf` extra for a slower fallback"))
+        gs = shutil.which("gs")
+        add((OK, "ghostscript", gs) if gs else (WARN, "ghostscript", (
+            "gs not found: PostScript sources (.ps, .ps.gz) and PDFs whose text layer is glyph names cannot be "
+            "read; see docs/SOURCES.md")))
         rows += _sandbox_rows(cfg)
     width = max(len(r[1]) for r in rows)
     for status, item, detail in rows:

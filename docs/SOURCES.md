@@ -231,6 +231,21 @@ entry's old provenance as a whole), posts a note listing what it recorded and wh
 back to `state:available`. An answer that failed for network trouble is tried again on the next run,
 and a release that did not go through is retried as well.
 
+## PostScript and compressed files
+
+A body that starts with the gzip magic (an author page's `paper.ps.gz`) is decompressed before it
+is classified, and the cache keeps (and the manifest hashes) the document itself. PostScript is read
+through Ghostscript: `gs -sDEVICE=pdfwrite` renders it to PDF, which `pdftotext` then reads; a PDF
+whose text layer is glyph names rather than words (the Type 3 fonts dvips writes) is rendered the
+same way, and when its text is still unreadable the pages are rendered at 300 dpi with
+`gs -sDEVICE=pnggray` and recognised by OCR (with `[sources] ocr`). Without Ghostscript the service
+says "needs Ghostscript" for such a file, and `doctor` warns. Ghostscript can be installed without
+root: `apt-get download` the `ghostscript`, `libgs10` and `libgs-common` packages, unpack them with
+`dpkg -x` into `~/.local/opt/ghostscript`, and put a `gs` wrapper on the PATH that sets
+`LD_LIBRARY_PATH` to the unpacked library directory and `GS_LIB` to its Resource, lib, font and
+ICC-profile directories (the profiles come from `libgs-common`; unpack `fonts-urw-base35` too, or a
+file that names a standard font such as Times or Helvetica will not render).
+
 ## Sources never enter a repository
 
 The cache under the operator's state directory (`<state>/sources/`) is the only copy of a text and
