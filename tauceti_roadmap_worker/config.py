@@ -155,6 +155,10 @@ class Sources:
     ocr_min_chars: int = 250
     # Who may answer a needs-references request (attach, name a source, waive).
     answer_associations: list[str] = field(default_factory=lambda: ["OWNER", "MEMBER", "COLLABORATOR"])
+    # Whose request comments the intake reads (the board's bot logins always count): operators post
+    # them, and an operator whose submissions were merged is at least a CONTRIBUTOR.
+    request_associations: list[str] = field(default_factory=lambda: ["OWNER", "MEMBER", "COLLABORATOR",
+                                                                      "CONTRIBUTOR"])
 
 
 @dataclass
@@ -288,9 +292,10 @@ def validate(cfg: Config) -> None:
     for cls in cfg.sources.allow:
         if cls not in LICENCE_CLASSES:
             problems.append(f"sources.allow: unknown licence class {cls!r} (known: {', '.join(LICENCE_CLASSES)})")
-    for assoc in cfg.sources.answer_associations:
-        if assoc not in ASSOCIATIONS:
-            problems.append(f"sources.answer_associations: unknown association {assoc!r} (known: {', '.join(ASSOCIATIONS)})")
+    for key in ("answer_associations", "request_associations"):
+        for assoc in getattr(cfg.sources, key):
+            if assoc not in ASSOCIATIONS:
+                problems.append(f"sources.{key}: unknown association {assoc!r} (known: {', '.join(ASSOCIATIONS)})")
     if cfg.sources.max_megabytes < 1 or cfg.sources.ocr_dpi < 72:
         problems.append("sources.max_megabytes must be at least 1 and sources.ocr_dpi at least 72")
     if not cfg.board.intention_labels:

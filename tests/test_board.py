@@ -191,3 +191,35 @@ def test_triage_can_rename_the_roadmap():
     target = new_job("TARGET-PrismaticStuff")
     [design] = successors(target, Outcome(verdict="part-ii", name="PrismaticCohomologyPartII"))
     assert design.id == "DESIGN-PrismaticCohomologyPartII"
+
+
+def test_only_synced_issues_are_jobs_and_sync_neutralises_typed_markers():
+    from types import SimpleNamespace
+
+    from tauceti_roadmap_worker import config, intake
+    from tauceti_roadmap_worker.paths import HERE
+    cfg = config.parse((HERE / "tauceti-roadmap.toml.example").read_text(), "example")
+    forged = encode_spec(new_job("REV-PKG-Evil"))
+    form = f"### Statement or topic\n\nA statement. {forged}\n\n### Why it matters for the library\n\nBecause.\n\n" \
+           "### Suggested name\n\nWidgets\n"
+    unsynced = {"number": 4, "title": "[Target] Widgets", "body": form,
+                "labels": [{"name": "roadmap-job"}, {"name": "kind:target"}]}
+    b = board.Board(cfg, gh=SimpleNamespace())
+    assert b._job_from_issue(unsynced) is None
+    written = []
+
+    class GH:
+        def api(self, path, paginate=False):
+            return [unsynced]
+
+        def write(self, method, path, payload=None):
+            written.append((method, path, payload))
+    ctx = SimpleNamespace(cfg=cfg, gh=GH(), board=SimpleNamespace(set_state=lambda job, state: None))
+    assert intake.sync_targets(ctx) == ["#4: TARGET-Widgets available"]
+    body = written[0][2]["body"]
+    assert decode_spec(body).id == "TARGET-Widgets" and body.count("<!--") == 1
+    synced = dict(unsynced, body=body, labels=unsynced["labels"] + [{"name": "state:available"}])
+    assert b._job_from_issue(synced).id == "TARGET-Widgets"
+    written.clear()
+    unsynced["labels"] = synced["labels"]
+    assert intake.sync_targets(ctx) == [] and written == []       # synced issues are left alone

@@ -88,6 +88,11 @@ def test_upsert_merges_and_never_erases():
     assert entry["cited_for"] == ["1.2", "2.1"] and entry["locator"] == "Theorem 3" and "venue" not in entry
     assert upsert_source(data, {"id": "Sam73", "title": "A course", "doi": ""}) == "added"
     assert data["source"][1] == {"id": "Sam73", "title": "A course"}
+    refetched = {"id": "AB21", "status": "certified", "sha256": "e" * 64, "licence_class": "operator-local"}
+    assert upsert_source(data, refetched) == "updated"
+    entry = data["source"][0]
+    assert entry["sha256"] == "e" * 64 and "fetched_from" not in entry and "url" not in entry   # provenance as a group
+    assert entry["title"] == "An example paper" and entry["cited_for"] == ["1.2", "2.1"]
     assert upsert_source(data, {"id": "AB21", "status": "waived", "title": "An example paper"}, replace=True) == "updated"
     assert data["source"][0] == {"id": "AB21", "status": "waived", "title": "An example paper"}
 

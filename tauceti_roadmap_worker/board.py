@@ -488,11 +488,15 @@ class Board:
         self.ns = cfg.board.namespace_label
 
     def _job_from_issue(self, issue: dict) -> Job | None:
+        """The job an issue carries. Only issues with a `state:` label are jobs: the board sets that
+        label itself, so a spec someone typed into an issue nobody has synced is not a job."""
+        labels = [label["name"] for label in issue.get("labels", [])]
+        if not any(label.startswith("state:") for label in labels):
+            return None
         job = decode_spec(issue.get("body") or "")
         if not job:
             return None
-        job.number = issue["number"]
-        job.labels = [label["name"] for label in issue.get("labels", [])]
+        job.number, job.labels = issue["number"], labels
         job.state = state_from_labels(job.labels)
         return job
 
@@ -528,15 +532,18 @@ class Board:
         return int(created["number"]) if created else 0
 
     def set_state(self, job: Job, state: str, comment: str = "") -> None:
+        """Add the new state label first, then remove the others, so a failure in between never leaves
+        a job without a state (and out of every listing)."""
         if state not in STATES:
             raise ValueError(state)
+        self.gh.write("POST", f"repos/{self.repo}/issues/{job.number}/labels", {"labels": [f"state:{state}"]})
         for label in job.labels:
             if label.startswith("state:") and label != f"state:{state}":
                 try:
                     self.gh.write("DELETE", f"repos/{self.repo}/issues/{job.number}/labels/{label}")
                 except GHError:
                     pass
-        self.gh.write("POST", f"repos/{self.repo}/issues/{job.number}/labels", {"labels": [f"state:{state}"]})
+        job.labels = [label for label in job.labels if not label.startswith("state:")] + [f"state:{state}"]
         if comment:
             self.comment(job.number, comment)
         job.state = state

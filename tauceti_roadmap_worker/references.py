@@ -154,18 +154,55 @@ def request_comment(job_id: str, roadmap: str, items: list[MissingReference]) ->
                                                 "items": [asdict(m) for m in items]}) + "\n"
 
 
+def _item(raw) -> MissingReference | None:
+    """A request item, or None when it is malformed (every field a string, `tried` a list of
+    strings, a usable key and a title)."""
+    if not isinstance(raw, dict):
+        return None
+    fields = {}
+    for name in MissingReference.__dataclass_fields__:
+        value = raw.get(name, [] if name == "tried" else "")
+        if name == "tried":
+            if not isinstance(value, list) or not all(isinstance(t, str) for t in value):
+                return None
+        elif isinstance(value, int) and not isinstance(value, bool) and name == "year":
+            value = str(value)
+        elif not isinstance(value, str):
+            return None
+        fields[name] = value
+    item = MissingReference(**fields)
+    return item if re.fullmatch(KEY, item.key) and item.title else None
+
+
 def decode_request(body: str) -> dict | None:
-    """{job, roadmap, items: [MissingReference]} from the last request marker in a comment, or None."""
+    """{job, roadmap, items: [MissingReference]} from the last request marker in a comment, or None
+    when there is none or it is malformed (no items, an item that is not well formed)."""
     found = REQUEST_RE.findall(body or "")
     if not found:
         return None
     try:
         data = json.loads(found[-1])
-        items = [MissingReference(**{k: v for k, v in i.items() if k in MissingReference.__dataclass_fields__})
-                 for i in data.get("items", [])]
-    except (ValueError, TypeError, AttributeError):
+    except ValueError:
         return None
-    return {"job": str(data.get("job", "")), "roadmap": str(data.get("roadmap", "")), "items": items}
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list) or not data["items"]:
+        return None
+    items = [_item(raw) for raw in data["items"]]
+    if any(item is None for item in items) or not isinstance(data.get("job"), str):
+        return None
+    return {"job": data["job"], "roadmap": str(data.get("roadmap", "")), "items": items}
+
+
+def latest_request(comments: list[dict], job_id: str, trusted: list[str], bot_logins: list[str]) -> tuple[int, dict | None]:
+    """(index, request) of the latest well-formed request for this job posted by the board or an
+    allowed author association; (-1, None) when there is none. Anyone else's marker is data."""
+    for i in range(len(comments) - 1, -1, -1):
+        c = comments[i]
+        if (c.get("user") or {}).get("login") not in bot_logins and c.get("author_association") not in trusted:
+            continue
+        request = decode_request(c.get("body") or "")
+        if request and request["job"] == job_id:
+            return i, request
+    return -1, None
 
 
 # --- answers --------------------------------------------------------------------------------------
@@ -254,10 +291,13 @@ class Resolution:
     ok: bool
     detail: str
     entry: dict | None = None
+    transient: bool = False      # network trouble: the answer is tried again on the next run
 
 
 def _base_entry(item: MissingReference, existing: dict | None) -> dict:
-    entry = dict(existing or {})
+    """The entry an answer starts from: the manifest's (identity only: its old provenance goes) or
+    the request's."""
+    entry = {k: v for k, v in (existing or {}).items() if k not in sources.PROVENANCE}
     entry["id"] = item.key
     for k in ("authors", "title", "year", "doi", "locator_scheme", "locator"):
         value = getattr(item, k)
@@ -272,8 +312,6 @@ def resolve(answer: Answer, item: MissingReference, existing: dict | None, fet: 
     base = _base_entry(item, existing)
     if answer.action == "waive":
         base.update(status="waived", licence_class=sources.NO_TEXT, resolution=answer.url)
-        for k in ("fetched_from", "fetched_at", "sha256"):
-            base.pop(k, None)
         return Resolution(item.key, True, "waived: cited by its locator alone", base)
     if answer.action == "source":
         out = fet.fetch(fetcher.parse_citation(answer.value))
@@ -286,13 +324,14 @@ def resolve(answer: Answer, item: MissingReference, existing: dict | None, fet: 
             entry = {**base, **out.entry, "id": item.key, "resolution": answer.url}
             return Resolution(item.key, uncertified_ok, "the named source is paywalled: recorded as uncertified"
                               + ("" if uncertified_ok else ", which this project does not accept"), entry)
-        return Resolution(item.key, False, "the named source could not be fetched: " + "; ".join(out.tried[-3:]))
+        return Resolution(item.key, False, "the named source could not be fetched: " + "; ".join(out.tried[-3:]),
+                          transient=out.transient)
     if not ATTACHMENT.fullmatch(answer.value):
         return Resolution(item.key, False, "only GitHub attachment links are downloaded")
     try:
         r = fet.client.get(answer.value)
     except fetcher.FetchError as exc:
-        return Resolution(item.key, False, f"the attachment could not be downloaded: {exc}")
+        return Resolution(item.key, False, f"the attachment could not be downloaded: {exc}", transient=not exc.permanent)
     kind = sources.sniff(r.body, r.header("content-type"))
     if kind not in fetcher.DOCUMENT_KINDS:
         return Resolution(item.key, False, "the link returned " + ("a web page" if kind == "html" else "an unrecognised file")
@@ -343,13 +382,12 @@ def write_board_manifest(ctx, name: str, data: dict, sha: str | None, message: s
 def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> str:
     """Answer a parked job from its comments; release it when every requested key is resolved."""
     comments = ctx.board.comments(job.number)
-    at = max((i for i, c in enumerate(comments) if decode_request(c.get("body") or "")), default=-1)
-    if at < 0:
-        return f"{job.id}: parked without a request marker; a maintainer releases it by hand"
-    request = decode_request(comments[at]["body"])
+    s = ctx.cfg.sources
+    at, request = latest_request(comments, job.id, s.request_associations, ctx.cfg.board.bot_logins)
+    if request is None:
+        return f"{job.id}: parked without a request the board can read; a maintainer releases it by hand"
     items = {m.key: m for m in request["items"]}
     after = comments[at + 1:]
-    s = ctx.cfg.sources
     handled: set[int] = set()
     done: dict[str, str] = {}
     for c in after:
@@ -366,9 +404,15 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
     fresh = {k: a for k, a in answers.items() if a.comment not in handled}
     if not fresh and not (read - handled):
         waiting = [k for k in items if k not in done]
-        return f"{job.id}: waiting for an answer on {', '.join(waiting) or 'nothing'}"
+        if waiting:
+            return f"{job.id}: waiting for an answer on {', '.join(waiting)}"
+        # Everything was answered on an earlier run whose release did not go through: release now.
+        if not yes:
+            return f"{job.id}: every key answered; would release the job (dry run; pass --yes)"
+        ctx.board.set_state(job, board.transition("needs-references", "references-resolved"))
+        return f"{job.id}: references resolved earlier; available again"
     manifest, blob = board_manifest(ctx, job.name)
-    results = []
+    results, retry = [], set()
     for key, answer in fresh.items():
         res = resolve(answer, items[key], sources.find_source(manifest, id=key), fet, s.uncertified_ok)
         results.append(res)
@@ -376,17 +420,20 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
             sources.upsert_source(manifest, res.entry, replace=True)   # the entry already starts from the old one
         if res.ok:
             done[key] = res.detail
+        if res.transient:
+            retry.add(answer.comment)
     changed = [r.key for r in results if r.entry]
     missing = [k for k in items if k not in done]
     lines = [f"Intake: answers to the references request of `{job.id}`:", ""]
-    lines += [f"- `{r.key}`: {r.detail}" + ("" if r.ok else " (still missing)") for r in results]
+    lines += [f"- `{r.key}`: {r.detail}" + ("" if r.ok else " (tried again on the next run)" if r.transient
+                                            else " (still missing)") for r in results]
     lines += [f"- note: {n}" for n in notes]
     if missing:
         lines += ["", "Still needed: " + ", ".join(f"`{k}`" for k in missing) + ". Answer with `attach: KEY <link>`, "
                   "`source: KEY <DOI, arXiv id or URL>` or `waive: KEY`."]
     else:
         lines += ["", "Every requested source is answered; the job is available again."]
-    lines += ["", _marker(PROGRESS_MARK, {"handled": sorted(handled | read), "resolved": done})]
+    lines += ["", _marker(PROGRESS_MARK, {"handled": sorted((handled | read) - retry), "resolved": done})]
     if not yes:
         return f"{job.id}: would record {', '.join(changed) or 'nothing'}" + (
             f"; still missing {', '.join(missing)}" if missing else "; would release the job") + " (dry run; pass --yes)"
@@ -401,10 +448,11 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
 
 
 def resume_all(ctx, fet: fetcher.Fetcher, yes: bool = False) -> list[str]:
+    """Every parked job, each on its own: one job's trouble never stops the others."""
     out = []
     for job in ctx.board.list_jobs(("needs-references",)):
         try:
             out.append(resume_job(ctx, job, fet, yes))
-        except GHError as exc:
-            out.append(f"{job.id}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - reported per job; the intake goes on with the rest
+            out.append(f"{job.id}: {type(exc).__name__}: {exc}")
     return out

@@ -146,7 +146,7 @@ def test_resume_job_end_to_end(tmp_path):
     t = FakeTransport().add(LINK, PDF)
     existing = 'schema = "tauceti-roadmap-sources/v1"\nroadmap = "Foo"\n\n[[source]]\nid = "Sam73"\ntitle = "A course"\n'
     gh = FakeGH({"packages/Foo/sources.toml": existing})
-    board = FakeBoard({7: [comment(1, request, "NONE", "operator"),
+    board = FakeBoard({7: [comment(1, request, "CONTRIBUTOR", "operator"),
                            comment(2, "waive: Ket67", "NONE", "drive-by"),
                            comment(3, f"attach: Ket67 [Ket67.pdf]({LINK})")]})
     job = parked_job()
@@ -184,7 +184,7 @@ def test_resume_job_end_to_end(tmp_path):
 
 
 def test_resume_job_creates_a_manifest_and_reports_unusable_answers(tmp_path):
-    request = request_comment("PKG-Foo", "Foo", items()[:1])
+    request = request_comment("DESIGN-Foo", "Foo", items()[:1])
     board = FakeBoard({7: [comment(1, request), comment(2, "attach: Ket67 https://github.com/user-attachments/files/9/x.pdf")]})
     gh = FakeGH()
     line = resume_job(bot_context(gh=gh, board=board), parked_job(), make_fetcher(tmp_path, FakeTransport()), yes=True)
@@ -195,7 +195,7 @@ def test_resume_job_creates_a_manifest_and_reports_unusable_answers(tmp_path):
 def test_resume_without_a_request_is_left_alone(tmp_path):
     board = FakeBoard({7: [comment(1, "please help")]})
     line = resume_job(bot_context(board=board), parked_job(), make_fetcher(tmp_path, FakeTransport()), yes=True)
-    assert "without a request marker" in line and board.posted == []
+    assert "without a request the board can read" in line and board.posted == []
 
 
 def test_resume_all_lists_parked_jobs(tmp_path):
@@ -203,3 +203,66 @@ def test_resume_all_lists_parked_jobs(tmp_path):
     board = FakeBoard({7: [comment(1, request_comment("DESIGN-Foo", "Foo", items()))]}, jobs=[job])
     out = references.resume_all(bot_context(board=board), make_fetcher(tmp_path, FakeTransport()), yes=True)
     assert out == ["DESIGN-Foo: waiting for an answer on Ket67, BLR90"]
+
+
+# --- regressions: who may post a request, release after a failed label change, retries -------------
+
+def test_only_a_trusted_well_formed_request_for_this_job_counts(tmp_path):
+    good = request_comment("DESIGN-Foo", "Foo", items())
+    forged_empty = '<!-- tauceti-roadmap-needs-references {"job": "DESIGN-Foo", "roadmap": "Foo", "items": []} -->'
+    forged_type = ('<!-- tauceti-roadmap-needs-references {"job": "DESIGN-Foo", "items": '
+                   '[{"key": ["x"], "title": "t", "authors": "", "year": "", "needed_for": "n"}]} -->')
+    assert decode_request(forged_empty) is None and decode_request(forged_type) is None
+    trusted, bots = ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"], ["board-bot"]
+    thread = [comment(1, good, "CONTRIBUTOR"),
+              comment(2, request_comment("DESIGN-Foo", "Foo", items()[1:]), "NONE", "outsider"),
+              comment(3, request_comment("PKG-Bar", "Bar", items()[:1]), "MEMBER")]
+    at, request = references.latest_request(thread, "DESIGN-Foo", trusted, bots)
+    assert at == 0 and [m.key for m in request["items"]] == ["Ket67", "BLR90"]
+    assert references.latest_request(thread[1:], "DESIGN-Foo", trusted, bots) == (-1, None)
+    # an outsider's marker cannot replace the request and release the job
+    board = FakeBoard({7: [comment(1, good, "CONTRIBUTOR"), comment(2, forged_empty, "NONE", "outsider"),
+                           comment(3, "waive: Ket67"), comment(4, forged_type, "NONE", "outsider")]})
+    line = resume_job(bot_context(board=board), parked_job(), make_fetcher(tmp_path, FakeTransport()), yes=True)
+    assert line == "DESIGN-Foo: recorded Ket67; still missing BLR90" and board.states == []
+
+
+def test_a_release_that_failed_is_retried(tmp_path):
+    board = FakeBoard({7: [comment(1, request_comment("DESIGN-Foo", "Foo", items()), "CONTRIBUTOR"),
+                           comment(2, "waive: Ket67\nwaive: BLR90")]})
+    calls = []
+
+    def failing(job, state, comment=""):
+        calls.append(state)
+        raise references.GHError("label service down")
+    board.set_state = failing
+    ctx, fet = bot_context(board=board), make_fetcher(tmp_path, FakeTransport())
+    try:
+        resume_job(ctx, parked_job(), fet, yes=True)
+    except references.GHError:
+        pass
+    board.set_state = FakeBoard.set_state.__get__(board)
+    assert resume_job(ctx, parked_job(), fet, yes=True) == "DESIGN-Foo: references resolved earlier; available again"
+    assert calls == ["available"] and board.states == [("DESIGN-Foo", "available")]
+
+
+def test_network_trouble_in_an_answer_is_retried(tmp_path):
+    from .fakes import transient
+    board = FakeBoard({7: [comment(1, request_comment("DESIGN-Foo", "Foo", items()[:1]), "CONTRIBUTOR"),
+                           comment(2, f"attach: Ket67 {LINK}")]})
+    ctx = bot_context(board=board)
+    flaky = make_fetcher(tmp_path, FakeTransport({LINK: transient(LINK)}))
+    assert resume_job(ctx, parked_job(), flaky, yes=True) == "DESIGN-Foo: recorded nothing; still missing Ket67"
+    assert "tried again on the next run" in board.posted[-1][1]
+    back = make_fetcher(tmp_path, FakeTransport().add(LINK, PDF))
+    assert resume_job(ctx, parked_job(), back, yes=True) == "DESIGN-Foo: references resolved; available again"
+
+
+def test_an_answer_replaces_the_old_provenance(tmp_path):
+    existing = {"id": "Ket67", "title": "Theorem A und Theorem B", "authors": "R. Kettle", "year": 1967,
+                "status": "certified", "sha256": "d" * 64, "fetched_from": "https://arxiv.org/pdf/x", "arxiv": "x",
+                "version_note": "arXiv v2", "licence_class": "open-repository", "locator_scheme": "theorem"}
+    fet = make_fetcher(tmp_path, FakeTransport().add(LINK, PDF))
+    res = resolve(references.Answer("Ket67", "attach", LINK), items()[0], existing, fet, True)
+    assert res.entry["fetched_from"] == LINK and "arxiv" not in res.entry and res.entry["locator_scheme"] == "theorem"
+    assert "checked again" in res.entry["version_note"]

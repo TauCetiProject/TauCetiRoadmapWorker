@@ -60,6 +60,10 @@ REQUIRED_WAIVED = ("id", "authors", "title", "year", "status")
 FIELD_ORDER = ("id", "authors", "title", "year", "venue", "doi", "arxiv", "locator_scheme", "locator", "url",
                "fetched_from", "fetched_at", "sha256", "licence_class", "status", "accessed", "version_note",
                "resolution", "cited_for")
+# Where the text came from: replaced as a group whenever an entry gets a new text (or none), so a
+# record never mixes the URL of one copy with the hash of another.
+PROVENANCE = ("url", "fetched_from", "fetched_at", "sha256", "arxiv", "licence_class", "status", "accessed",
+              "version_note", "resolution")
 DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -196,8 +200,9 @@ def find_source(data: dict, *, id: str = "", doi: str = "", arxiv: str = "", sha
 
 def upsert_source(data: dict, entry: dict, replace: bool = False) -> str:
     """Add `entry` to the manifest or update the entry with its id; 'added' or 'updated'. Fields of the
-    new entry win, except that `cited_for` lists are merged and empty values never erase. With
-    `replace`, the entry with that id is replaced as a whole (in place)."""
+    new entry win, except that `cited_for` lists are merged and empty values never erase; an entry
+    that carries a status or a hash replaces the old provenance fields as a group. With `replace`, the
+    entry with that id is replaced as a whole (in place)."""
     data.setdefault("source", [])
     current = find_source(data, id=entry.get("id", ""))
     if current is None:
@@ -207,6 +212,9 @@ def upsert_source(data: dict, entry: dict, replace: bool = False) -> str:
         current.clear()
         current.update({k: v for k, v in entry.items() if v not in ("", None, [])})
         return "updated"
+    if entry.get("status") or entry.get("sha256"):
+        for key in PROVENANCE:                 # a new text (or none): the old provenance goes as a whole
+            current.pop(key, None)
     for key, value in entry.items():
         if value in ("", None, []):
             continue

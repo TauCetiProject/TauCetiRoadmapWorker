@@ -192,7 +192,9 @@ def sync_targets(ctx) -> list[str]:
     issues = ctx.gh.api(f"repos/{repo}/issues?labels={cfg.board.namespace_label},kind:target&state=open&per_page=100",
                         paginate=True)
     for issue in issues:
-        if issue.get("pull_request") or board.decode_spec(issue.get("body") or ""):
+        # Synced issues carry a state label (only the board sets one); an unsynced form is human text,
+        # so any marker typed into it is neutralised before the board appends the real spec.
+        if issue.get("pull_request") or any(label["name"].startswith("state:") for label in issue.get("labels", [])):
             continue
         form = board.parse_target_form(issue.get("body") or "")
         name = board.camel_name(form.get("name") or issue.get("title", ""))
@@ -200,7 +202,7 @@ def sync_targets(ctx) -> list[str]:
             out.append(f"#{issue['number']}: target form incomplete (statement and a usable name are needed)")
             continue
         job = board.new_job(board.make_id("target", name), inputs={"form": form, "issue": issue["number"]})
-        body = (issue.get("body") or "") + "\n\n" + board.encode_spec(job)
+        body = board.neutralise(issue.get("body") or "") + "\n\n" + board.encode_spec(job)
         ctx.gh.write("PATCH", f"repos/{repo}/issues/{issue['number']}", {"body": body})
         job.number, job.labels = issue["number"], [label["name"] for label in issue.get("labels", [])]
         ctx.board.set_state(job, "available")
