@@ -46,6 +46,11 @@ stale_hours = 24
 # Also read targets filed as `intention` issues on the content repository's board
 # (labels `intention` + `roadmap/<area>`), the convention TauCetiWorker already reads.
 intentions = true
+# `targets import-intentions` turns open issues of the content repository that carry ALL of these
+# labels into TARGET jobs, once each (the mapping is kept in the state directory's intentions.json).
+# Narrow it (for example ["intention", "roadmap-target"]) when intentions mostly claim Lean work on
+# existing roadmaps rather than ask for new ones.
+intention_labels = ["intention"]
 
 [roadmap]
 # Active roadmap folders in the content repository, and where completed ones live.
@@ -98,9 +103,13 @@ passes = [
   { agent = "codex", model = "" },
   { agent = "claude", model = "" },
 ]
-# Add section-sharded passes (one per README layer, instantiating every statement on small
-# examples). Evidence so far: they catch pinning gaps whole-document passes miss. Opt-in.
+# Add section-sharded passes: after its whole-document pass, every red-team job runs one more pass
+# per top-level README section that states targets (`## Layer ...`), instantiating every statement
+# of that section on small examples, and merges their findings into its report before the fix lane.
+# Evidence so far: they catch pinning gaps whole-document passes miss. Opt-in.
 sharded = false
+# At most this many section passes per red-team job; adjacent sections are grouped beyond it.
+shard_max = 8
 # Mark the pull request ready for review after the last round (false: it stays a draft and a
 # human marks it ready).
 ready_after = false
@@ -131,12 +140,33 @@ deny = [".libgen.is", ".libgen.rs", ".libgen.li", ".sci-hub.se", ".sci-hub.st", 
 # manifest records it as `uncertified`. Paywalls are never circumvented. false = such a citation
 # sends the job to `needs-references` instead.
 uncertified_ok = true
-# Run OCR (uv venv + RapidOCR) on image-only scans in the sources service (not yet implemented).
+# Directories holding texts the operator already has (licence class "operator-local"). `sources
+# fetch` looks here first (by arXiv id, DOI, title words or content hash). Never commit a path here
+# that names a person's home directory: use "~/..." — it is expanded on each host.
+local_dirs = []
+# Paywalled hosts: never fetched. A citation that resolves only to one of them is recorded as
+# `uncertified` with its DOI and locator. DOIs with these prefixes are not resolved at all (the
+# service still looks for an arXiv or HAL version).
+paywalled = [".sciencedirect.com", ".elsevier.com", ".springer.com", ".springerlink.com", ".springernature.com"]
+paywalled_doi_prefixes = ["10.1016", "10.1007"]
+# User-Agent of the sources service ("" = tauceti-roadmap-worker/<version>).
+user_agent = ""
+# Largest file the service downloads.
+max_megabytes = 200
+# Run OCR on image-only scans (pages with almost no text layer). Needs the optional `ocr` extra
+# (RapidOCR with pypdfium2); without it the service says so and keeps the text layer it found.
 ocr = false
+# Rendering resolution for OCR, and the characters per page below which a page counts as image-only.
+ocr_dpi = 300
+ocr_min_chars = 250
+# GitHub author associations whose comments may answer a needs-references request (attach a file,
+# name an alternative source, `waive: <key>`). Anyone else's comment on the job is ignored.
+answer_associations = ["OWNER", "MEMBER", "COLLABORATOR"]
 # Licence classes and the hosts that belong to them (a leading dot allows every subdomain).
 # Texts the operator already holds locally are the class "operator-local" and need no host.
 [sources.allow]
-open-repository = ["arxiv.org", ".arxiv.org", "hal.science", ".hal.science", "numdam.org", ".numdam.org",
+open-repository = ["arxiv.org", ".arxiv.org", "hal.science", ".hal.science", ".archives-ouvertes.fr",
+                   "numdam.org", ".numdam.org",
                    "gdz.sub.uni-goettingen.de", "eudml.org", ".eudml.org", "projecteuclid.org",
                    "stacks.math.columbia.edu", "zbmath.org", ".zbmath.org"]
 publisher-open = ["msp.org", "ems.press", "doi.org"]

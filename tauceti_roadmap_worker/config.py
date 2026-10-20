@@ -25,6 +25,8 @@ from . import paths
 AGENTS = ("codex", "claude")
 SANDBOX_PROFILES = ("off", "proxy", "netjail")
 LICENCE_CLASSES = ("open-repository", "publisher-open", "author-page", "institutional", "operator-local")
+# GitHub's author_association values: who may answer a `needs-references` request.
+ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
@@ -61,6 +63,8 @@ class Board:
     bot_logins: list[str] = field(default_factory=lambda: ["github-actions[bot]"])
     stale_hours: float = 24.0
     intentions: bool = True
+    # `targets import-intentions` imports open issues of the content repository carrying all of these.
+    intention_labels: list[str] = field(default_factory=lambda: ["intention"])
 
 
 @dataclass
@@ -97,6 +101,7 @@ class RedTeam:
     rounds: int = 2
     passes: list[RedTeamPass] = field(default_factory=lambda: [RedTeamPass("codex"), RedTeamPass("claude")])
     sharded: bool = False
+    shard_max: int = 8
     ready_after: bool = False
 
 
@@ -123,7 +128,8 @@ class Agents:
 @dataclass
 class Sources:
     allow: dict[str, list[str]] = field(default_factory=lambda: {
-        "open-repository": ["arxiv.org", ".arxiv.org", "hal.science", ".hal.science", "numdam.org", ".numdam.org",
+        "open-repository": ["arxiv.org", ".arxiv.org", "hal.science", ".hal.science", ".archives-ouvertes.fr",
+                            "numdam.org", ".numdam.org",
                             "gdz.sub.uni-goettingen.de", "eudml.org", ".eudml.org", "projecteuclid.org",
                             "stacks.math.columbia.edu", "zbmath.org", ".zbmath.org"],
         "publisher-open": ["msp.org", "ems.press", "doi.org"],
@@ -135,7 +141,20 @@ class Sources:
         ".z-lib.org", ".z-library.sk", ".annas-archive.org", ".library.lol", ".booksc.org",
     ])
     uncertified_ok: bool = True
+    # Directories of texts the operator already holds (licence class operator-local); `~` is expanded.
+    local_dirs: list[str] = field(default_factory=list)
+    # Hosts whose pages are paywalled: never fetched, so a citation that resolves only there is
+    # recorded as uncertified. DOIs with these prefixes are not even resolved.
+    paywalled: list[str] = field(default_factory=lambda: [
+        ".sciencedirect.com", ".elsevier.com", ".springer.com", ".springerlink.com", ".springernature.com"])
+    paywalled_doi_prefixes: list[str] = field(default_factory=lambda: ["10.1016", "10.1007"])
+    user_agent: str = ""
+    max_megabytes: int = 200
     ocr: bool = False
+    ocr_dpi: int = 300
+    ocr_min_chars: int = 250
+    # Who may answer a needs-references request (attach, name a source, waive).
+    answer_associations: list[str] = field(default_factory=lambda: ["OWNER", "MEMBER", "COLLABORATOR"])
 
 
 @dataclass
@@ -253,6 +272,8 @@ def validate(cfg: Config) -> None:
             problems.append(f"agents.lanes.{kind}.agent must be one of {AGENTS}")
     if cfg.redteam.rounds < 1:
         problems.append("redteam.rounds must be at least 1")
+    if cfg.redteam.shard_max < 1:
+        problems.append("redteam.shard_max must be at least 1")
     if not cfg.redteam.passes:
         problems.append("redteam.passes must list at least one pass")
     for p in cfg.redteam.passes:
@@ -267,6 +288,13 @@ def validate(cfg: Config) -> None:
     for cls in cfg.sources.allow:
         if cls not in LICENCE_CLASSES:
             problems.append(f"sources.allow: unknown licence class {cls!r} (known: {', '.join(LICENCE_CLASSES)})")
+    for assoc in cfg.sources.answer_associations:
+        if assoc not in ASSOCIATIONS:
+            problems.append(f"sources.answer_associations: unknown association {assoc!r} (known: {', '.join(ASSOCIATIONS)})")
+    if cfg.sources.max_megabytes < 1 or cfg.sources.ocr_dpi < 72:
+        problems.append("sources.max_megabytes must be at least 1 and sources.ocr_dpi at least 72")
+    if not cfg.board.intention_labels:
+        problems.append("board.intention_labels must name at least one label")
     for pattern in cfg.gates.forbidden_patterns + cfg.gates.outside_folder_allow:
         try:
             re.compile(pattern)

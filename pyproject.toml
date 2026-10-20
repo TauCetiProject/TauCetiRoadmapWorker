@@ -10,8 +10,15 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-# Standard library only: TOML is read with tomllib (Python 3.11+).
+# Standard library only: TOML is read with tomllib (Python 3.11+). The sources service extracts PDF
+# text with `pdftotext -layout` when poppler is installed, else with the optional `pdf` extra; OCR of
+# image-only scans needs the optional `ocr` extra (the RapidOCR recipe: ONNX runtime, pypdfium2 for
+# rendering). If OpenCV then fails to load libGL, swap opencv-python for opencv-python-headless.
 dependencies = []
+
+[project.optional-dependencies]
+pdf = ["pypdf>=4"]
+ocr = ["rapidocr-onnxruntime>=1.3", "pypdfium2>=4", "numpy", "pillow"]
 
 [project.scripts]
 tauceti-roadmap = "tauceti_roadmap_worker.cli:main"
