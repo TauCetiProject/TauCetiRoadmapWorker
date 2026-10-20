@@ -128,14 +128,20 @@ def doctor(args) -> int:
         except OSError as exc:
             add((FAIL, "state directory", f"{state}: {exc}"))
         dummy = {}
-        for lane in prompts.LANES:
+        for lane in prompts.BRIEFS:
             dummy |= {k: "x" for k in prompts.placeholders(lane)}
         try:
-            for lane in prompts.LANES:
+            for lane in prompts.BRIEFS:
                 prompts.render(lane, dummy)
-            add((OK, "prompts", f"{len(prompts.LANES)} briefs render ({paths.PROMPTS})"))
+            add((OK, "prompts", f"{len(prompts.BRIEFS)} briefs render ({paths.PROMPTS})"))
         except prompts.PromptError as exc:
             add((FAIL, "prompts", str(exc)))
+        reason = sources.ocr_status()
+        if cfg.sources.ocr:
+            add((OK if not reason else WARN, "ocr", "RapidOCR available" if not reason else reason))
+        pdf = shutil.which("pdftotext")
+        add((OK, "pdf text", pdf) if pdf else (WARN, "pdf text", "pdftotext not found: install poppler-utils, "
+                                                                  "or the `pdf` extra for a slower fallback"))
         rows += _sandbox_rows(cfg)
     width = max(len(r[1]) for r in rows)
     for status, item, detail in rows:

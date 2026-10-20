@@ -3,13 +3,156 @@
 Port of mk-redteam2.sh / run-redteam.sh: each round has one pass per configured agent (the job
 names the agent it needs), on a read-only checkout of the pull request head; the report goes to the
 board, and a `fix` lane on the pull request branch merges the round's findings.
+
+With `[redteam] sharded = true`, each red-team job also runs one section pass per top-level README
+section that states targets (`## Layer ...`, or the `### Layer ...` subsections when the layers sit
+under one `## ` wrapper; adjacent sections are grouped beyond `[redteam] shard_max`), on the
+`redteam-section` brief: every statement of the section instantiated
+on small examples, which catches pinning gaps a whole-document pass misses. The section findings
+are renumbered after the whole-document pass's own, tagged with their section, and merged into the
+job's report, so the fix lane reads one report per pass as before.
 """
 
 from __future__ import annotations
 
-from .. import board, gitops
+import re
+from dataclasses import dataclass
+
+from .. import board, gitops, prompts
 from ..board import Job
 from .base import Context, Lane, LaneError, Workspace, open_roadmap_prs, rev_dir, sibling_checkouts
+from .review import sample_items
+
+FENCE = re.compile(r"^\s*(```|~~~)")
+FINDING = re.compile(r"^## ([RS])(\d+) \((P[123])\)\s*[—–-]+\s*(.*)$")
+LAYER = re.compile(r"^### Layer\b")
+# A section states targets when it has bold-labelled paragraphs or bullets, numbered subsections or Lean.
+STATEMENT = re.compile(r"^\s*(?:[-*]\s+|\d+\.\s+)?\*\*[^*\n]{3,}\*\*|^###\s+\d+(?:\.\d+)*\s|^```lean", re.M)
+# Headings of sections that frame a roadmap rather than state it.
+FRAMING = re.compile(r"^(?:\d+\.\s*)?(?:scope|(?:\w+ )?conventions|references|provenance|sources|what mathlib|"
+                     r"existing|dependencies|ownership|prerequisites|workstreams|ordering|merge order|summary|"
+                     r"overview|status|contributing)\b", re.I)
+
+
+@dataclass(frozen=True)
+class Section:
+    title: str
+    start: int          # 1-based line of its `## ` heading
+    end: int            # its last line
+    text: str
+
+    @property
+    def size(self) -> int:
+        return self.end - self.start + 1
+
+
+def split_sections(readme: str) -> list[Section]:
+    """The README's top-level sections: each `## ` heading outside code fences up to the next."""
+    lines = readme.splitlines()
+    heads, fenced = [], False
+    for i, line in enumerate(lines, 1):
+        if FENCE.match(line):
+            fenced = not fenced
+        elif not fenced and line.startswith("## "):
+            heads.append(i)
+    ends = [h - 1 for h in heads[1:]] + [len(lines)] if heads else []
+    return [Section(lines[start - 1][3:].strip(), start, end, "\n".join(lines[start - 1:end]))
+            for start, end in zip(heads, ends, strict=True)]
+
+
+def layer_units(sections: list[Section]) -> list[Section]:
+    """`## ` sections as they are, except that one holding `### Layer` subsections becomes those layers
+    (the text before its first layer stays with the wrapper and is read as context)."""
+    out = []
+    for section in sections:
+        lines = section.text.split("\n")           # keeps a trailing blank line, so line numbers stay exact
+        heads, fenced = [], False
+        for i, line in enumerate(lines):
+            if FENCE.match(line):
+                fenced = not fenced
+            elif not fenced and LAYER.match(line):
+                heads.append(i)
+        if not heads:
+            out.append(section)
+            continue
+        for k, i in enumerate(heads):
+            j = heads[k + 1] if k + 1 < len(heads) else len(lines)
+            out.append(Section(lines[i][4:].strip(), section.start + i, section.start + j - 1, "\n".join(lines[i:j])))
+    return out
+
+
+def statement_sections(sections: list[Section]) -> list[Section]:
+    """The sections that state targets: every layer, and any other section with statement-like
+    content unless its heading says it only frames the roadmap."""
+    return [s for s in sections if re.match(r"layer\b", s.title, re.I)
+            or (not FRAMING.match(s.title) and (sample_items(s.text) or STATEMENT.search(s.text)))]
+
+
+def group_sections(sections: list[Section], max_groups: int) -> list[list[Section]]:
+    """At most `max_groups` runs of adjacent sections, as even in length as whole sections allow."""
+    if len(sections) <= max_groups:
+        return [[s] for s in sections]
+
+    def greedy(cap: int) -> list[list[Section]]:
+        groups, current, size = [], [], 0
+        for s in sections:
+            if current and size + s.size > cap:
+                groups.append(current)
+                current, size = [], 0
+            current.append(s)
+            size += s.size
+        return groups + ([current] if current else [])
+
+    lo, hi = max(s.size for s in sections), sum(s.size for s in sections)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        lo, hi = (lo, mid) if len(greedy(mid)) <= max_groups else (mid + 1, hi)
+    return greedy(lo)
+
+
+def _blocks(text: str) -> tuple[list[tuple[tuple, list[str]]], dict[str, list[str]]]:
+    """A report's finding blocks ((prefix, number, severity, title), body lines) and its other `## `
+    sections by heading."""
+    findings, others, current = [], {}, None
+    for line in text.splitlines():
+        m = FINDING.match(line)
+        if m:
+            current = []
+            findings.append(((m.group(1), int(m.group(2)), m.group(3), m.group(4).strip()), current))
+        elif line.startswith("## "):
+            current = others.setdefault(line[3:].strip(), [])
+        elif current is not None:
+            current.append(line)
+    return findings, others
+
+
+def merge_section_reports(main: str, shards: list[tuple[str, str | None]], prefix: str = "R") -> str:
+    """The whole-document report with every section pass's findings inserted before its
+    `## Verified sound`, renumbered to continue its own sequence and tagged with their section; the
+    sections' instance tables and the passes that wrote nothing are listed at the end."""
+    own = [n for (p, n, _s, _t), _ in _blocks(main)[0] if p == prefix]
+    number = max(own, default=0)
+    added, summary = [], ["## Section passes", ""]
+    for label, text in shards:
+        if text is None:
+            summary.append(f"- {label}: no report (the pass wrote nothing)")
+            continue
+        findings, others = _blocks(text)
+        summary.append(f"- {label}: {len(findings)} finding(s)")
+        for (_p, _n, severity, title), body in findings:
+            number += 1
+            added.append(f"## {prefix}{number:02d} ({severity}) — [{label}] {title}")
+            added += [*body]
+        for heading in ("Instances", "Not verifiable"):
+            if others.get(heading) and any(line.strip() for line in others[heading]):
+                summary += ["", f"### {label}: {heading.lower()}", *[line for line in others[heading] if line.strip()]]
+    lines = main.rstrip("\n").splitlines()
+    at = next((i for i, line in enumerate(lines) if line.strip() == "## Verified sound"), len(lines))
+    merged = lines[:at] + ([*added, ""] if added else []) + lines[at:] + ["", *summary]
+    text = "\n".join(merged) + "\n"
+    if added:
+        text = re.sub(r"^\*\*Verdict:\*\*.*$", "**Verdict:** changes needed", text, count=1, flags=re.M)
+    return text
 
 
 def report_problems(text: str, pr: int, name: str, head7: str, pass_: str) -> list[str]:
@@ -64,8 +207,44 @@ class RedTeamLane(Lane):
         return {"PR": str(ws.extra["pr"]), "HEAD": ws.extra["head"][:7], "PASS": f"{j.pass_} ({ctx.agent})",
                 "SECOND_PASS": second, "OUTSIDE_CHECK": outside}
 
+    def briefs(self, job: Job, ctx: Context, ws: Workspace, values: dict) -> list[tuple[str, str]]:
+        runs = super().briefs(job, ctx, ws, values)
+        if not ctx.cfg.redteam.sharded:
+            return runs
+        readme = ws.extra.get("readme")
+        text = readme.read_text(encoding="utf-8") if readme and readme.is_file() else ""
+        groups = group_sections(statement_sections(layer_units(split_sections(text))), ctx.cfg.redteam.shard_max)
+        ws.extra["shards"] = []
+        for k, group in enumerate(groups, 1):
+            report = ws.scratch / "sections" / f"section-{k:02d}.md"
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.unlink(missing_ok=True)           # a report from an earlier attempt must not stand in
+            shard = {"index": k, "title": " / ".join(s.title for s in group),
+                     "lines": f"{group[0].start}–{group[-1].end}", "report": report}
+            ws.extra["shards"].append(shard)
+            runs.append((f"section-{k:02d}", prompts.render("redteam-section", {
+                **values, "SECTION_INDEX": str(k), "SECTION_COUNT": str(len(groups)), "SECTION_TITLE": shard["title"],
+                "SECTION_LINES": shard["lines"], "SECTION_REPORT": str(report)})))
+        return runs
+
+    def after_runs(self, job: Job, ctx: Context, ws: Workspace) -> None:
+        shards = ws.extra.get("shards") or []
+        if not shards or not ws.report.is_file():
+            return
+        texts = [(f"§{s['index']} {s['title']}", s["report"].read_text(encoding="utf-8") if s["report"].is_file() else None)
+                 for s in shards]
+        prefix = "S" if board.parse_job_id(job.id).round > 1 else "R"
+        ws.report.write_text(merge_section_reports(ws.report.read_text(encoding="utf-8"), texts, prefix), encoding="utf-8")
+
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)
+        shards = ws.extra.get("shards") or []
+        for s in shards:
+            head = f"# Section pass {s['index']}/{len(shards)} of #{ws.extra['pr']} {job.name} at {ws.extra['head'][:7]}"
+            if not s["report"].is_file():
+                problems.append(f"section pass {s['index']} ({s['title']}) wrote no report")
+            elif not s["report"].read_text(encoding="utf-8").startswith(head):
+                problems.append(f"section pass {s['index']}: first line must start with {head!r}")
         if ws.report.is_file():
             j = board.parse_job_id(job.id)
             problems += report_problems(ws.report.read_text(encoding="utf-8"), ws.extra["pr"], job.name,

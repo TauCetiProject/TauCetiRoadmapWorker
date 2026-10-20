@@ -16,8 +16,8 @@ SHA = sources.sha256_bytes(PDF)
 GONE = "c" * 64
 
 
-def write_manifest(ctx, ws, name="Foo"):
-    manifest = ws.package(ctx.cfg, name) / "sources.toml"
+def write_manifest(run_ctx, ws, name="Foo"):
+    manifest = ws.package(run_ctx.cfg, name) / "sources.toml"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     data = sources.new_manifest(name)
     data["source"] = [
@@ -33,8 +33,8 @@ def write_manifest(ctx, ws, name="Foo"):
     return manifest
 
 
-def live(ctx, transport):  # noqa: F811 - the fixture's name
-    return dataclasses.replace(ctx, dry_run=False, transport=transport)
+def live(base, transport):
+    return dataclasses.replace(base, dry_run=False, transport=transport)
 
 
 def test_prepare_sources_fetches_and_requests_what_is_gone(ctx):  # noqa: F811
