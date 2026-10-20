@@ -1,10 +1,16 @@
 # TauCetiRoadmapWorker
 
 `tauceti-roadmap` plans [Tau Ceti](https://github.com/TauCetiProject/TauCeti) roadmaps with agents
-that operators run on their own machines. Humans file targets on a job board; workers triage them,
+that operators run on their own machines. Humans file targets on the job board; workers triage them,
 design the roadmaps, write the roadmap packages, review each other's work independently, and port
 accepted packages to [TauCetiRoadmap](https://github.com/TauCetiProject/TauCetiRoadmap) as draft
 pull requests. Nothing merges into the roadmap repository without a human.
+
+**Want a roadmap?** Open an issue on the job board,
+[TauCetiProject/TauCetiRoadmapJobs](https://github.com/TauCetiProject/TauCetiRoadmapJobs/issues/new/choose),
+with the "Target" template: the statement or topic you want a roadmap for, why it matters for the
+library, and the sources you know. That is the whole hand-off; the workers do the rest, and the
+issue shows you each stage. Issues on this repository are for the tool itself.
 
 The contract is [docs/DESIGN.md](docs/DESIGN.md), the operators' and maintainers' guide is
 [docs/OPERATORS.md](docs/OPERATORS.md), and the sources rules are [docs/SOURCES.md](docs/SOURCES.md).
@@ -138,7 +144,9 @@ available again once every key is answered.
 ## Filing targets
 
 A target names a statement or topic, why it matters for the library, the sources you know and a
-suggested name. File it with the issue template on the job board, or from the command line:
+suggested name. File it with the "Target" issue template on the job board,
+[TauCetiProject/TauCetiRoadmapJobs](https://github.com/TauCetiProject/TauCetiRoadmapJobs/issues/new/choose),
+or from the command line:
 
 ```bash
 tauceti-roadmap --conf $CONF targets file --statement "..." --why "..." --name PrismaticCohomology
