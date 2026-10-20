@@ -34,6 +34,7 @@ from urllib.parse import urlparse
 
 from . import (
     __version__,
+    build,
     claims,
     config,
     depgraph,
@@ -278,12 +279,15 @@ def work(args) -> int:
                   operator=operator, agent=agent, model=model, conf=_local_conf(args, cfg), dry_run=args.dry_run,
                   agent_fixed=bool(args.agent), model_fixed=bool(args.model))
     log = watch.round_logger(ctx.wdir)
-    log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}")
+    started = build.build_id()
+    build.snapshot(ctx.wdir, started)
+    log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}, "
+        f"build {started}")
     # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
     signal.signal(signal.SIGTERM, _stop)
     if args.loop:
         try:
-            work_loop(ctx, only, lambda: _order(ctx), log=log)
+            work_loop(ctx, only, lambda: _order(ctx), log=log, build=started)
         except KeyboardInterrupt:
             return 130
         return 0

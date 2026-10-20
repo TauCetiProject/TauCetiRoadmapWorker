@@ -485,6 +485,8 @@ class Lane:
             pass  # operators without write access on the board: `board sync` mirrors the state
         return (pr or {}).get("html_url", "")
 
+    agent_started = False   # set once the first agent run begins: a failure before it is the operator's side
+
     def run(self, job: Job, ctx: Context) -> LaneResult:
         reason = self.eligible(job, ctx)
         if reason:
@@ -497,6 +499,7 @@ class Lane:
             (ws.job_dir / (f"brief-{label}.md" if label else "brief.md")).write_text(brief, encoding="utf-8")
         if ctx.dry_run:
             return LaneResult(job.id, "dry-run", f"{len(runs)} brief(s) written to {ws.job_dir}")
+        self.agent_started = True
         for label, brief in runs:
             result = self.run_agent(ctx, ws, brief, label)
             where = f" ({label})" if label else ""

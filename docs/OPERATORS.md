@@ -82,7 +82,16 @@ held the job.
 
 A round that stops before it submits or parks its job (the lane fails, git or GitHub raises, the
 agent hits a usage limit, or you press Ctrl-C) releases the lease and puts the job back to
-`state:available` with a "Released by worker" note. A job that fails three times on one worker is
+`state:available` with a "Released by worker" note. A fault before any agent runs (a brief that does
+not render, a checkout that fails) is on the operator's side: the job is released as
+`setup-failed`, not counted against it, and the worker process leaves it alone until it restarts.
+
+**Upgrading.** At startup a worker copies the briefs and issue templates of its build into
+`workers/<id>/build/<version>+<hash>/` and renders only from that copy, so reinstalling the tool
+(`uv tool install --force ...`) under a running worker cannot mix new briefs with old code. At
+every round boundary it compares the installed build with the one it started on; when they differ
+it logs `installed build changed (old → new); exiting for restart` and exits 0, so run workers under
+a service that restarts them (`Restart=always`), or start them again by hand. A job that fails three times on one worker is
 skipped by that worker (the count is in `workers/<id>/attempts.json`; delete the job's entry to let
 the worker try it again); other workers may still try it. The design lane is capped per
 operator per day (`[design] daily_cap`), counted in `design-ledger.jsonl` on the host.

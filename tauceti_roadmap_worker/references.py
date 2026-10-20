@@ -49,6 +49,13 @@ from . import board, fetcher, sources
 from .gh import GHError
 from .paths import ISSUE_TEMPLATES
 
+_TEMPLATES: Path | None = None   # a worker's startup snapshot (build.snapshot)
+
+
+def use_templates(root: Path | None) -> None:
+    global _TEMPLATES
+    _TEMPLATES = Path(root) if root else None
+
 REQUEST_MARK = "tauceti-roadmap-needs-references"
 PROGRESS_MARK = "tauceti-roadmap-references-progress"
 REQUEST_RE = re.compile(r"<!--\s*" + REQUEST_MARK + r"\s*(\{.*?\})\s*-->", re.S)
@@ -135,7 +142,7 @@ def add_missing(path: Path, item: MissingReference) -> None:
 
 
 def _template_body() -> str:
-    text = (ISSUE_TEMPLATES / "needs-references.md").read_text(encoding="utf-8")
+    text = ((_TEMPLATES or ISSUE_TEMPLATES) / "needs-references.md").read_text(encoding="utf-8")
     if text.startswith("---"):
         text = text.split("---", 2)[2]
     return text.strip() + "\n"

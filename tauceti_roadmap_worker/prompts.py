@@ -25,7 +25,23 @@ class PromptError(Exception):
     pass
 
 
-def expand(text: str, root: Path = PROMPTS) -> str:
+# A worker renders from the snapshot it took at startup (build.snapshot), never from an install
+# that may be replaced under it while it runs.
+_ROOT: Path | None = None
+
+
+def use(root: Path | None) -> None:
+    global _ROOT
+    _ROOT = Path(root) if root else None
+
+
+def root_dir(root: Path | None = None) -> Path:
+    return Path(root) if root else (_ROOT or PROMPTS)
+
+
+def expand(text: str, root: Path | None = None) -> str:
+    root = root_dir(root)
+
     def include(m: re.Match) -> str:
         path = root / m.group(1)
         if not path.is_file():
@@ -34,18 +50,19 @@ def expand(text: str, root: Path = PROMPTS) -> str:
     return INCLUDE.sub(include, text)
 
 
-def template(lane: str, root: Path = PROMPTS) -> str:
+def template(lane: str, root: Path | None = None) -> str:
+    root = root_dir(root)
     path = root / f"{lane}.md"
     if not path.is_file():
         raise PromptError(f"no brief for lane {lane!r} at {path}")
     return expand(path.read_text(encoding="utf-8"), root)
 
 
-def placeholders(lane: str, root: Path = PROMPTS) -> set[str]:
+def placeholders(lane: str, root: Path | None = None) -> set[str]:
     return set(PLACEHOLDER.findall(template(lane, root)))
 
 
-def render(lane: str, values: dict[str, str], root: Path = PROMPTS) -> str:
+def render(lane: str, values: dict[str, str], root: Path | None = None) -> str:
     text = template(lane, root)
     missing = sorted(set(PLACEHOLDER.findall(text)) - set(values))
     if missing:

@@ -47,15 +47,18 @@ leaves the model to the lane. Ctrl-C (or a stop signal) ends the round cleanly.
 To keep a worker running in the background, a user service does well:
 
 ```bash
-systemd-run --user --unit rmw-alice-1 --collect --setenv=PYTHONUNBUFFERED=1 \
+systemd-run --user --unit rmw-alice-1 --collect --property=Restart=always --property=RestartSec=30 \
+  --setenv=PYTHONUNBUFFERED=1 \
   --setenv=PATH="$HOME/.elan/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
   /usr/bin/bash -lc "exec tauceti-roadmap --conf $CONF work --worker-id alice-1 --loop \
     >> $HOME/.local/state/tauceti/projects/TauCetiRoadmap/logs/alice-1.log 2>&1"
 systemctl --user stop rmw-alice-1                                   # stop it (the job is released)
 ```
 
-If several `gh` accounts are logged in on the machine, pin the one the worker uses (for example
-`--setenv=GH_TOKEN=...`; the token is then readable in the unit's environment by your user).
+A worker exits by itself after a reinstall of the tool (at the end of its current round), and the
+service brings it back on the new build. If several `gh` accounts are logged in on the machine, pin
+the one the worker uses (for example `--setenv=GH_TOKEN=...`; the token is then readable in the
+unit's environment by your user).
 
 Watch it:
 

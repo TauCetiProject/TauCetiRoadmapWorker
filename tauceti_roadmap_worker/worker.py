@@ -95,12 +95,15 @@ def for_job(ctx: Context, job: Job) -> tuple[Context | None, str]:
 
 
 def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", order: list[str] | None = None,
-              log=print) -> LaneResult:
+              log=print, avoid: set[str] | None = None) -> LaneResult:
+    """One round. `avoid`: jobs this process already failed to set up (left alone, silently)."""
     jobs = base.board.list_jobs(("available",), tuple(only) if only else None)
     if job_id:
         jobs = [j for j in jobs if j.id == job_id]
     failed_before = failures(base)
     for job in rank(jobs, order or []):
+        if avoid and job.id in avoid:
+            continue
         if failed_before.get(job.id, 0) >= MAX_ATTEMPTS:
             log(f"skip {job.id}: failed {MAX_ATTEMPTS} times on this worker (see its jobs/ folder)")
             continue
@@ -126,7 +129,9 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
 
 # Outcomes after which the job goes back to `state:available`: the lane stopped before it submitted
 # or parked the job (a submission holds it as `submitted`, a request as `needs-references`).
-RELEASED = ("failed", "limited", "skipped", "interrupted")
+# `setup-failed` is an exception before any agent ran (a brief that does not render, a checkout):
+# the operator's side, so it is not counted against the job, and this process leaves the job alone.
+RELEASED = ("failed", "setup-failed", "limited", "skipped", "interrupted")
 
 
 def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
@@ -145,7 +150,8 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
         with Heartbeat(ctx, key):
             result = lane.run(job, ctx)
     except Exception as exc:  # noqa: BLE001 - git, GitHub, the lane's own errors or a bug: all release the job
-        result = LaneResult(job.id, "failed", f"{type(exc).__name__}: {exc}")
+        status = "failed" if getattr(lane, "agent_started", True) else "setup-failed"
+        result = LaneResult(job.id, status, f"{type(exc).__name__}: {exc}")
     except BaseException as exc:  # noqa: BLE001 - Ctrl-C or SystemExit: release the job, then stop
         interrupt, result = exc, LaneResult(job.id, "interrupted", type(exc).__name__)
     finally:
@@ -176,18 +182,32 @@ AFTER_ROUND = 20    # seconds between a round that did something and the next
 PARKED_WATCH = 3 * 3600   # idle seconds a parked job is watched for its answer; then the idle poll finds it
 
 
-def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=print, sleep=time.sleep) -> None:
+def current_build() -> str:
+    from .build import build_id
+    return build_id()
+
+
+def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=print, sleep=time.sleep,
+              build: str = "") -> None:
     """Rounds until interrupted: sleep through usage limits and idle periods. An idle worker sleeps
     `[worker] idle_seconds`, except that the next poll comes within QUICK_POLL seconds after a
     failure (the job was released and may be due again), and after the board answers a job this
     worker parked for references (looked up every QUICK_POLL seconds of idle time, for at most
-    PARKED_WATCH seconds per job). A board that cannot be read counts as an idle round."""
+    PARKED_WATCH seconds per job). A board that cannot be read counts as an idle round. With `build`
+    (the build it started on), every round boundary compares it with the installed build and
+    returns, for a restart, when they differ."""
     idle = idle_sleep or ctx.cfg.worker.idle_seconds
     parked: dict[str, float] = {}   # jobs this worker parked -> idle seconds left to watch for the answer
     quick = False                    # the next idle wait is short
+    avoid: set[str] = set()          # jobs this process failed to set up
     while True:
+        if build:
+            installed = current_build()
+            if installed != build:
+                log(f"{now():%Y-%m-%dT%H:%MZ} installed build changed ({build} → {installed}); exiting for restart")
+                return
         try:
-            result = work_once(ctx, only, order=order_fn(), log=log)
+            result = work_once(ctx, only, order=order_fn(), log=log, avoid=avoid)
         except GHError as exc:
             result = LaneResult("", "idle", f"the board could not be read: {exc}")
         log(f"{now():%Y-%m-%dT%H:%MZ} {result.job or '-'} {result.status}: {result.detail}")
@@ -195,6 +215,8 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
             parked[result.job] = PARKED_WATCH
         else:
             parked.pop(result.job, None)
+        if result.status == "setup-failed":
+            avoid.add(result.job)
         if result.status == "limited":
             wake = result.retry_at
             sleep(max(300, (wake - dt.datetime.now(wake.tzinfo)).total_seconds() + 300) if wake else 1800)
