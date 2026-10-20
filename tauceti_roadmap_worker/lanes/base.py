@@ -448,21 +448,47 @@ class Lane:
         return LaneResult(job.id, "needs-references", f"{len(missing)} source(s) missing: "
                           + ", ".join(m.key for m in missing))
 
-    def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
-        """Commit the job's own files on the worker's board branch, push it to the operator's fork
-        and open the submission pull request that names the job."""
-        cfg = ctx.cfg
-        allowed = board.allowed_paths(job, cfg.board.packages_dir)
+    def validate(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        """Everything that would stop the submission: the lane's checks, then the board's own rules
+        on the files it would submit (deliverables only, no local path, valid data, no source
+        material)."""
+        return self.check(job, ctx, ws) + self.submission_problems(job, ctx, ws)
+
+    def submission_problems(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        allowed = board.allowed_paths(job, ctx.cfg.board.packages_dir)
         changed = gitops.changed_files(ws.board)
         outside = [p for p in changed if p not in allowed]
         if outside:
-            raise LaneError("the agent changed files outside the job's deliverables: " + ", ".join(outside[:10]))
+            return ["the agent changed files outside the job's deliverables: " + ", ".join(outside[:10])
+                    + " (restore them; only the job's deliverables may change)"]
         problems = []
         for path in changed:
             data = (ws.board / path).read_bytes() if (ws.board / path).is_file() else b""
             problems += board.file_problems(path, data.decode("utf-8", errors="replace"), allowed, data)
+        return problems
+
+    def earlier_attempt(self, ws: Workspace) -> str:
+        """For a retry on this worker: where the failed attempt's deliverables and problems are, so
+        the agent repairs them rather than starting over. The problems file moves aside."""
+        problems = ws.job_dir / "problems.txt"
+        if not problems.is_file():
+            return ""
+        previous = ws.job_dir / "problems.previous.txt"
+        problems.replace(previous)
+        kept = ws.job_dir / UNSUBMITTED
+        return ("## An earlier attempt\n\nAn earlier run of this job on this worker failed the worker's checks; the "
+                f"problems are listed in `{previous}`." + (
+                    f" What it wrote is kept in `{kept}` (laid out like the repository). Start from it: put what is sound "
+                    "back in place and repair the listed problems, rather than starting over." if kept.is_dir() else ""))
+
+    def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
+        """Commit the job's own files on the worker's board branch, push it to the operator's fork
+        and open the submission pull request that names the job."""
+        cfg = ctx.cfg
+        problems = self.submission_problems(job, ctx, ws)
         if problems:
             raise LaneError("; ".join(problems))
+        changed = gitops.changed_files(ws.board)
         if not changed:
             raise LaneError("nothing to submit")
         message = (f"{job.id}: {summary}\n\nAI-assisted: {ctx.agent} ({ctx.model}), worker {ctx.worker_id}.")
@@ -495,6 +521,9 @@ class Lane:
         self.prepare_sources(job, ctx, ws)
         values = {**self.common_values(job, ctx, ws), **self.values(job, ctx, ws)}
         runs = self.briefs(job, ctx, ws, values)
+        earlier = self.earlier_attempt(ws)
+        if earlier and runs:
+            runs[0] = (runs[0][0], runs[0][1].rstrip() + "\n\n" + earlier)
         for label, brief in runs:
             (ws.job_dir / (f"brief-{label}.md" if label else "brief.md")).write_text(brief, encoding="utf-8")
         if ctx.dry_run:
@@ -513,16 +542,33 @@ class Lane:
         missing = self.missing_references(ws)
         if missing:
             return self.park(job, ctx, missing)
-        problems = self.check(job, ctx, ws)
+        problems = self.validate(job, ctx, ws)
+        if problems:
+            # One repair run in the same workspace before the job fails (still one attempt).
+            (ws.job_dir / "problems.txt").write_text("\n".join(problems) + "\n", encoding="utf-8")
+            result = self.run_agent(ctx, ws, repair_brief(runs[0][1], problems), "repair")
+            if result.limited:
+                return LaneResult(job.id, "limited", "usage limit (repair)", retry_at=result.reset_at)
+            self.scrub_outputs(job, ctx, ws)
+            problems = self.validate(job, ctx, ws) if result.exit_code == 0 else \
+                problems + [f"the repair run exited {result.exit_code}"]
         if problems:
             (ws.job_dir / "problems.txt").write_text("\n".join(problems) + "\n", encoding="utf-8")
             return LaneResult(job.id, "failed", "; ".join(problems[:5]))
+        (ws.job_dir / "problems.txt").unlink(missing_ok=True)
         note = self.finish(job, ctx, ws)
         try:
             url = self.submit(job, ctx, ws, note or f"{board.TITLE[job.kind].lower()} of {job.name}")
         except (LaneError, gitops.GitError, GHError) as exc:
             return LaneResult(job.id, "failed", str(exc))
         return LaneResult(job.id, "submitted", note, url)
+
+
+def repair_brief(brief: str, problems: list[str]) -> str:
+    return (brief.rstrip() + "\n\n## Repair\n\nThe worker's checks found these problems in your deliverables:\n\n"
+            + "\n".join(f"- {p}" for p in problems[:60])
+            + "\n\nRepair these problems in place; change nothing else. Keep every file you already wrote, edit only "
+              "what each problem names, and keep the report in its required shape.\n")
 
 
 def scan_problems(result: gates.GateResult) -> list[str]:

@@ -80,6 +80,16 @@ one; Ctrl-C stops it. `tauceti-roadmap status [--all]` lists the board's jobs by
 age since the issue last changed and, for claimed jobs, the lease's owner and how long it has
 held the job.
 
+When the worker's checks of a run's deliverables fail (the plan's schema, the report's shape, the
+manifest, the privacy and source-material rules), the agent gets one repair run in the same
+workspace, with the problems appended to its brief ("Repair these problems in place; change
+nothing else"), before the job fails; the two runs count as one attempt. When a job is retried on
+the same worker, its brief points at the earlier attempt's `problems.txt` (kept as
+`problems.previous.txt`) and its `unsubmitted/` folder, so the agent repairs instead of starting
+over. A design that needs something a supplier has not written yet says so with a `gap:<slug>`
+prerequisite and a `gaps` entry naming the supplier and its section; the intake posts each such gap
+on the supplier's open job on the board (or on the design's own issue when it has none).
+
 A round that stops before it submits or parks its job (the lane fails, git or GitHub raises, the
 agent hits a usage limit, or you press Ctrl-C) releases the lease and puts the job back to
 `state:available` with a "Released by worker" note. A fault before any agent runs (a brief that does

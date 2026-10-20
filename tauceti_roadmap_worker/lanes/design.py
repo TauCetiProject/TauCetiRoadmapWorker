@@ -18,7 +18,8 @@ from .. import board, depgraph, gates, sources
 from ..board import Job
 from .base import Context, Lane, Workspace, load_order, order_path, sibling_readmes
 
-PREREQ = re.compile(r"^(?:mathlib|tauceti):[A-Za-z_][\w.'!?]*$|^roadmap:[A-Z][A-Za-z0-9]*(?:\s.*)?$|^target:[\w.]+$")
+PREREQ = re.compile(r"^(?:mathlib|tauceti):[A-Za-z_][\w.'!?]*$|^roadmap:[A-Z][A-Za-z0-9]*(?:\s.*)?$|^target:[\w.]+$"
+                    r"|^gap:[A-Za-z0-9][\w.-]*$")
 DEF_KINDS = ("definition", "construction")
 
 
@@ -31,7 +32,10 @@ def validate_plan(data: dict, name: str) -> list[str]:
     if not isinstance(layers, list) or not layers:
         return problems + ["plan.json: no layers"]
     ids = set()
-    gaps_for = {n for g in data.get("gaps", []) if isinstance(g, dict) for n in g.get("neededBy", [])}
+    gaps = [g for g in data.get("gaps", []) if isinstance(g, dict)]
+    gaps_for = {n for g in gaps for n in g.get("neededBy", [])}
+    by_slug = {str(g.get("slug") or g.get("id") or ""): g for g in gaps}
+    named = set()
     for layer in layers:
         for t in layer.get("targets", []) if isinstance(layer, dict) else []:
             tid = t.get("id", "?")
@@ -48,13 +52,41 @@ def validate_plan(data: dict, name: str) -> list[str]:
                 problems.append(f"plan.json: target {tid} has no locator and no recorded gap")
             for p in t.get("prerequisites", []):
                 if not PREREQ.match(str(p)):
-                    problems.append(f"plan.json: target {tid}: prerequisite {p!r} is not mathlib:/tauceti:/roadmap:/target:")
+                    problems.append(f"plan.json: target {tid}: prerequisite {p!r} is not mathlib:/tauceti:/roadmap:/"
+                                    "target:/gap:")
+                elif str(p).startswith("gap:"):
+                    if str(p)[4:] not in by_slug:
+                        problems.append(f"plan.json: target {tid}: {p} names no entry of `gaps`")
+                    named.add(str(p)[4:])
     for layer in layers:
         for t in layer.get("targets", []) if isinstance(layer, dict) else []:
             for p in t.get("prerequisites", []):
                 if str(p).startswith("target:") and str(p)[7:] not in ids:
                     problems.append(f"plan.json: target {t.get('id')}: unknown {p}")
+    for slug in sorted(named & set(by_slug)):
+        problems += [f"plan.json: gap {slug}: {p}" for p in supplier_gap_problems(by_slug[slug])]
     return problems
+
+
+def supplier_gap_problems(gap: dict) -> list[str]:
+    """A gap a prerequisite names (`gap:<slug>`) states what is missing: `needs` (one sentence),
+    `supplier` (the roadmap that must provide it, or "none") and, for a supplier, `section` (its
+    section or target)."""
+    problems = []
+    if not str(gap.get("needs", "")).strip():
+        problems.append("`needs` (one sentence: what is missing) is required")
+    supplier = str(gap.get("supplier", "")).strip()
+    if not supplier or (supplier != "none" and not re.fullmatch(board.NAME_RE, supplier)):
+        problems.append("`supplier` must name a roadmap (CamelCase) or be \"none\"")
+    elif supplier != "none" and not str(gap.get("section") or gap.get("target") or "").strip():
+        problems.append("`section` (the supplier's section or target that must provide it) is required")
+    return problems
+
+
+def supplier_gaps(plan: dict) -> list[dict]:
+    """The gaps of a plan that a named supplier must close."""
+    return [g for g in plan.get("gaps", []) if isinstance(g, dict) and str(g.get("supplier", "none")) not in ("", "none")
+            and (g.get("slug") or g.get("id"))]
 
 
 def ledger_path(state: Path) -> Path:

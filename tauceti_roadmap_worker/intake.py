@@ -144,6 +144,8 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
     notes = []
     if job.kind == "target" and outcome.verdict == "merge-into":
         notes.append(absorb(ctx, job, outcome.into, jobs))
+    if board.artefact_of(job.id) == "DESIGN" and job.kind != "review":
+        notes.append(announce_gaps(ctx, job, jobs))
     reason = board.blocked_reason(job, outcome, max_rounds=cfg.board.max_rounds)
     if reason:
         ctx.board.comment(job.number, f"Parked for a human: {reason}")
@@ -156,6 +158,31 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
             ctx.gh.cli_write("pr", "ready", str(pr), "-R", cfg.repositories.content)
             notes.append(f"#{pr} marked ready")
     return "created " + (", ".join(created) if created else "nothing") + (f" ({'; '.join(notes)})" if notes else "")
+
+
+def announce_gaps(ctx, job: Job, jobs: list[Job]) -> str:
+    """Each gap of a design's plan that a named supplier must close becomes a comment on that
+    supplier's open job on the board (its latest design, package, review or fix), or a note on the
+    design's own issue when the supplier has none."""
+    from .lanes.design import supplier_gaps
+    pkg = board.package_dir(ctx.cfg.board.packages_dir, job.name)
+    try:
+        plan = json.loads(ctx.gh.raw_file(ctx.cfg.repositories.packages_repo(), f"{pkg}/design/plan.json"))
+    except (GHError, ValueError):
+        return "no plan.json to read gaps from"
+    gaps = supplier_gaps(plan if isinstance(plan, dict) else {})
+    for gap in gaps:
+        supplier, slug = str(gap["supplier"]), str(gap.get("slug") or gap.get("id"))
+        what = (f"`{job.name}` needs from `{supplier}` {gap.get('section') or gap.get('target') or ''}: "
+                + board.neutralise(str(gap.get("needs", ""))).strip() + f" (gap `{slug}` of `{job.id}`, #{job.number})")
+        theirs = [j for j in jobs if j.name == supplier and j.state != "done"
+                  and j.kind in ("design", "package", "review", "fix", "target")]
+        if theirs:
+            ctx.board.comment(max(theirs, key=lambda j: j.number).number, f"Intake: a supplier contract is missing. {what}.")
+        else:
+            ctx.board.comment(job.number, f"Intake: a supplier contract is missing, and `{supplier}` has no open job on "
+                                          f"the board to carry it. {what}.")
+    return f"{len(gaps)} supplier gap(s) announced" if gaps else "no supplier gaps"
 
 
 MERGED_LABEL = "merged-into"
