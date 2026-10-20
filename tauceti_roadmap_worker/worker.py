@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import claims
 from .board import KIND_PRIORITY, Job
+from .config import AGENTS
 from .gh import GHError
 from .lanes import Context, LaneResult, lane_for
 from .lanes.base import LaneBlocked
@@ -70,16 +71,22 @@ class Heartbeat:
         self.stop.set()
 
 
-def for_job(ctx: Context, job: Job) -> tuple[Context | None, str]:
+PAUSED = "paused by a usage limit"
+
+
+def for_job(ctx: Context, job: Job, paused: dict[str, dt.datetime] | None = None) -> tuple[Context | None, str]:
     """(the context a job runs in, '') or (None, why this worker leaves it). The family is the
     operator's `--agent`, else the agent the job requires, else its lane's. The model is the one the
     job requires (a red-team pass), else the one its lane pins for that family (`[agents.lanes.<kind>]
     model`, `codex_model`, `claude_model`), else the family's default. A worker pinned with `--model`
-    leaves a job that needs another model; one pinned with `--agent` only lets the lane pick it."""
+    leaves a job that needs another model; one pinned with `--agent` only lets the lane pick it. A
+    family in `paused` (a usage limit, until when) is left until then."""
     cfg = ctx.cfg
     agent = ctx.agent if ctx.agent_fixed else (job.requires_agent or cfg.lane_agent(job.kind)[0])
     if job.requires_agent and job.requires_agent != agent:
         return None, f"needs agent {job.requires_agent}"
+    if paused and agent in paused:
+        return None, f"{agent} {PAUSED} until {paused[agent]:%Y-%m-%dT%H:%MZ}"
     want = job.requires_model or cfg.lane_model(job.kind, agent)
     if ctx.model_fixed:
         if want and ctx.model != want:
@@ -96,8 +103,11 @@ def for_job(ctx: Context, job: Job) -> tuple[Context | None, str]:
 
 
 def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", order: list[str] | None = None,
-              log=print, avoid: set[str] | None = None) -> LaneResult:
-    """One round. `avoid`: jobs this process already failed to set up (left alone, silently)."""
+              log=print, avoid: set[str] | None = None, paused: dict[str, dt.datetime] | None = None,
+              noted: dict[str, dt.datetime] | None = None) -> LaneResult:
+    """One round. `avoid`: jobs this process already failed to set up (left alone, silently).
+    `paused`: agent families out of quota, until when; their jobs are skipped, logged once per pause
+    (`noted` keeps which pauses were logged)."""
     jobs = base.board.list_jobs(("available",), tuple(only) if only else None)
     if job_id:
         jobs = [j for j in jobs if j.id == job_id]
@@ -108,9 +118,15 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
         if failed_before.get(job.id, 0) >= MAX_ATTEMPTS:
             log(f"skip {job.id}: failed {MAX_ATTEMPTS} times on this worker (see its jobs/ folder)")
             continue
-        ctx, why = for_job(base, job)
+        ctx, why = for_job(base, job, paused)
         if ctx is None:
-            log(f"skip {job.id}: {why}")
+            family = why.split(" ", 1)[0]
+            if PAUSED not in why:
+                log(f"skip {job.id}: {why}")
+            elif noted is None or noted.get(family) != paused[family]:
+                log(f"skip {family} jobs (first: {job.id}): {why}")
+                if noted is not None:
+                    noted[family] = paused[family]
             continue
         lane = lane_for(job)
         reason = lane.eligible(job, ctx)
@@ -150,6 +166,7 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
         log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
         with Heartbeat(ctx, key):
             result = lane.run(job, ctx)
+        result.agent = result.agent or ctx.agent
     except LaneBlocked as exc:
         result = LaneResult(job.id, "blocked", str(exc))
     except Exception as exc:  # noqa: BLE001 - git, GitHub, the lane's own errors or a bug: all release the job
@@ -190,6 +207,8 @@ def release(ctx: Context, job: Job, result: LaneResult) -> None:
 QUICK_POLL = 60     # seconds: the latest first poll after a failure or after a parked job is answered
 AFTER_ROUND = 20    # seconds between a round that did something and the next
 PARKED_WATCH = 3 * 3600   # idle seconds a parked job is watched for its answer; then the idle poll finds it
+LIMIT_MARGIN = 300        # seconds after a usage limit's reset before its family is tried again
+LIMIT_UNKNOWN = 1800      # seconds a usage limit with no reset time pauses its family
 
 
 def release_leftovers(ctx: Context, log=print) -> list[str]:
@@ -227,9 +246,29 @@ def current_build() -> str:
     return build_id()
 
 
+def usable_families(ctx: Context) -> set[str]:
+    """The agent families this worker can run: the pinned one (`--agent` or `--model`), else every
+    installed one."""
+    agent = getattr(ctx, "agent", "")
+    if getattr(ctx, "agent_fixed", False) or getattr(ctx, "model_fixed", False):
+        return {agent} - {""}
+    return {a for a in AGENTS if shutil.which(a)} | ({agent} - {""})
+
+
+def pause_until(result: LaneResult) -> dt.datetime:
+    """When a usage limit ends, with a margin: its reset time plus five minutes, else half an hour."""
+    if result.retry_at:
+        wake = result.retry_at if result.retry_at.tzinfo else result.retry_at.replace(tzinfo=dt.UTC)
+        return wake.astimezone(dt.UTC) + dt.timedelta(seconds=LIMIT_MARGIN)
+    return now() + dt.timedelta(seconds=LIMIT_UNKNOWN)
+
+
 def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=print, sleep=time.sleep,
               build: str = "") -> None:
-    """Rounds until interrupted: sleep through usage limits and idle periods. An idle worker sleeps
+    """Rounds until interrupted: sleep through idle periods and usage limits. A usage limit pauses
+    only the family that hit it (until its reset plus five minutes): the worker goes on with jobs
+    of its other families and leaves that family's jobs alone until then; a worker whose every
+    usable family is paused sleeps until the first pause ends. An idle worker sleeps
     `[worker] idle_seconds`, except that the next poll comes within QUICK_POLL seconds after a
     failure (the job was released and may be due again), and after the board answers a job this
     worker parked for references (looked up every QUICK_POLL seconds of idle time, for at most
@@ -240,7 +279,13 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
     parked: dict[str, float] = {}   # jobs this worker parked -> idle seconds left to watch for the answer
     quick = False                    # the next idle wait is short
     avoid: set[str] = set()          # jobs this process failed to set up
+    paused: dict[str, dt.datetime] = {}   # agent family -> end of its usage limit
+    noted: dict[str, dt.datetime] = {}    # pauses already logged by work_once
     while True:
+        for family in [f for f, until in paused.items() if until <= now()]:
+            del paused[family]
+            noted.pop(family, None)
+            log(f"{now():%Y-%m-%dT%H:%MZ} {family}'s usage limit is over: its jobs are eligible again")
         if build:
             installed = current_build()
             if not installed:
@@ -249,7 +294,7 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
                 log(f"{now():%Y-%m-%dT%H:%MZ} installed build changed ({build} → {installed}); exiting for restart")
                 return
         try:
-            result = work_once(ctx, only, order=order_fn(), log=log, avoid=avoid)
+            result = work_once(ctx, only, order=order_fn(), log=log, avoid=avoid, paused=paused, noted=noted)
         except GHError as exc:
             result = LaneResult("", "idle", f"the board could not be read: {exc}")
         log(f"{now():%Y-%m-%dT%H:%MZ} {result.job or '-'} {result.status}: {result.detail}")
@@ -260,8 +305,15 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
         if result.status == "setup-failed":
             avoid.add(result.job)
         if result.status == "limited":
-            wake = result.retry_at
-            sleep(max(300, (wake - dt.datetime.now(wake.tzinfo)).total_seconds() + 300) if wake else 1800)
+            family = result.agent or getattr(ctx, "agent", "")
+            paused[family] = max(pause_until(result), paused.get(family, now()))
+            usable = usable_families(ctx) or {family}
+            if usable <= set(paused):
+                sleep(max(LIMIT_MARGIN, (min(paused[f] for f in usable) - now()).total_seconds()))
+            else:
+                log(f"{now():%Y-%m-%dT%H:%MZ} {family} {PAUSED} until {paused[family]:%Y-%m-%dT%H:%MZ}; "
+                    f"going on with {', '.join(sorted(usable - set(paused)))}")
+                sleep(AFTER_ROUND)
         elif result.status == "idle" and quick:
             quick = False
             sleep(min(QUICK_POLL, idle))

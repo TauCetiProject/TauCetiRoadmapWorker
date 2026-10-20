@@ -70,8 +70,11 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   another model, with a line like `skip REV-PKG-X: REV-PKG-X needs gpt-6-astra or fable; this worker is
   pinned to gpt-6.1-sol`. A worker pinned with `--agent` alone lets the lane pick the model. `doctor`
   warns when neither family of the review models is installed on the host.
-* `--loop` keeps going: after a usage limit it sleeps until the reset time the agent printed; when
-  nothing is eligible it sleeps `[worker] idle_seconds` (default 600). The first poll after a
+* `--loop` keeps going: a usage limit pauses only the agent family that hit it, until the reset
+  time the agent printed plus five minutes (half an hour when it printed none), and the worker goes
+  on with jobs for its other families; a worker whose every usable family is paused (one pinned with
+  `--agent` or `--model`, or with one agent installed) sleeps until the first reset. When nothing is
+  eligible it sleeps `[worker] idle_seconds` (default 600). The first poll after a
   failure comes within a minute, and while a job it parked for references waits, it looks every
   minute whether the board answered it and polls at once when it did. Without `--loop` it does one
   round and exits.

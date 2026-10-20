@@ -88,6 +88,21 @@ class MissingReference:
     sha256: str = ""
 
 
+def tried_list(value) -> list[str]:
+    """`tried` as a list of strings: an agent may write one string instead of a list (then it was
+    iterated character by character: "A, u, t, h, o, r"), and a list that a string was split into
+    (every item one character) is joined back."""
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = [str(t) for t in value]
+        if len(items) > 1 and all(len(t) <= 1 for t in items):
+            items = ["".join(items)]
+    else:
+        items = []
+    return [t.strip() for t in items if t.strip()]
+
+
 def parse_missing(data: dict, existing_keys: set[str] | None = None) -> list[MissingReference]:
     """The [[missing]] tables of a needs-references.toml; items without a title or a `needed_for`
     are dropped, and items without a key get one derived from authors and year."""
@@ -97,7 +112,7 @@ def parse_missing(data: dict, existing_keys: set[str] | None = None) -> list[Mis
             continue
         m = MissingReference(authors=str(item.get("authors", "")), title=str(item.get("title", "")),
                              year=str(item.get("year", "")), needed_for=str(item.get("needed_for", "")),
-                             tried=[str(t) for t in item.get("tried", [])], note=str(item.get("note", "")),
+                             tried=tried_list(item.get("tried", [])), note=str(item.get("note", "")),
                              key=str(item.get("id") or item.get("key") or ""), doi=str(item.get("doi", "")),
                              url=str(item.get("url", "")), locator_scheme=str(item.get("locator_scheme", "")),
                              locator=str(item.get("locator", "")), sha256=str(item.get("sha256", "")).lower())
@@ -158,7 +173,7 @@ def request_comment(job_id: str, roadmap: str, items: list[MissingReference]) ->
     def cell(s: str) -> str:
         return s.replace("|", "\\|").replace("\n", " ").replace("<!--", "&lt;!--").strip()[:300]
     rows = "\n".join(f"| `{cell(m.key)}` | {cell(m.authors)} | {cell(m.title)} | {cell(m.year)} | {cell(m.needed_for)} | "
-                     f"{cell(', '.join(m.tried)) or 'none'} |" for m in items)
+                     f"{cell('; '.join(tried_list(m.tried))) or 'none'} |" for m in items)
     body = (_template_body().replace("__JOB__", job_id).replace("__ROADMAP__", roadmap)
             .replace("__ROWS__", rows or "| | | | | | |"))
     return body + "\n" + _marker(REQUEST_MARK, {"job": job_id, "roadmap": roadmap,
@@ -167,15 +182,18 @@ def request_comment(job_id: str, roadmap: str, items: list[MissingReference]) ->
 
 def _item(raw) -> MissingReference | None:
     """A request item, or None when it is malformed (every field a string, `tried` a list of
-    strings, a usable key and a title)."""
+    strings or one string, a usable key and a title)."""
     if not isinstance(raw, dict):
         return None
     fields = {}
     for name in MissingReference.__dataclass_fields__:
         value = raw.get(name, [] if name == "tried" else "")
         if name == "tried":
-            if not isinstance(value, list) or not all(isinstance(t, str) for t in value):
+            if isinstance(value, list) and not all(isinstance(t, str) for t in value):
                 return None
+            if not isinstance(value, (list, str)):
+                return None
+            value = tried_list(value)
         elif isinstance(value, int) and not isinstance(value, bool) and name == "year":
             value = str(value)
         elif not isinstance(value, str):

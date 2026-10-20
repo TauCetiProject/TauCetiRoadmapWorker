@@ -60,6 +60,23 @@ def test_request_comment_carries_a_marker_that_cannot_be_closed_early():
     assert decode_request("no marker") is None
 
 
+def test_tried_may_be_one_string_and_lists_join_with_semicolons():
+    """Regression (board #27): `tried` written as one string was iterated character by character and
+    the "Already tried" column read "A, u, t, h, o, r, ..."."""
+    [one] = parse_missing({"missing": [{"authors": "A. B", "title": "T", "year": 1990, "needed_for": "x",
+                                        "tried": "Author page, arXiv and HAL: none"}]})
+    assert one.tried == ["Author page, arXiv and HAL: none"]
+    text = request_comment("DESIGN-Foo", "Foo", [one, items()[0]])
+    assert "| Author page, arXiv and HAL: none |" in text
+    assert "| GDZ (image-only); publisher (paywalled) |" in text
+    # A request posted before the fix carries the split string in its marker: it is joined back.
+    split = MissingReference("A. B", "T", "1990", "x", list("Author page"), key="AB90")
+    assert references.tried_list(split.tried) == ["Author page"]
+    decoded = decode_request(request_comment("DESIGN-Foo", "Foo", [split]))
+    assert decoded["items"][0].tried == ["Author page"]
+    assert references.tried_list(None) == [] and references.tried_list(["a", " ", "b c"]) == ["a", "b c"]
+
+
 # --- answers --------------------------------------------------------------------------------------
 
 def test_parse_answers():

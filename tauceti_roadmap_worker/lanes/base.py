@@ -88,6 +88,7 @@ class LaneResult:
     detail: str = ""
     url: str = ""
     retry_at: dt.datetime | None = None
+    agent: str = ""        # the family the round ran (a usage limit pauses that family only)
 
 
 class LaneError(Exception):

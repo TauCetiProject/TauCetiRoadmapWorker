@@ -32,7 +32,7 @@ def loop(monkeypatch, results: list[LaneResult], board=None, on_sleep=None, idle
     ctx = SimpleNamespace(cfg=cfg, board=board or FakeBoard())
     rounds = iter(results)
 
-    def work_once(base, only, job_id="", order=None, log=print, avoid=None):
+    def work_once(base, only, job_id="", order=None, log=print, avoid=None, **kw):
         try:
             return next(rounds)
         except StopIteration:
@@ -110,7 +110,7 @@ def test_a_board_that_cannot_be_read_is_an_idle_round(monkeypatch):
     from tauceti_roadmap_worker.gh import GHError
     results = iter([GHError("GET .../issues: 502")])
 
-    def work_once(base, only, job_id="", order=None, log=print, avoid=None):
+    def work_once(base, only, job_id="", order=None, log=print, avoid=None, **kw):
         for r in results:
             raise r
         raise Stop
