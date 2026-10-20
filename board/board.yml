@@ -39,10 +39,11 @@ jobs:
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
-      TAUCETI_PROJECT_STATE: ${{ runner.temp }}/state
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4          # the default branch: its tauceti-roadmap.toml, never PR code
+      - name: State directory outside the checkout
+        run: echo "TAUCETI_PROJECT_STATE=$RUNNER_TEMP/state" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@v6
       - name: Install the worker
         run: uv tool install git+https://github.com/TauCetiProject/TauCetiRoadmapWorker@main
