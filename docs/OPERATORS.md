@@ -313,7 +313,9 @@ prints a table of what it did (a dry run without `--yes`). It reads `research/bl
 | design queued, not written (`--kinds target`) | `TARGET-<Name>` | none |
 
 A fixer's acceptance never counts: such a package gets its independent review here. Skipped, with
-the reason in the table: a roadmap with an explorer job `external` or claimed (in flight), a review
+the reason in the table: a roadmap already ported (its folder on the roadmap repository's main,
+active or completed, or an open pull request there adding its README; the table names the pull
+request), a roadmap with an explorer job `external` or claimed (in flight), a review
 that asks for changes or has no readable verdict, a roadmap the board already has a job for, and one
 waiting in an open import pull request. Every job records the explorer job and issue it rests on
 (`inputs.explorer`), so reruns import nothing twice.

@@ -84,6 +84,34 @@ def test_each_explorer_stage_becomes_the_matching_board_job(checkout):
     assert "PORT-Alpha" in table and "in flight in the explorer" in table and table.endswith("target: 1")
 
 
+def test_a_ported_roadmap_is_skipped_and_the_lookup_reads_the_content_repository_once(checkout, tmp_path):
+    steps = plan(checkout, ported={"Alpha": "open pull request #905 on o/r", "Gamma": "on o/r main (x/Gamma)"})
+    assert steps["Alpha"].skip == "ported: open pull request #905 on o/r" and steps["Gamma"].skip.startswith("ported: on")
+
+    calls = []
+
+    class ContentGH:
+        def api(self, path, paginate=False):
+            calls.append(path)
+            if "/contents/TauCetiRoadmap?" in path:
+                return [{"type": "dir", "name": "Alpha"}, {"type": "file", "name": "README.md"}]
+            if "/contents/Completed?" in path:
+                return [{"type": "dir", "name": "Old"}]
+            if path.endswith("pulls?state=open&per_page=100"):
+                return [{"number": 905}, {"number": 906}]
+            if "/pulls/905/files" in path:
+                return [{"filename": "TauCetiRoadmap/Beta/README.md", "status": "added"},
+                        {"filename": "TauCetiRoadmap/Beta/Suggested.lean", "status": "added"}]
+            if "/pulls/906/files" in path:
+                return [{"filename": "TauCetiRoadmap/Zeta/notes.md", "status": "added"}]
+            raise AssertionError(path)
+    found = explorer.ported_roadmaps(SimpleNamespace(cfg=example_config(), gh=ContentGH()))
+    repo = example_config().repositories.content
+    assert found == {"Alpha": f"on {repo} main (TauCetiRoadmap/Alpha)", "Old": f"on {repo} main (Completed/Old)",
+                     "Beta": f"open pull request #905 on {repo}"}
+    assert len(calls) == 5
+
+
 def test_kinds_and_names_filter(checkout):
     assert sorted(plan(checkout, kinds=("design",))) == ["Delta", "Gamma"]
     named = plan(checkout, names=("Alpha", "Nope"))
@@ -111,7 +139,7 @@ class GH:
         self.pulls = list(pulls)
 
     def api(self, path, paginate=False):
-        return self.pulls
+        return [] if "/contents/" in path or "/files" in path or "TauCetiRoadmap/pulls" in path else self.pulls
 
 
 def bot(tmp_path, board=None, gh=None):

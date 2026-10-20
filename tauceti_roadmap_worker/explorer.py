@@ -16,9 +16,11 @@ each roadmap the most advanced stage decides:
 | design queued, not written                                       | TARGET-<Name>    | none |
 
 A fixer's acceptance never counts, so a self-accepted package gets the independent review here.
-Skipped, and said so: a roadmap with an explorer job in flight (`external`, or claimed on its
-issue), a review that asks for changes, and a roadmap the board already has (any job of that name,
-or an open import pull request for it). Every board job records the explorer job and issue it rests
+Skipped, and said so: a roadmap already ported (its folder is on the roadmap repository's main,
+active or completed, or an open pull request there adds `<active_dir>/<Name>/README.md`), a roadmap
+with an explorer job in flight (`external`, or claimed on its issue), a review that asks for
+changes, and a roadmap the board already has (any job of that name, or an open import pull request
+for it). Every board job records the explorer job and issue it rests
 on (`inputs.explorer`), so a rerun imports nothing twice.
 
 Files reach the board only through a pull request, one per roadmap, from the maintainer's fork,
@@ -38,6 +40,7 @@ from pathlib import Path
 
 from . import board, gitops
 from .board import Job, comment_json, make_id, new_job
+from .gh import GHError
 
 EXPLORER = "CBirkbeck/tauceti-explorer"
 BLUEPRINT = Path("research") / "blueprint"
@@ -194,9 +197,12 @@ def plan_package(ex: Explorer, name: str, pkg: Path, dest: str, mine: list[dict]
 
 
 def plan_import(ex: Explorer, packages_dir: str, jobs: list[Job], pending: dict[str, int],
-                kinds: tuple[str, ...] = STAGES, names: tuple[str, ...] = ()) -> list[Step]:
-    """Every roadmap's step, filtered by stage and name, with what the board already has marked as
-    skipped. `pending` maps roadmap names to open import pull requests. Pure."""
+                kinds: tuple[str, ...] = STAGES, names: tuple[str, ...] = (),
+                ported: dict[str, str] | None = None) -> list[Step]:
+    """Every roadmap's step, filtered by stage and name, with what is already done marked as
+    skipped. `pending` maps roadmap names to open import pull requests, `ported` to where the roadmap
+    repository has them already. Pure."""
+    ported = ported or {}
     steps = []
     for name in names or ex.names():
         step = plan_roadmap(ex, name, packages_dir)
@@ -207,7 +213,9 @@ def plan_import(ex: Explorer, packages_dir: str, jobs: list[Job], pending: dict[
         if step.stage not in kinds:
             continue
         on_board = sorted(j.id for j in jobs if j.name == name)
-        if not step.skip and on_board:
+        if name in ported:
+            step.skip = f"ported: {ported[name]}"
+        elif not step.skip and on_board:
             step.skip = "already on the board: " + ", ".join(on_board[:3])
         elif not step.skip and name in pending:
             step.skip = f"waiting in import pull request #{pending[name]}"
@@ -249,6 +257,29 @@ def open_imports(ctx) -> dict[str, int]:
     return out
 
 
+def ported_roadmaps(ctx) -> dict[str, str]:
+    """Roadmap name -> where the roadmap repository has it already: a folder on main (active or
+    completed), or an open pull request that adds its README. Read once per run: the folder
+    listings, then the open pull requests and their files."""
+    cfg, repo = ctx.cfg, ctx.cfg.repositories.content
+    out: dict[str, str] = {}
+    for folder in (cfg.roadmap.active_dir, cfg.roadmap.completed_dir):
+        try:
+            entries = ctx.gh.api(f"repos/{repo}/contents/{folder}?ref={cfg.project.branch}") or []
+        except GHError:
+            entries = []
+        for e in entries if isinstance(entries, list) else []:
+            if e.get("type") == "dir":
+                out.setdefault(e["name"], f"on {repo} main ({folder}/{e['name']})")
+    readme = re.compile(rf"^{re.escape(cfg.roadmap.active_dir)}/({board.NAME_RE})/README\.md$")
+    for pr in ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True) or []:
+        for f in ctx.gh.api(f"repos/{repo}/pulls/{pr['number']}/files?per_page=100", paginate=True) or []:
+            m = readme.match(f.get("filename", ""))
+            if m and f.get("status") != "removed":
+                out.setdefault(m.group(1), f"open pull request #{pr['number']} on {repo}")
+    return out
+
+
 def open_pull_request(ctx, step: Step) -> str:
     """Copy the step's files onto a branch of the maintainer's board checkout, run the submission
     gates on them, push to the fork and open the pull request. Returns what happened."""
@@ -280,7 +311,8 @@ def open_pull_request(ctx, step: Step) -> str:
 def import_explorer(ctx, root: Path, kinds: tuple[str, ...] = STAGES, names: tuple[str, ...] = (),
                     yes: bool = False) -> list[Step]:
     ex = Explorer.read(root)
-    steps = plan_import(ex, ctx.cfg.board.packages_dir, ctx.board.all_jobs(), open_imports(ctx), kinds, names)
+    steps = plan_import(ex, ctx.cfg.board.packages_dir, ctx.board.all_jobs(), open_imports(ctx), kinds, names,
+                        ported_roadmaps(ctx))
     for step in steps:
         if step.skip:
             step.outcome = "skipped: " + step.skip
