@@ -3,6 +3,8 @@
     tauceti-roadmap --conf <toml path or https URL> doctor
     tauceti-roadmap targets list | file --statement ... --why ...
     tauceti-roadmap work --worker-id ID [--only kind,...] [--agent codex|claude] [--loop]
+    tauceti-roadmap tail --worker-id ID [--job JOB]      follow a worker's rounds and its agent's output
+    tauceti-roadmap status [--all]                       the board's jobs by state, ages and claimants
     tauceti-roadmap gate <worktree> <Name> [--base origin/main] [--json] [--out FILE]
     tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE]
     tauceti-roadmap merge-order [--list] [--pr N]
@@ -30,7 +32,20 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import __version__, claims, config, depgraph, explorer, fetcher, gates, paths, prompts, references, sources
+from . import (
+    __version__,
+    claims,
+    config,
+    depgraph,
+    explorer,
+    fetcher,
+    gates,
+    paths,
+    prompts,
+    references,
+    sources,
+    watch,
+)
 from . import targets as target_files
 from .board import KINDS, Board, decode_submission
 from .gh import GH, GHError
@@ -243,16 +258,17 @@ def work(args) -> int:
     ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=cl, worker_id=paths.sanitize_worker_id(args.worker_id),
                   operator=operator, agent=agent, model=model, conf=_local_conf(args, cfg), dry_run=args.dry_run,
                   agent_fixed=bool(args.agent))
-    print(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}")
+    log = watch.round_logger(ctx.wdir)
+    log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}")
     # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
     signal.signal(signal.SIGTERM, _stop)
     if args.loop:
         try:
-            work_loop(ctx, only, lambda: _order(ctx))
+            work_loop(ctx, only, lambda: _order(ctx), log=log)
         except KeyboardInterrupt:
             return 130
         return 0
-    result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx))
+    result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx), log=log)
     print(f"{result.job or '-'} {result.status}: {result.detail}" + (f" {result.url}" if result.url else ""))
     return 0 if result.status in ("submitted", "idle", "dry-run", "needs-references") else 1
 
@@ -443,6 +459,37 @@ def _ocr(cfg: config.Config, pdf: Path, out: str) -> int:
     return 0
 
 
+def tail_cmd(args) -> int:
+    cfg = _load(args)
+    wdir = paths.worker_dir(cfg.project.name, args.worker_id)
+    if not wdir.is_dir():
+        raise SystemExit(f"no worker {args.worker_id!r} on this host ({wdir})")
+    try:
+        watch.tail(wdir, job=args.job)
+    except KeyboardInterrupt:
+        return 0
+    return 0
+
+
+def status_cmd(args) -> int:
+    cfg = _load(args)
+    gh = GH()
+    issues = gh.api(f"repos/{cfg.repositories.board_repo()}/issues?labels={cfg.board.namespace_label}"
+                    f"&state={'all' if args.all else 'open'}&per_page=100", paginate=True)
+    leases = {}
+    if cfg.repositories.claims:
+        shared = claims.Claims(repo=cfg.repositories.claims,
+                               gitdir=cfg.state_dir() / "claims" / (cfg.repositories.claims.replace("/", "__") + ".git"),
+                               owner="status", operator="", project=cfg.project.name)
+        try:
+            keys = shared.live_keys(f"roadmap/{cfg.project.name}/job/")
+        except (OSError, subprocess.SubprocessError):
+            keys = []
+        leases = {k: lease for k in keys if (lease := shared.read(k))}
+    print(watch.status(Board(cfg, gh), issues, leases, cfg.project.name, include_done=args.all))
+    return 0
+
+
 def board_cmd(args) -> int:
     from . import intake
     cfg = _load(args)
@@ -557,6 +604,13 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--roadmap", default="")
     s.add_argument("--post", action="store_true", help="post the request on the job and park it")
 
+    tl = sub.add_parser("tail", help="follow a worker's round log and its current job's agent output")
+    tl.add_argument("--worker-id", required=True)
+    tl.add_argument("--job", default="", help="follow this job (default: the one the worker started last)")
+
+    st = sub.add_parser("status", help="the board's jobs by state, with their ages and claimants")
+    st.add_argument("--all", action="store_true", help="include done jobs and closed issues")
+
     b = sub.add_parser("board", help="board maintenance for the bot or a maintainer (dry run unless --yes)")
     b.add_argument("action", choices=["intake", "references", "sync", "stale", "import-explorer"])
     b.add_argument("--pr", type=int, default=0)
@@ -571,7 +625,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     handlers = {"doctor": doctor, "targets": targets, "work": work, "gate": gate, "merge-order": merge_order,
-                "sources": sources_cmd, "board": board_cmd}
+                "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd}
     try:
         return handlers[args.command](args)
     except GHError as exc:

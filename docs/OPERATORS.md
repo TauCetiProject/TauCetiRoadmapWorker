@@ -66,6 +66,13 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   round and exits.
 * `--dry-run` takes no lease, writes the brief to the job folder and prints every GitHub write.
 
+**Watching.** `tauceti-roadmap tail --worker-id <id> [--job <JOB>]` follows a worker's round log
+(`workers/<id>/rounds.log`: every line the worker prints, timestamped) and the live output of the
+agent on its current job (`jobs/<JOB>/run-N.out`), moving to the next job when the worker starts
+one; Ctrl-C stops it. `tauceti-roadmap status [--all]` lists the board's jobs by state with their
+age since the issue last changed and, for claimed jobs, the lease's owner and how long it has
+held the job.
+
 A round that stops before it submits or parks its job (the lane fails, git or GitHub raises, the
 agent hits a usage limit, or you press Ctrl-C) releases the lease and puts the job back to
 `state:available` with a "Released by worker" note. A job that fails three times on one worker is
@@ -336,6 +343,7 @@ machine are here:
 | `workers/<id>/port/<Name>`, `pr/<Name>` | worktrees for the port lane and for work on a pull request branch |
 | `workers/<id>/jobs/<JOB>/` | brief, agent logs (`run-N.out` with START/EXIT lines), scratch, problems, gate result |
 | `workers/<id>/attempts.json` | failures per job on this worker |
+| `workers/<id>/rounds.log` | every line the worker printed, timestamped (what `tail` follows) |
 | `workers/<id>/jobs/<JOB>/unsubmitted/` | what the job's last round that left anything left in the board checkout beyond the board's main, set aside before the next round reset it |
 | `rev/<pr>/` | read-only checkouts of open roadmap pull requests at their heads (was `/tmp/rev/<pr>`) |
 | `prs.json` | open roadmap pull requests: number, roadmap, head, branch, owner (was `/tmp/rev-list.txt` and `/tmp/watch-prs`) |
