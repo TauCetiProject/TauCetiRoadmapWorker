@@ -29,6 +29,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -277,10 +278,19 @@ def work(args) -> int:
     from .worker import release_leftovers, work_loop, work_once
     cfg = _load(args)
     gh = GH(dry_run=args.dry_run)
-    try:
-        operator = gh.login()
-    except GHError as exc:
-        raise SystemExit(f"gh: {exc} (run gh auth login)") from exc
+    operator, last = "", None
+    for delay in (0, *config.RETRY_DELAYS):        # a network blip at startup must not stop a worker
+        if delay:
+            time.sleep(delay)
+        try:
+            operator = gh.login()
+            break
+        except GHError as exc:
+            last = exc
+    if not operator:
+        raise SystemExit(f"gh: {last} (run gh auth login)")
+    for warning in cfg.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
     only = tuple(k.strip() for k in args.only.split(",") if k.strip()) if args.only else None
     unknown = [k for k in only or () if k not in KINDS]
     if unknown:

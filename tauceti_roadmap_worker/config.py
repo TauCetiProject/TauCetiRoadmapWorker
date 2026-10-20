@@ -12,9 +12,11 @@ defaults, so a minimal file needs only `[project] name` and `[repositories] cont
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import re
 import subprocess
+import time
 import tomllib
 import urllib.request
 from dataclasses import dataclass, field
@@ -371,15 +373,51 @@ def discover(conf: str | None, cwd: Path | None = None) -> str:
     raise ConfigError("no configuration: pass --conf PATH_OR_URL or set TAUCETI_ROADMAP_CONF")
 
 
-def load(conf: str | None = None) -> Config:
+RETRY_DELAYS = (5, 20, 60)   # seconds before each retry of a URL read at startup
+
+
+def url_cache(url: str, env: dict | None = None) -> Path:
+    """Where the last good copy of a configuration URL is kept: `<state>/config/<sha256 of the url>.toml`,
+    under the explicit state directory if one is set, else under the tauceti state root (the
+    project, and so its state directory, is only known once the file is read)."""
+    env = os.environ if env is None else env
+    root = Path(env["TAUCETI_PROJECT_STATE"]).expanduser() if env.get("TAUCETI_PROJECT_STATE") else \
+        paths.state_root("x", env).parent.parent
+    return root / "config" / (hashlib.sha256(url.encode()).hexdigest() + ".toml")
+
+
+def fetch(url: str, opener=None, sleep=time.sleep, delays: tuple[int, ...] = RETRY_DELAYS) -> str:
+    """The text at an https URL, tried once and then after each delay; raises the last error."""
+    opener = opener or (lambda u: urllib.request.urlopen(u, timeout=30))  # noqa: S310 - https only
+    last: Exception | None = None
+    for delay in (0, *delays):
+        if delay:
+            sleep(delay)
+        try:
+            with opener(url) as response:
+                return response.read().decode("utf-8")
+        except (OSError, ValueError) as exc:   # URLError, HTTPError, timeouts are OSErrors
+            last = exc
+    raise last if last else OSError(f"{url}: not read")
+
+
+def load(conf: str | None = None, opener=None, sleep=time.sleep) -> Config:
     where = discover(conf)
     if where.startswith("https://"):
-        with urllib.request.urlopen(where, timeout=30) as response:  # noqa: S310 - https only
-            text = response.read().decode("utf-8")
+        cache = url_cache(where)
+        try:
+            text = fetch(where, opener, sleep)
+        except (OSError, ValueError) as exc:
+            if not cache.is_file():
+                raise ConfigError(f"{where}: {exc} (after {1 + len(RETRY_DELAYS)} tries, and no cached copy)") from exc
+            age = time.time() - cache.stat().st_mtime
+            cfg = parse(cache.read_text(encoding="utf-8"), where)
+            cfg.warnings.append(f"{where} could not be read ({exc}); using the copy cached {age / 3600:.1f} h ago")
+            return cfg
         cfg = parse(text, where)
-        saved = cfg.state_dir() / "tauceti-roadmap.toml"
-        saved.parent.mkdir(parents=True, exist_ok=True)
-        saved.write_text(text, encoding="utf-8")
+        for saved in (cache, cfg.state_dir() / "tauceti-roadmap.toml"):
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            saved.write_text(text, encoding="utf-8")
         return cfg
     if where.startswith("http://"):
         raise ConfigError("refusing a plain-http configuration URL; use https")
