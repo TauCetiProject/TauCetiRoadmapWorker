@@ -23,6 +23,7 @@ from .pr import pr_branch_worktree
 class ArtefactFixLane(Lane):
     kind = "fix"
     prompt = "fix"
+    edits_manifest = True
 
     def art(self, job: Job) -> str:
         return board.parse_job_id(job.id).subject

@@ -6,8 +6,11 @@
     tauceti-roadmap gate <worktree> <Name> [--base origin/main] [--json] [--out FILE]
     tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE]
     tauceti-roadmap merge-order [--list] [--pr N]
+    tauceti-roadmap targets import-intentions [--limit N] [--number N] [--yes]
     tauceti-roadmap sources check <sources.toml> | classify <url> | request <needs-references.toml> --job ID
-    tauceti-roadmap board intake [--pr N] | sync | stale [--release]     (board bot / maintainer; --yes to write)
+    tauceti-roadmap sources fetch <DOI | arXiv id | URL | "Authors, Title, Year"> [--manifest sources.toml] [--id KEY]
+    tauceti-roadmap sources cache <sources.toml> | ocr <file.pdf>
+    tauceti-roadmap board intake [--pr N] | references | sync | stale [--release]   (board bot / maintainer; --yes to write)
 
 Every GitHub write honours --dry-run. `gate` exits 1 when any gate fails: call it directly, never
 through a pipe that would hide its exit status (use --out to keep a copy of the result).
@@ -21,11 +24,10 @@ import shutil
 import socket
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import __version__, claims, config, depgraph, gates, paths, prompts, sources
+from . import __version__, claims, config, depgraph, fetcher, gates, paths, prompts, references, sources
 from .board import KINDS, Board, decode_submission
 from .gh import GH, GHError
 
@@ -298,18 +300,19 @@ def merge_order(args) -> int:
 def sources_cmd(args) -> int:
     cfg = _load(args)
     s = cfg.sources
+    deny = sources.deny_list(s.deny)
     if args.action == "classify":
-        print(sources.classify_url(args.target, s.allow, s.deny))
+        print(sources.classify_url(args.target, s.allow, deny))
         return 0
     if args.action == "check":
-        problems = sources.validate_manifest(sources.load_manifest(Path(args.target)), s.allow, s.deny, s.uncertified_ok)
+        problems = sources.validate_manifest(sources.load_manifest(Path(args.target)), s.allow, deny, s.uncertified_ok)
         for p in problems:
             print(p)
         print(f"{args.target}: {len(problems)} problem(s)")
         return 1 if problems else 0
     if args.action == "request":
-        items = sources.parse_missing(tomllib.loads(Path(args.target).read_text(encoding="utf-8")))
-        text = sources.needs_references_comment(args.job or "<job>", args.roadmap or "<roadmap>", items)
+        items = references.read_missing(Path(args.target))
+        text = references.request_comment(args.job or "<job>", args.roadmap or "<roadmap>", items)
         if not args.post:
             print(text)
             return 0
@@ -320,8 +323,87 @@ def sources_cmd(args) -> int:
         ctx.board.comment(job.number, text)
         ctx.board.set_state(job, "needs-references")
         return 0
-    print("sources fetch: not implemented yet (build-plan step 4); agents fetch legal sources themselves")
-    return 2
+    if args.action == "ocr":
+        return _ocr(cfg, Path(args.target), args.out)
+    fet = fetcher.Fetcher(fetcher.client_from_config(cfg), sources.cache_root(cfg.state_dir()), s)
+    if args.action == "cache":
+        failed = 0
+        for a in fet.materialize(sources.load_manifest(Path(args.target))):
+            failed += bool(a.permanent)
+            print(f"{a.id}\t{a.text if a.text else 'unavailable: ' + a.problem}")
+        return 1 if failed else 0
+    return _fetch(args, cfg, fet)
+
+
+def _fetch(args, cfg: config.Config, fet: fetcher.Fetcher) -> int:
+    """`sources fetch`: resolve, download, extract; record the entry; on failure, the [[missing]] table."""
+    s = cfg.sources
+    if args.licence_class and args.licence_class not in config.LICENCE_CLASSES:
+        raise SystemExit(f"--licence-class must be one of {', '.join(config.LICENCE_CLASSES)}")
+    cit = fetcher.parse_citation(args.target, authors=args.authors, title=args.title, year=args.year)
+    out = fet.fetch(cit, licence_class=args.licence_class)
+    manifest = path = None
+    if args.manifest:
+        path = Path(args.manifest)
+        manifest = sources.load_manifest(path) if path.is_file() else sources.new_manifest(path.parent.name)
+    entry = dict(out.entry)
+    existing = None
+    if manifest is not None:
+        existing = sources.find_source(manifest, id=args.id, doi=entry.get("doi", ""), arxiv=entry.get("arxiv", ""),
+                                       sha256=entry.get("sha256", ""))
+    taken = {str(e.get("id", "")) for e in (manifest or {}).get("source", [])}
+    entry["id"] = args.id or (existing or {}).get("id") or sources.citation_key(entry.get("authors", ""), entry.get("year", ""), taken)
+    for key, value in (("locator_scheme", args.locator_scheme), ("locator", args.locator)):
+        if value:
+            entry[key] = value
+    if args.cited_for:
+        entry["cited_for"] = list(args.cited_for)
+    if args.json:
+        print(json.dumps({"status": out.status, "entry": entry, "file": str(out.file or ""), "text": str(out.text or ""),
+                          "tried": out.tried, "note": out.note}, indent=1, ensure_ascii=False))
+    else:
+        for line in out.tried:
+            print(f"  tried: {line}")
+    accepted = out.status == "fetched" or (out.status == "uncertified" and s.uncertified_ok)
+    if accepted and manifest is not None:
+        action = sources.upsert_source(manifest, entry)
+        sources.save_manifest(path, manifest)
+        if not args.json:
+            print(f"{action} {entry['id']} in {path}")
+        if not (existing or {}).get("locator_scheme") and not entry.get("locator_scheme"):
+            print(f"warning: {entry['id']} has no locator_scheme yet (pass --locator-scheme)", file=sys.stderr)
+    if not args.json:
+        if out.status == "fetched":
+            print(f"{entry['id']}: {out.entry.get('licence_class')} text from {out.entry.get('fetched_from') or 'a local file'}")
+            print(f"file: {out.file}")
+            print(f"text: {out.text}" + (f" ({out.note})" if out.note else ""))
+        else:
+            print(f"{entry['id']}: {out.status}: {out.note}")
+    if accepted:
+        return 0
+    if args.missing_out and not out.transient:
+        references.add_missing(Path(args.missing_out), references.MissingReference(
+            authors=str(entry.get("authors") or args.authors), title=str(entry.get("title") or args.title or args.target),
+            year=str(entry.get("year") or args.year), needed_for=", ".join(args.cited_for) or "see the report",
+            tried=out.tried[-6:], key=entry["id"], doi=str(entry.get("doi", "")),
+            url=args.target if cit.kind == "url" else "", locator_scheme=args.locator_scheme, locator=args.locator))
+        print(f"recorded {entry['id']} in {args.missing_out}", file=sys.stderr if args.json else sys.stdout)
+    return 1
+
+
+def _ocr(cfg: config.Config, pdf: Path, out: str) -> int:
+    reason = sources.ocr_status()
+    if reason:
+        print(reason, file=sys.stderr)
+        return 2
+    pages = sources.ocr_pdf_pages(pdf, dpi=cfg.sources.ocr_dpi)
+    text = sources.numbered_text(pages, [f"OCR of {pdf.name} (RapidOCR, {cfg.sources.ocr_dpi} dpi; {len(pages)} pages)."])
+    if out:
+        Path(out).write_text(text, encoding="utf-8")
+        print(out)
+    else:
+        sys.stdout.write(text)
+    return 0
 
 
 def board_cmd(args) -> int:
@@ -334,12 +416,17 @@ def board_cmd(args) -> int:
                                gitdir=cfg.state_dir() / "claims" / (cfg.repositories.claims.replace("/", "__") + ".git"),
                                owner=f"{ctx.operator}/board", operator=ctx.operator, project=cfg.project.name,
                                dry_run=ctx.dry_run)
-    if args.action == "intake":
-        repo = cfg.repositories.packages_repo()
-        numbers = [args.pr] if args.pr else [p["number"] for p in ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True)
-                                             if decode_submission(p.get("body") or "")]
-        for n in numbers:
-            print(intake.intake(ctx, n, yes=args.yes and not args.dry_run))
+    write = args.yes and not args.dry_run
+    if args.action in ("intake", "references"):
+        if args.action == "intake":
+            repo = cfg.repositories.packages_repo()
+            numbers = [args.pr] if args.pr else [p["number"] for p in ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True)
+                                                 if decode_submission(p.get("body") or "")]
+            for n in numbers:
+                print(intake.intake(ctx, n, yes=write))
+        if not args.pr:
+            for line in references.resume_all(ctx, ctx.sources_fetcher(), yes=write):
+                print(line)
         return 0
     if args.action == "sync":
         for line in intake.sync_targets(ctx) + intake.sync_leases(ctx, shared) + intake.sync_pull_requests(ctx):
@@ -393,15 +480,29 @@ def parser() -> argparse.ArgumentParser:
     m.add_argument("--list", action="store_true")
     m.add_argument("--pr", type=int, default=0)
 
-    s = sub.add_parser("sources", help="check a sources manifest, classify a URL, render a needs-references request")
-    s.add_argument("action", choices=["check", "classify", "request", "fetch"])
-    s.add_argument("target")
+    s = sub.add_parser("sources", help="fetch a legal source, check a manifest, classify a URL, cache a manifest's "
+                                       "texts, OCR a scan, render a needs-references request")
+    s.add_argument("action", choices=["fetch", "check", "classify", "cache", "ocr", "request"])
+    s.add_argument("target", help="fetch: DOI, arXiv id, URL, local file or 'Authors, Title, Year'; check/cache: "
+                                  "sources.toml; classify: URL; ocr: PDF; request: needs-references.toml")
+    s.add_argument("--manifest", default="", help="fetch: record the entry in this sources.toml")
+    s.add_argument("--id", default="", help="fetch: the citation key (default: the manifest's, else derived)")
+    s.add_argument("--authors", default="")
+    s.add_argument("--title", default="")
+    s.add_argument("--year", default="")
+    s.add_argument("--locator-scheme", default="", choices=["", *sources.LOCATOR_SCHEMES])
+    s.add_argument("--locator", default="")
+    s.add_argument("--cited-for", action="append", default=[], help="a README section or target citing it (repeatable)")
+    s.add_argument("--licence-class", default="", help="fetch: the class of a URL on a host no list names, once checked")
+    s.add_argument("--missing-out", default="", help="fetch: on failure, add a [[missing]] table to this file")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--out", default="", help="ocr: write the numbered text here")
     s.add_argument("--job", default="")
     s.add_argument("--roadmap", default="")
     s.add_argument("--post", action="store_true", help="post the request on the job and park it")
 
     b = sub.add_parser("board", help="board maintenance for the bot or a maintainer (dry run unless --yes)")
-    b.add_argument("action", choices=["intake", "sync", "stale"])
+    b.add_argument("action", choices=["intake", "references", "sync", "stale"])
     b.add_argument("--pr", type=int, default=0)
     b.add_argument("--yes", action="store_true")
     b.add_argument("--release", action="store_true")

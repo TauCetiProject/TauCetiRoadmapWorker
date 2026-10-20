@@ -1,9 +1,10 @@
 """What every lane shares: the run context, the workspace, the brief, the agent run, the
 `needs-references` hand-off and the submission to the board.
 
-A lane run is: eligible? -> prepare checkouts -> render the brief -> run the agent -> parked on
-missing references? -> mechanical checks -> lane-specific finish (push, open a PR, reply) ->
-submit the report and deliverables to the board as a pull request that names the job.
+A lane run is: eligible? -> prepare checkouts -> make the manifest's texts available in the sources
+cache -> render the brief (or briefs) -> run the agent on each -> parked on missing references? ->
+mechanical checks -> lane-specific finish (push, open a PR, reply) -> submit the report and
+deliverables to the board as a pull request that names the job.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import agents, board, claims, gates, gitops, prompts, sources
+from .. import agents, board, claims, fetcher, gates, gitops, prompts, references, sources
 from ..board import Board, Job
 from ..config import Config
 from ..depgraph import read_order
@@ -40,6 +41,11 @@ class Context:
     conf: str = ""
     dry_run: bool = False
     agent_fixed: bool = True   # False: each job runs on its lane's configured agent (or the one it requires)
+    transport: object = None   # the sources service's HTTP transport (None: urllib); tests pass a fake
+
+    def sources_fetcher(self) -> fetcher.Fetcher:
+        return fetcher.Fetcher(fetcher.client_from_config(self.cfg, self.transport), sources.cache_root(self.state),
+                               self.cfg.sources)
 
     @property
     def state(self) -> Path:
@@ -175,6 +181,7 @@ def library_description(content: Path) -> str:
 class Lane:
     kind = ""
     prompt = ""
+    edits_manifest = False     # the job's deliverables include sources.toml (design, package, their fixes)
 
     # -- hooks --
     def eligible(self, job: Job, ctx: Context) -> str:
@@ -253,16 +260,79 @@ class Lane:
             "SIBLINGS": "; ".join(f"{name} at `{path}`" for _pr, name, path in sibs) or
                         ("; ".join(p["name"] for p in prs) or "none"),
             "MAX_LEAN_LINES": str(cfg.gates.max_lean_lines), "ELABORATE": elaborate, "EXTRA_RULES": extra_rules,
+            "SOURCE_TEXTS": ws.extra.get("source_texts", "none recorded yet"),
+            "FETCH": self.fetch_command(job, ctx, ws),
         }
 
-    def missing_references(self, ws: Workspace) -> list[sources.MissingReference]:
-        path = ws.scratch / "needs-references.toml"
-        if not path.is_file():
-            return []
+    def fetch_command(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        """The command line an agent runs to fetch a source through the service."""
+        args = ["sources", "fetch"]
+        if self.edits_manifest:
+            args += ["--manifest", str(ws.package(ctx.cfg, job.name) / "sources.toml")]
+        return ctx.cli(*args, "--missing-out", str(ws.scratch / "needs-references.toml"))
+
+    def prepare_sources(self, job: Job, ctx: Context, ws: Workspace) -> None:
+        """Bring every text the roadmap's manifest records into the sources cache, list them for the
+        brief, and turn texts that are gone for good into a needs-references request. A request left
+        by an earlier run of this job is archived first: its answers are in the manifest now."""
+        request = ws.scratch / "needs-references.toml"
+        if request.is_file():
+            request.replace(ws.scratch / "needs-references.previous.toml")
+        manifest_path = ws.package(ctx.cfg, job.name) / "sources.toml"
+        if not manifest_path.is_file():
+            return
         try:
-            return sources.parse_missing(tomllib.loads(path.read_text(encoding="utf-8")))
-        except tomllib.TOMLDecodeError:
-            return []
+            manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as exc:
+            ws.extra["source_texts"] = f"none: the manifest does not parse ({exc})"
+            return
+        available = ctx.sources_fetcher().materialize(manifest, offline=ctx.dry_run)
+        lines = []
+        for a in available:
+            if a.text:
+                lines.append(f"- `{a.id}` ({a.label}): `{a.text}`")
+            else:
+                lines.append(f"- `{a.id}` ({a.label}): unavailable: {a.problem}")
+        ws.extra["source_texts"] = "\n" + "\n".join(lines) if lines else "none recorded yet"
+        for a in available:
+            if a.text or not a.permanent:
+                continue
+            entry = sources.find_source(manifest, id=a.id) or {}
+            references.add_missing(request, references.MissingReference(
+                authors=str(entry.get("authors", "")), title=str(entry.get("title", a.id)), year=str(entry.get("year", "")),
+                needed_for=", ".join(entry.get("cited_for", [])) or f"the roadmap's citations of {a.id}",
+                tried=[a.problem], key=a.id, doi=str(entry.get("doi", "")), url=str(entry.get("url", "")),
+                locator_scheme=str(entry.get("locator_scheme", "")), sha256=str(entry.get("sha256", ""))))
+
+    def missing_references(self, ws: Workspace) -> list[references.MissingReference]:
+        return references.read_missing(ws.scratch / "needs-references.toml")
+
+    def briefs(self, job: Job, ctx: Context, ws: Workspace, values: dict) -> list[tuple[str, str]]:
+        """(label, brief) for each agent run of the job, in order; '' labels the main brief."""
+        return [("", prompts.render(self.prompt, values))]
+
+    def after_runs(self, job: Job, ctx: Context, ws: Workspace) -> None:
+        """Combine the outputs of several runs (the red-team lane merges its section passes)."""
+
+    def run_agent(self, ctx: Context, ws: Workspace, brief: str, label: str = "") -> agents.AgentResult:
+        attempt = len(list(ws.job_dir.glob("run-*.out"))) + 1
+        stem = f"run-{attempt}" + (f"-{label}" if label else "")
+        return agents.run_agent(agents.AgentRun(
+            agent=ctx.agent, model=ctx.model, workdir=ws.workdir, brief=brief,
+            log_out=ws.job_dir / f"{stem}.out", log_err=ws.job_dir / f"{stem}.err",
+            timeout=ctx.cfg.agents.timeout_minutes * 60, sandbox_profile=ctx.cfg.sandbox.profile,
+            proxy_url=ctx.cfg.sandbox.proxy_url, netjail=ctx.cfg.sandbox.netjail,
+            claude_hook=ctx.cfg.sandbox.claude_hook, settings_dir=ctx.wdir / "settings"))
+
+    def park(self, job: Job, ctx: Context, missing: list[references.MissingReference]) -> LaneResult:
+        """Post the request (from the template, with its machine-readable marker) and park the job."""
+        ctx.board.comment(job.number, references.request_comment(job.id, job.name, missing))
+        try:
+            ctx.board.set_state(job, "needs-references")
+        except GHError:
+            pass  # operators without write access on the board: `board sync` mirrors the state
+        return LaneResult(job.id, "needs-references", f"{len(missing)} source(s) missing: "
+                          + ", ".join(m.key for m in missing))
 
     def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
         """Commit the job's own files on the worker's board branch, push it to the operator's fork
@@ -306,30 +376,25 @@ class Lane:
         if reason:
             return LaneResult(job.id, "skipped", reason)
         ws = self.prepare(job, ctx)
+        self.prepare_sources(job, ctx, ws)
         values = {**self.common_values(job, ctx, ws), **self.values(job, ctx, ws)}
-        brief = prompts.render(self.prompt, values)
-        (ws.job_dir / "brief.md").write_text(brief, encoding="utf-8")
+        runs = self.briefs(job, ctx, ws, values)
+        for label, brief in runs:
+            (ws.job_dir / (f"brief-{label}.md" if label else "brief.md")).write_text(brief, encoding="utf-8")
         if ctx.dry_run:
-            return LaneResult(job.id, "dry-run", f"brief written to {ws.job_dir / 'brief.md'}")
-        attempt = len(list(ws.job_dir.glob("run-*.out"))) + 1
-        result = agents.run_agent(agents.AgentRun(
-            agent=ctx.agent, model=ctx.model, workdir=ws.workdir, brief=brief,
-            log_out=ws.job_dir / f"run-{attempt}.out", log_err=ws.job_dir / f"run-{attempt}.err",
-            timeout=ctx.cfg.agents.timeout_minutes * 60, sandbox_profile=ctx.cfg.sandbox.profile,
-            proxy_url=ctx.cfg.sandbox.proxy_url, netjail=ctx.cfg.sandbox.netjail,
-            claude_hook=ctx.cfg.sandbox.claude_hook, settings_dir=ctx.wdir / "settings"))
-        if result.limited:
-            return LaneResult(job.id, "limited", "usage limit", retry_at=result.reset_at)
-        if result.exit_code != 0:
-            return LaneResult(job.id, "failed", f"agent exited {result.exit_code}" + (" (timeout)" if result.timed_out else ""))
+            return LaneResult(job.id, "dry-run", f"{len(runs)} brief(s) written to {ws.job_dir}")
+        for label, brief in runs:
+            result = self.run_agent(ctx, ws, brief, label)
+            where = f" ({label})" if label else ""
+            if result.limited:
+                return LaneResult(job.id, "limited", "usage limit" + where, retry_at=result.reset_at)
+            if result.exit_code != 0:
+                return LaneResult(job.id, "failed", f"agent exited {result.exit_code}{where}"
+                                  + (" (timeout)" if result.timed_out else ""))
+        self.after_runs(job, ctx, ws)
         missing = self.missing_references(ws)
         if missing:
-            ctx.board.comment(job.number, sources.needs_references_comment(job.id, job.name, missing))
-            try:
-                ctx.board.set_state(job, "needs-references")
-            except GHError:
-                pass
-            return LaneResult(job.id, "needs-references", f"{len(missing)} source(s) missing")
+            return self.park(job, ctx, missing)
         problems = self.check(job, ctx, ws)
         if problems:
             (ws.job_dir / "problems.txt").write_text("\n".join(problems) + "\n", encoding="utf-8")
