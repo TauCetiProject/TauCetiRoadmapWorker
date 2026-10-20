@@ -130,5 +130,5 @@ def test_merge_order_plan_with_stacks_and_external():
                             external={"903": {"Other": [77, "someone"]}}, mutual={(903, 78)})
     assert "#901 (Alpha) → **this pull request** (#902)." in paras[902]
     assert "#902 (Bravo) → **this pull request** (#903)." in paras[903]        # stacked on #902
-    assert "#77 (Other)" in paras[903]
-    assert "can merge once approved" in paras[901]
+    assert "#77 (Other, someone)" in paras[903]
+    assert "can merge as soon as it is approved" in paras[901]

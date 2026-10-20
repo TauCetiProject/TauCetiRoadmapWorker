@@ -1,5 +1,6 @@
 """The `port` lane: copy the accepted package into the content repository on a fork branch, run the
-gates, open the draft pull request with the dependency and merge-order paragraphs.
+gates, open the draft pull request with the dependency and merge-order paragraphs (the latter by the
+renderer `merge-order` uses).
 
 Port of the maintainer's mk-port.sh, mk-syn.sh and open-port-pr.sh: the brief is rendered from
 prompts/port.md, the synopsis is taken from the report's "Draft pull request body" section, and the
@@ -130,9 +131,23 @@ class PortLane(Lane):
         head7 = gitops.git(ws.workdir, "rev-parse", "--short=7", "HEAD").strip()
         with open(ws.report, "a", encoding="utf-8") as f:
             f.write(f"\n\nPull request: #{number} ({ws.extra['branch']} at {head7})\n")
-        from ..mergeorder import refresh
-        refresh(ctx, only={number})
-        return f"ported {job.name}: draft pull request #{number}"
+        return f"ported {job.name}: draft pull request #{number}" + self.write_merge_order(
+            ctx, {"pr": number, "name": job.name}, readme, body, prs, order)
+
+    def write_merge_order(self, ctx: Context, new: dict, readme: str, body: str, prs: list[dict],
+                          order: list[str]) -> str:
+        """The new pull request's "Merge order" paragraph, by the renderer `merge-order` uses (its
+        number is known only once it is open); '' when written, else why not."""
+        from ..mergeorder import paragraph_for
+        para = paragraph_for(ctx, new, readme, prs, order)
+        if not para:
+            return " (not in the merge order: no merge-order paragraph)"
+        text = depgraph.apply_paragraph(body, para) or body.rstrip() + "\n\n" + para + "\n"
+        try:
+            ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.content}/pulls/{new['pr']}", {"body": text})
+        except GHError as exc:
+            return f" (merge-order paragraph not written: {exc}; run merge-order --pr {new['pr']})"
+        return ""
 
 
 def pr_number_from_report(text: str) -> int:

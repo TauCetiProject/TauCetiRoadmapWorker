@@ -213,21 +213,34 @@ def merge_chain(name: str, edges: dict[str, dict[str, set[int]]], order: list[st
 MARK_OPEN, MARK_CLOSE = "<!-- merge-order -->", "<!-- /merge-order -->"
 
 
-def merge_order_paragraph(pr: int, chain: list[tuple[int, str]], external: list[tuple[int, str]] | None = None,
-                          mutual: list[tuple[int, str]] | None = None) -> str:
-    """The idempotent 'Merge order' paragraph of a pull request description: the chain only, no
-    position number. `chain` and `external` are (pr, roadmap name) pairs already in merge order."""
+def _cited(prs: list[tuple]) -> str:
+    """`#248 (LFunctions, roed-math), #934 (QuaternionicModularForms)`: (pr, roadmap[, author])."""
+    return ", ".join(f"#{p[0]} ({p[1]}, {p[2]})" if len(p) > 2 and p[2] else f"#{p[0]} ({p[1]})" for p in prs)
+
+
+def merge_order_paragraph(pr: int, chain: list[tuple[int, str]], external: list[tuple] | None = None,
+                          mutual: list[tuple] | None = None) -> str:
+    """The idempotent 'Merge order' paragraph of a pull request description, in the wording of the
+    maintainer's merge_order.py: the chain only, no position number. `chain` holds (pr, roadmap)
+    pairs in merge order; `external` and `mutual` hold (pr, roadmap, author) for other authors' pull
+    requests that add roadmaps this one cites (those that cite it back are `mutual`). `external` is
+    None when the other authors' pull requests were not read: then the paragraph says nothing about
+    them, rather than that there are none."""
     if chain:
         head = " → ".join(f"#{p} ({n})" for p, n in chain) + f" → **this pull request** (#{pr})."
     else:
-        head = f"No open roadmap pull request of this project must merge before this one; **this pull request** (#{pr}) can merge once approved."
+        head = (f"No open pull request of ours must merge before this one; **this pull request** (#{pr}) can merge "
+                "as soon as it is approved.")
     ext = ""
     if external:
         ext = (" It also depends on other authors' pull requests that add roadmaps it cites, which must merge first: "
-               + ", ".join(f"#{p} ({n})" for p, n in external) + ".")
+               + _cited(external) + ".")
+    elif external is not None:
+        ext = " It depends on no other author's open pull request."
     if mutual:
-        ext += (" It also cites " + ", ".join(f"#{p} ({n})" for p, n in mutual) + ", which in turn cite this one; "
-                "these have no whole-pull-request order among themselves.")
+        ext += (" It also cites " + _cited(mutual) + ", which in turn consume this one (directly or through one "
+                "another); these specifications have no whole-pull-request order among themselves, and the "
+                "stage-level graph between them is acyclic.")
     return f"{MARK_OPEN}\n**Merge order.** {head}{ext} Roadmaps already on main are not listed.\n{MARK_CLOSE}"
 
 
@@ -257,7 +270,7 @@ def dependency_paragraph(name: str, readme: str, open_prs: dict[str, int], order
     ranked = [s for s in order if s in suppliers] + sorted(suppliers - set(order))
     listed = ", ".join(f"#{open_prs[s]} ({s})" for s in ranked) if ranked else "none"
     return ("Dependencies (cited in the README by roadmap name and section; the Lean imports none of them). "
-            f"In open roadmap pull requests of this project: {listed}. Roadmaps on main are cited by name; "
+            f"In open pull requests of ours: {listed}. Roadmaps on main are cited by name; "
             "everything else named in the README is a consumer, not a prerequisite.")
 
 

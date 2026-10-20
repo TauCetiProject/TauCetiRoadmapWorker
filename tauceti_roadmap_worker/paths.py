@@ -20,7 +20,9 @@ Inside it (see docs/OPERATORS.md for the full list):
     hold-draft.txt              pull requests that must stay drafts (one number per line)
     label-ignore.txt            "<pr> <timestamp-prefix>" comments that never flip labels
     stacks.toml                 stacked pull requests: child = parent
-    external-deps.json          other authors' roadmap pull requests a pull request cites
+    external-deps.json          other authors' roadmap pull requests a pull request cites (beyond the scan)
+    other-prs.json              roadmap folders other authors' open pull requests add, by head
+    dropped-external.txt        other authors' pull requests that never count as dependencies
     mutual.txt                  "<pr> <other-pr>" pairs that cite each other (no whole-PR order)
 """
 

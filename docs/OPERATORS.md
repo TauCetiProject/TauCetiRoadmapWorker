@@ -181,7 +181,20 @@ works on its sources (target, design, package, review, and the design and packag
 on the content repository (port, red team, red-team fix, gate) submit only their report. The port lane composes the pull-request description from
 computed facts: the synopsis from the report, the dependencies on other open roadmap pull requests,
 the merge-order chain and a validation paragraph from the gate result. `merge-order` refreshes the
-chain paragraph in every open roadmap pull request; it never states a position number.
+chain paragraph in every open roadmap pull request, and the port lane writes the new pull request's
+with the same renderer; it never states a position number. The paragraph reads
+
+    **Merge order.** #a (Name) → #b (Name) → **this pull request** (#n). It depends on no other author's open pull request. Roadmaps already on main are not listed.
+
+(or "No open pull request of ours must merge before this one; **this pull request** (#n) can merge
+as soon as it is approved." when no open roadmap pull request of the project must come first). The
+chain is the transitive closure of the roadmap's suppliers among those pull requests, in merge-order
+rank. Other authors' pull requests are read from the content repository: an open pull request the
+port lane did not open counts when it adds a roadmap folder that is not on main and the README cites
+that roadmap as a supplier; it is listed as `#248 (LFunctions, roed-math)` in "It also depends on
+other authors' pull requests that add roadmaps it cites, which must merge first: ...". When those
+pull requests cannot be read the sentence is left out, never replaced by "no other author's".
+A roadmap missing from the merge order gets no paragraph.
 
 Only the operator who opened a pull request can push to its branch, so the fix rounds on a board
 pull request and the gate rounds on a roadmap pull request name that operator (`requires_operator`).
@@ -455,8 +468,10 @@ machine are here:
 | `design-ledger.jsonl` | design jobs started per operator per day |
 | `hold-draft.txt` | pull requests that must stay drafts (was `/tmp/hold-draft.txt`) |
 | `stacks.toml` | stacked pull requests, `child = parent` (was hard-coded in merge_order.py) |
-| `external-deps.json` | other authors' roadmap pull requests a pull request depends on (was `/tmp/ext-deps.json`) |
-| `mutual.txt` | `<pr> <other-pr>` pairs that cite each other (was `decycle/MUTUAL.txt`) |
+| `external-deps.json` | other authors' roadmap pull requests a pull request depends on that the scan cannot see, added to what it finds (was `/tmp/ext-deps.json`; ext_deps.py's shape is read too) |
+| `other-prs.json` | the roadmap folders other authors' open pull requests add, by head (the scan's cache) |
+| `dropped-external.txt` | other authors' pull requests that never count as dependencies, one number per line (was `decycle/DROPPED_EXTERNAL.txt`) |
+| `mutual.txt` | `<pr> <other-pr>` pairs that cite each other: no whole-pull-request order between them, and an acyclic stage-level graph (was `decycle/MUTUAL.txt`) |
 | `sources/<sha256>.<ext>`, `sources/<sha256>.txt` | the sources cache: fetched files and their line-numbered texts (see SOURCES.md) |
 | `sources/local-index.json` | hashes of the texts in `[sources] local_dirs`, by path, size and modification time |
 | `intentions.json` | intentions already imported: `<owner>/<repo>#<n>` → TARGET job and board issue |

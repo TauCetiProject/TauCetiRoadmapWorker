@@ -37,9 +37,29 @@ def test_paragraph_is_chain_only_without_position():
     assert "#901 (Alpha) → #902 (Bravo) → #903 (Charlie) → #904 (Delta) → **this pull request** (#905)." in para
     assert "position" not in para.lower() and not re.search(r"\b\d+ of \d+\b|rank", para)
     alone = merge_order_paragraph(901, [])
-    assert "can merge once approved" in alone
+    assert "can merge as soon as it is approved" in alone
     ext = merge_order_paragraph(905, chain, external=[(77, "Other")], mutual=[(78, "Peer")])
     assert "#77 (Other)" in ext and "#78 (Peer)" in ext
+
+
+def test_paragraph_wording_is_the_maintainers():
+    """The exact sentences decycle/merge_order.py writes on the maintainer's pull requests."""
+    assert merge_order_paragraph(792, [(785, "ReductiveGroupsPartII")],
+                                 external=[(248, "LFunctions", "roed-math"), (934, "QuaternionicModularForms", "WilliamCoram")]) == (
+        f"{MARK_OPEN}\n**Merge order.** #785 (ReductiveGroupsPartII) → **this pull request** (#792). It also depends on "
+        "other authors' pull requests that add roadmaps it cites, which must merge first: #248 (LFunctions, roed-math), "
+        f"#934 (QuaternionicModularForms, WilliamCoram). Roadmaps already on main are not listed.\n{MARK_CLOSE}")
+    assert merge_order_paragraph(1336, [], external=[]) == (
+        f"{MARK_OPEN}\n**Merge order.** No open pull request of ours must merge before this one; **this pull request** "
+        "(#1336) can merge as soon as it is approved. It depends on no other author's open pull request. Roadmaps "
+        f"already on main are not listed.\n{MARK_CLOSE}")
+    # Other authors' pull requests not read: nothing is said about them (never "none" unchecked).
+    assert "other author" not in merge_order_paragraph(1336, [], external=None)
+    assert merge_order_paragraph(5, [], external=[], mutual=[(78, "Peer", "someone")]).split("**this pull request** (#5) ")[1] == (
+        "can merge as soon as it is approved. It depends on no other author's open pull request. It also cites "
+        "#78 (Peer, someone), which in turn consume this one (directly or through one another); these specifications "
+        "have no whole-pull-request order among themselves, and the stage-level graph between them is acyclic. "
+        f"Roadmaps already on main are not listed.\n{MARK_CLOSE}")
 
 
 def test_apply_paragraph_is_idempotent_and_safe():
@@ -59,4 +79,5 @@ def test_dependency_paragraph_for_new_port():
     readme = "*Needs:* Charlie §2 and Alpha §1, Mathlib `Nat`. Consumed by Foxtrot.\n"
     text = dependency_paragraph("Delta", readme, {"Alpha": 901, "Charlie": 903, "Foxtrot": 906}, ORDER)
     assert "#901 (Alpha), #903 (Charlie)" in text and "Foxtrot" not in text.split("In open")[1].split(".")[0]
+    assert "In open pull requests of ours: #901 (Alpha), #903 (Charlie)." in text      # what sync_prose.py rewrites
     assert "none" in dependency_paragraph("Alpha", "", {"Bravo": 902}, ORDER)
