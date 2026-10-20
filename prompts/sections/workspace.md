@@ -10,3 +10,8 @@
 - Do the mathematics, every verdict and every edit yourself. If your agent can start helpers, use
   them only to locate text, and read every quoted line yourself before relying on it.
 - Keep a worklist in your scratch directory and save as you go, so partial work survives.
+- In everything you write, refer to files by repository-relative paths only (`packages/<Name>/README.md`,
+  `TauCetiRoadmap/<Name>/Suggested.lean`) and to sources as `<source id> line N`. The absolute paths
+  in this brief are for your tools: never write an absolute path, a home directory, the worker's
+  state directory or a temporary path into a report, a README, a Lean file or the manifest. A
+  submission with a machine path is refused.

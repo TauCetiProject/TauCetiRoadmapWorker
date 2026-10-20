@@ -11,6 +11,7 @@ round starts from the board's main again.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import os
@@ -172,6 +173,23 @@ def dropped_names(cfg: Config) -> list[str]:
 
 
 UNSUBMITTED = "unsubmitted"
+# Machine paths in the files that hand work on (reports, the triage, verdicts, the manifest) are
+# rewritten before the gate; README and Lean content is never rewritten (a path there is a defect).
+SCRUBBED = ("target.md", "review.json", "sources.toml")
+TEMP_ROOTS = re.compile(r"(?<![\w.~<>/-])/(?:private/(?:tmp|var)|tmp)/(?=[^\s/])")
+
+
+def scrub_paths(text: str, state: Path, home: Path) -> str:
+    """Machine paths out of a hand-off: the project state directory becomes `<state>`, the home
+    directory `~`, and a temporary path `<scratch>/`."""
+    def prefix(root: str, label: str, text: str) -> str:
+        root = root.rstrip("/\\")
+        return re.sub(re.escape(root) + r"(?![\w.-])", lambda m: label, text) if len(root) > 1 else text
+    for root in sorted({str(state), str(Path(state).resolve())}, key=len, reverse=True):
+        text = prefix(root, "<state>", text)
+    for root in sorted({str(home), str(Path(home).resolve())}, key=len, reverse=True):
+        text = prefix(root, "~", text)
+    return TEMP_ROOTS.sub("<scratch>/", text)
 
 
 def set_aside(checkout: Path, jobs: Path, worker: str, base: str = "main") -> Path | None:
@@ -373,6 +391,23 @@ class Lane:
         if changed:
             sources.save_manifest(path, manifest)
 
+    def scrub_outputs(self, job: Job, ctx: Context, ws: Workspace) -> list[Path]:
+        """Rewrite machine paths in the job's hand-off files (its report, the triage, verdicts, the
+        manifest) before any check reads them; returns the files changed. The privacy gate stays as
+        the backstop, and README and Lean content is never rewritten."""
+        pkg = ws.package(ctx.cfg, job.name)
+        files = [ws.report] + [p for name in SCRUBBED for p in pkg.rglob(name) if "reports" not in p.parts]
+        changed = []
+        for path in files:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            clean = scrub_paths(text, ctx.state, Path.home())
+            if clean != text:
+                path.write_text(clean, encoding="utf-8")
+                changed.append(path)
+        return changed
+
     def missing_references(self, ws: Workspace) -> list[references.MissingReference]:
         return references.read_missing(ws.scratch / "needs-references.toml")
 
@@ -394,7 +429,13 @@ class Lane:
             claude_hook=ctx.cfg.sandbox.claude_hook, settings_dir=ctx.wdir / "settings"))
 
     def park(self, job: Job, ctx: Context, missing: list[references.MissingReference]) -> LaneResult:
-        """Post the request (from the template, with its machine-readable marker) and park the job."""
+        """Post the request (from the template, with its machine-readable marker, machine paths
+        rewritten: the comment is public) and park the job."""
+        def clean(value):
+            if isinstance(value, list):
+                return [clean(v) for v in value]
+            return scrub_paths(value, ctx.state, Path.home()) if isinstance(value, str) else value
+        missing = [dataclasses.replace(m, **{k: clean(v) for k, v in dataclasses.asdict(m).items()}) for m in missing]
         ctx.board.comment(job.number, references.request_comment(job.id, job.name, missing))
         try:
             ctx.board.set_state(job, "needs-references")
@@ -461,6 +502,7 @@ class Lane:
                 return LaneResult(job.id, "failed", f"agent exited {result.exit_code}{where}"
                                   + (" (timeout)" if result.timed_out else ""))
         self.after_runs(job, ctx, ws)
+        self.scrub_outputs(job, ctx, ws)
         missing = self.missing_references(ws)
         if missing:
             return self.park(job, ctx, missing)

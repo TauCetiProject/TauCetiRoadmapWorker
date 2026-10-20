@@ -228,3 +228,41 @@ def test_answer_forms_in_the_request_template():
         {"missing": [{"title": "T", "needed_for": "x", "authors": "A", "year": 1999}]}))
     assert "`local: KEY" in text and "`source: KEY" in text and "`waive: KEY`" in text
     assert "attach:" not in text and "never downloaded" in text
+
+
+# --- machine paths are rewritten in hand-offs, refused elsewhere ----------------------------------
+
+def test_hand_offs_lose_machine_paths_and_readmes_still_fail_on_them(ctx):  # noqa: F811
+    from pathlib import Path
+    job = new_job("TARGET-Foo")
+    lane = lane_for(job)
+    ws = lane.prepare(job, ctx)
+    state_path = f"{ctx.state}/workers/w1/board/packages/Foo/target.md"
+    text = (f"Read `{state_path}`, notes in {Path.home()}/notes/q-series.md and the run log /tmp/rmw-1/run.out;\n"
+            "a relative path packages/Foo/tmp/x stays.\n")
+    pkg = ws.package(ctx.cfg, "Foo")
+    for path in (ws.report, pkg / "target.md", pkg / "sources.toml", pkg / "README.md"):
+        path.write_text(text if path.suffix != ".toml" else f'note = "{text.splitlines()[0]}"\n')
+    changed = lane.scrub_outputs(job, ctx, ws)
+    assert sorted(p.name for p in changed) == ["TARGET-Foo.md", "sources.toml", "target.md"]
+    assert ws.report.read_text() == ("Read `<state>/workers/w1/board/packages/Foo/target.md`, notes in "
+                                     "~/notes/q-series.md and the run log <scratch>/rmw-1/run.out;\n"
+                                     "a relative path packages/Foo/tmp/x stays.\n")
+    assert file_problems("packages/Foo/reports/TARGET-Foo.md", ws.report.read_text(),
+                         allowed_paths(job, "packages")) == []
+    readme = (pkg / "README.md").read_text()
+    assert readme == text and "local path" in file_problems("packages/Foo/README.md", readme,
+                                                            {"packages/Foo/README.md"})[0]
+
+
+def test_a_request_comment_carries_no_machine_path(ctx):  # noqa: F811
+    from pathlib import Path
+    job = new_job("TARGET-Foo")
+    job.number = 7
+    item = references.MissingReference("A", "T", "1999", "Layer 1", tried=[f"{Path.home()}/library (not there)",
+                                                                           f"{ctx.state}/sources/x.txt"])
+    posted = []
+    ctx.board.comment = lambda number, body: posted.append(body)
+    lane_for(job).park(job, ctx, [item])
+    assert str(Path.home()) not in posted[0] and "~/library (not there)" in posted[0]
+    assert "<state>/sources/x.txt" in posted[0]

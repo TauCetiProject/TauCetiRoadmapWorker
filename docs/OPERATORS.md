@@ -147,6 +147,15 @@ machine: the cache under the state directory is their only copy, and every submi
 source documents, extracted text, manifests that embed text and fenced passages of more than 40
 lines (see "Sources never enter a repository" in SOURCES.md).
 
+### Machine paths
+
+Agents are told to write repository-relative paths only. As a safety net, after the agent runs and
+before any check, the worker rewrites machine paths in the job's hand-off files (its report,
+`target.md`, the verdict files and `sources.toml`) and in the references request it posts: the
+project state directory becomes `<state>`, the home directory `~`, and a `/tmp/` path
+`<scratch>/`. README and Lean content is never rewritten: a machine path there is a defect, and the
+privacy gate refuses the submission ("local path in ...") as it refuses any path left elsewhere.
+
 ### Every round starts from the board
 
 A worker never carries files from one round to the next in its checkouts. Each round fetches the
