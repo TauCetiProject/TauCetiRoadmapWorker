@@ -125,6 +125,11 @@ Agents fetch what they need themselves, within rules:
 - Every prompt carries the untrusted-text rule and the fetch rules. The sandbox profile
   denies executing fetched content, raw network tools and credential access; the proxy logs
   every host.
+- Fixes on a draft PR (red-team fix rounds and gate rounds) run under the operator who
+  opened the PR, since only that operator can push to its fork branch; reviews and red-team
+  passes run under any other operator.
+- Lean imports in `Suggested.lean`: the single line `import Mathlib` followed only by the
+  `TauCeti.*` modules actually used; the gate rejects `import Mathlib.<submodule>`.
 - Budget: TauCetiWorker's quota and credit accounting applies unchanged; the design lane is
   the only expensive one and it is capped per operator per day in the toml.
 
