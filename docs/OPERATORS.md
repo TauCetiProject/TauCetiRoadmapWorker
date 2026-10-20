@@ -113,17 +113,25 @@ operator per day (`[design] daily_cap`), counted in `design-ledger.jsonl` on the
 ## The job graph
 
 ```text
-target ──triage──▶ DESIGN-Name ──▶ REV-DESIGN-Name ─accepted─▶ PKG-Name ──▶ REV-PKG-Name ─accepted─▶ PORT-Name
-                        ▲                │ needs_changes            ▲             │ needs_changes          │ draft PR #n
-                        └── FIX-DESIGN-Name~2 ◀┘ (≤ max_rounds)     └── FIX-PKG-Name~2 ◀┘                    ▼
-                                                                         RT-Name~1a, RT-Name~1b (two agents)
-                                                                                    ▼
-                                                                         FIX-RT-Name~1 (branch owner)
-                                                                                    ▼
-                                                                         RT-Name~2a, RT-Name~2b ─▶ FIX-RT-Name~2
-                                                                                    ▼
-                                                     human review on the draft ─▶ GATE-Name~k (branch owner) ─▶ reply
+target ──triage──▶ DESIGN-Name ═══ board PR (needs-review) ════════════▶ merged ──▶ PKG-Name ═══ board PR (needs-review) ══╗
+                         REV-DESIGN-Name ─accepted─┘                                   REV-PKG-Name ─accepted─┐          ║
+                          │ needs_changes ▲                                             │ needs_changes ▲     ▼          ║
+                          └▶ FIX-DESIGN-Name~2 (pushes to the PR) ┘                       └▶ FIX-PKG-Name~2 ┘  RT-Name~1a, RT-Name~1b
+                                                                                                              ▼          ║
+                                                                                                FIX-RT-Name~1 (pushes)  ║
+                                                                                                              ▼          ║
+                                                                                        RT-Name~2a, ~2b ─▶ FIX-RT-Name~2 ║
+                                                                                                              ▼          ║
+                                                                           PORT-Name ◀── merged ◀════════════════════════╝
+                                                                              │ roadmap PR (draft, human reviews only)
+                                                                              ▼
+                                                                  GATE-Name~k (branch owner) ─▶ reply
 ```
+
+A design or package submission is not merged right away: its board pull request stays open, labelled
+`needs-review`, through its reviews, their fix rounds (pushed to its branch by its owner) and, for a
+package, the red-team rounds; every review or pass is a comment on it (see "Reviewing from a browser
+model" below for the shape). After the last red-team fix the intake merges it and creates the port.
 
 **Consolidation.** Before a target becomes a design, its triage compares it with every other open
 target and every open design on the board (names, statements, and the triage or design files that
@@ -160,11 +168,11 @@ read as an instruction.
 | target | the filed form (quoted as data), roadmaps, open roadmap PRs, packages | `packages/<Name>/target.md`, `sources.toml` | anyone | Verdict/Name/Base/Owner header, sources manifest if changed |
 | design | `target.md`, roadmaps, libraries, merge order | `design/README.md`, `design/plan.json`, `sources.toml` | daily cap | plan.json schema, sources manifest, residue, dependency check |
 | package | accepted design and its review | `README.md`, `Suggested.lean`, `metadata.toml`, `sources.toml` | anyone | every text gate, sources manifest, elaboration |
-| review | the design or package (read-only) | `review.json` (or `design/review.json`) and a report; may add to `sources.toml` | not an author's operator (or, with `separation = "agent"`, not the authoring agent and model) | verdict schema, report header, reviewed files untouched, the author's manifest entries kept |
-| fix (design/package) | the review | the artefact's files | anyone (a fresh review follows) | finding sections, gates |
-| port | accepted package | branch `roadmap/<kebab-name>` on the operator's fork, draft PR | anyone | commit made, full gate with build, synopsis |
-| redteam | PR head (read-only) | a report | the agent the pass requires | report header, checkout untouched |
-| fix (red team) | the round's pass reports | commits on the PR branch | the PR branch owner | commit made, clean tree, full gate with build |
+| review | the board PR's head (read-only) | a comment on the board PR in the review shape (from its report and verdict) | not an author's operator (or, with `separation = "agent"`, not the authoring agent and model) | verdict schema, report header, reviewed files untouched |
+| fix (design/package) | the review's comments | commits pushed to the board PR's branch | its owner (a fresh review follows) | finding sections, gates |
+| redteam | the board PR's head (read-only) | a comment on the board PR in the red-team shape | the agent and model the pass requires | report header, checkout untouched |
+| fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | finding sections, the package's gates, elaboration, the targeted build in a roadmap checkout |
+| port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review since the last reply | commits on the PR branch, a reply, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
 
 Every lane writes its report to `packages/<Name>/reports/<JOB>.md` on the board, so the next lane
@@ -175,9 +183,33 @@ computed facts: the synopsis from the report, the dependencies on other open roa
 the merge-order chain and a validation paragraph from the gate result. `merge-order` refreshes the
 chain paragraph in every open roadmap pull request; it never states a position number.
 
-Only the operator who opened a pull request can push to its branch, so red-team fixes and gate
-rounds name that operator (`requires_operator`). The red-team passes of one round name different
-agents (`requires_agent`), from `[redteam] passes`.
+Only the operator who opened a pull request can push to its branch, so the fix rounds on a board
+pull request and the gate rounds on a roadmap pull request name that operator (`requires_operator`).
+The red-team passes of one round name different agents and models (`requires_agent`,
+`requires_model`), from `[redteam] passes`.
+
+### Reviewing from a browser model
+
+A browser model such as ChatGPT Pro reads GitHub and leaves comments, and that is all a review on
+the board needs. The steps for the human who drives it:
+
+1. Open the pinned "Review queue" issue on the job board (`board sync` keeps it current): it lists
+   every review and red-team pass open on a board pull request, with links.
+2. Pick a pull request and give the model its link. The pull request's first comment is the brief:
+   the job, the files at the head (raw links), the principles, what to check, and the shape of the
+   review. The model holds no sources: it samples locators against legal copies it can open itself
+   (arXiv, HAL, Numdam, GDZ, publisher open pages) and marks the rest as not verifiable.
+3. Optionally post `reviewing` (one word) first, to claim the review so that no worker starts it.
+4. Post the review as one comment: first line `Review (<agent>) of <sha7>` (for a red-team pass,
+   `Red team round <N> pass <x> (<agent>) of <sha7>`), then `Verdict: accepted`, `needs_changes` or
+   `rejected`, then numbered findings `1. **F01** (P1) <title>` with location, claim, witness and
+   repair, then `## Verified sound` and `## Not verifiable`.
+
+The board reads such comments only from the logins in `[review] comment_reviewers` (and from the
+workers that claimed the job), only of the pull request's current head (a review of an older head is
+answered once, as stale), and only when the reviewer is independent of the authors in the
+configured separation mode (a browser model's agent name counts as its agent). A worker that
+already holds a review is not preempted: the board waits for its review, and both count.
 
 With `[redteam] sharded = true`, every red-team job runs its whole-document pass and then one section
 pass per README section that states targets (the `## Layer` sections, or the `### Layer`
@@ -311,9 +343,11 @@ tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; on
                                                    # expired leases released, live ones → state:claimed;
                                                    # PR labels;
                                                    # GATE jobs when humans await a reply;
+                                                   # the pinned "Review queue" issue;
                                                    # held PRs back to draft
-tauceti-roadmap --conf $CONF board intake --yes    # merge valid submissions, create successor jobs,
-                                                   # then answer parked needs-references jobs
+tauceti-roadmap --conf $CONF board intake --yes    # take in submissions (designs and packages stay open
+                                                   # for review), answer needs-references jobs, then read
+                                                   # the reviews and passes on the board's open PRs
 tauceti-roadmap --conf $CONF board references --yes   # only the needs-references answers
 tauceti-roadmap --conf $CONF board stale --release --yes   # release lapsed claims and closed submissions
 tauceti-roadmap --conf $CONF merge-order           # refresh the chain paragraph on open roadmap PRs

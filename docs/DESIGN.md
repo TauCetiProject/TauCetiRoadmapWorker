@@ -84,16 +84,28 @@ checkout, submits a PR to the board, and the intake advances the state.
    (`requires_agent`, `requires_model`). Authoring lanes (design, package, fix, port, gate) run on
    the family defaults.
 5. `fix` — resolves a review's findings in the package files only.
-6. `port` — copies the accepted package into the content repository on a fork branch, runs
-   the gates (build of the module, mechanical identifier check, dependency check against the
-   merge order, residue and `set_option` scans, outside-folder diff empty), writes the
-   merge-order chain into the description, and opens a draft PR.
-7. `redteam` — two independent whole-document passes on the draft PR (two different agents),
-   each followed by a `fix` lane on the PR branch; a second round of the same; then the PR is
-   marked ready for human review. The maintainer may add section-sharded passes: today's
-   evidence is that a section-level pass instantiating every statement on small examples
-   catches pinning gaps that whole-document passes miss.
-8. `gate` — reacts to the human reviewers' comments on the draft PR: ingest every review
+
+   A design or package is reviewed on its own submission pull request on the board, which is not
+   merged while the review lasts: the intake labels it `needs-review`, pins a brief for browser
+   reviewers as its first comment, and every review is a comment on it (first line
+   `Review (<agent>) of <sha7>`, a `Verdict:` line, numbered `1. **F01** (P1)` findings), posted by
+   a review worker or by a browser model such as ChatGPT Pro that a listed maintainer login drives.
+   A fix pushes to the same branch and a fresh review of the new head follows.
+6. `redteam` — after the package review accepts, two independent whole-document passes (two
+   different agents) on the package's still-open board pull request, each round followed by a
+   `fix` lane that pushes to its branch (with the targeted Lean build of the module in a checkout
+   of the roadmap repository); a second round of the same. A pass is a comment whose first line is
+   `Red team round <N> pass <x> (<agent>) of <sha7>`, from a worker or a browser model. The
+   maintainer may add section-sharded passes: today's evidence is that a section-level pass
+   instantiating every statement on small examples catches pinning gaps that whole-document
+   passes miss. After the last round's fix the board pull request is merged.
+7. `port` — copies the red-teamed package into the content repository on a fork branch, places
+   the roadmap in the merge order if it is not there yet, runs the gates (build of the module,
+   mechanical identifier check, dependency check against the merge order, residue and
+   `set_option` scans, outside-folder diff empty), writes the merge-order chain into the
+   description, and opens the roadmap pull request (a draft, or ready with
+   `[redteam] ready_after`), which receives human reviews only.
+8. `gate` — reacts to the human reviewers' comments on the roadmap PR: ingest every review
    since the last reply (not only the latest), run a fix lane, push, reply finding by
    finding, and flip the labels. The final merge is a human action.
 
@@ -157,8 +169,11 @@ Agents fetch what they need themselves, within rules:
 
 1. File a target (issue template) or an intention on the roadmap board.
 2. Answer `needs-references` requests.
-3. Review and merge the final draft PR; comments on it feed the `gate` lane automatically.
-4. Maintain `tauceti-roadmap.toml` and the prompts (CODEOWNERS-protected).
+3. Optionally review designs and packages from a browser model (ChatGPT Pro or another) on the
+   board's pull requests: the pinned "Review queue" issue lists them, each pull request's first
+   comment is the brief, and a review is a comment in the shape the brief gives.
+4. Review and merge the roadmap PR; comments on it feed the `gate` lane automatically.
+5. Maintain `tauceti-roadmap.toml` and the prompts (CODEOWNERS-protected).
 
 ## 8. Build plan
 

@@ -163,12 +163,15 @@ into jobs; see [docs/OPERATORS.md](docs/OPERATORS.md#board-maintenance).
 
 Every design and package is reviewed by an agent of another operator (or, where the project allows
 it, of another agent and model) before it moves on, and every fix round gets a fresh review; a
-fixer's own acceptance never counts. Reviews and red-team passes run on the review models the
-configuration pins (Fable on Claude, Astra on Codex), whichever family a worker runs. A browser
-model such as ChatGPT Pro reviews by reading the review pull request on the board, following the
-brief pinned as its first comment, and leaving its review as a comment in the shape that brief
-gives (a first line `Review (<agent>) of <sha7>`, a `Verdict:` line and numbered findings), which
-the board's intake reads like any other review; this flow is landing in pass 2.
+fixer's own acceptance never counts. Each design and package is reviewed on its own pull request
+on the job board, which stays open through its reviews, their fixes and (for a package) two
+red-team rounds; only then is it merged and ported, and the roadmap pull request gets human
+reviews. Reviews and red-team passes run on the review models the configuration pins (Fable on
+Claude, Astra on Codex), whichever family a worker runs. A browser model such as ChatGPT Pro can
+review too: the pinned "Review queue" issue on the board lists what is open, each pull request's
+first comment is the brief, and the review is one comment in the shape the brief gives (a first
+line `Review (<agent>) of <sha7>`, a `Verdict:` line and numbered findings), which the board reads
+like a worker's when it comes from a login the project lists.
 
 ## Development
 
