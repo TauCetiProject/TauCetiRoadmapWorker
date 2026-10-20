@@ -38,7 +38,7 @@ def fake_git(cwd, *args, check=True, timeout=900):
     return ""
 
 
-def fake_checkout(repo, dest, *rest):
+def fake_checkout(repo, dest, *rest, **options):
     dest.mkdir(parents=True, exist_ok=True)
     return SHA
 

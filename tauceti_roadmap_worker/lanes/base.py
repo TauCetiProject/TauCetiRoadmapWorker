@@ -1,10 +1,12 @@
 """What every lane shares: the run context, the workspace, the brief, the agent run, the
 `needs-references` hand-off and the submission to the board.
 
-A lane run is: eligible? -> prepare checkouts -> make the manifest's texts available in the sources
-cache -> render the brief (or briefs) -> run the agent on each -> parked on missing references? ->
-mechanical checks -> lane-specific finish (push, open a PR, reply) -> submit the report and
-deliverables to the board as a pull request that names the job.
+A lane run is: eligible? -> clean checkouts of the board's main -> make the manifest's texts
+available in the sources cache -> render the brief (or briefs) -> run the agent on each -> parked
+on missing references? -> mechanical checks -> lane-specific finish (push, open a PR, reply) ->
+submit the report and deliverables to the board as a pull request that names the job. Anything a
+run writes in the board checkout is either submitted or reproducible from the board: the next
+round starts from the board's main again.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -168,6 +171,29 @@ def dropped_names(cfg: Config) -> list[str]:
         return []
 
 
+UNSUBMITTED = "unsubmitted"
+
+
+def set_aside(checkout: Path, jobs: Path, worker: str) -> Path | None:
+    """Copy what the last round left uncommitted in the board checkout to `jobs/<JOB>/unsubmitted/`
+    of the job whose branch (`<worker>/<JOB>`) is checked out, replacing an older copy, before the
+    checkout is reset to the board's main. Returns that folder, or None when nothing was left.
+    Best effort: a checkout git cannot read is reset all the same."""
+    try:
+        branch = gitops.current_branch(checkout)
+        if not branch.startswith(worker + "/"):
+            return None
+        files = [p for p in gitops.changed_files(checkout) if (checkout / p).is_file()]
+    except gitops.GitError:
+        return None
+    dest = jobs / branch.split("/", 1)[1] / UNSUBMITTED
+    shutil.rmtree(dest, ignore_errors=True)
+    for rel in files:
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(checkout / rel, dest / rel)
+    return dest if files else None
+
+
 def library_description(content: Path) -> str:
     m, t = content / ".lake" / "packages" / "mathlib" / "Mathlib", content / ".lake" / "packages" / "TauCeti" / "TauCeti"
     if m.is_dir() and t.is_dir():
@@ -182,6 +208,7 @@ class Lane:
     kind = ""
     prompt = ""
     edits_manifest = False     # the job's deliverables include sources.toml (design, package, their fixes)
+    resumes_checkpoint = False  # carries on from what its last run left unsubmitted (no lane does yet)
 
     # -- hooks --
     def eligible(self, job: Job, ctx: Context) -> str:
@@ -211,22 +238,30 @@ class Lane:
 
     # -- shared steps --
     def prepare(self, job: Job, ctx: Context) -> Workspace:
+        """Every round starts from clean checkouts of the board's and the content repository's
+        main. What the last round left unsubmitted in the board checkout is copied to its job's
+        folder first (`unsubmitted/`) and discarded: the board's copy wins. Only a lane that
+        resumes a checkpoint gets it back, and only into the same job's package folder."""
         cfg = ctx.cfg
+        worker = sanitize_worker_id(ctx.worker_id)
         job_dir = ctx.wdir / "jobs" / claims.ref_safe(job.id)
         scratch = job_dir / "scratch"
         scratch.mkdir(parents=True, exist_ok=True)
         board_dir, content_dir = ctx.wdir / "board", ctx.wdir / "content"
-        gitops.sync_checkout(cfg.repositories.packages_repo(), board_dir, "main")
+        pkg = board.package_dir(cfg.board.packages_dir, job.name)
+        kept = set_aside(board_dir, ctx.wdir / "jobs", worker)
+        gitops.sync_checkout(cfg.repositories.packages_repo(), board_dir, "main", scrub=(pkg,))
         gitops.sync_checkout(cfg.repositories.content, content_dir, cfg.project.branch)
         shared = os.environ.get("TAUCETI_ROADMAP_LAKE_PACKAGES")
         if shared and Path(shared).is_dir() and not (content_dir / ".lake" / "packages").exists():
             # One built Mathlib/Tau Ceti for every worker of the host (never build it per worker).
             (content_dir / ".lake").mkdir(parents=True, exist_ok=True)
             os.symlink(Path(shared).resolve(), content_dir / ".lake" / "packages")
-        branch = f"{sanitize_worker_id(ctx.worker_id)}/{claims.ref_safe(job.id)}"
+        branch = f"{worker}/{claims.ref_safe(job.id)}"
         gitops.git(board_dir, "checkout", "-q", "-B", branch)
-        pkg = board_dir / board.package_dir(cfg.board.packages_dir, job.name)
-        report = pkg / "reports" / f"{job.id}.md"
+        if self.resumes_checkpoint and kept == job_dir / UNSUBMITTED and (kept / pkg).is_dir():
+            shutil.copytree(kept / pkg, board_dir / pkg, dirs_exist_ok=True)
+        report = board_dir / pkg / "reports" / f"{job.id}.md"
         report.parent.mkdir(parents=True, exist_ok=True)
         return Workspace(job_dir=job_dir, scratch=scratch, board=board_dir, content=content_dir,
                          workdir=board_dir, report=report, branch=branch)

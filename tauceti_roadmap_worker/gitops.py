@@ -34,16 +34,23 @@ def url(repo: str) -> str:
     return f"https://github.com/{repo}"
 
 
-def sync_checkout(repo: str, dest: Path, ref: str = "main") -> str:
+def sync_checkout(repo: str, dest: Path, ref: str = "main", scrub: tuple[str, ...] = ()) -> str:
     """A clean detached checkout of `repo` at `origin/<ref>` (cloned on first use, blobs on demand).
-    Returns the commit. Only for directories the worker owns."""
+    Returns the commit. Only for directories the worker owns.
+
+    Whatever an earlier round left in the tree is discarded and the remote's copy wins: edits to
+    tracked files, and untracked files, including one the new commit now tracks (a plain checkout
+    refuses to overwrite it, and then every later round fails the same way). Under the `scrub`
+    paths ignored files go too. A caller that wants to keep unsubmitted work copies it first."""
     if not (dest / ".git").exists():
         dest.parent.mkdir(parents=True, exist_ok=True)
         git(None, "clone", "-q", "--filter=blob:none", "--no-checkout", url(repo), str(dest))
-    git(dest, "fetch", "-q", "origin", ref)
-    git(dest, "checkout", "-q", "--detach", "FETCH_HEAD")
-    git(dest, "reset", "-q", "--hard", "FETCH_HEAD")
+    git(dest, "fetch", "-q", "origin", f"+refs/heads/{ref}:refs/remotes/origin/{ref}")
+    git(dest, "checkout", "-q", "--force", "--detach", f"origin/{ref}")
+    git(dest, "reset", "-q", "--hard", f"origin/{ref}")
     git(dest, "clean", "-qfd")
+    if scrub:
+        git(dest, "clean", "-qfdx", "--", *scrub)
     return git(dest, "rev-parse", "HEAD").strip()
 
 
@@ -53,7 +60,7 @@ def checkout_pr(repo: str, dest: Path, number: int) -> str:
         dest.parent.mkdir(parents=True, exist_ok=True)
         git(None, "clone", "-q", "--filter=blob:none", "--no-checkout", url(repo), str(dest))
     git(dest, "fetch", "-q", "origin", f"pull/{number}/head", "main")
-    git(dest, "checkout", "-q", "--detach", "FETCH_HEAD")
+    git(dest, "checkout", "-q", "--force", "--detach", "FETCH_HEAD")
     git(dest, "reset", "-q", "--hard", "FETCH_HEAD")
     git(dest, "clean", "-qfd")
     return git(dest, "rev-parse", "HEAD").strip()
@@ -82,6 +89,14 @@ def push(worktree: Path, fork: str, branch: str, dry_run: bool = False) -> None:
     else:
         git(worktree, "remote", "set-url", "fork", url(fork))
     git(worktree, "push", "-q", "--force-with-lease", "fork", f"HEAD:refs/heads/{branch}")
+
+
+def current_branch(worktree: Path) -> str:
+    """The branch checked out in `worktree`, or '' (detached, or not a checkout yet)."""
+    if not (worktree / ".git").exists():
+        return ""
+    name = git(worktree, "rev-parse", "--abbrev-ref", "HEAD", check=False).strip()
+    return "" if name == "HEAD" else name
 
 
 def changed_files(worktree: Path, base: str = "HEAD") -> list[str]:
