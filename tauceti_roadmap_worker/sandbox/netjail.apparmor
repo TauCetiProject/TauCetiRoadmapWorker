@@ -1,0 +1,11 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Grants the netjail wrapper the right to create user namespaces (Ubuntu restricts this for
+# unprivileged programs). Everything under it stays unconfined; the namespace it creates has no
+# network interface except loopback, so the only route out is the allow-everything-and-log proxy.
+# Replace __NETJAIL_PATH__ by the absolute path of the compiled binary, then
+#   sudo cp netjail.apparmor /etc/apparmor.d/netjail && sudo apparmor_parser -r /etc/apparmor.d/netjail
+profile netjail __NETJAIL_PATH__ flags=(unconfined) {
+  userns,
+}

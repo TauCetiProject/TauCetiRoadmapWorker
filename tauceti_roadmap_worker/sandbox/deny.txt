@@ -1,0 +1,38 @@
+# Hosts worker agents may never reach (everything else is allowed and logged by allowproxy.py).
+# Paste sites, file drops and tunnels: the usual exfiltration and payload channels.
+pastebin.com
+.pastebin.com
+paste.ee
+hastebin.com
+transfer.sh
+.ngrok.io
+.ngrok-free.app
+.ngrok.app
+.trycloudflare.com
+.loca.lt
+.serveo.net
+.burpcollaborator.net
+.interact.sh
+.oast.fun
+.requestbin.com
+.pipedream.net
+.webhook.site
+webhook.site
+discord.com
+.discord.com
+.telegram.org
+api.telegram.org
+# Pirate mirrors of books and papers: sources are fetched only from legal places.
+.libgen.is
+.libgen.rs
+.libgen.li
+.libgen.st
+.sci-hub.se
+.sci-hub.st
+.sci-hub.ru
+.z-lib.org
+.z-library.sk
+.z-lib.gs
+.annas-archive.org
+.library.lol
+.booksc.org
