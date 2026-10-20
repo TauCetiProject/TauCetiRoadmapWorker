@@ -207,3 +207,22 @@ def test_section_reports_are_merged_and_checked(ctx):  # noqa: F811
     assert "## R02 (P1) — [§1 Layer 0: definitions]" in merged and "**Verdict:** changes needed" in merged
     ws.extra["shards"][1]["report"].write_text("# Something else\n")
     assert "section pass 2: first line must start with" in lane.check(job, ctx, ws)[0]
+
+
+def test_merge_keeps_fenced_lines_and_reads_heading_variants():
+    section = ("# Section pass 1/1 of #905 Foo at abc1234: x\n**Verdict:** changes needed\n\n"
+               "## R01 (P1): a colon instead of a dash\nRepair:\n```markdown\n## 1.2 The corrected heading\n"
+               "**Theorem 1.2.** fixed.\n```\nend of R01.\n\n## R02 [P3] - brackets\nx\n\n## Verified sound\n- ok\n")
+    merged = merge_section_reports(MAIN, [("§1 x", section)])
+    assert "## R02 (P1) — [§1 x] a colon instead of a dash" in merged and "## R03 (P3) — [§1 x] brackets" in merged
+    body = merged[merged.index("## R02"):merged.index("## R03")]
+    assert "## 1.2 The corrected heading" in body and "end of R01." in body and body.count("```") == 2
+    from tauceti_roadmap_worker.lanes.redteam import unparsed_findings
+    assert unparsed_findings("**Verdict:** changes needed\n\nR01 the sign is wrong\n")
+    assert not unparsed_findings(section) and not unparsed_findings("**Verdict:** no blocking finding\n")
+
+
+def test_split_sections_counts_lines_like_an_editor():
+    text = "intro\u2028still line one\n## Layer 0: x\n\n**Target 0.1.** y\f\n## Layer 1: z\n"
+    sections = split_sections(text)
+    assert [(s.title, s.start, s.end) for s in sections] == [("Layer 0: x", 2, 4), ("Layer 1: z", 5, 5)]

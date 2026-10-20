@@ -24,7 +24,8 @@ from .base import Context, Lane, LaneError, Workspace, open_roadmap_prs, rev_dir
 from .review import sample_items
 
 FENCE = re.compile(r"^\s*(```|~~~)")
-FINDING = re.compile(r"^## ([RS])(\d+) \((P[123])\)\s*[—–-]+\s*(.*)$")
+# `## R01 (P1) — title`, and the variants agents write: a colon or hyphen, brackets, no separator.
+FINDING = re.compile(r"^## ([RS])(\d+)\s*[(\[](P[123])[)\]]\s*[:—–-]*\s*(.*)$")
 LAYER = re.compile(r"^### Layer\b")
 # A section states targets when it has bold-labelled paragraphs or bullets, numbered subsections or Lean.
 STATEMENT = re.compile(r"^\s*(?:[-*]\s+|\d+\.\s+)?\*\*[^*\n]{3,}\*\*|^###\s+\d+(?:\.\d+)*\s|^```lean", re.M)
@@ -48,7 +49,9 @@ class Section:
 
 def split_sections(readme: str) -> list[Section]:
     """The README's top-level sections: each `## ` heading outside code fences up to the next."""
-    lines = readme.splitlines()
+    lines = readme.split("\n")                 # not splitlines(): editors number lines by "\n" only
+    if lines and lines[-1] == "":
+        lines.pop()
     heads, fenced = [], False
     for i, line in enumerate(lines, 1):
         if FENCE.match(line):
@@ -112,9 +115,15 @@ def group_sections(sections: list[Section], max_groups: int) -> list[list[Sectio
 
 def _blocks(text: str) -> tuple[list[tuple[tuple, list[str]]], dict[str, list[str]]]:
     """A report's finding blocks ((prefix, number, severity, title), body lines) and its other `## `
-    sections by heading."""
-    findings, others, current = [], {}, None
-    for line in text.splitlines():
+    sections by heading. Lines inside code fences belong to the block they are in."""
+    findings, others, current, fenced = [], {}, None, False
+    for line in text.split("\n"):
+        if FENCE.match(line):
+            fenced = not fenced
+        if fenced or FENCE.match(line):
+            if current is not None:
+                current.append(line)
+            continue
         m = FINDING.match(line)
         if m:
             current = []
@@ -124,6 +133,12 @@ def _blocks(text: str) -> tuple[list[tuple[tuple, list[str]]], dict[str, list[st
         elif current is not None:
             current.append(line)
     return findings, others
+
+
+def unparsed_findings(text: str) -> bool:
+    """A report whose verdict asks for changes but in which no finding heading can be read."""
+    verdict = re.search(r"^\*\*Verdict:\*\*\s*(.*)$", text, re.M)
+    return bool(verdict and "changes needed" in verdict.group(1).lower() and not _blocks(text)[0])
 
 
 def merge_section_reports(main: str, shards: list[tuple[str, str | None]], prefix: str = "R") -> str:
@@ -245,6 +260,9 @@ class RedTeamLane(Lane):
                 problems.append(f"section pass {s['index']} ({s['title']}) wrote no report")
             elif not s["report"].read_text(encoding="utf-8").startswith(head):
                 problems.append(f"section pass {s['index']}: first line must start with {head!r}")
+            elif unparsed_findings(s["report"].read_text(encoding="utf-8")):
+                problems.append(f"section pass {s['index']}: the verdict asks for changes but no finding is written "
+                                "as `## R01 (P1) — <title>`")
         if ws.report.is_file():
             j = board.parse_job_id(job.id)
             problems += report_problems(ws.report.read_text(encoding="utf-8"), ws.extra["pr"], job.name,
