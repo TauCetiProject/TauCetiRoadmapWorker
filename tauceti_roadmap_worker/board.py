@@ -363,24 +363,33 @@ def package_dir(packages_dir: str, name: str) -> str:
     return f"{packages_dir.strip('/')}/{name}"
 
 
+def manifest_path(packages_dir: str, name: str) -> str:
+    """The roadmap's sources manifest on the board's packages tree."""
+    return f"{package_dir(packages_dir, name)}/sources.toml"
+
+
 def allowed_paths(job: Job, packages_dir: str) -> set[str]:
-    """The files a job's submission pull request may add or change on the board's packages tree."""
+    """The files a job's submission pull request may add or change on the board's packages tree.
+    The sources manifest belongs to every job that works on the roadmap's sources: the target's
+    triage, the design, the package, their fixes, and reviews (which record what they fetched to
+    check a locator; the review lane keeps the author's entries intact)."""
     p = package_dir(packages_dir, job.name)
     report = {f"{p}/reports/{job.id}.md"}
-    design = {f"{p}/design/README.md", f"{p}/design/plan.json", f"{p}/sources.toml"}
-    package = {f"{p}/README.md", f"{p}/Suggested.lean", f"{p}/metadata.toml", f"{p}/sources.toml"}
+    manifest = {manifest_path(packages_dir, job.name)}
+    design = {f"{p}/design/README.md", f"{p}/design/plan.json"}
+    package = {f"{p}/README.md", f"{p}/Suggested.lean", f"{p}/metadata.toml"}
     art = artefact_of(job.id)
     if job.kind == "target":
-        return report | {f"{p}/target.md"}
+        return report | manifest | {f"{p}/target.md"}
     if job.kind == "design":
-        return report | design
+        return report | manifest | design
     if job.kind == "package":
-        return report | package
+        return report | manifest | package
     if job.kind == "review":
         verdict = f"{p}/design/review.json" if art == "DESIGN" else f"{p}/review.json"
-        return report | {verdict}
+        return report | manifest | {verdict}
     if job.kind == "fix" and art:
-        return report | (design if art == "DESIGN" else package)
+        return report | manifest | (design if art == "DESIGN" else package)
     # port, redteam, fix-RT and gate change the content repository; on the board only their report.
     return report
 

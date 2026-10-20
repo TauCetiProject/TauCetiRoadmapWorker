@@ -85,7 +85,6 @@ def record_design(state: Path, operator: str, job_id: str) -> None:
 class DesignLane(Lane):
     kind = "design"
     prompt = "design"
-    edits_manifest = True
 
     def eligible(self, job: Job, ctx: Context) -> str:
         reason = super().eligible(job, ctx)

@@ -1,4 +1,6 @@
 """The `review` lane: an independent review of a design or a package, read-only on the artefact.
+The one file it may add to is the sources manifest, where it records what it fetched to check a
+locator; the author's entries stay as they were.
 
 The reviewer is never the author's operator: `independent_of` lists every job that wrote the
 round under review, and both the lease namespace (before the run) and the intake (on submission)
@@ -12,10 +14,12 @@ import hashlib
 import json
 import random
 import re
+import tomllib
 
-from .. import board, gitops
+from .. import board, gitops, sources
 from ..board import Job
 from .base import Context, Lane, Workspace
+from .design import manifest_problems
 
 TARGET_HEADING = re.compile(r"^\*\*([A-Z][^*\n]{2,150})\*\*", re.M)
 NOT_TARGETS = ("Checks", "Summary", "Dependencies", "Examples", "Verdict", "Needs", "Merge order")
@@ -95,7 +99,28 @@ class ReviewLane(Lane):
             problems.append(f"verdict file: {exc}")
         if ws.report.is_file() and not ws.report.read_text(encoding="utf-8").startswith(f"# Review of {job.name}"):
             problems.append("report: first line must be '# Review of <Name> (...)'")
-        touched = [p for p in gitops.changed_files(ws.board) if str(ws.board / p) in self.files(job, ctx, ws)]
+        manifest = board.manifest_path(ctx.cfg.board.packages_dir, job.name)
+        changed = gitops.changed_files(ws.board)
+        touched = [p for p in changed if str(ws.board / p) in self.files(job, ctx, ws) and p != manifest]
         if touched:
             problems.append("a review changes none of the reviewed files: " + ", ".join(touched))
+        if manifest in changed:
+            problems += manifest_record_problems(ctx, ws, manifest)
         return problems
+
+
+def manifest_record_problems(ctx: Context, ws: Workspace, manifest: str) -> list[str]:
+    """A review records in the sources manifest what it fetched to check a locator: it may add
+    sources and provenance, never remove or rewrite what the author cited."""
+    path = ws.board / manifest
+    if not path.is_file():
+        return ["a review keeps the sources manifest: sources.toml was deleted"]
+    problems = manifest_problems(ctx, path)
+    if problems:
+        return problems
+    try:
+        before = tomllib.loads(gitops.git(ws.board, "show", f"HEAD:{manifest}", check=False))
+    except tomllib.TOMLDecodeError:
+        before = {}
+    after = tomllib.loads(path.read_text(encoding="utf-8"))
+    return [f"sources.toml: a review keeps the author's entries: {p}" for p in sources.altered_entries(before, after)]

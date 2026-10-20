@@ -36,7 +36,9 @@ cited_for = ["1.2", "Layer 3"]               # README sections or targets that c
 ```
 
 `tauceti-roadmap sources check <sources.toml>` validates a manifest (exit 1 on problems); the design,
-package and fix lanes run the same check before submitting. The checks are mechanical: required
+package and fix lanes run the same check before submitting, and the target and review lanes run it
+on a manifest they changed. A review may add sources and provenance, never remove or rewrite an
+entry the author recorded. The checks are mechanical: required
 fields, unique ids, known schemes, classes and statuses, a DOI without resolver prefix, an ISO
 `fetched_at`, no denied host, and for a certified source the URL it was fetched from, the SHA-256
 of what was read and a real licence class. Whether a locator supports a statement is the
@@ -119,7 +121,8 @@ The outcome is one of:
   into a request or an `uncertified` record.
 
 `--json` prints the outcome as JSON. The agents get this command, with `--manifest` only where their
-job may edit the manifest (design, package and their fixes), in the sources section of every brief.
+job may edit the manifest (target, design, package, review, and the design and package fixes), in
+the sources section of every brief.
 
 ## The cache and its texts
 

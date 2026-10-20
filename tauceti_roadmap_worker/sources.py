@@ -225,6 +225,25 @@ def upsert_source(data: dict, entry: dict, replace: bool = False) -> str:
     return "updated"
 
 
+def altered_entries(before: dict, after: dict) -> list[str]:
+    """How the manifest `after` alters the entries `before` recorded: an entry removed, a field of
+    what it cites changed (any field but its provenance), or a `cited_for` reference dropped. New
+    entries, new fields and a new provenance (another legal copy was read) are additions."""
+    out = []
+    for old in before.get("source", []):
+        key = str(old.get("id", ""))
+        new = find_source(after, id=key)
+        if new is None:
+            out.append(f"{key}: removed")
+            continue
+        changed = [f for f, v in old.items() if f not in PROVENANCE and f != "cited_for" and new.get(f) != v]
+        if not set(old.get("cited_for", [])) <= set(new.get("cited_for", [])):
+            changed.append("cited_for")
+        if changed:
+            out.append(f"{key}: {', '.join(changed)} changed")
+    return out
+
+
 def _surnames(authors: str) -> list[str]:
     def initials(piece: str) -> bool:
         return all(re.fullmatch(r"(?:[^\W\d_]\.?-?)+", tok) and len(tok.replace(".", "").replace("-", "")) <= 3

@@ -104,10 +104,10 @@ read as an instruction.
 
 | Kind | Reads | Writes | Who may take it | Checked before submission |
 | --- | --- | --- | --- | --- |
-| target | the filed form (quoted as data), roadmaps, open roadmap PRs, packages | `packages/<Name>/target.md` | anyone | Verdict/Name/Base/Owner header |
+| target | the filed form (quoted as data), roadmaps, open roadmap PRs, packages | `packages/<Name>/target.md`, `sources.toml` | anyone | Verdict/Name/Base/Owner header, sources manifest if changed |
 | design | `target.md`, roadmaps, libraries, merge order | `design/README.md`, `design/plan.json`, `sources.toml` | daily cap | plan.json schema, sources manifest, residue, dependency check |
 | package | accepted design and its review | `README.md`, `Suggested.lean`, `metadata.toml`, `sources.toml` | anyone | every text gate, sources manifest, elaboration |
-| review | the design or package (read-only) | `review.json` (or `design/review.json`) and a report | not an author's operator | verdict schema, report header, reviewed files untouched |
+| review | the design or package (read-only) | `review.json` (or `design/review.json`) and a report; may add to `sources.toml` | not an author's operator | verdict schema, report header, reviewed files untouched, the author's manifest entries kept |
 | fix (design/package) | the review | the artefact's files | anyone (a fresh review follows) | finding sections, gates |
 | port | accepted package | branch `roadmap/<kebab-name>` on the operator's fork, draft PR | anyone | commit made, full gate with build, synopsis |
 | redteam | PR head (read-only) | a report | the agent the pass requires | report header, checkout untouched |
@@ -115,7 +115,9 @@ read as an instruction.
 | gate | every review since the last reply | commits on the PR branch, a reply, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
 
 Every lane writes its report to `packages/<Name>/reports/<JOB>.md` on the board, so the next lane
-(often another operator) can read it. The port lane composes the pull-request description from
+(often another operator) can read it. The roadmap's `sources.toml` is a deliverable of every job that
+works on its sources (target, design, package, review, and the design and package fixes); the lanes
+on the content repository (port, red team, red-team fix, gate) submit only their report. The port lane composes the pull-request description from
 computed facts: the synopsis from the report, the dependencies on other open roadmap pull requests,
 the merge-order chain and a validation paragraph from the gate result. `merge-order` refreshes the
 chain paragraph in every open roadmap pull request; it never states a position number.

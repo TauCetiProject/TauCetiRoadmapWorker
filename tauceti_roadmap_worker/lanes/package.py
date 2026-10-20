@@ -37,7 +37,6 @@ def elaboration_problems(ctx: Context, ws: Workspace, lean: Path) -> list[str]:
 class PackageLane(Lane):
     kind = "package"
     prompt = "package"
-    edits_manifest = True
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)

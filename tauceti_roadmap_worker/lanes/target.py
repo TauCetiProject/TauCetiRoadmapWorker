@@ -1,4 +1,5 @@
-"""The `target` lane: triage a human-filed target into a design brief (`packages/<Name>/target.md`).
+"""The `target` lane: triage a human-filed target into a design brief (`packages/<Name>/target.md`),
+recording the sources it found in the roadmap's `sources.toml`.
 
 The intake reads the triage's first lines (Verdict, Name, Base, Owner) and creates the design job
 under the triaged name, or closes the target as a duplicate naming its owner.
@@ -8,9 +9,10 @@ from __future__ import annotations
 
 import re
 
-from .. import prompts
+from .. import board, gitops, prompts
 from ..board import NAME_RE, Job
 from .base import Context, Lane, Workspace
+from .design import manifest_problems
 
 VERDICTS = ("design", "part-ii", "duplicate")
 FIELDS = (("statement", "Statement or topic"), ("why", "Why it matters for the library"), ("sources", "Known sources"),
@@ -54,6 +56,9 @@ class TargetLane(Lane):
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)
+        manifest = board.manifest_path(ctx.cfg.board.packages_dir, job.name)
+        if manifest in gitops.changed_files(ws.board) and (ws.board / manifest).is_file():
+            problems += manifest_problems(ctx, ws.board / manifest)
         path = ws.package(ctx.cfg, job.name) / "target.md"
         if not path.is_file():
             return problems + [f"no {path.name}"]

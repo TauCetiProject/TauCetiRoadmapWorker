@@ -65,12 +65,17 @@ def test_transient_trouble_does_not_park(ctx):  # noqa: F811
 
 
 def test_fetch_command_edits_the_manifest_only_where_the_job_may(ctx):  # noqa: F811
-    design, review = new_job("DESIGN-Foo"), new_job("REV-DESIGN-Foo")
+    design = new_job("DESIGN-Foo")
     ws = lane_base.Lane().prepare(design, ctx)
     cmd = lane_for(design).fetch_command(design, ctx, ws)
     assert cmd.startswith("tauceti-roadmap --conf /conf.toml sources fetch --manifest ")
     assert cmd.endswith("/scratch/needs-references.toml") and "packages/Foo/sources.toml" in cmd
-    assert "--manifest" not in lane_for(review).fetch_command(review, ctx, ws)
+    for job_id in ("TARGET-Foo", "PKG-Foo", "REV-DESIGN-Foo", "REV-PKG-Foo~2", "FIX-PKG-Foo~2"):
+        job = new_job(job_id)
+        assert "--manifest" in lane_for(job).fetch_command(job, ctx, ws), job_id
+    for job_id in ("PORT-Foo", "RT-Foo~1a", "FIX-RT-Foo~1", "GATE-Foo~1"):
+        job = new_job(job_id)
+        assert "--manifest" not in lane_for(job).fetch_command(job, ctx, ws), job_id
 
 
 def test_dry_run_brief_lists_cached_texts_without_fetching(ctx):  # noqa: F811

@@ -207,7 +207,6 @@ def library_description(content: Path) -> str:
 class Lane:
     kind = ""
     prompt = ""
-    edits_manifest = False     # the job's deliverables include sources.toml (design, package, their fixes)
     resumes_checkpoint = False  # carries on from what its last run left unsubmitted (no lane does yet)
 
     # -- hooks --
@@ -235,6 +234,11 @@ class Lane:
 
     def records_author(self, job: Job) -> bool:
         return bool(board.artefact_of(job.id)) and job.kind != "review"
+
+    def edits_manifest(self, job: Job, ctx: Context) -> bool:
+        """Whether the job's deliverables include the roadmap's sources.toml (the board decides)."""
+        return board.manifest_path(ctx.cfg.board.packages_dir, job.name) in board.allowed_paths(
+            job, ctx.cfg.board.packages_dir)
 
     # -- shared steps --
     def prepare(self, job: Job, ctx: Context) -> Workspace:
@@ -302,7 +306,7 @@ class Lane:
     def fetch_command(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """The command line an agent runs to fetch a source through the service."""
         args = ["sources", "fetch"]
-        if self.edits_manifest:
+        if self.edits_manifest(job, ctx):
             args += ["--manifest", str(ws.package(ctx.cfg, job.name) / "sources.toml")]
         return ctx.cli(*args, "--missing-out", str(ws.scratch / "needs-references.toml"))
 
