@@ -137,7 +137,7 @@ read as an instruction.
 | target | the filed form (quoted as data), roadmaps, open roadmap PRs, packages | `packages/<Name>/target.md`, `sources.toml` | anyone | Verdict/Name/Base/Owner header, sources manifest if changed |
 | design | `target.md`, roadmaps, libraries, merge order | `design/README.md`, `design/plan.json`, `sources.toml` | daily cap | plan.json schema, sources manifest, residue, dependency check |
 | package | accepted design and its review | `README.md`, `Suggested.lean`, `metadata.toml`, `sources.toml` | anyone | every text gate, sources manifest, elaboration |
-| review | the design or package (read-only) | `review.json` (or `design/review.json`) and a report; may add to `sources.toml` | not an author's operator | verdict schema, report header, reviewed files untouched, the author's manifest entries kept |
+| review | the design or package (read-only) | `review.json` (or `design/review.json`) and a report; may add to `sources.toml` | not an author's operator (or, with `separation = "agent"`, not the authoring agent and model) | verdict schema, report header, reviewed files untouched, the author's manifest entries kept |
 | fix (design/package) | the review | the artefact's files | anyone (a fresh review follows) | finding sections, gates |
 | port | accepted package | branch `roadmap/<kebab-name>` on the operator's fork, draft PR | anyone | commit made, full gate with build, synopsis |
 | redteam | PR head (read-only) | a report | the agent the pass requires | report header, checkout untouched |
@@ -264,11 +264,15 @@ else your own fork (then your workers de-duplicate only among themselves). Lease
 and fail-open: a lease that cannot be registered is logged and the round proceeds.
 
 When a design, package or fix is submitted, the worker also records an author lease
-(`roadmap/<project>/author/<JOB>`, operator login inside). A review job lists every job that wrote the
-round it reviews (`independent_of`); a worker refuses it when its operator authored any of them,
-and the intake refuses a submission whose GitHub author did (it reads the board's own
-"Intake: merged #N from @login" notes, which only the board's logins can write). A fix worker's own
-acceptance never counts.
+(`roadmap/<project>/author/<JOB>`, with the operator login, agent and model inside). A review job
+lists every job that wrote the round it reviews (`independent_of`); a worker refuses it when its
+operator authored any of them, and the intake refuses a submission whose GitHub author did (it reads
+the board's own "Intake: merged #N from @login (agent, model)" notes, which only the board's logins
+can write). With `[review] separation = "agent"` (a project with a single operator) the authoring
+operator may take the review when the reviewing agent and model differ from the authoring ones
+recorded for the job (an author record without its agent and model never counts as different), and
+the intake applies the same test to the submission's agent and model. Projects with several
+operators keep the default `"operator"`. A fix worker's own acceptance never counts.
 
 ## Board maintenance
 

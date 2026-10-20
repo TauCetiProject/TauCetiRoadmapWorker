@@ -70,11 +70,40 @@ def held_by_other(lease: dict | None, owner: str, now: int) -> bool:
     return lease_live(lease, now) and lease.get("owner") != owner
 
 
-def separation_problem(review_independent_of: list[str], operator: str, recorded: dict[str, str]) -> str:
-    """'' when `operator` may take a job independent of the listed jobs, else the reason.
-    `recorded` maps job id -> operator login from the author records."""
-    clash = [jid for jid in review_independent_of if recorded.get(jid, "").lower() == operator.lower() != ""]
-    return f"operator {operator} authored {', '.join(clash)}" if clash else ""
+SEPARATION = ("operator", "agent")
+
+
+def authorship(record) -> tuple[str, str, str]:
+    """(operator, agent, model) from an author record (a login, or a dict with those keys)."""
+    if isinstance(record, dict):
+        return (str(record.get("operator") or record.get("login") or ""), str(record.get("agent") or ""),
+                str(record.get("model") or ""))
+    return (str(record or ""), "", "")
+
+
+def independent(mode: str, reviewer: tuple[str, str, str], author: tuple[str, str, str]) -> bool:
+    """Whether a reviewer (operator, agent, model) is independent of an author. Another operator
+    always is. In `agent` mode (a single-operator project) the same operator is too, when the
+    reviewing agent and model differ from the authoring ones recorded for the job; an author record
+    that lacks its agent or its model never counts as different."""
+    if not author[0] or reviewer[0].lower() != author[0].lower():
+        return True
+    return mode == "agent" and bool(author[1] and author[2]) and (reviewer[1], reviewer[2]) != (author[1], author[2])
+
+
+def separation_problem(review_independent_of: list[str], operator: str, recorded: dict, mode: str = "operator",
+                       agent: str = "", model: str = "") -> str:
+    """'' when `operator` (running `agent` and `model`) may take a job independent of the listed
+    jobs, else the reason. `recorded` maps job id -> its author record (a login, or a dict with
+    operator, agent and model)."""
+    clash = [jid for jid in review_independent_of
+             if jid in recorded and not independent(mode, (operator, agent, model), authorship(recorded[jid]))]
+    if not clash:
+        return ""
+    if mode == "agent":
+        return (f"operator {operator} authored {', '.join(clash)} with the same agent and model as this reviewer "
+                f"({agent}, {model}), or none recorded")
+    return f"operator {operator} authored {', '.join(clash)}"
 
 
 @dataclass
@@ -188,15 +217,17 @@ class Claims:
         return [line.split()[1][len(NS) + 1:] for line in out.stdout.splitlines() if len(line.split()) == 2]
 
     # -- authorship --
-    def record_author(self, job_id: str) -> int:
-        return self.acquire(author_key(self.project, job_id), AUTHOR_TTL, extra={"job": job_id})
+    def record_author(self, job_id: str, agent: str = "", model: str = "") -> int:
+        return self.acquire(author_key(self.project, job_id), AUTHOR_TTL,
+                            extra={"job": job_id, "agent": agent, "model": model})
 
-    def recorded_authors(self, job_ids: list[str]) -> dict[str, str]:
+    def recorded_authors(self, job_ids: list[str]) -> dict[str, dict]:
+        """job id -> {operator, agent, model} from the author records."""
         out = {}
         for jid in job_ids:
             lease = self.read(author_key(self.project, jid))
             if lease and lease.get("operator"):
-                out[jid] = lease["operator"]
+                out[jid] = {"operator": lease["operator"], "agent": lease.get("agent", ""), "model": lease.get("model", "")}
         return out
 
 

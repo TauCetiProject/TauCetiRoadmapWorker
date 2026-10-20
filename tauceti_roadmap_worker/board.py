@@ -447,18 +447,22 @@ def file_problems(path: str, text: str, allowed: set[str], data: bytes | None = 
     return problems
 
 
-def separation_problems(job: Job, submitter: str, authors: dict[str, set[str]]) -> list[str]:
-    """Author/reviewer separation: a job with `independent_of` refuses a submitter (operator login)
-    who did any of those jobs. `authors` maps job id -> logins recorded for it."""
+def separation_problems(job: Job, submitter: str, authors: dict, mode: str = "operator", agent: str = "",
+                        model: str = "") -> list[str]:
+    """Author/reviewer separation: a job with `independent_of` refuses a submitter (operator login,
+    running `agent` and `model`) who is not independent of the author of any of those jobs (see
+    claims.independent: another operator, or in `agent` mode another agent and model). `authors`
+    maps job id -> the author records the board holds for it (logins, or dicts)."""
+    from .claims import authorship, independent
     if not job.independent_of:
         return []
-    who = submitter.lower()
-    return [f"{submitter} also did {other}" for other in job.independent_of
-            if who in {a.lower() for a in authors.get(other, set())}]
+    same = f" with the same agent and model as this reviewer ({agent}, {model}), or none recorded" if mode == "agent" else ""
+    return [f"{submitter} also did {other}{same}" for other in job.independent_of
+            if any(not independent(mode, (submitter, agent, model), authorship(a)) for a in authors.get(other, ()))]
 
 
-def encode_submission(job_id: str, worker: str, operator: str, agent: str) -> str:
-    data = {"job": job_id, "worker": worker, "operator": operator, "agent": agent}
+def encode_submission(job_id: str, worker: str, operator: str, agent: str, model: str = "") -> str:
+    data = {"job": job_id, "worker": worker, "operator": operator, "agent": agent, "model": model}
     return "<!-- tauceti-roadmap-submission " + json.dumps(data) + " -->"
 
 
@@ -473,20 +477,25 @@ def decode_submission(body: str) -> dict | None:
     return data if isinstance(data, dict) and "job" in data else None
 
 
-INTAKE_NOTE = re.compile(r"^Intake: merged #(\d+) from @([A-Za-z0-9-]+)")
+INTAKE_NOTE = re.compile(r"^Intake: merged #(\d+) from @([A-Za-z0-9-]+)(?: \(([^,)]*)(?:, ([^)]*))?\))?")
 
 
-def authors_from_comments(comments: list[dict], bot_logins: list[str]) -> set[str]:
-    """Logins the board recorded as having submitted a job ("Intake: merged #N from @login").
-    Only notes written by the board's own logins count: anyone else's comment is data."""
-    found = set()
+def authorship_from_comments(comments: list[dict], bot_logins: list[str]) -> list[dict]:
+    """The submissions the board recorded for a job ("Intake: merged #N from @login (agent, model)"):
+    [{login, agent, model}]. Only notes written by the board's own logins count."""
+    found = []
     for c in comments:
         if (c.get("user") or {}).get("login") not in bot_logins:
             continue
         m = INTAKE_NOTE.match(c.get("body") or "")
         if m:
-            found.add(m.group(2))
+            found.append({"login": m.group(2), "agent": (m.group(3) or "").strip(" ?"), "model": (m.group(4) or "").strip()})
     return found
+
+
+def authors_from_comments(comments: list[dict], bot_logins: list[str]) -> set[str]:
+    """Logins the board recorded as having submitted a job."""
+    return {a["login"] for a in authorship_from_comments(comments, bot_logins)}
 
 
 def neutralise(text: str) -> str:
@@ -677,9 +686,10 @@ class Board:
     def comments(self, number: int) -> list[dict]:
         return self.gh.api(f"repos/{self.repo}/issues/{number}/comments?per_page=100", paginate=True)
 
-    def authors(self, job_ids: list[str], jobs: list[Job]) -> dict[str, set[str]]:
+    def authors(self, job_ids: list[str], jobs: list[Job]) -> dict[str, list[dict]]:
+        """job id -> the submissions the board recorded for it: [{login, agent, model}]."""
         out = {}
         for jid in job_ids:
             job = self.find(jid, jobs)
-            out[jid] = authors_from_comments(self.comments(job.number), self.cfg.board.bot_logins) if job else set()
+            out[jid] = authorship_from_comments(self.comments(job.number), self.cfg.board.bot_logins) if job else []
         return out

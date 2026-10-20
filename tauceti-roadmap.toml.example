@@ -142,6 +142,16 @@ claude_model = "fable"
 # references waits, it looks every minute whether the board answered it and polls at once when it did.
 idle_seconds = 600
 
+[review]
+# Who counts as independent of an author. "operator": another operator login (projects with several
+# operators keep this). "agent": also the same operator, when the reviewing agent and model differ
+# from the authoring agent and model recorded for the job (a single-operator project). The worker
+# checks it before a review and the intake again before it merges one.
+separation = "operator"
+# Logins whose review comments on a board pull request count, besides the board's bots and the
+# project's own workers (for example a maintainer reviewing from a browser model).
+comment_reviewers = []
+
 [sources]
 # Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through
 # the bundled deny list. A leading dot covers every subdomain.

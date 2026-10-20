@@ -137,8 +137,11 @@ Agents fetch what they need themselves, within rules:
   subscriptions, and run `tauceti --conf <raw toml url> work --worker-id <id>`. The fork and
   the claim lease are automatic. Several workers per operator and several operators per
   project coexist by lease.
-- Author and reviewer separation: the claim namespace records the operator for each design
-  and package; `review` jobs refuse a claim from the same operator.
+- Author and reviewer separation: the claim namespace records the operator, agent and model for
+  each design and package; `review` jobs refuse a claim from the same operator. A single-operator
+  project sets `[review] separation = "agent"`: the authoring operator may then review when the
+  reviewing agent and model differ from the authoring ones recorded for the job, and the intake
+  applies the same test. Projects with several operators keep `separation = "operator"`.
 - Every prompt carries the untrusted-text rule and the fetch rules. The sandbox profile
   denies executing fetched content, raw network tools and credential access; the proxy logs
   every host.

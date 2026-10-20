@@ -247,7 +247,8 @@ class Lane:
             return f"needs the branch owner {job.requires_operator}"
         if job.independent_of and ctx.claims:
             problem = claims.separation_problem(job.independent_of, ctx.operator,
-                                                ctx.claims.recorded_authors(job.independent_of))
+                                                ctx.claims.recorded_authors(job.independent_of),
+                                                ctx.cfg.review.separation, ctx.agent, ctx.model)
             if problem:
                 return problem
         # A `local:` answer: the text never travels, so only an operator who holds it resumes the job.
@@ -473,11 +474,11 @@ class Lane:
         gitops.push(ws.board, fork, ws.branch)
         body = (f"Refs #{job.number}\n\n{summary}\n\nAgent: {ctx.agent} ({ctx.model}); operator @{ctx.operator}; "
                 f"worker `{ctx.worker_id}`. Files: " + ", ".join(f"`{p}`" for p in changed) + "\n\n"
-                + board.encode_submission(job.id, ctx.worker_id, ctx.operator, ctx.agent))
+                + board.encode_submission(job.id, ctx.worker_id, ctx.operator, ctx.agent, ctx.model))
         pr = gitops.open_pull_request(ctx.gh, repo, f"{ctx.operator}:{ws.branch}", "main",
                                       f"{board.title_for(job)}: submission", body, draft=False)
         if self.records_author(job) and ctx.claims:
-            ctx.claims.record_author(job.id)
+            ctx.claims.record_author(job.id, ctx.agent, ctx.model)
         try:
             ctx.board.set_state(job, "submitted")
         except GHError:

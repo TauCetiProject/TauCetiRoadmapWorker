@@ -105,7 +105,8 @@ def intake(ctx, number: int, yes: bool = False) -> str:
         problems += board.file_problems(f["filename"], text, allowed)
     author = pr["user"]["login"]
     if job.independent_of:
-        problems += board.separation_problems(job, author, ctx.board.authors(job.independent_of, jobs))
+        problems += board.separation_problems(job, author, ctx.board.authors(job.independent_of, jobs),
+                                              cfg.review.separation, sub.get("agent", ""), sub.get("model", ""))
     failed, running = _checks(ctx, repo, pr["head"]["sha"])
     if running:
         return f"#{number}: checks still running"
@@ -120,7 +121,8 @@ def intake(ctx, number: int, yes: bool = False) -> str:
     if not yes:
         return f"#{number}: would merge {job.id} (dry run; pass --yes)"
     ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash"})
-    ctx.board.comment(job.number, f"Intake: merged #{number} from @{author} ({sub.get('agent', '?')}).")
+    ctx.board.comment(job.number, f"Intake: merged #{number} from @{author} ({sub.get('agent') or '?'}, "
+                                  f"{sub.get('model') or '?'}).")
     job.state = "done"
     outcome = outcome_for(ctx, job, pr, jobs)
     ctx.board.set_state(job, "done")

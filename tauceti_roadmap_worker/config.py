@@ -189,6 +189,17 @@ class Prompts:
 
 
 @dataclass
+class Review:
+    # Who counts as independent of an author: "operator" (another operator login; multi-operator
+    # projects) or "agent" (also the same operator, when the reviewing agent and model differ from
+    # the authoring ones recorded for the job; for single-operator projects).
+    separation: str = "operator"
+    # Logins whose review comments on a board pull request count (besides the board's bots and the
+    # project's own workers), for example a maintainer who reviews from a browser model.
+    comment_reviewers: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Worker:
     # Seconds a `--loop` worker sleeps when no job is eligible; every poll is a board listing on the
     # operator's GitHub quota. After a failure, and once the board answers a job the worker parked
@@ -212,6 +223,7 @@ class Config:
     replies: Replies = field(default_factory=Replies)
     prompts: Prompts = field(default_factory=Prompts)
     worker: Worker = field(default_factory=Worker)
+    review: Review = field(default_factory=Review)
     path: str = ""
     warnings: list[str] = field(default_factory=list)
 
@@ -310,6 +322,8 @@ def validate(cfg: Config) -> None:
         problems.append("board.max_rounds must be at least 1")
     if cfg.design.daily_cap < 0:
         problems.append("design.daily_cap must be >= 0")
+    if cfg.review.separation not in ("operator", "agent"):
+        problems.append("review.separation must be operator or agent")
     if cfg.worker.idle_seconds < 30:
         problems.append("worker.idle_seconds must be at least 30")
     if cfg.roadmap.merge_order_repo not in ("packages", "content", "local"):
