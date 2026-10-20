@@ -1,0 +1,424 @@
+"""tauceti-roadmap: the command line.
+
+    tauceti-roadmap --conf <toml path or https URL> doctor
+    tauceti-roadmap targets list | file --statement ... --why ...
+    tauceti-roadmap work --worker-id ID [--only kind,...] [--agent codex|claude] [--loop]
+    tauceti-roadmap gate <worktree> <Name> [--base origin/main] [--json] [--out FILE]
+    tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE]
+    tauceti-roadmap merge-order [--list] [--pr N]
+    tauceti-roadmap sources check <sources.toml> | classify <url> | request <needs-references.toml> --job ID
+    tauceti-roadmap board intake [--pr N] | sync | stale [--release]     (board bot / maintainer; --yes to write)
+
+Every GitHub write honours --dry-run. `gate` exits 1 when any gate fails: call it directly, never
+through a pipe that would hide its exit status (use --out to keep a copy of the result).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import socket
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+from urllib.parse import urlparse
+
+from . import __version__, claims, config, depgraph, gates, paths, prompts, sources
+from .board import KINDS, Board, decode_submission
+from .gh import GH, GHError
+
+OK, WARN, FAIL = "ok", "warn", "FAIL"
+
+
+def _load(args) -> config.Config:
+    try:
+        return config.load(args.conf)
+    except config.ConfigError as exc:
+        raise SystemExit(f"configuration: {exc}") from exc
+
+
+def _local_conf(args, cfg: config.Config) -> str:
+    """A path children (agents calling `gate`) can use: the saved copy when --conf was a URL."""
+    if cfg.path.startswith("https://"):
+        return str(cfg.state_dir() / "tauceti-roadmap.toml")
+    return str(Path(cfg.path).resolve()) if cfg.path else ""
+
+
+# --- doctor ---------------------------------------------------------------------------------------
+
+def _tool_version(cmd: str) -> str:
+    try:
+        out = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=30)
+        return (out.stdout or out.stderr).strip().splitlines()[0][:80] if out.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        return ""
+
+
+def doctor(args) -> int:
+    rows: list[tuple[str, str, str]] = []
+    add = rows.append
+    add((OK if sys.version_info >= (3, 12) else FAIL, "python", sys.version.split()[0]))
+    try:
+        cfg = config.load(args.conf)
+        add((OK, "configuration", cfg.path))
+        for w in cfg.warnings:
+            add((WARN, "configuration", w))
+    except config.ConfigError as exc:
+        add((FAIL, "configuration", str(exc)))
+        cfg = None
+    for tool, needed in (("git", True), ("gh", True), ("uv", False)):
+        version = _tool_version(tool)
+        add((OK if version else (FAIL if needed else WARN), tool, version or "not found"))
+    agents_found = []
+    for agent in ("codex", "claude"):
+        version = _tool_version(agent)
+        if version:
+            agents_found.append(agent)
+        add((OK if version else WARN, agent, version or "not installed (lanes cannot use this agent)"))
+    if not agents_found:
+        add((FAIL, "agents", "neither codex nor claude is installed"))
+    if cfg and cfg.agents.default not in agents_found:
+        add((WARN, "agents.default", f"{cfg.agents.default} is not installed here; pass --agent"))
+    if cfg and (cfg.gates.build or cfg.gates.elaborate):
+        lake = shutil.which("lake")
+        add((OK if lake else WARN, "lake", lake or "not found: package elaboration and the port/fix/gate builds are unavailable"))
+    gh = GH()
+    login = ""
+    if shutil.which("gh"):
+        ok, line = gh.auth_status()
+        add((OK if ok else FAIL, "gh auth", line or "not logged in (run gh auth login)"))
+        if ok:
+            try:
+                login = gh.login()
+                add((OK, "github login", login))
+            except GHError as exc:
+                add((FAIL, "github login", str(exc)))
+    if cfg and login:
+        r = cfg.repositories
+        for label, repo in (("content", r.content), ("board", r.board_repo()), ("packages", r.packages_repo()),
+                            ("library", r.library)):
+            try:
+                data = gh.api(f"repos/{repo}")
+                add((OK, f"repository {label}", f"{repo} (push: {data.get('permissions', {}).get('push', False)})"))
+            except GHError as exc:
+                add((FAIL, f"repository {label}", f"{repo}: {exc}"))
+        ns = claims.namespace_for(cfg, gh, login)
+        shared = bool(r.claims) and ns == r.claims
+        add((OK if shared else WARN, "claims namespace",
+             ns + ("" if shared else " (your fork: de-duplication covers only your own workers until you are admitted)")))
+        if cfg.roadmap.merge_order_repo != "local":
+            repo = r.packages_repo() if cfg.roadmap.merge_order_repo == "packages" else r.content
+            try:
+                order = depgraph.read_order(gh.raw_file(repo, cfg.roadmap.merge_order_file))
+                add((OK, "merge order", f"{repo}:{cfg.roadmap.merge_order_file} ({len(order)} roadmaps)"))
+            except GHError:
+                add((WARN, "merge order", f"{repo}:{cfg.roadmap.merge_order_file} not found (dependency checks are skipped)"))
+    if cfg:
+        state = cfg.state_dir()
+        try:
+            state.mkdir(parents=True, exist_ok=True)
+            probe = state / ".doctor"
+            probe.write_text("ok")
+            probe.unlink()
+            add((OK, "state directory", str(state)))
+        except OSError as exc:
+            add((FAIL, "state directory", f"{state}: {exc}"))
+        dummy = {}
+        for lane in prompts.LANES:
+            dummy |= {k: "x" for k in prompts.placeholders(lane)}
+        try:
+            for lane in prompts.LANES:
+                prompts.render(lane, dummy)
+            add((OK, "prompts", f"{len(prompts.LANES)} briefs render ({paths.PROMPTS})"))
+        except prompts.PromptError as exc:
+            add((FAIL, "prompts", str(exc)))
+        rows += _sandbox_rows(cfg)
+    width = max(len(r[1]) for r in rows)
+    for status, item, detail in rows:
+        print(f"{status:<4}  {item:<{width}}  {detail}")
+    return 1 if any(r[0] == FAIL for r in rows) else 0
+
+
+def _sandbox_rows(cfg: config.Config) -> list[tuple[str, str, str]]:
+    from .agents import netjail_usable
+    s = cfg.sandbox
+    rows = [(OK, "sandbox", s.profile)]
+    if s.profile in ("proxy", "netjail"):
+        u = urlparse(s.proxy_url)
+        try:
+            with socket.create_connection((u.hostname or "127.0.0.1", u.port or 3128), timeout=3):
+                rows.append((OK, "proxy", s.proxy_url))
+        except OSError:
+            rows.append((FAIL, "proxy", f"{s.proxy_url} is not listening (start sandbox/allowproxy.py)"))
+    if s.profile == "netjail":
+        rows.append((OK, "netjail", s.netjail) if netjail_usable(s.netjail)
+                    else (WARN, "netjail", f"{s.netjail or 'not set'} unusable; agents fall back to the proxy profile"))
+    return rows
+
+
+# --- targets --------------------------------------------------------------------------------------
+
+def targets(args) -> int:
+    cfg = _load(args)
+    gh = GH(dry_run=args.dry_run)
+    b = Board(cfg, gh)
+    if args.action == "list":
+        for job in b.list_jobs(("available", "claimed", "submitted", "needs-references", "blocked"), ("target", "design")):
+            print(f"#{job.number:<6} {job.id:<40} {job.state}")
+        repo = cfg.repositories.board_repo()
+        raw = gh.api(f"repos/{repo}/issues?labels={cfg.board.namespace_label},kind:target&state=open&per_page=100", paginate=True)
+        for issue in raw:
+            if "tauceti-roadmap-job" not in (issue.get("body") or ""):
+                print(f"#{issue['number']:<6} (filed, awaiting `board sync`)  {issue['title'][:70]}")
+        if cfg.board.intentions:
+            intents = gh.api(f"repos/{cfg.repositories.content}/issues?labels=intention&state=open&per_page=100", paginate=True)
+            for issue in intents:
+                print(f"intention {cfg.repositories.content}#{issue['number']}: {issue['title'][:70]}")
+        return 0
+    if not args.statement or not args.why:
+        raise SystemExit("targets file needs --statement and --why")
+    body = "\n\n".join([f"### Statement or topic\n\n{args.statement}", f"### Why it matters for the library\n\n{args.why}",
+                        f"### Known sources\n\n{args.sources or '_No response_'}", f"### Suggested name\n\n{args.name or '_No response_'}",
+                        f"### Licence class of the sources\n\n{args.licence or 'Unknown'}"])
+    title = f"[Target] {args.title or args.name or args.statement[:60]}"
+    created = gh.write("POST", f"repos/{cfg.repositories.board_repo()}/issues",
+                       {"title": title, "body": body, "labels": [cfg.board.namespace_label, "kind:target"]})
+    print(created["html_url"] if created else "(dry run)")
+    return 0
+
+
+# --- work -----------------------------------------------------------------------------------------
+
+def work(args) -> int:
+    from .lanes import Context
+    from .mergeorder import _order
+    from .worker import work_loop, work_once
+    cfg = _load(args)
+    gh = GH(dry_run=args.dry_run)
+    try:
+        operator = gh.login()
+    except GHError as exc:
+        raise SystemExit(f"gh: {exc} (run gh auth login)") from exc
+    only = tuple(k.strip() for k in args.only.split(",") if k.strip()) if args.only else None
+    unknown = [k for k in only or () if k not in KINDS]
+    if unknown:
+        raise SystemExit(f"--only: unknown kind(s) {', '.join(unknown)} (kinds: {', '.join(KINDS)})")
+    agent = args.agent or cfg.agents.default
+    model = args.model or cfg.model_for(agent)
+    cl = claims.open_claims(cfg, gh, operator, paths.sanitize_worker_id(args.worker_id), dry_run=args.dry_run)
+    ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=cl, worker_id=paths.sanitize_worker_id(args.worker_id),
+                  operator=operator, agent=agent, model=model, conf=_local_conf(args, cfg), dry_run=args.dry_run,
+                  agent_fixed=bool(args.agent))
+    print(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}")
+    if args.loop:
+        try:
+            work_loop(ctx, only, lambda: _order(ctx))
+        except KeyboardInterrupt:
+            return 130
+        return 0
+    result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx))
+    print(f"{result.job or '-'} {result.status}: {result.detail}" + (f" {result.url}" if result.url else ""))
+    return 0 if result.status in ("submitted", "idle", "dry-run", "needs-references") else 1
+
+
+# --- gate -----------------------------------------------------------------------------------------
+
+def _order_for_gate(cfg: config.Config, explicit: str) -> list[str] | None:
+    if explicit:
+        return depgraph.read_order(Path(explicit).read_text(encoding="utf-8"))
+    if cfg.roadmap.merge_order_repo == "local":
+        path = cfg.state_dir() / cfg.roadmap.merge_order_file
+        return depgraph.read_order(path.read_text(encoding="utf-8")) if path.is_file() else None
+    repo = cfg.repositories.packages_repo() if cfg.roadmap.merge_order_repo == "packages" else cfg.repositories.content
+    try:
+        return depgraph.read_order(GH().raw_file(repo, cfg.roadmap.merge_order_file))
+    except GHError:
+        return None
+
+
+def gate(args) -> int:
+    from .lanes.base import dropped_names, sibling_readmes
+    cfg = _load(args)
+    siblings = sibling_readmes(cfg.state_dir(), cfg.roadmap.active_dir)
+    order = _order_for_gate(cfg, args.order)
+    if args.depcheck:
+        if not args.name:
+            raise SystemExit("gate --depcheck needs --name")
+        if order is None:
+            print("depcheck: no merge-order file; nothing to check")
+            return 0
+        readmes = {**siblings, args.name: Path(args.depcheck).read_text(encoding="utf-8")}
+        edges = depgraph.supplier_edges(readmes, set(order), set(cfg.roadmap.main_extended))
+        problems = depgraph.check_order(edges, order, only={args.name})
+        for p in problems:
+            print(p)
+        print(f"depcheck: {len(readmes)} roadmaps, {sum(len(v) for v in edges.values())} edges, {len(problems)} problem(s)")
+        return 1 if problems else 0
+    if not args.worktree or not args.name_pos:
+        raise SystemExit("usage: gate <worktree> <Name> [--base REF] | gate --depcheck README --name Name")
+    opts = gates.GateOptions.from_config(cfg, order=order, siblings=siblings, dropped=dropped_names(cfg))
+    result = gates.run_gate(Path(args.worktree), args.name_pos, opts, base=args.base,
+                            build_cmd=cfg.gates.build if args.build else "")
+    if args.out:
+        Path(args.out).write_text(json.dumps(result.to_dict(), indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=1, ensure_ascii=False))
+    else:
+        print(result.summary())
+        for key, hits in result.details.items():
+            for h in hits[:10]:
+                print(f"  {key}: " + (f"line {h.line}: {h.text}" if isinstance(h, gates.Hit) else str(h)))
+    return result.exit_code
+
+
+# --- merge-order, sources, board ------------------------------------------------------------------
+
+def _bot_context(args, cfg, dry: bool):
+    from .lanes import Context
+    gh = GH(dry_run=dry)
+    try:
+        login = gh.login()
+    except GHError:
+        login = "unknown"
+    return Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=None, worker_id="board", operator=login,
+                   agent="", model="", conf=_local_conf(args, cfg), dry_run=dry)
+
+
+def merge_order(args) -> int:
+    from .mergeorder import refresh
+    cfg = _load(args)
+    ctx = _bot_context(args, cfg, args.dry_run)
+    for line in refresh(ctx, only={args.pr} if args.pr else None, listing=args.list):
+        print(line)
+    return 0
+
+
+def sources_cmd(args) -> int:
+    cfg = _load(args)
+    s = cfg.sources
+    if args.action == "classify":
+        print(sources.classify_url(args.target, s.allow, s.deny))
+        return 0
+    if args.action == "check":
+        problems = sources.validate_manifest(sources.load_manifest(Path(args.target)), s.allow, s.deny, s.uncertified_ok)
+        for p in problems:
+            print(p)
+        print(f"{args.target}: {len(problems)} problem(s)")
+        return 1 if problems else 0
+    if args.action == "request":
+        items = sources.parse_missing(tomllib.loads(Path(args.target).read_text(encoding="utf-8")))
+        text = sources.needs_references_comment(args.job or "<job>", args.roadmap or "<roadmap>", items)
+        if not args.post:
+            print(text)
+            return 0
+        ctx = _bot_context(args, cfg, args.dry_run)
+        job = ctx.board.find(args.job)
+        if not job:
+            raise SystemExit(f"unknown job {args.job}")
+        ctx.board.comment(job.number, text)
+        ctx.board.set_state(job, "needs-references")
+        return 0
+    print("sources fetch: not implemented yet (build-plan step 4); agents fetch legal sources themselves")
+    return 2
+
+
+def board_cmd(args) -> int:
+    from . import intake
+    cfg = _load(args)
+    ctx = _bot_context(args, cfg, dry=args.dry_run or not args.yes)
+    shared = None
+    if cfg.repositories.claims:
+        shared = claims.Claims(repo=cfg.repositories.claims,
+                               gitdir=cfg.state_dir() / "claims" / (cfg.repositories.claims.replace("/", "__") + ".git"),
+                               owner=f"{ctx.operator}/board", operator=ctx.operator, project=cfg.project.name,
+                               dry_run=ctx.dry_run)
+    if args.action == "intake":
+        repo = cfg.repositories.packages_repo()
+        numbers = [args.pr] if args.pr else [p["number"] for p in ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True)
+                                             if decode_submission(p.get("body") or "")]
+        for n in numbers:
+            print(intake.intake(ctx, n, yes=args.yes and not args.dry_run))
+        return 0
+    if args.action == "sync":
+        for line in intake.sync_targets(ctx) + intake.sync_leases(ctx, shared) + intake.sync_pull_requests(ctx):
+            print(line)
+        return 0
+    for line in intake.stale(ctx, shared, release=args.release):
+        print(line)
+    return 0
+
+
+# --- parser ---------------------------------------------------------------------------------------
+
+def parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="tauceti-roadmap", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--conf", help="tauceti-roadmap.toml path or https URL")
+    ap.add_argument("--dry-run", action="store_true", help="print GitHub writes instead of making them")
+    ap.add_argument("--version", action="version", version=f"tauceti-roadmap {__version__}")
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("doctor", help="report the tools, credentials and configuration this host can use")
+
+    t = sub.add_parser("targets", help="list targets, or file one")
+    t.add_argument("action", choices=["list", "file"])
+    t.add_argument("--statement", default="")
+    t.add_argument("--why", default="")
+    t.add_argument("--sources", default="")
+    t.add_argument("--name", default="")
+    t.add_argument("--licence", default="")
+    t.add_argument("--title", default="")
+
+    w = sub.add_parser("work", help="run one round (or --loop) of the worker")
+    w.add_argument("--worker-id", required=True)
+    w.add_argument("--only", default="", help=f"comma list of kinds: {','.join(KINDS)}")
+    w.add_argument("--agent", choices=config.AGENTS, default="")
+    w.add_argument("--model", default="")
+    w.add_argument("--job", default="", help="take only this job id")
+    w.add_argument("--loop", action="store_true")
+
+    g = sub.add_parser("gate", help="run the push gates on a roadmap folder (exit 1 on any failure)")
+    g.add_argument("worktree", nargs="?")
+    g.add_argument("name_pos", nargs="?", metavar="Name")
+    g.add_argument("--base", default="", help="merge-base reference for the outside-folder diff, e.g. origin/main")
+    g.add_argument("--build", action="store_true", help="also run the configured targeted build")
+    g.add_argument("--json", action="store_true")
+    g.add_argument("--out", default="")
+    g.add_argument("--depcheck", default="", metavar="README", help="only the dependency check of this README")
+    g.add_argument("--name", default="")
+    g.add_argument("--order", default="", help="merge-order file (default: the configured one)")
+
+    m = sub.add_parser("merge-order", help="refresh the merge-order chain in every open roadmap pull request")
+    m.add_argument("--list", action="store_true")
+    m.add_argument("--pr", type=int, default=0)
+
+    s = sub.add_parser("sources", help="check a sources manifest, classify a URL, render a needs-references request")
+    s.add_argument("action", choices=["check", "classify", "request", "fetch"])
+    s.add_argument("target")
+    s.add_argument("--job", default="")
+    s.add_argument("--roadmap", default="")
+    s.add_argument("--post", action="store_true", help="post the request on the job and park it")
+
+    b = sub.add_parser("board", help="board maintenance for the bot or a maintainer (dry run unless --yes)")
+    b.add_argument("action", choices=["intake", "sync", "stale"])
+    b.add_argument("--pr", type=int, default=0)
+    b.add_argument("--yes", action="store_true")
+    b.add_argument("--release", action="store_true")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    handlers = {"doctor": doctor, "targets": targets, "work": work, "gate": gate, "merge-order": merge_order,
+                "sources": sources_cmd, "board": board_cmd}
+    try:
+        return handlers[args.command](args)
+    except GHError as exc:
+        print(f"GitHub: {exc}", file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

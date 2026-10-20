@@ -38,6 +38,7 @@ class Context:
     model: str
     conf: str = ""
     dry_run: bool = False
+    agent_fixed: bool = True   # False: each job runs on its lane's configured agent (or the one it requires)
 
     @property
     def state(self) -> Path:

@@ -6,6 +6,7 @@ build/
 dist/
 .venv/
 .pytest_cache/
+.pytest-tmp/
 .ruff_cache/
 
 # Local operator files: never commit a filled-in configuration, credentials or logs.

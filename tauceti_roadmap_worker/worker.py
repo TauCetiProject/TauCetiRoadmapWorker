@@ -8,7 +8,9 @@ when the round ends, whatever the outcome (a submitted job is then held by its p
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
+import shutil
 import threading
 import time
 
@@ -18,6 +20,8 @@ from pathlib import Path
 from . import claims
 from .board import KIND_PRIORITY, Job
 from .gh import GHError
+from .gitops import GitError
+from .prompts import PromptError
 from .lanes import Context, LaneError, LaneResult, lane_for
 
 HEARTBEAT = 300
@@ -66,16 +70,34 @@ class Heartbeat:
         self.stop.set()
 
 
-def work_once(ctx: Context, only: tuple[str, ...] | None, job_id: str = "", order: list[str] | None = None,
+def for_job(ctx: Context, job: Job) -> Context | None:
+    """The context a job runs in: the operator's pinned agent, or (unpinned) the agent the job
+    requires or its lane's configured agent, if that agent is installed here."""
+    if ctx.agent_fixed:
+        return ctx
+    agent, model = ctx.cfg.lane_agent(job.kind)
+    if job.requires_agent and job.requires_agent != agent:
+        agent, model = job.requires_agent, ctx.cfg.model_for(job.requires_agent)
+    if agent == ctx.agent and model == ctx.model:
+        return ctx
+    if not shutil.which(agent):
+        return None
+    return dataclasses.replace(ctx, agent=agent, model=model)
+
+
+def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", order: list[str] | None = None,
               log=print) -> LaneResult:
-    kinds = tuple(only) if only else None
-    jobs = ctx.board.list_jobs(("available",), kinds)
+    jobs = base.board.list_jobs(("available",), tuple(only) if only else None)
     if job_id:
         jobs = [j for j in jobs if j.id == job_id]
-    failed_before = failures(ctx)
+    failed_before = failures(base)
     for job in rank(jobs, order or []):
         if failed_before.get(job.id, 0) >= MAX_ATTEMPTS:
             log(f"skip {job.id}: failed {MAX_ATTEMPTS} times on this worker (see its jobs/ folder)")
+            continue
+        ctx = for_job(base, job)
+        if ctx is None:
+            log(f"skip {job.id}: its agent is not installed here")
             continue
         lane = lane_for(job)
         reason = lane.eligible(job, ctx)
@@ -89,31 +111,35 @@ def work_once(ctx: Context, only: tuple[str, ...] | None, job_id: str = "", orde
             continue
         if status == claims.ERROR and ctx.claims and not ctx.dry_run:
             log(f"{job.id}: the lease could not be registered; proceeding unclaimed (fail-open)")
-        if not ctx.dry_run:
-            try:
-                ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by worker `{ctx.worker_id}` "
-                                                    f"(@{ctx.operator}, {ctx.agent}).")
-            except GHError:
-                pass  # no write access to the board: the lease is the claim; `board sync` mirrors it
-        log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
-        try:
-            with Heartbeat(ctx, key):
-                result = lane.run(job, ctx)
-        except (LaneError, OSError) as exc:
-            result = LaneResult(job.id, "failed", str(exc))
-        finally:
-            if ctx.claims and not ctx.dry_run:
-                ctx.claims.release(key)
-        if result.status == "failed" and not ctx.dry_run:
-            record_failure(ctx, job.id)
-        if result.status in ("failed", "limited", "skipped") and not ctx.dry_run:
-            try:
-                ctx.board.set_state(job, "available", f"Released by worker `{ctx.worker_id}`: {result.status}"
-                                                      f" ({result.detail[:300]}).")
-            except GHError:
-                pass
-        return result
+        return run_job(ctx, job, lane, key, log)
     return LaneResult("", "idle", "no eligible job")
+
+
+def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
+    if not ctx.dry_run:
+        try:
+            ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by worker `{ctx.worker_id}` "
+                                                f"(@{ctx.operator}, {ctx.agent}).")
+        except GHError:
+            pass  # no write access to the board: the lease is the claim; `board sync` mirrors it
+    log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
+    try:
+        with Heartbeat(ctx, key):
+            result = lane.run(job, ctx)
+    except (LaneError, OSError, GitError, GHError, PromptError) as exc:
+        result = LaneResult(job.id, "failed", f"{type(exc).__name__}: {exc}")
+    finally:
+        if ctx.claims and not ctx.dry_run:
+            ctx.claims.release(key)
+    if result.status == "failed" and not ctx.dry_run:
+        record_failure(ctx, job.id)
+    if result.status in ("failed", "limited", "skipped") and not ctx.dry_run:
+        try:
+            ctx.board.set_state(job, "available", f"Released by worker `{ctx.worker_id}`: {result.status}"
+                                                  f" ({result.detail[:300]}).")
+        except GHError:
+            pass
+    return result
 
 
 def work_loop(ctx: Context, only, order_fn, idle_sleep: int = 600, log=print) -> None:
