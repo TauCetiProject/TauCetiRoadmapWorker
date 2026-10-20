@@ -93,13 +93,13 @@ def test_sources_fetch_records_the_entry(tmp_path, capsys, fake_net):
 
 def test_sources_fetch_failure_writes_the_request(tmp_path, capsys, fake_net):
     request = tmp_path / "scratch" / "needs-references.toml"
-    args = ["--conf", EXAMPLE, "sources", "fetch", "R. Kiehl, \"Theorem A und Theorem B\", 1967", "--authors", "R. Kiehl",
+    args = ["--conf", EXAMPLE, "sources", "fetch", "R. Kettle, \"Theorem A und Theorem B\", 1967", "--authors", "R. Kettle",
             "--missing-out", str(request), "--cited-for", "Layer 2", "--json"]
     assert cli.main(args) == 1
     result = json.loads(capsys.readouterr().out)
-    assert result["status"] == "failed" and result["entry"]["id"] == "Kie67"
+    assert result["status"] == "failed" and result["entry"]["id"] == "Ket67"
     [missing] = tomllib.loads(request.read_text())["missing"]
-    assert missing["id"] == "Kie67" and missing["needed_for"] == "Layer 2" and missing["tried"]
+    assert missing["id"] == "Ket67" and missing["needed_for"] == "Layer 2" and missing["tried"]
 
 
 def test_sources_fetch_paywalled_doi_is_uncertified(tmp_path, capsys, fake_net):

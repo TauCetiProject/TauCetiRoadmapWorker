@@ -22,8 +22,14 @@ tauceti-roadmap --conf <toml path or raw https URL> doctor
 
 `doctor` exits 1 on any failure and reports: Python, git, gh, the agent CLIs, `lake`, the `gh` login,
 access to the content, board, packages and library repositories, which claims namespace your
-workers will use, the merge-order file, the state directory, whether every brief renders, and the
-sandbox.
+workers will use, the merge-order file, the state directory, whether every brief renders, the PDF
+text extractor, OCR (when enabled) and the sandbox.
+
+**Sources.** The sources service extracts PDF text with `pdftotext` (install poppler-utils) or, more
+slowly, with the optional `pdf` extra; OCR of image-only scans needs the optional `ocr` extra
+(`uv tool install --force 'tauceti-roadmap-worker[pdf,ocr] @ git+https://github.com/TauCetiProject/TauCetiRoadmapWorker'`).
+Texts you already hold go in the directories of `[sources] local_dirs` (write them as `~/...` in a
+shared configuration); see [SOURCES.md](SOURCES.md).
 
 **Lean.** The package lane elaborates `Suggested.lean` and the port, red-team fix and gate lanes run
 the targeted build (`[gates] build`, default `lake build {module}`, never a bare `lake build`). Each
@@ -110,6 +116,74 @@ Only the operator who opened a pull request can push to its branch, so red-team 
 rounds name that operator (`requires_operator`). The red-team passes of one round name different
 agents (`requires_agent`), from `[redteam] passes`.
 
+With `[redteam] sharded = true`, every red-team job runs its whole-document pass and then one section
+pass per README section that states targets (the `## Layer` sections, or the `### Layer`
+subsections of a single `## ` wrapper; framing sections such as the scope, conventions, references
+and provenance are skipped). Each section pass instantiates every statement of its section on
+small examples (brief `prompts/redteam-section.md`). At most `[redteam] shard_max` section passes run
+per job; beyond that, adjacent sections are grouped, balanced by length. Their findings are
+renumbered after the job's own, tagged `[§k Section]`, and merged into the job's report before the
+fix lane reads it. A sharded job costs one agent run per section more than a whole-document pass.
+
+Every lane makes the texts its roadmap's `sources.toml` records available in the sources cache before
+the agent starts and lists their line-numbered files in the brief; agents fetch new sources through
+`tauceti-roadmap sources fetch` (see [SOURCES.md](SOURCES.md)).
+
+## Campaign-specific rules
+
+A project adds its own rules without touching the code or the shared briefs, through three hooks in
+`tauceti-roadmap.toml`:
+
+| Hook | What it does | Where the file lives |
+| --- | --- | --- |
+| `[gates] forbidden_patterns` | regular expressions that must not match a roadmap's README.md or Suggested.lean; checked by the package lane, by every push gate and by `tauceti-roadmap gate` (count `forbidden`) | in the toml |
+| `[gates] dropped_names_file` | roadmap names that must never be cited (dropped or abandoned roadmaps), one per line, `#` comments; checked by the same gates (count `dropped`) and listed in every brief's dependency section | relative to each host's state directory |
+| `[prompts] extra_rules_file` | Markdown appended to every brief under "Project rules" | relative to the packages repository (commit it there, CODEOWNERS-protected) |
+
+**Worked example: a project decides that no roadmap targets the abc conjecture or its explicit forms.**
+The rule has three parts: the gate catches the names in the files, the dropped-names file removes a
+roadmap that was started on it, and the brief tells authors and reviewers why.
+
+```toml
+[gates]
+# Single-quoted TOML strings keep the backslashes of the regular expressions.
+forbidden_patterns = [
+  '(?i)\babc[ -]conjecture\b',                    # prose: "the abc conjecture", "ABC-conjecture"
+  '(?i)\b(?:explicit|effective|uniform) abc\b',    # its named forms
+  '\babc_[A-Za-z]\w*',                             # Lean names: abc_conjecture, abc_effective_bound
+]
+dropped_names_file = "dropped-roadmaps.txt"
+
+[prompts]
+extra_rules_file = "rules/project-rules.md"
+```
+
+`dropped-roadmaps.txt`, in the state directory of every host that runs workers or the gate:
+
+```text
+# Roadmaps the project dropped; never cite them.
+AbcConjecture
+```
+
+`rules/project-rules.md`, committed to the packages repository:
+
+```markdown
+- No roadmap targets the abc conjecture or any explicit, effective or uniform form of it, and no
+  roadmap plans a route whose purpose is one of them. A statement that would serve only such a route
+  is cut; say so in the report.
+- Results of this family may be mentioned as background in prose; they are never targets, never
+  `Suggested.lean` declarations, and never cited as suppliers.
+```
+
+Check the patterns before you rely on them: a configuration with an invalid regular expression is
+refused at load time, and `tauceti-roadmap --conf $CONF gate <worktree> <Name>` on a roadmap that
+mentions the family reports `forbidden=N` with the offending lines. Patterns are searched in the
+whole text of both files, Lean comments included, and each match is reported with its line, so keep
+them specific (a bare `\babc\b` would
+also flag an unrelated variable named `abc`). The dropped-names file and the rules file are read
+afresh for every job; a change to the toml itself (the patterns) reaches a `--loop` worker when it
+restarts, since the configuration is loaded once per start.
+
 ## Claims and separation
 
 Leases use the TauCetiTools format (TauCetiWorker `scripts/claim.sh`): refs
@@ -134,9 +208,12 @@ run unless `--yes` is given.
 tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; leases → state:claimed;
                                                    # PR labels; GATE jobs when humans await a reply;
                                                    # held PRs back to draft
-tauceti-roadmap --conf $CONF board intake --yes    # merge valid submissions, create successor jobs
+tauceti-roadmap --conf $CONF board intake --yes    # merge valid submissions, create successor jobs,
+                                                   # then answer parked needs-references jobs
+tauceti-roadmap --conf $CONF board references --yes   # only the needs-references answers
 tauceti-roadmap --conf $CONF board stale --release --yes   # release lapsed claims and closed submissions
 tauceti-roadmap --conf $CONF merge-order           # refresh the chain paragraph on open roadmap PRs
+tauceti-roadmap --conf $CONF targets import-intentions --yes   # intentions → TARGET jobs (10 per run)
 ```
 
 The intake merges a submission only when it names an open job, changes only that job's deliverables
@@ -147,6 +224,18 @@ pull request ready for review; otherwise it stays a draft for a human to mark re
 
 Pull requests listed in `hold-draft.txt` in the state directory stay drafts: `board sync` converts
 them back if anything marks them ready.
+
+For every job parked in `state:needs-references`, the intake reads the humans' answers after the
+latest request (attach, source, waive; see [SOURCES.md](SOURCES.md)), records them in the roadmap's
+`sources.toml` on the packages repository, and makes the job available again once every key is
+answered. Its notes carry a progress marker, so running it every few minutes repeats nothing.
+
+`targets import-intentions` turns open issues of the content repository that carry every label of
+`[board] intention_labels` into TARGET jobs, oldest first, at most `--limit` (default 10) per run,
+or one with `--number N`. Each intention is imported once: the mapping is kept in `intentions.json`
+in the state directory, and an intention a board job already names is never imported again even if
+that file is lost. The intention's text is quoted into the job as data; the triage decides whether
+it asks for a new roadmap, a Part II, or is owned already.
 
 ## The state directory
 
@@ -168,7 +257,10 @@ machine are here:
 | `stacks.toml` | stacked pull requests, `child = parent` (was hard-coded in merge_order.py) |
 | `external-deps.json` | other authors' roadmap pull requests a pull request depends on (was `/tmp/ext-deps.json`) |
 | `mutual.txt` | `<pr> <other-pr>` pairs that cite each other (was `decycle/MUTUAL.txt`) |
-| `sources/` | the sources cache (see SOURCES.md) |
+| `sources/<sha256>.<ext>`, `sources/<sha256>.txt` | the sources cache: fetched files and their line-numbered texts (see SOURCES.md) |
+| `sources/local-index.json` | hashes of the texts in `[sources] local_dirs`, by path, size and modification time |
+| `intentions.json` | intentions already imported: `<owner>/<repo>#<n>` → TARGET job and board issue |
+| `workers/<id>/jobs/<JOB>/scratch/needs-references.toml` | the job's open request (`.previous.toml`: the one a resumed run archived) |
 | `tauceti-roadmap.toml` | the saved copy of a configuration given as a URL |
 
 `[gates] dropped_names_file` and a `merge_order_repo = "local"` order file are also relative to it.
@@ -195,19 +287,28 @@ alternative for operators who already use it.
 
 * **A target**: use the issue template on the board (or `targets file`). `board sync` turns it into a
   `TARGET-Name` job; the triage decides new roadmap, Part II, or duplicate.
-* **A `needs-references` request**: attach the text, name an alternative legal source with its
-  locator, or waive the citation (it is then cited by locator only, as `uncertified`), and move the
-  job back to `state:available`.
+* **A `needs-references` request**: answer each key in a comment on the job, one line each:
+  `attach: KEY` with the file attached to the comment, `source: KEY <DOI, arXiv id or URL>`, or
+  `waive: KEY` (the citation is then cited by its locator alone, as `waived`). The board's intake
+  records the answers and makes the job available again once every key is answered.
+* **An intention** on the roadmap repository becomes a TARGET job when the maintainer runs
+  `targets import-intentions`; there is nothing else to do.
 * **A draft pull request**: review it on GitHub. Your comments feed the gate lane; the reply answers
   every point, and the labels flip between awaiting-author and awaiting-review. Merging is yours.
 * **The configuration and the prompts** are CODEOWNERS-protected; changes go through review.
 
 ## Known limits of this version
 
-* The sources service (fetching, the cache, OCR) is not implemented; see SOURCES.md.
 * The harness runs standalone; running the lanes as TauCetiWorker `only=` kinds, with its quota
   pacing, dashboard and Bubble sandbox, is the intended integration.
 * Two workers of the branch owner may run a red-team fix and a gate round on the same pull request
   at once; the branch push uses `--force-with-lease`, so one of them fails and retries rather than
   overwriting the other.
-* Section-sharded red-team passes (`[redteam] sharded`) are configured but not yet scheduled.
+* A job parked for references is run again from the start once answered; its earlier partial work
+  stays only in that worker's job folder.
+* Attachments are downloaded without credentials: on a private board, humans name a legal source
+  or attach the file to a public issue instead.
+* The weekly digest issue of open `needs-references` requests is not implemented; use the label.
+* Which README sections get a sharded red-team pass is a heuristic on the headings (layers, and
+  sections with bold-labelled statements, numbered subsections or Lean, minus framing sections).
+* The dropped-names file lives in each host's state directory, so every operator keeps a copy.

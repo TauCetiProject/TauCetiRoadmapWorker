@@ -86,8 +86,8 @@ def test_upsert_merges_and_never_erases():
     assert upsert_source(data, {"id": "ab21", "cited_for": ["2.1"], "locator": "Theorem 3", "venue": ""}) == "updated"
     entry = data["source"][0]
     assert entry["cited_for"] == ["1.2", "2.1"] and entry["locator"] == "Theorem 3" and "venue" not in entry
-    assert upsert_source(data, {"id": "Ser73", "title": "A course", "doi": ""}) == "added"
-    assert data["source"][1] == {"id": "Ser73", "title": "A course"}
+    assert upsert_source(data, {"id": "Sam73", "title": "A course", "doi": ""}) == "added"
+    assert data["source"][1] == {"id": "Sam73", "title": "A course"}
 
 
 def test_find_source():
@@ -100,10 +100,10 @@ def test_find_source():
 
 
 @pytest.mark.parametrize("authors,year,key", [
-    ("J.-P. Serre", 1973, "Ser73"),
-    ("Serre, J.-P.", "1973", "Ser73"),
-    ("S. Bosch, W. Lütkebohmert, M. Raynaud", 1990, "BLR90"),
-    ("Bosch, S. and Lütkebohmert, W.", 1993, "BL93"),
+    ("J.-P. Sample", 1973, "Sam73"),
+    ("Sample, J.-P.", "1973", "Sam73"),
+    ("S. Bauer, W. Lüttich, M. Renard", 1990, "BLR90"),
+    ("Bauer, S. and Lüttich, W.", 1993, "BL93"),
     ("A. One; B. Two; C. Three; D. Four", 2021, "OTT+21"),
     ("", "", "Ano"),
 ])
@@ -112,7 +112,7 @@ def test_citation_key(authors, year, key):
 
 
 def test_citation_key_avoids_existing():
-    assert citation_key("J.-P. Serre", 1973, {"ser73", "Ser73a"}) == "Ser73b"
+    assert citation_key("J.-P. Sample", 1973, {"sam73", "Sam73a"}) == "Sam73b"
 
 
 # --- cache ----------------------------------------------------------------------------------------

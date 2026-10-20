@@ -89,7 +89,7 @@ def test_dry_run_brief_lists_cached_texts_without_fetching(ctx):  # noqa: F811
 def test_a_request_parks_the_job_with_its_marker(ctx, monkeypatch):  # noqa: F811
     def agent_asks_for_a_text(run, base_env=None):
         (run.log_out.parent / "scratch" / "needs-references.toml").write_text(
-            '[[missing]]\nauthors = "R. Kiehl"\ntitle = "Theorem A und Theorem B"\nyear = 1967\n'
+            '[[missing]]\nauthors = "R. Kettle"\ntitle = "Theorem A und Theorem B"\nyear = 1967\n'
             'needed_for = "the locator sample: Satz 2.3"\ntried = ["GDZ: image-only"]\n')
         return agents.AgentResult(exit_code=0, seconds=1.0)
     monkeypatch.setattr(agents, "run_agent", agent_asks_for_a_text)
@@ -97,5 +97,5 @@ def test_a_request_parks_the_job_with_its_marker(ctx, monkeypatch):  # noqa: F81
     job = new_job("REV-PKG-Foo")
     job.number = 7
     result = lane_for(job).run(job, run_ctx)
-    assert result.status == "needs-references" and result.detail.endswith("Kie67")
+    assert result.status == "needs-references" and result.detail.endswith("Ket67")
     assert ("comment", 7) in run_ctx.board.calls and ("state", "needs-references") in run_ctx.board.calls

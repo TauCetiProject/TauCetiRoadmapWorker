@@ -4,7 +4,7 @@ Worker side. When an agent cannot read a source legally, or the worker cannot fe
 manifest records, the job's scratch directory gets `needs-references.toml`:
 
     [[missing]]
-    id = "Kie67"                       # the key the README cites it by (derived when absent)
+    id = "Ket67"                       # the key the README cites it by (derived when absent)
     authors = "A. Author"
     title = "On the thing"
     year = 1967

@@ -37,9 +37,9 @@ def test_parse_citation(text, kind, value):
 
 
 def test_parse_free_text_citation():
-    c = parse_citation('R. Kiehl, "Theorem A und Theorem B in der nichtarchimedischen Funktionentheorie", Invent. Math. 2 (1967)')
+    c = parse_citation('R. Kettle, "Theorem A und Theorem B für Beispielräume", Invent. Math. 2 (1967)')
     assert c.kind == "text" and c.title.startswith("Theorem A und") and c.year == "1967"
-    assert parse_citation("Serre, A course in arithmetic", year="1973").year == "1973"
+    assert parse_citation("Sample, A course in examples", year="1973").year == "1973"
 
 
 def test_title_and_author_matching():
@@ -49,8 +49,8 @@ def test_title_and_author_matching():
     assert not title_matches("Theorem A", "A different paper about modular forms")
     assert title_matches("On the thing and its cousin", "A. Author, On the Thing and its Cousin, 1971", free_text=True)
     assert not title_matches("On the thing", "A. Author, On the Thing, 1971", free_text=True)   # one word: too weak
-    assert surnames_match(["Jean-Pierre Serre"], "J.-P. Serre") and surnames_match("anyone", "")
-    assert not surnames_match(["John Tate"], "J.-P. Serre")
+    assert surnames_match(["Jean-Pierre Sample"], "J.-P. Sample") and surnames_match("anyone", "")
+    assert not surnames_match(["John Other"], "J.-P. Sample")
 
 
 # --- the policy client ----------------------------------------------------------------------------
@@ -324,7 +324,7 @@ def test_materialize_finds_operator_texts_by_hash(tmp_path):
     lib.mkdir()
     (lib / "renamed-scan.pdf").write_bytes(PDF)
     sha = sources.sha256_bytes(PDF)
-    data = {"source": [{"id": "Kie67", "status": "certified", "sha256": sha, "licence_class": "operator-local"}]}
+    data = {"source": [{"id": "Ket67", "status": "certified", "sha256": sha, "licence_class": "operator-local"}]}
     [got] = make_fetcher(tmp_path, FakeTransport(), local_dirs=[str(lib)]).materialize(data)
     assert got.text and (tmp_path / "cache" / "local-index.json").is_file()
     [missing] = make_fetcher(tmp_path / "x", FakeTransport(), local_dirs=[]).materialize(data)

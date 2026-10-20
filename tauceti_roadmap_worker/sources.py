@@ -233,7 +233,7 @@ def _surnames(authors: str) -> list[str]:
 
 
 def citation_key(authors: str, year, existing: set[str] | None = None) -> str:
-    """An alpha-style key: `Ser73` for one author, `BLR90` for two or three, `ABC+21` for more;
+    """An alpha-style key: `Sam73` for one author, `BLR90` for two or three, `ABC+21` for more;
     a, b, ... are appended until it is not in `existing` (compared case-insensitively)."""
     names = _surnames(authors or "") or ["Anon"]
     yy = (re.findall(r"\d{4}", str(year or "")) or [""])[-1][2:]
