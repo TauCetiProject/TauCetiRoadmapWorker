@@ -261,6 +261,39 @@ def dependency_paragraph(name: str, readme: str, open_prs: dict[str, int], order
             "everything else named in the README is a consumer, not a prerequisite.")
 
 
+class OrderCycle(ValueError):
+    """Placing a roadmap would put one of its suppliers after one of its consumers."""
+
+
+LEAN_SUPPLIER = re.compile(r"\bTauCetiRoadmap\.([A-Z][A-Za-z0-9]*)\b")
+
+
+def package_suppliers(name: str, readme: str, lean: str, known: set[str]) -> set[str]:
+    """The roadmaps a package consumes: those its README names as suppliers (as the dependency
+    check reads them) and every `TauCetiRoadmap.<X>` its Lean names, among `known`."""
+    edges = supplier_edges({name: readme}, known)
+    return (set(edges.get(name, {})) | set(LEAN_SUPPLIER.findall(lean or ""))) - {name}
+
+
+def place_in_order(text: str, name: str, suppliers: set[str], consumers: set[str] = frozenset()) -> tuple[str, list[str]]:
+    """The merge-order file with `name` placed right after its last listed supplier (at the end
+    when none is listed), and notes (suppliers missing from the order). Raises OrderCycle when a
+    listed consumer of `name` comes before one of its listed suppliers. A listed name stays."""
+    order = read_order(text)
+    if name in order:
+        return text, []
+    pos = {n: i for i, n in enumerate(order)}
+    listed = sorted((s for s in suppliers if s in pos), key=pos.get)
+    notes = [f"supplier {s} of {name} is not in the merge order; it must be inserted before {name}"
+             for s in sorted(suppliers - set(pos))]
+    early = [c for c in consumers if c in pos and listed and pos[c] <= pos[listed[-1]]]
+    if early:
+        c = min(early, key=pos.get)
+        raise OrderCycle(f"{name} consumes {listed[-1]} (#{pos[listed[-1]] + 1}) and is consumed by {c} "
+                         f"(#{pos[c] + 1}), which comes first: a supplier after a consumer, a cycle through {name}")
+    return insert_into_order(text, name, set(listed)), notes
+
+
 def insert_into_order(text: str, name: str, suppliers: set[str]) -> str:
     """The merge-order file with `name` inserted right after its last supplier (appended when none of
     its suppliers is listed). Comments and other lines are kept; an already listed name is left alone."""

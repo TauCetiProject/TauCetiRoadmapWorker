@@ -22,6 +22,7 @@ from . import claims
 from .board import KIND_PRIORITY, Job
 from .gh import GHError
 from .lanes import Context, LaneResult, lane_for
+from .lanes.base import LaneBlocked
 
 HEARTBEAT = 300
 MAX_ATTEMPTS = 3
@@ -149,6 +150,8 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
         log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
         with Heartbeat(ctx, key):
             result = lane.run(job, ctx)
+    except LaneBlocked as exc:
+        result = LaneResult(job.id, "blocked", str(exc))
     except Exception as exc:  # noqa: BLE001 - git, GitHub, the lane's own errors or a bug: all release the job
         status = "failed" if getattr(lane, "agent_started", True) else "setup-failed"
         result = LaneResult(job.id, status, f"{type(exc).__name__}: {exc}")
@@ -165,7 +168,14 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
 
 def release(ctx: Context, job: Job, result: LaneResult) -> None:
     """End a round that did not submit or park the job: count a failure, and put the job back to
-    `state:available` (the only state label it keeps)."""
+    `state:available` (the only state label it keeps); a job that needs a human is blocked."""
+    if not ctx.dry_run and result.status == "blocked":
+        try:
+            ctx.board.set_state(job, "blocked", f"Blocked by worker `{ctx.worker_id}`: {result.detail[:600]} "
+                                                "A human decides how to continue.")
+        except GHError:
+            pass
+        return
     if ctx.dry_run or result.status not in RELEASED:
         return
     if result.status == "failed":

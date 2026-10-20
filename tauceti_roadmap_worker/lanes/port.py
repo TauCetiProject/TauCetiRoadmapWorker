@@ -15,8 +15,8 @@ import re
 from .. import depgraph, gates, gitops
 from ..board import Job
 from ..gh import GHError
-from .base import (PR_MARKER, Context, Lane, LaneError, Workspace, dropped_names, load_order, open_roadmap_prs,
-                   order_path, scan_problems, sibling_checkouts, sibling_readmes)
+from .base import (PR_MARKER, Context, Lane, LaneError, Workspace, dropped_names, ensure_in_order, load_order,
+                   open_roadmap_prs, order_path, scan_problems, sibling_checkouts, sibling_readmes)
 from .pr import fresh_worktree
 
 
@@ -66,6 +66,9 @@ class PortLane(Lane):
         ws = super().prepare(job, ctx)
         prs = open_roadmap_prs(ctx)
         ws.extra["prs"] = prs
+        pkg = ws.package(ctx.cfg, job.name)
+        texts = [(pkg / f).read_text(encoding="utf-8") if (pkg / f).is_file() else "" for f in ("README.md", "Suggested.lean")]
+        ws.extra["order_notes"] = ensure_in_order(ctx, ws, job.name, *texts)
         ws.extra["siblings"] = sibling_checkouts(ctx, prs, skip=job.name)
         wt = fresh_worktree(ctx, ws.content, job.name, "port")
         ws.extra["base"] = gitops.git(wt, "rev-parse", "HEAD").strip()

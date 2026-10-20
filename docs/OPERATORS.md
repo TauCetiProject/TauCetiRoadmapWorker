@@ -52,6 +52,10 @@ tauceti-roadmap --conf $CONF work --worker-id alice-author --only design,package
 tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --agent claude --loop
 ```
 
+* A configuration given as an https URL is read with retries (after 5, 20 and 60 seconds); the last
+  good copy is kept in `<state>/config/<sha256 of the URL>.toml` and used, with a warning naming its
+  age, when every try fails (a worker fails only when there is no copy at all). The `gh` login at
+  startup is retried the same way.
 * `--worker-id` names the worker: its directory, its branch prefix and its lease owner
   (`<login>/<worker-id>`). Use distinct ids for concurrent workers.
 * `--only` pins a worker to some kinds (`target, design, package, review, fix, port, redteam, gate`);
@@ -316,6 +320,14 @@ tauceti-roadmap --conf $CONF merge-order           # refresh the chain paragraph
 tauceti-roadmap --conf $CONF targets import-intentions --yes   # intentions → TARGET jobs (10 per run)
 tauceti-roadmap --conf $CONF board import-explorer --from ~/tauceti-explorer --yes   # see below
 ```
+
+A roadmap that reaches the port without a place in the merge order (an imported package, say) is
+placed by the port lane: right after its last supplier that the order lists (its README's supplier
+lines, as the dependency check reads them, and every `TauCetiRoadmap.<X>` its Lean names), at the end
+when it has none, with a warning for a supplier the order lacks. The edited `ORDER.txt` is part of
+the port's submission, so the intake merges it with the report. When the place would put one of
+its suppliers after one of its consumers, the job is set to `state:blocked` with the cycle in a
+comment, and nothing is submitted.
 
 The intake merges a submission only when it names an open job, changes only that job's deliverables
 and report, contains no local path, has valid JSON and TOML, its checks passed, and its author is

@@ -22,7 +22,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import agents, board, claims, fetcher, gates, gitops, prompts, references, sources
+from .. import agents, board, claims, depgraph, fetcher, gates, gitops, prompts, references, sources
 from ..board import Board, Job
 from ..config import Config
 from ..depgraph import read_order
@@ -92,6 +92,10 @@ class LaneResult:
 
 class LaneError(Exception):
     pass
+
+
+class LaneBlocked(LaneError):
+    """The job cannot go on without a human (a merge-order cycle): it is set to `state:blocked`."""
 
 
 # --- shared lookups -------------------------------------------------------------------------------
@@ -218,6 +222,36 @@ def set_aside(checkout: Path, jobs: Path, worker: str, base: str = "main") -> Pa
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(checkout / rel, dest / rel)
     return dest
+
+
+def ensure_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: str) -> list[str]:
+    """Place the roadmap in the board's merge-order file (in the board checkout, so the submission
+    carries the change) right after its last supplier, when it is not listed yet; returns notes.
+    A placement that would put a supplier after a consumer raises LaneBlocked."""
+    path = order_path(ctx.cfg, ws.board, ws.content)
+    if ctx.cfg.roadmap.merge_order_repo != "packages" or not path.is_file():
+        return []
+    text = path.read_text(encoding="utf-8")
+    order = read_order(text)
+    if name in order:
+        return []
+    active = ws.content / ctx.cfg.roadmap.active_dir
+    readmes = {p.parent.name: p.read_text(encoding="utf-8", errors="replace")
+               for p in active.glob("*/README.md")} if active.is_dir() else {}
+    readmes.update(sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra.get("prs")))
+    known = set(order) | set(readmes)
+    suppliers = depgraph.package_suppliers(name, readme, lean, known)
+    edges = depgraph.supplier_edges({**readmes, name: readme}, known | {name})
+    consumers = {c for c, sups in edges.items() if name in sups and c != name}
+    try:
+        new, notes = depgraph.place_in_order(text, name, suppliers, consumers)
+    except depgraph.OrderCycle as exc:
+        raise LaneBlocked(f"merge order: {exc}") from exc
+    path.write_text(new, encoding="utf-8")
+    placed = read_order(new)
+    at = placed.index(name)
+    where = f"after {placed[at - 1]}" if at else "first"
+    return [f"{name} placed in the merge order {where}"] + notes
 
 
 def library_description(content: Path) -> str:
@@ -455,7 +489,7 @@ class Lane:
         return self.check(job, ctx, ws) + self.submission_problems(job, ctx, ws)
 
     def submission_problems(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
-        allowed = board.allowed_paths(job, ctx.cfg.board.packages_dir)
+        allowed = board.allowed_paths(job, ctx.cfg.board.packages_dir, board.order_file(ctx.cfg))
         changed = gitops.changed_files(ws.board)
         outside = [p for p in changed if p not in allowed]
         if outside:

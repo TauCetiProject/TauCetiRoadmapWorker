@@ -385,18 +385,25 @@ def package_dir(packages_dir: str, name: str) -> str:
     return f"{packages_dir.strip('/')}/{name}"
 
 
+def order_file(cfg) -> str:
+    """The merge-order file's path on the board's packages tree, when the board keeps it ('' else)."""
+    return cfg.roadmap.merge_order_file if cfg.roadmap.merge_order_repo == "packages" else ""
+
+
 def manifest_path(packages_dir: str, name: str) -> str:
     """The roadmap's sources manifest on the board's packages tree."""
     return f"{package_dir(packages_dir, name)}/sources.toml"
 
 
-def allowed_paths(job: Job, packages_dir: str) -> set[str]:
+def allowed_paths(job: Job, packages_dir: str, order_file: str = "") -> set[str]:
     """The files a job's submission pull request may add or change on the board's packages tree.
     The sources manifest belongs to every job that works on the roadmap's sources: the target's
     triage, the design, the package, their fixes, and reviews (which record what they fetched to
     check a locator; the review lane keeps the author's entries intact)."""
     p = package_dir(packages_dir, job.name)
     report = {f"{p}/reports/{job.id}.md"}
+    if order_file and (job.kind == "port" or (job.kind == "fix" and parse_job_id(job.id).subject == "RT")):
+        report.add(order_file)   # the lane that first needs the merge order places the roadmap in it
     manifest = {manifest_path(packages_dir, job.name)}
     design = {f"{p}/design/README.md", f"{p}/design/plan.json"}
     package = {f"{p}/README.md", f"{p}/Suggested.lean", f"{p}/metadata.toml"}

@@ -95,7 +95,7 @@ def intake(ctx, number: int, yes: bool = False) -> str:
     if job.state in ("done", "blocked"):
         problems.append(f"{job.id} is {job.state}")
     files = ctx.gh.api(f"repos/{repo}/pulls/{number}/files?per_page=100", paginate=True)
-    allowed = board.allowed_paths(job, cfg.board.packages_dir)
+    allowed = board.allowed_paths(job, cfg.board.packages_dir, board.order_file(cfg))
     for f in files:
         if f.get("status") == "removed":
             problems.append(f"{f['filename']} is deleted")
