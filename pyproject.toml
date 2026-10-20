@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tauceti-roadmap-worker"
+version = "0.1.0"
+description = "Operator harness that plans, reviews and ports Tau Ceti roadmaps through a job board"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+# Standard library only: TOML is read with tomllib (Python 3.11+).
+dependencies = []
+
+[project.scripts]
+tauceti-roadmap = "tauceti_roadmap_worker.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+# The briefs live at the repository root (prompts/) so that they are easy to review and
+# CODEOWNERS-protected; the wheel bundles them into the package so that paths.HERE / "prompts"
+# resolves the same way in a checkout and in an installed tool.
+[tool.hatch.build.targets.wheel]
+packages = ["tauceti_roadmap_worker"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"prompts" = "tauceti_roadmap_worker/prompts"
+".github/ISSUE_TEMPLATE" = "tauceti_roadmap_worker/issue_templates"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120

@@ -1,0 +1,176 @@
+# tauceti-roadmap.toml — canonical, human-owned configuration of one roadmap project.
+#
+# Copy this file, fill it in and protect it with CODEOWNERS. It is public: never put tokens,
+# passwords, keys or private paths here. Operators run against it with
+#     tauceti-roadmap --conf <path or raw https URL> doctor
+# A URL is fetched once per start and saved in the project state directory
+# (~/.local/state/tauceti/projects/<project.name>/tauceti-roadmap.toml).
+schema_version = 1
+
+[project]
+# The project's name. It keys the state directory and appears in lease records. [A-Za-z0-9_.-]
+name = "TauCetiRoadmapWorker"
+# Default branch of the content repository; draft pull requests target it.
+branch = "main"
+
+[repositories]
+# The content repository: its roadmap folders are what the final pull requests add. The worker
+# only ever opens draft pull requests here, from the operator's fork.
+content = "TauCetiProject/TauCetiRoadmap"
+# The job board: one issue per job, with `kind:*` and `state:*` labels. Leave empty to use a label
+# namespace inside the content repository (see board.namespace_label). Set interaction limits to
+# collaborators so that only the board and its bot comment on jobs.
+board = "TauCetiProject/TauCetiRoadmapJobs"
+# Where the intermediate artefacts live (design packets, package README/Suggested.lean, review
+# reports, sources manifests), under board.packages_dir. Empty = the board repository.
+packages = ""
+# The writable claims namespace: lease refs `refs/tauceti-claims/roadmap/...` (TauCetiTools lease
+# format). Empty = the operator's own fork, so a fleet de-duplicates only across its own workers
+# until the operator is admitted to the shared namespace.
+claims = "TauCetiProject/tauceti-roadmap-claims"
+# The Lean library the roadmaps build on (read-only: duplication audits grep it).
+library = "TauCetiProject/TauCeti"
+
+[board]
+# Label every job issue carries, so that a board inside the content repository stays separable.
+namespace_label = "roadmap-job"
+# Folder (in the packages repository) holding one sub-folder per roadmap: packages/<Name>/.
+packages_dir = "packages"
+# Rounds of fix + fresh independent review before a design or package is parked for a human
+# (state:blocked). A fix worker's self-acceptance never counts.
+max_rounds = 3
+# Logins whose comments are the board's own (claim notices, intake notes).
+bot_logins = ["github-actions[bot]"]
+# A claim or submission with no sign of progress for this long is released by `board stale --release`.
+stale_hours = 24
+# Also read targets filed as `intention` issues on the content repository's board
+# (labels `intention` + `roadmap/<area>`), the convention TauCetiWorker already reads.
+intentions = true
+
+[roadmap]
+# Active roadmap folders in the content repository, and where completed ones live.
+active_dir = "TauCetiRoadmap"
+completed_dir = "Completed"
+# The merge-order file: one roadmap name per line, suppliers before consumers ('#' comments).
+# A roadmap may consume only roadmaps above it, roadmaps on main, and other authors' pull
+# requests that add a roadmap folder. New roadmaps are inserted after their last supplier.
+# merge_order_repo is "packages", "content" or "local" (a path relative to the state directory).
+merge_order_repo = "packages"
+merge_order_file = "merge-order/ORDER.txt"
+# Label the port lane puts on every pull request it opens; the merge-order chain and the red-team
+# lanes find their pull requests by it.
+pr_label = "roadmap-worker"
+# Open the final pull request as a draft (today's rule). A human marks it ready, unless
+# redteam.ready_after says otherwise.
+open_as_draft = true
+# Roadmaps already on main that open pull requests extend: suppliers for everyone, never consumers.
+main_extended = []
+
+[gates]
+# Targeted build of one roadmap module, run in the port worktree. {module} expands to
+# <active_dir>.<Name>.Suggested. Never a bare `lake build`. Empty disables the build gate.
+build = "lake build {module}"
+# Elaboration of a package's Suggested.lean in an existing build (package and review lanes).
+# {file} is the absolute path. Empty = do not elaborate (say so in the report).
+elaborate = "lake env lean {file}"
+# Suggested.lean states and does not develop: at most this many lines.
+max_lean_lines = 5000
+# Reject `import Mathlib.<submodule>`: the Mathlib import is the single line `import Mathlib`.
+forbid_mathlib_subimports = true
+# Project-specific regular expressions that must not match README.md or Suggested.lean (for
+# example anchors of results the project has decided no roadmap may target). Empty by default.
+forbidden_patterns = []
+# File (relative to the state directory) listing roadmap names that must never be cited, one per
+# line: dropped or abandoned roadmaps. Empty = none.
+dropped_names_file = ""
+# Regular expressions for paths outside TauCetiRoadmap/<Name>/ that a port pull request may
+# still touch. The default (empty) means: the outside-folder diff must be empty.
+outside_folder_allow = []
+# Run the dependency check against the merge order as part of the gate.
+require_depcheck = true
+
+[redteam]
+# Rounds of red-teaming on the draft pull request. Each round runs every pass below
+# independently, then one fix lane merges their findings on the pull request branch.
+rounds = 2
+# The passes of one round: two different agents, so that the reviews are independent.
+passes = [
+  { agent = "codex", model = "" },
+  { agent = "claude", model = "" },
+]
+# Add section-sharded passes (one per README layer, instantiating every statement on small
+# examples). Evidence so far: they catch pinning gaps whole-document passes miss. Opt-in.
+sharded = false
+# Mark the pull request ready for review after the last round (false: it stays a draft and a
+# human marks it ready).
+ready_after = false
+
+[design]
+# The design lane is the only expensive one: at most this many design jobs per operator per day.
+daily_cap = 2
+
+[agents]
+# Default agent for every lane: "codex" or "claude". Operators override per run with --agent.
+default = "codex"
+# Models passed to the agent CLIs. Operators may override with --model.
+codex_model = "gpt-6.1-sol"
+claude_model = "claude-opus-5-5"
+# Wall-clock limit of one agent run.
+timeout_minutes = 360
+# Per-lane overrides, e.g. reviews on a different agent family from authoring:
+# [agents.lanes.review]
+# agent = "claude"
+# model = ""
+
+[sources]
+# Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through
+# the bundled deny list. A leading dot covers every subdomain.
+deny = [".libgen.is", ".libgen.rs", ".libgen.li", ".sci-hub.se", ".sci-hub.st", ".sci-hub.ru",
+        ".z-lib.org", ".z-library.sk", ".annas-archive.org", ".library.lol", ".booksc.org"]
+# A published theorem behind a paywall may be cited by its locator without the text; the
+# manifest records it as `uncertified`. Paywalls are never circumvented. false = such a citation
+# sends the job to `needs-references` instead.
+uncertified_ok = true
+# Run OCR (uv venv + RapidOCR) on image-only scans in the sources service (not yet implemented).
+ocr = false
+# Licence classes and the hosts that belong to them (a leading dot allows every subdomain).
+# Texts the operator already holds locally are the class "operator-local" and need no host.
+[sources.allow]
+open-repository = ["arxiv.org", ".arxiv.org", "hal.science", ".hal.science", "numdam.org", ".numdam.org",
+                   "gdz.sub.uni-goettingen.de", "eudml.org", ".eudml.org", "projecteuclid.org",
+                   "stacks.math.columbia.edu", "zbmath.org", ".zbmath.org"]
+publisher-open = ["msp.org", "ems.press", "doi.org"]
+author-page = []
+institutional = []
+
+[sandbox]
+# "off" (default): agents run directly on the host.
+# "proxy": agents get HTTP(S)_PROXY pointing at proxy_url (run the bundled allowproxy.py there:
+#          everything allowed and logged, exfiltration hosts and pirate mirrors refused).
+# "netjail": agents run in a private network namespace whose only route out is that proxy
+#          (needs the bundled netjail compiled and permitted; falls back to "proxy" otherwise).
+# TauCetiWorker's --bubble sandbox is the alternative for operators who already use it.
+profile = "off"
+proxy_url = "http://127.0.0.1:3128"
+# Path of the compiled netjail binary (profile "netjail").
+netjail = ""
+# Give Claude agents the bundled PreToolUse hook that blocks executing fetched content, raw network
+# tools, proxy tampering and credential access.
+claude_hook = true
+
+[replies]
+# How the gate lane tells a review from a reply on the content repository's pull requests.
+# A comment counts as a review when it comes from someone else, or when one of these markers
+# appears in its first 60 characters. A reply must never name a marker in its first 40 characters.
+review_markers = ["ChatGPT", "GPT-", "Astra", "🤖", ":robot:", "AI-assisted", "Deep re-review", "Deep review"]
+# Logins whose APPROVED review at the current head clears both labels (the human merger).
+approvers = []
+# Label names on the content repository.
+awaiting_author = "awaiting-author"
+awaiting_review = "awaiting-review"
+# Our own comments that start like this are housekeeping, not replies to a review.
+housekeeping_prefixes = ["Red-team repairs at", "Scope change at", "Supplier change at", "Ownership change at", "Housekeeping at"]
+
+[prompts]
+# Optional file (in the packages repository) of project-specific rules appended to every brief.
+extra_rules_file = ""

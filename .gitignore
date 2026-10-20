@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local operator files: never commit a filled-in configuration, credentials or logs.
+tauceti-roadmap.toml
+*.key
+*.token
+.env
+logs/
+state/
+
+# Editors
+.idea/
+.vscode/
+*.swp
