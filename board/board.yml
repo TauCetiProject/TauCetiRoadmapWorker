@@ -1,0 +1,56 @@
+# The job board's maintenance, run by GitHub Actions in the jobs repository (TauCetiRoadmapJobs).
+# Install: copy this file to .github/workflows/board.yml in the jobs repository, next to its
+# tauceti-roadmap.toml. It needs no secret: the workflow's own token writes to the board.
+#
+# Every ten minutes, and whenever a pull request, an issue or a comment changes on the board, it
+# takes in submissions, reads the reviews on open pull requests, answers needs-references requests,
+# syncs targets, labels and the review queue, and releases stale claims. Runs never overlap.
+#
+# The claims namespace is another repository, which this token cannot write to (and can read only
+# when it is public): the lease checks then see no lease, and claiming a review by a `reviewing`
+# comment works without a lease. See docs/OPERATORS.md, "The board workflow".
+name: board
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  # pull_request_target runs in the board repository's context (a token that can write) and never
+  # checks out or runs the pull request's code: the intake reads submissions as data.
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
+  issue_comment:
+    types: [created, edited]
+  issues:
+    types: [opened, edited, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: board
+  cancel-in-progress: false
+
+jobs:
+  board:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAUCETI_PROJECT_STATE: ${{ runner.temp }}/state
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4          # the default branch: its tauceti-roadmap.toml, never PR code
+      - uses: astral-sh/setup-uv@v6
+      - name: Install the worker
+        run: uv tool install git+https://github.com/TauCetiProject/TauCetiRoadmapWorker@main
+      - name: Intake
+        run: tauceti-roadmap --conf ./tauceti-roadmap.toml board intake --yes
+      - name: Sync
+        if: always()
+        run: tauceti-roadmap --conf ./tauceti-roadmap.toml board sync --yes
+      - name: Stale claims
+        if: always()
+        run: tauceti-roadmap --conf ./tauceti-roadmap.toml board stale --release --yes

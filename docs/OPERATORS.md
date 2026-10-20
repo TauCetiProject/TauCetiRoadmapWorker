@@ -363,6 +363,27 @@ the port's submission, so the intake merges it with the report. When the place w
 its suppliers after one of its consumers, the job is set to `state:blocked` with the cycle in a
 comment, and nothing is submitted.
 
+### The board workflow
+
+The board's maintenance need not depend on anyone running it: copy `board/board.yml` from this
+repository to `.github/workflows/board.yml` in the jobs repository. Every ten minutes, and on every
+pull request, issue and comment event of the board, it installs the tool from this repository's
+main and runs `board intake --yes`, `board sync --yes` and `board stale --release --yes` with the
+workflow's own token (permissions: contents, pull requests and issues write; one run at a time).
+Everything the board writes works with that token: its notes are signed by `github-actions[bot]`
+(keep it in `[board] bot_logins`), and authorship always comes from the submission pull request's
+author.
+
+Two things that token cannot reach are skipped, not failed. The claims namespace is another
+repository: `board intake` reads it to wait for a worker that holds a review (and to take a lease
+for a `reviewing` comment), `board sync` to mirror live leases and release expired ones, and
+`board stale` to spare a claim whose lease is live; without access they see no leases (the claim is
+still made on the issue, and `board stale` falls back to the issue's inactivity). And the roadmap
+repository: `board sync` flips its pull requests' labels and keeps held ones as drafts only with a
+token that can write there, so a maintainer's own runs (or a token with that access) cover those;
+the workflow notes what it skipped. Team membership for `[board] target_filers` comes from
+`board/filers.json`, which every run with a maintainer's token keeps current.
+
 The intake merges a submission only when it names an open job, changes only that job's deliverables
 and report, contains no local path, has valid JSON and TOML, its checks passed, and its author is
 independent where required. When a design is accepted it inserts the roadmap into the merge-order

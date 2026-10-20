@@ -92,3 +92,13 @@ def test_a_fault_before_the_agent_runs_is_not_counted_and_not_retried(tmp_path, 
     assert worker.failures(ctx) == {} and gh.states(1) == ["available"] and ctx.claims.released
     nxt = worker.work_once(ctx, None, log=lambda line: None, avoid={"TARGET-Gan"})
     assert nxt.job == "TARGET-Next"                               # the process leaves the faulty job alone
+
+
+def test_the_board_workflow_runs_the_three_commands_with_its_own_token():
+    text = (paths.HERE / "board" / "board.yml").read_text()
+    for line in ("board intake --yes", "board sync --yes", "board stale --release --yes", "group: board",
+                 "cancel-in-progress: false", "contents: write", "pull-requests: write", "issues: write",
+                 "GH_TOKEN: ${{ github.token }}", "pull_request_target:", "issue_comment:", '- cron: "*/10 * * * *"',
+                 "uv tool install git+https://github.com/TauCetiProject/TauCetiRoadmapWorker@main"):
+        assert line in text, line
+    assert "ref: ${{ github.event.pull_request.head" not in text      # never checks out a pull request's code

@@ -353,8 +353,11 @@ def sync_pull_requests(ctx) -> list[str]:
         number = p["pr"]
         data = ctx.gh.api(f"repos/{repo}/pulls/{number}")
         if str(number) in held and not data.get("draft"):
-            ctx.gh.cli_write("pr", "ready", str(number), "--undo", "-R", repo)
-            out.append(f"#{number}: held, converted back to draft")
+            try:
+                ctx.gh.cli_write("pr", "ready", str(number), "--undo", "-R", repo)
+                out.append(f"#{number}: held, converted back to draft")
+            except GHError as exc:
+                out.append(f"#{number}: held, but not converted back to draft ({exc})")
         reviews = ctx.gh.api(f"repos/{repo}/pulls/{number}/reviews?per_page=100", paginate=True)
         comments = ctx.gh.api(f"repos/{repo}/issues/{number}/comments?per_page=100", paginate=True)
         events = events_from_api(reviews, comments)
@@ -363,11 +366,14 @@ def sync_pull_requests(ctx) -> list[str]:
                                           ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,
                                           awaiting_review=r.awaiting_review)
         have = {label["name"] for label in data.get("labels", [])}
-        if want and want not in have:
-            ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [want]})
-        for label in drop:
-            if label in have:
-                ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{label}")
+        try:   # a token of the board alone (its workflow's) cannot write to the roadmap repository
+            if want and want not in have:
+                ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [want]})
+            for label in drop:
+                if label in have:
+                    ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{label}")
+        except GHError as exc:
+            out.append(f"#{number}: labels on {repo} not changed ({exc})")
         if want == r.awaiting_author:
             mine = [j for j in jobs if j.kind == "gate" and j.name == p["name"]]
             if not any(j.state in ("available", "claimed", "submitted") for j in mine):
