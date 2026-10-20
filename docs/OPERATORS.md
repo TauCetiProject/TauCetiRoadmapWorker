@@ -363,7 +363,11 @@ alternative for operators who already use it.
 ## What a human does when
 
 * **A target**: use the issue template on the board (or `targets file`). `board sync` turns it into a
-  `TARGET-Name` job; the triage decides new roadmap, Part II, or duplicate.
+  `TARGET-Name` job; the triage decides new roadmap, Part II, duplicate, or a merge into another
+  open target or design. Many targets at once: `targets file-many --from targets.toml --yes` (a
+  TOML file of `[[target]]` tables or a JSON Lines file, with `statement`, `why` and optionally
+  `sources`, `name`, `licence`, `title`); an entry whose roadmap name the board already has, as a
+  target issue or a job, is skipped, so a list can be filed again after it grows.
 * **A `needs-references` request**: answer each key in a comment on the job, one line each:
   `source: KEY <DOI, arXiv id or URL>`, `local: KEY <file name>` (operators hold the text in
   `[sources] local_dirs`; only a worker whose operator holds it resumes the job), or `waive: KEY`

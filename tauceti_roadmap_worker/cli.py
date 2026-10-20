@@ -31,6 +31,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import __version__, claims, config, depgraph, explorer, fetcher, gates, paths, prompts, references, sources
+from . import targets as target_files
 from .board import KINDS, Board, decode_submission
 from .gh import GH, GHError
 
@@ -201,14 +202,17 @@ def targets(args) -> int:
             for issue in intents:
                 print(f"intention {cfg.repositories.content}#{issue['number']}: {issue['title'][:70]}")
         return 0
+    if args.action == "file-many":
+        if not args.source:
+            raise SystemExit("targets file-many needs --from <targets.toml | targets.jsonl>")
+        ctx = _bot_context(args, cfg, args.dry_run or not args.yes)
+        for line in target_files.file_many(ctx, target_files.read_list(Path(args.source)), yes=args.yes and not args.dry_run):
+            print(line)
+        return 0
     if not args.statement or not args.why:
         raise SystemExit("targets file needs --statement and --why")
-    body = "\n\n".join([f"### Statement or topic\n\n{args.statement}", f"### Why it matters for the library\n\n{args.why}",
-                        f"### Known sources\n\n{args.sources or '_No response_'}", f"### Suggested name\n\n{args.name or '_No response_'}",
-                        f"### Licence class of the sources\n\n{args.licence or 'Unknown'}"])
-    title = f"[Target] {args.title or args.name or args.statement[:60]}"
-    created = gh.write("POST", f"repos/{cfg.repositories.board_repo()}/issues",
-                       {"title": title, "body": body, "labels": [cfg.board.namespace_label, "kind:target"]})
+    fields = {k: getattr(args, k) for k in target_files.FIELDS}
+    created = gh.write("POST", f"repos/{cfg.repositories.board_repo()}/issues", target_files.issue_payload(cfg, fields))
     print(created["html_url"] if created else "(dry run)")
     return 0
 
@@ -495,8 +499,9 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="report the tools, credentials and configuration this host can use")
 
     t = sub.add_parser("targets", help="list targets, file one, or import the roadmap repository's intentions")
-    t.add_argument("action", choices=["list", "file", "import-intentions"])
-    t.add_argument("--yes", action="store_true", help="import-intentions: create the jobs (default: dry run)")
+    t.add_argument("action", choices=["list", "file", "file-many", "import-intentions"])
+    t.add_argument("--yes", action="store_true", help="import-intentions, file-many: write (default: dry run)")
+    t.add_argument("--from", dest="source", default="", help="file-many: a TOML ([[target]]) or JSON Lines list")
     t.add_argument("--limit", type=int, default=10, help="import-intentions: at most this many per run (0: all)")
     t.add_argument("--number", type=int, default=0, help="import-intentions: only this intention issue")
     t.add_argument("--statement", default="")
