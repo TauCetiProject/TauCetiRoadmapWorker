@@ -142,6 +142,9 @@ class FakeIssuesGH:
 
     def __init__(self, issues: list[dict]):
         self.issues = {i["number"]: {"state": "open", **i} for i in issues}
+        # The labels an issue starts with were added in the order listed.
+        self.events = {n: [{"event": "labeled", "label": dict(label)} for label in i["labels"]]
+                       for n, i in self.issues.items()}
         self.writes: list[tuple[str, str, dict]] = []
         self.comments: dict[int, list[str]] = {}
         self.fail_removals = False
@@ -163,7 +166,14 @@ class FakeIssuesGH:
                     if want <= set(self.labels(n)) and state in ("all", i["state"])]
         if len(parts) == 6 and parts[3] == "issues" and parts[5] == "labels":
             return copy.deepcopy(self.issues[int(parts[4])]["labels"])
+        if len(parts) == 6 and parts[3] == "issues" and parts[5] == "events":
+            return copy.deepcopy(self.events[int(parts[4])])
         raise GHError(f"GET {path}: not faked")
+
+    def add_label(self, number: int, name: str) -> None:
+        """A label added from outside (another writer)."""
+        self.issues[number]["labels"].append({"name": name})
+        self.events[number].append({"event": "labeled", "label": {"name": name}})
 
     def write(self, method: str, path: str, payload: dict | None = None):
         self.writes.append((method, path, payload or {}))
@@ -172,7 +182,7 @@ class FakeIssuesGH:
         if parts[5] == "labels" and method == "POST":
             for name in payload["labels"]:
                 if name not in self.labels(number):
-                    self.issues[number]["labels"].append({"name": name})
+                    self.add_label(number, name)
             return copy.deepcopy(self.issues[number]["labels"])
         if parts[5] == "labels" and method == "DELETE":
             name = unquote(parts[6])

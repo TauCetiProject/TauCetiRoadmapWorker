@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -207,6 +208,10 @@ def targets(args) -> int:
 
 # --- work -----------------------------------------------------------------------------------------
 
+def _stop(signum, frame):
+    raise SystemExit(128 + signum)
+
+
 def work(args) -> int:
     from .lanes import Context
     from .mergeorder import _order
@@ -228,6 +233,8 @@ def work(args) -> int:
                   operator=operator, agent=agent, model=model, conf=_local_conf(args, cfg), dry_run=args.dry_run,
                   agent_fixed=bool(args.agent))
     print(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}")
+    # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
+    signal.signal(signal.SIGTERM, _stop)
     if args.loop:
         try:
             work_loop(ctx, only, lambda: _order(ctx))
@@ -504,6 +511,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("target", help="fetch: DOI, arXiv id, URL, local file or 'Authors, Title, Year'; check/cache: "
                                   "sources.toml; classify: URL; ocr: PDF; request: needs-references.toml")
     s.add_argument("--manifest", default="", help="fetch: record the entry in this sources.toml")
+    s.add_argument("--add-only", action="store_true",
+                   help="fetch: an entry the manifest has keeps its values (a review adds, never rewrites)")
     s.add_argument("--id", default="", help="fetch: the citation key (default: the manifest's, else derived)")
     s.add_argument("--authors", default="")
     s.add_argument("--title", default="")
@@ -511,8 +520,6 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--locator-scheme", default="", choices=["", *sources.LOCATOR_SCHEMES])
     s.add_argument("--locator", default="")
     s.add_argument("--cited-for", action="append", default=[], help="a README section or target citing it (repeatable)")
-    s.add_argument("--add-only", action="store_true",
-                   help="fetch: an entry the manifest has keeps its values (a review adds, never rewrites)")
     s.add_argument("--licence-class", default="", help="fetch: the class of a URL on a host no list names, once checked")
     s.add_argument("--missing-out", default="", help="fetch: on failure, add a [[missing]] table to this file")
     s.add_argument("--json", action="store_true")

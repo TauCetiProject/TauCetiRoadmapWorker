@@ -213,14 +213,16 @@ def sync_targets(ctx) -> list[str]:
 
 def sync_states(ctx, shared: claims.Claims | None) -> list[str]:
     """The board's invariant: every open job issue carries exactly one `state:` label. An issue that
-    carries several keeps the one `board.repaired_state` picks, the lease deciding between claimed
-    and available (with no readable claims namespace a `claimed` label stands)."""
+    carries several keeps the one `board.repaired_state` picks from the label added last and the
+    lease (with no readable claims namespace, no lease information)."""
     out, now = [], int(dt.datetime.now(dt.UTC).timestamp())
     for job in ctx.board.state_conflicts():
         states = board.state_labels(job.labels)
         live = claims.lease_live(shared.read(claims.job_key(ctx.cfg.project.name, job.id)), now) if shared else None
-        keep = board.repaired_state(states, live)
-        why = "no lease information" if live is None else ("a live lease" if live else "no live lease")
+        last = ctx.board.last_state_added(job)
+        keep = board.repaired_state(states, live, last)
+        why = "; ".join(([f"`state:{last}` added last"] if last else [])
+                        + ["no lease information" if live is None else ("a live lease" if live else "no live lease")])
         ctx.board.set_state(job, keep, "Board: this job carried " + ", ".join(f"`state:{s}`" for s in states)
                             + f"; it keeps `state:{keep}` ({why}).")
         out.append(f"{job.id}: {' + '.join(states)} -> {keep} ({why})")

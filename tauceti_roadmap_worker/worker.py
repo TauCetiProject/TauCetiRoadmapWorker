@@ -123,15 +123,15 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
     """Claim, run the lane, and end the round in one place: the lease is always released, and every
     way a lane can stop before it submits (a failure it reports, an exception from git, GitHub or
     anything else, a usage limit, an interrupt) goes through `release`."""
-    if not ctx.dry_run:
-        try:
-            ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by worker `{ctx.worker_id}` "
-                                                f"(@{ctx.operator}, {ctx.agent}).")
-        except GHError:
-            pass  # no write access to the board: the lease is the claim; `board sync` mirrors it
-    log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
     interrupt = None
     try:
+        if not ctx.dry_run:
+            try:
+                ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by worker `{ctx.worker_id}` "
+                                                    f"(@{ctx.operator}, {ctx.agent}).")
+            except GHError:
+                pass  # no write access to the board: the lease is the claim; `board sync` mirrors it
+        log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
         with Heartbeat(ctx, key):
             result = lane.run(job, ctx)
     except Exception as exc:  # noqa: BLE001 - git, GitHub, the lane's own errors or a bug: all release the job
@@ -163,23 +163,28 @@ def release(ctx: Context, job: Job, result: LaneResult) -> None:
 
 QUICK_POLL = 60     # seconds: the latest first poll after a failure or after a parked job is answered
 AFTER_ROUND = 20    # seconds between a round that did something and the next
+PARKED_WATCH = 3 * 3600   # idle seconds a parked job is watched for its answer; then the idle poll finds it
 
 
 def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=print, sleep=time.sleep) -> None:
     """Rounds until interrupted: sleep through usage limits and idle periods. An idle worker sleeps
     `[worker] idle_seconds`, except that the next poll comes within QUICK_POLL seconds after a
     failure (the job was released and may be due again), and after the board answers a job this
-    worker parked for references (looked up every QUICK_POLL seconds while one waits)."""
+    worker parked for references (looked up every QUICK_POLL seconds of idle time, for at most
+    PARKED_WATCH seconds per job). A board that cannot be read counts as an idle round."""
     idle = idle_sleep or ctx.cfg.worker.idle_seconds
-    parked: set[str] = set()     # jobs this worker parked, until the board answers them
-    quick = False                # the next idle wait is short
+    parked: dict[str, float] = {}   # jobs this worker parked -> idle seconds left to watch for the answer
+    quick = False                    # the next idle wait is short
     while True:
-        result = work_once(ctx, only, order=order_fn(), log=log)
+        try:
+            result = work_once(ctx, only, order=order_fn(), log=log)
+        except GHError as exc:
+            result = LaneResult("", "idle", f"the board could not be read: {exc}")
         log(f"{now():%Y-%m-%dT%H:%MZ} {result.job or '-'} {result.status}: {result.detail}")
         if result.status == "needs-references":
-            parked.add(result.job)
+            parked[result.job] = PARKED_WATCH
         else:
-            parked.discard(result.job)
+            parked.pop(result.job, None)
         if result.status == "limited":
             wake = result.retry_at
             sleep(max(300, (wake - dt.datetime.now(wake.tzinfo)).total_seconds() + 300) if wake else 1800)
@@ -196,24 +201,30 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
             sleep(AFTER_ROUND)
 
 
-def wait_idle(ctx: Context, seconds: float, parked: set[str], sleep=time.sleep) -> set[str]:
+def wait_idle(ctx: Context, seconds: float, parked: dict[str, float], sleep=time.sleep) -> set[str]:
     """Sleep up to `seconds`. While jobs this worker parked are waiting for references, look every
     QUICK_POLL seconds whether one has left `state:needs-references` (the board answered it): then
-    stop early, forget those jobs and return them."""
+    stop early, forget those jobs and return them. A job watched for its whole PARKED_WATCH is
+    forgotten too: the ordinary idle poll finds it when it is answered."""
     left = seconds
     while left > 0:
         step = min(left, QUICK_POLL) if parked else left
         sleep(step)
         left -= step
+        for job_id in list(parked):
+            parked[job_id] -= step
+            if parked[job_id] <= 0:
+                del parked[job_id]
         if not parked:
             continue
         try:
             waiting = {job.id for job in ctx.board.list_jobs(("needs-references",))}
         except GHError:
             continue
-        answered = parked - waiting
+        answered = set(parked) - waiting
         if answered:
-            parked -= answered
+            for job_id in answered:
+                del parked[job_id]
             return answered
     return set()
 

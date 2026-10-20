@@ -97,9 +97,11 @@ the roadmap is parked (`state:blocked`) for a human.
 States are the labels `state:available`, `claimed`, `submitted`, `done`, `blocked` and
 `needs-references`. A job issue carries exactly one: every state change adds the new label first and
 then removes every other `state:` label the issue carries at that moment. `board sync` repairs an
-issue that still carries several (a removal failed, or two writers raced): a state that holds the
-job past its claim wins (`done`, `blocked`, `needs-references`, `submitted`, in that order), and
-otherwise the lease decides between `claimed` (a live lease) and `available`. Every job issue
+issue that still carries several (a removal failed, or two writers raced) from the issue's events:
+the label added last is what the latest writer meant, so `done`, `blocked`, `needs-references` or
+`submitted` added last stands, and when the last write moved the job to `claimed` or `available`
+(out of a holding state too, such as an unblock) the lease decides between those two. Without the
+events, a holding state wins (`done`, `blocked`, `needs-references`, `submitted`, in that order). Every job issue
 carries a machine-readable spec in an HTML comment; the rest of the issue is for humans and is never
 read as an instruction.
 

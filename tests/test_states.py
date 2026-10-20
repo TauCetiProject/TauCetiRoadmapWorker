@@ -30,7 +30,7 @@ def test_set_state_removes_every_state_label_the_issue_carries(cfg):
     gh = FakeIssuesGH([job_issue(1, JOB, "available")])
     b = Board(cfg, gh)
     job = listed(b, 1)                            # listed while the issue said only `available`
-    gh.issues[1]["labels"].append({"name": "state:claimed"})   # someone else wrote since
+    gh.add_label(1, "state:claimed")              # someone else wrote since
     b.set_state(job, "needs-references", "parked")
     assert gh.states(1) == ["needs-references"] and job.state == "needs-references"
     assert board.state_labels(job.labels) == ["needs-references"] and gh.comments[1] == ["parked"]
@@ -61,19 +61,24 @@ def test_a_failed_removal_leaves_the_new_state_on(cfg):
     assert sorted(gh.states(1)) == ["available", "claimed"]     # never no state: sync repairs this
 
 
-@pytest.mark.parametrize("states,live,keep", [
-    (["available", "claimed"], True, "claimed"),
-    (["available", "claimed"], False, "available"),
-    (["available", "claimed"], None, "claimed"),
-    (["claimed", "needs-references"], True, "needs-references"),
-    (["claimed", "submitted"], True, "submitted"),
-    (["available", "needs-references"], False, "needs-references"),
-    (["blocked", "available"], False, "blocked"),
-    (["submitted", "done"], False, "done"),
-    (["bogus", "available"], False, "available"),
+@pytest.mark.parametrize("states,live,last,keep", [
+    (["available", "claimed"], True, "available", "claimed"),        # the lease decides between the two
+    (["available", "claimed"], False, "claimed", "available"),
+    (["available", "claimed"], None, "available", "available"),      # no lease information: the last write
+    (["claimed", "needs-references"], True, "needs-references", "needs-references"),   # a worker parked it
+    (["claimed", "submitted"], True, "submitted", "submitted"),
+    (["needs-references", "available"], False, "available", "available"),   # references answered
+    (["blocked", "available"], False, "available", "available"),             # a maintainer's unblock
+    (["submitted", "available"], True, "available", "claimed"),              # released, then leased again
+    (["submitted", "done"], False, "done", "done"),
+    # Without the issue's events: a holding state wins, then the lease.
+    (["available", "needs-references"], False, "", "needs-references"),
+    (["blocked", "available"], False, "", "blocked"),
+    (["available", "claimed"], None, "", "claimed"),
+    (["bogus", "available"], False, "", "available"),
 ])
-def test_repaired_state(states, live, keep):
-    assert board.repaired_state(states, live) == keep
+def test_repaired_state(states, live, last, keep):
+    assert board.repaired_state(states, live, last) == keep
 
 
 def test_board_sync_repairs_issues_with_several_state_labels(cfg):
@@ -81,18 +86,25 @@ def test_board_sync_repairs_issues_with_several_state_labels(cfg):
                        job_issue(2, "TARGET-Beta", "available", "claimed"),
                        job_issue(3, "DESIGN-Gamma", "claimed", "needs-references"),
                        job_issue(4, "PKG-Delta", "submitted"),
-                       {**job_issue(5, "PKG-Eps", "available", "done"), "state": "closed"}])
+                       {**job_issue(5, "PKG-Eps", "available", "done"), "state": "closed"},
+                       job_issue(6, "DESIGN-Zeta", "needs-references", "available"),
+                       job_issue(7, "PKG-Eta", "blocked", "available")])
     shared = FakeClaims(live=(claims.job_key(cfg.project.name, "TARGET-Alpha"),))
     ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=None, worker_id="board", operator="m",
                   agent="codex", model="m")
     out = intake.sync_states(ctx, shared)
-    assert out == ["TARGET-Alpha: available + claimed -> claimed (a live lease)",
-                   "TARGET-Beta: available + claimed -> available (no live lease)",
-                   "DESIGN-Gamma: claimed + needs-references -> needs-references (no live lease)"]
-    assert [gh.states(n) for n in (1, 2, 3, 4)] == [["claimed"], ["available"], ["needs-references"], ["submitted"]]
+    assert out == [
+        "TARGET-Alpha: available + claimed -> claimed (`state:claimed` added last; a live lease)",
+        "TARGET-Beta: available + claimed -> available (`state:claimed` added last; no live lease)",
+        ("DESIGN-Gamma: claimed + needs-references -> needs-references (`state:needs-references` added last; "
+         "no live lease)"),
+        "DESIGN-Zeta: needs-references + available -> available (`state:available` added last; no live lease)",
+        "PKG-Eta: blocked + available -> available (`state:available` added last; no live lease)"]
+    assert [gh.states(n) for n in (1, 2, 3, 4, 6, 7)] == [["claimed"], ["available"], ["needs-references"],
+                                                          ["submitted"], ["available"], ["available"]]
     assert sorted(gh.states(5)) == ["available", "done"]            # closed issues are left alone
     assert gh.comments[2] == [("Board: this job carried `state:available`, `state:claimed`; it keeps "
-                               "`state:available` (no live lease).")]
+                               "`state:available` (`state:claimed` added last; no live lease).")]
     assert intake.sync_states(ctx, shared) == []                     # repaired: nothing left to do
 
 
@@ -143,12 +155,29 @@ def test_a_round_that_stops_before_submitting_releases_the_job(round_ctx, monkey
     assert gh.comments[1][0].startswith("Claimed for") and gh.comments[1][1].startswith("Released by worker `chris-1`")
 
 
-def test_an_interrupted_round_releases_the_job_and_stops(round_ctx, monkeypatch):
+@pytest.mark.parametrize("stop", [KeyboardInterrupt, lambda: SystemExit(143)])   # Ctrl-C, SIGTERM
+def test_an_interrupted_round_releases_the_job_and_stops(round_ctx, monkeypatch, stop):
     ctx, gh = round_ctx
-    monkeypatch.setattr(worker, "lane_for", lambda job: Lane(KeyboardInterrupt()))
-    with pytest.raises(KeyboardInterrupt):
+    exc = stop()
+    monkeypatch.setattr(worker, "lane_for", lambda job: Lane(exc))
+    with pytest.raises(type(exc)):
         worker.work_once(ctx, None, log=lambda line: None)
     assert gh.states(1) == ["available"] and ctx.claims.released and worker.failures(ctx) == {}
+
+
+def test_an_interrupt_during_the_claim_still_releases(round_ctx, monkeypatch):
+    ctx, gh = round_ctx
+    claim = ctx.board.set_state
+
+    def interrupted_claim(job, state, comment=""):
+        claim(job, state, comment)
+        if state == "claimed":
+            raise KeyboardInterrupt
+    monkeypatch.setattr(ctx.board, "set_state", interrupted_claim)
+    monkeypatch.setattr(worker, "lane_for", lambda job: Lane(LaneResult(JOB, "submitted", "")))
+    with pytest.raises(KeyboardInterrupt):
+        worker.work_once(ctx, None, log=lambda line: None)
+    assert gh.states(1) == ["available"] and ctx.claims.released
 
 
 def test_a_stale_listing_still_ends_with_one_state(round_ctx, monkeypatch):
@@ -159,7 +188,7 @@ def test_a_stale_listing_still_ends_with_one_state(round_ctx, monkeypatch):
 
     def stale_listing(*args, **kwargs):
         jobs = listing(*args, **kwargs)
-        gh.issues[1]["labels"].append({"name": "state:needs-references"})
+        gh.add_label(1, "state:needs-references")
         return jobs
     monkeypatch.setattr(ctx.board, "list_jobs", stale_listing)
     monkeypatch.setattr(worker, "lane_for", lambda job: Lane(CHECKOUT))

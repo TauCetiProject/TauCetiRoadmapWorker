@@ -90,3 +90,33 @@ def test_after_a_failure_the_next_polls_come_within_a_minute(monkeypatch):
     sleeps, _ = loop(monkeypatch, [failed, IDLE, IDLE])
     assert sleeps == [worker.AFTER_ROUND, 60, 900]
     assert worker.AFTER_ROUND <= worker.QUICK_POLL <= 60
+
+
+def test_an_unanswered_parked_job_is_watched_for_a_bounded_time(monkeypatch):
+    job = new_job(JOB)
+    job.state = "needs-references"
+    board = FakeBoard(jobs=[job])
+    listings = []
+    listing = board.list_jobs
+    board.list_jobs = lambda *a, **k: listings.append(1) or listing(*a, **k)
+    monkeypatch.setattr(worker, "PARKED_WATCH", 300)
+    parked = LaneResult(JOB, "needs-references", "")
+    sleeps, _ = loop(monkeypatch, [parked, IDLE, IDLE], board, idle_seconds=600)
+    # Minute slices while the job is watched (300 s), the rest of the idle time in one; then plain idle sleeps.
+    assert sleeps == [worker.AFTER_ROUND] + [60] * 5 + [300, 600] and len(listings) == 4
+
+
+def test_a_board_that_cannot_be_read_is_an_idle_round(monkeypatch):
+    from tauceti_roadmap_worker.gh import GHError
+    results = iter([GHError("GET .../issues: 502")])
+
+    def work_once(base, only, job_id="", order=None, log=print):
+        for r in results:
+            raise r
+        raise Stop
+    cfg = parsed()
+    sleeps, lines = [], []
+    monkeypatch.setattr(worker, "work_once", work_once)
+    with pytest.raises(Stop):
+        worker.work_loop(SimpleNamespace(cfg=cfg, board=FakeBoard()), None, list, log=lines.append, sleep=sleeps.append)
+    assert sleeps == [600] and "the board could not be read" in lines[0]

@@ -221,17 +221,24 @@ def state_from_labels(labels: list[str]) -> str:
 HOLDING = ("done", "blocked", "needs-references", "submitted")
 
 
-def repaired_state(states: list[str], lease_live: bool | None) -> str:
+def repaired_state(states: list[str], lease_live: bool | None, last: str = "") -> str:
     """The one state kept on an issue that carries several (a label removal failed, or two writers
-    raced). A holding state wins: whoever set it ended a round, and the board's own commands move
-    the job on from there (intake, `board references`, `board stale`). Between `claimed` and
-    `available` the lease decides: a live lease means a worker holds the job, none means nobody does.
-    With no lease information (`None`) a `claimed` label stands."""
-    for state in HOLDING:
-        if state in states:
-            return state
+    raced). `last` is the state whose label was added last: every state change adds its label
+    before removing the others, so it is what the latest writer meant. A holding state added last
+    stands. When the latest writer moved the job to `claimed` or `available` (out of a holding state
+    too: references answered, a stale submission released, an unblock), the lease decides between
+    those two: a live lease means a worker holds the job, none means nobody does; with no lease
+    information (`None`) the label added last stands. With no event information, a holding state
+    wins in HOLDING order: whoever set it ended a round, and the board's own commands move the job
+    on from there (intake, `board references`, `board stale`)."""
+    if last in HOLDING:
+        return last
+    if not last:
+        for state in HOLDING:
+            if state in states:
+                return state
     if lease_live is None:
-        return "claimed" if "claimed" in states else "available"
+        return last or ("claimed" if "claimed" in states else "available")
     return "claimed" if lease_live else "available"
 
 
@@ -599,6 +606,19 @@ class Board:
         if comment:
             self.comment(job.number, comment)
         job.state = state
+
+    def last_state_added(self, job: Job) -> str:
+        """Of the state labels the issue carries, the one added last (from its events), or ''."""
+        try:
+            events = self.gh.api(f"repos/{self.repo}/issues/{job.number}/events?per_page=100", paginate=True)
+        except GHError:
+            return ""
+        carried, last = set(state_labels(job.labels)) & set(STATES), ""
+        for event in events or []:
+            name = (event.get("label") or {}).get("name") or ""
+            if event.get("event") == "labeled" and name.startswith("state:") and name[6:] in carried:
+                last = name[6:]
+        return last
 
     def state_conflicts(self) -> list[Job]:
         """Open job issues that carry more than one `state:` label."""
