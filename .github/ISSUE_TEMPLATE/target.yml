@@ -50,7 +50,7 @@ body:
         - Publisher open archive
         - Author page
         - Institutional repository
-        - Held locally by me (I can attach it to the job)
+        - Held locally by me (never uploaded; the job will name the file for operators who hold it)
         - Paywalled (cite by locator only)
         - Unknown
     validations:

@@ -153,7 +153,7 @@ class Sources:
     ocr: bool = False
     ocr_dpi: int = 300
     ocr_min_chars: int = 250
-    # Who may answer a needs-references request (attach, name a source, waive).
+    # Who may answer a needs-references request (name a source, name a local file, waive).
     answer_associations: list[str] = field(default_factory=lambda: ["OWNER", "MEMBER", "COLLABORATOR"])
     # Whose request comments the intake reads (the board's bot logins always count): operators post
     # them, and an operator whose submissions were merged is at least a CONTRIBUTOR.

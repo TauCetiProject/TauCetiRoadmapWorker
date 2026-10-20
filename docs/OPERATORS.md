@@ -142,7 +142,10 @@ fix lane reads it. A sharded job costs one agent run per section more than a who
 
 Every lane makes the texts its roadmap's `sources.toml` records available in the sources cache before
 the agent starts and lists their line-numbered files in the brief; agents fetch new sources through
-`tauceti-roadmap sources fetch` (see [SOURCES.md](SOURCES.md)).
+`tauceti-roadmap sources fetch` (see [SOURCES.md](SOURCES.md)). Sources live only on the operator's
+machine: the cache under the state directory is their only copy, and every submission gate refuses
+source documents, extracted text, manifests that embed text and fenced passages of more than 40
+lines (see "Sources never enter a repository" in SOURCES.md).
 
 ### Every round starts from the board
 
@@ -261,7 +264,7 @@ Pull requests listed in `hold-draft.txt` in the state directory stay drafts: `bo
 them back if anything marks them ready.
 
 For every job parked in `state:needs-references`, the intake reads the humans' answers after the
-latest request (attach, source, waive; see [SOURCES.md](SOURCES.md)), records them in the roadmap's
+latest request (source, local, waive; see [SOURCES.md](SOURCES.md)), records them in the roadmap's
 `sources.toml` on the packages repository, and makes the job available again once every key is
 answered. Its notes carry a progress marker, so running it every few minutes repeats nothing.
 
@@ -324,9 +327,11 @@ alternative for operators who already use it.
 * **A target**: use the issue template on the board (or `targets file`). `board sync` turns it into a
   `TARGET-Name` job; the triage decides new roadmap, Part II, or duplicate.
 * **A `needs-references` request**: answer each key in a comment on the job, one line each:
-  `attach: KEY` with the file attached to the comment, `source: KEY <DOI, arXiv id or URL>`, or
-  `waive: KEY` (the citation is then cited by its locator alone, as `waived`). The board's intake
-  records the answers and makes the job available again once every key is answered.
+  `source: KEY <DOI, arXiv id or URL>`, `local: KEY <file name>` (operators hold the text in
+  `[sources] local_dirs`; only a worker whose operator holds it resumes the job), or `waive: KEY`
+  (the citation is then cited by its locator alone, as `waived`). Never attach a file: sources never
+  enter a repository or an issue, and attachments are not downloaded. The board's intake records the
+  answers and makes the job available again once every key is answered.
 * **An intention** on the roadmap repository becomes a TARGET job when the maintainer runs
   `targets import-intentions`; there is nothing else to do.
 * **A draft pull request**: review it on GitHub. Your comments feed the gate lane; the reply answers
@@ -342,8 +347,9 @@ alternative for operators who already use it.
   overwriting the other.
 * A job parked for references is run again from the start once answered; its earlier partial work
   stays only in that worker's job folder (`unsubmitted/`).
-* Attachments are downloaded without credentials: on a private board, humans name a legal source
-  or attach the file to a public issue instead.
+* A `local:` requirement is recorded on the answered job only: a later job of the roadmap (its
+  review, say) that needs the text runs on any worker and lists the text as unavailable when its
+  operator does not hold it.
 * The weekly digest issue of open `needs-references` requests is not implemented; use the label.
 * The intake reads a request only from the board's logins and `[sources] request_associations`: an
   operator with no association on the board yet (before a first merged submission) has their request

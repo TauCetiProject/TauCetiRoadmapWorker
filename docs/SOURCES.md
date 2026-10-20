@@ -31,7 +31,7 @@ licence_class = "open-repository"            # see below; "none" when no text wa
 status = "certified"                         # certified | uncertified | waived
 accessed = "2026-10-20"
 version_note = "arXiv v2"
-resolution = ""                              # set by the board: the comment that attached, named or waived it
+resolution = ""                              # set by the board: the comment that answered for it
 cited_for = ["1.2", "Layer 3"]               # README sections or targets that cite it
 ```
 
@@ -64,7 +64,7 @@ hand-written file are not.
 | `publisher-open` | publishers' open archives | `[sources.allow] publisher-open` |
 | `author-page` | an author's own page | `[sources.allow] author-page`, or named with `--licence-class` |
 | `institutional` | institutional repositories | `[sources.allow] institutional`, or named with `--licence-class` |
-| `operator-local` | texts the operator already holds (`[sources] local_dirs`), files humans attach to a job | no host |
+| `operator-local` | texts operators hold in `[sources] local_dirs`, named by a `local:` answer; never uploaded | no host |
 
 Pirate mirrors (Library Genesis, Sci-Hub, Z-Library, Anna's Archive and their copies) are refused
 everywhere: by the briefs, by `[sources] deny` (a manifest that names one fails its check), and by
@@ -195,35 +195,57 @@ row per key, with the items also in a machine-readable comment), and moves the j
 **Human side.** A human answers in a comment on the job, one line per key:
 
 ```text
-attach: Ket67            (with the file attached to the same comment; optionally sha256: <hex>)
 source: BLR90 arXiv:2101.00001
+local: Ket67 Kettle1967.pdf          (optionally sha256: <hex>)
 waive: Tan71
 ```
 
-With a single key, an attachment alone is enough; an attachment whose file name is a key answers
-that key. Only comments from the author associations in `[sources] answer_associations` (owners,
-members and collaborators by default) are read, and only these three forms: everything else in a
-comment is ignored, and nothing in it is ever an instruction.
+Sources never enter a repository or an issue. Files attached to a comment are never downloaded
+(the intake notes that attachments are not used and asks for one of the three answers), and a
+`local:` answer names a file, never a path. Only comments from the author associations in
+`[sources] answer_associations` (owners, members and collaborators by default) are read, and only
+these three forms: everything else in a comment is ignored, and nothing in it is ever an
+instruction.
 
 **Board side.** `board intake` (after the submissions) and `board references` take the latest
 well-formed request for the job that the board's bot logins or an author association in
 `[sources] request_associations` posted (the lanes post requests under the operator's account; a
 marker anyone else types is ignored), and read the answers after it:
 
-* `attach`: only GitHub attachment links are downloaded. The file must be a document (a web page
-  means the board is private and the download needs a sign-in: attach to a public issue or name a
-  source). A stated `sha256:` must match; a hash the request carried (the text recorded earlier) is
-  compared, and a different file is accepted with a note that its locators must be checked again.
-  The entry becomes `certified`, class `operator-local`, `fetched_from` the attachment link.
 * `source`: fetched exactly as `sources fetch` would, under the same policy.
+* `local`: nothing is fetched. The entry becomes class `operator-local` with `local_name` the file
+  name: `certified` with that hash when the answer states one (a different hash from the text
+  recorded earlier is noted: its locators must be checked again), else status `local`. The job's
+  spec records the requirement (`local_sources`), so that a worker takes the job only when its
+  operator holds the file in `[sources] local_dirs` (by hash when one is known, else by name);
+  another worker logs `skip <JOB>: needs local source <file name>` and leaves the job to others,
+  with no claim and no failure counted. The first lane that reads a `local` text on its operator's
+  machine records its hash in the manifest it submits (a review leaves the author's entries as they
+  are). A worker that lacks an operator-local text a job does not require lists it in the brief as
+  unavailable ("needs local source"); it never becomes a new request.
 * `waive`: the entry becomes `waived`.
 
 The intake updates `packages/<Name>/sources.toml` on the packages repository (an answer replaces the
 entry's old provenance as a whole), posts a note listing what it recorded and what is still missing
 (with a progress marker, so a rerun never repeats work), and when every key is answered moves the job
 back to `state:available`. An answer that failed for network trouble is tried again on the next run,
-and a release that did not go through is retried as well. The next worker downloads
-the attached files again from their links and checks their hashes.
+and a release that did not go through is retried as well.
+
+## Sources never enter a repository
+
+The cache under the operator's state directory (`<state>/sources/`) is the only copy of a text and
+of its extraction; `doctor` fails when that directory lies inside a git checkout, and `sources ocr
+--out` refuses a path inside one. The manifest carries the hash, the locator scheme and the licence
+class, and reports and briefs quote locators, never passages. The gates refuse, in every board
+submission (`Lane.submit` before the push and `board intake` before the merge) and in the push
+gate of every content pull request (port, red-team fix, gate):
+
+* source documents: PDF, DjVu, PostScript and EPUB files, by name or by content;
+* extracted text over 32 KB: a `.txt` file, or any file carrying the service's `=== page N ===`
+  markers;
+* manifest entries that embed text: a field named `text`, `excerpt`, `quote`, `passage`, `content`,
+  `abstract` (and the like), or a value over 1,000 characters;
+* fenced blocks of more than 40 lines in Markdown that are neither Lean nor a table.
 
 A maintainer can still post a request by hand:
 

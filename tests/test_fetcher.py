@@ -408,4 +408,19 @@ def test_materialize_finds_operator_texts_by_hash(tmp_path):
     [got] = make_fetcher(tmp_path, FakeTransport(), local_dirs=[str(lib)]).materialize(data)
     assert got.text and (tmp_path / "cache" / "local-index.json").is_file()
     [missing] = make_fetcher(tmp_path / "x", FakeTransport(), local_dirs=[]).materialize(data)
-    assert missing.permanent and "does not hold" in missing.problem
+    # Not gone: another operator holds it, and sources never travel, so it never becomes a request.
+    assert not missing.permanent and "needs local source Ket67" in missing.problem
+
+
+def test_materialize_reads_a_local_text_by_its_file_name(tmp_path):
+    lib = tmp_path / "library"
+    lib.mkdir()
+    (lib / "Kettle 1967.PDF").write_bytes(PDF)
+    data = {"source": [{"id": "Ket67", "status": "local", "local_name": "kettle 1967.pdf",
+                        "licence_class": "operator-local"}]}
+    t = FakeTransport()
+    [got] = make_fetcher(tmp_path, t, local_dirs=[str(lib)]).materialize(data, offline=True)
+    assert got.text and got.sha256 == sources.sha256_bytes(PDF) and t.requests == []
+    assert got.text.is_relative_to(tmp_path / "cache")
+    [missing] = make_fetcher(tmp_path / "x", FakeTransport(), local_dirs=[]).materialize(data)
+    assert missing.text is None and not missing.permanent and "needs local source kettle 1967.pdf" in missing.problem

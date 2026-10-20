@@ -263,6 +263,94 @@ def check_labels_missing(readme: str, lean: str) -> list[str]:
     return sorted(lab for lab in labels if lab not in lean and lab.replace("-", "_") not in lean)
 
 
+# --- source material: sources never enter a repository ---------------------------------------------
+
+SOURCE_SUFFIXES = (".pdf", ".djvu", ".djv", ".ps", ".eps", ".epub")
+SOURCE_MAGIC = (b"%PDF", b"AT&TFORM", b"%!PS")
+TEXT_SUFFIXES = (".txt", ".text")
+TEXT_LIMIT = 32 * 1024
+EXTRACTION_MARK = re.compile(r"^\s*(?:\d+\s+)?=== page \d+ ===\s*$", re.MULTILINE)
+EMBEDDED_KEYS = ("text", "fulltext", "excerpt", "excerpts", "quote", "quotes", "passage", "passages", "content",
+                 "abstract", "extract", "extraction")
+EMBEDDED_LIMIT = 1000
+FENCE_LIMIT = 40
+FENCE_OPEN = re.compile(r"^\s{0,3}(`{3,}|~{3,})\s*([^`\s]*)")
+
+
+def source_material_problems(path: str, data: bytes) -> list[str]:
+    """Why a file must not enter a repository: a source document (PDF, DjVu, PostScript or EPUB, by
+    name or by content), or more than 32 KB of extracted text (a text file, or text carrying the
+    sources service's page markers). Sources live only in the operator's cache."""
+    low = path.lower()
+    epub = data[:2] == b"PK" and b"application/epub+zip" in data[:120]
+    if low.endswith(SOURCE_SUFFIXES) or data.lstrip()[:8].startswith(SOURCE_MAGIC) or epub:
+        return [(f"{path}: a source document never enters a repository (the manifest records its hash, locator "
+                 "scheme and licence class; the text stays in the operator's cache)")]
+    if len(data) > TEXT_LIMIT and (low.endswith(TEXT_SUFFIXES)
+                                   or EXTRACTION_MARK.search(data.decode("utf-8", errors="replace"))):
+        return [(f"{path}: {len(data) // 1024} KB of extracted text never enters a repository (quote locators, "
+                 "never passages)")]
+    return []
+
+
+def manifest_text_problems(path: str, text: str) -> list[str]:
+    """Manifest entries that embed a source's text: a field named for one (text, excerpt, quote,
+    passage, ...) or a value longer than a citation needs."""
+    import tomllib
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return []          # reported as invalid TOML elsewhere
+    problems = []
+    for k, entry in enumerate(data.get("source", []) if isinstance(data.get("source"), list) else [], 1):
+        if not isinstance(entry, dict):
+            continue
+        where = f"{path}: source {k} ({entry.get('id', '?')})"
+        for key, value in entry.items():
+            if key.lower() in EMBEDDED_KEYS:
+                problems.append(f"{where}: `{key}` embeds text; the manifest records locators, never passages")
+            elif isinstance(value, str) and (len(value) > EMBEDDED_LIMIT or value.count("\n") >= 3):
+                problems.append(f"{where}: `{key}` is {len(value)} characters; the manifest records locators, "
+                                "never passages")
+    return problems
+
+
+def scan_long_fences(text: str, limit: int = FENCE_LIMIT) -> list[Hit]:
+    """Fenced blocks longer than `limit` lines that are neither Lean nor a table: a passage pasted from
+    a source. Reports, briefs and READMEs quote locators, never passages."""
+    hits, lines, i = [], text.splitlines(), 0
+    while i < len(lines):
+        m = FENCE_OPEN.match(lines[i])
+        if not m:
+            i += 1
+            continue
+        fence, lang = m.group(1), m.group(2).lower()
+        close = re.compile(rf"^\s{{0,3}}{re.escape(fence[0])}{{{len(fence)},}}\s*$")
+        j = i + 1
+        while j < len(lines) and not close.match(lines[j]):
+            j += 1
+        body = [line for line in lines[i + 1:j] if line.strip()]
+        table = bool(body) and all(line.lstrip()[:1] in ("|", "+") for line in body)
+        if len(lines[i + 1:j]) > limit and lang not in ("lean", "lean4") and not table:
+            hits.append(Hit(i + 1, f"a {j - i - 1}-line fenced block ({lang or 'no language'}): quote a locator, "
+                                   f"not a passage (at most {limit} lines unless Lean or a table)"))
+        i = j + 1
+    return hits
+
+
+def tree_source_problems(root: Path, folder: str) -> list[str]:
+    """Every file under `folder` of a checkout, through the source-material and manifest checks."""
+    problems = []
+    for path in sorted((root / folder).rglob("*")):
+        if path.is_file() and ".git" not in path.relative_to(root).parts:
+            rel = str(path.relative_to(root))
+            data = path.read_bytes()
+            problems += source_material_problems(rel, data)
+            if path.name == "sources.toml":
+                problems += manifest_text_problems(rel, data.decode("utf-8", errors="replace"))
+    return problems
+
+
 # --- the gate -------------------------------------------------------------------------------------
 
 @dataclass
@@ -337,6 +425,7 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
     r.add("check-labels-missing", check_labels_missing(readme, lean))
     r.add("empty-sections", empty_lean_sections(lean))
     r.add("round-labels", round_labels(readme + "\n" + lean))
+    r.add("long-fences", scan_long_fences(readme))
     if opts.order is not None:
         readmes = dict(opts.sibling_readmes)
         readmes[name] = readme
@@ -373,14 +462,19 @@ def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build
     r = scan_folder(name, readme_path.read_text(encoding="utf-8", errors="replace"),
                     lean_path.read_text(encoding="utf-8", errors="replace"), opts)
     r.add("metadata", [] if (root / folder / "metadata.toml").is_file() else [f"{folder}/metadata.toml missing"])
+    material = tree_source_problems(root, folder)
     try:
         r.add("dirty", [line for line in _git(root, "status", "--short").splitlines() if line.strip()])
         if base:
             mb = _git(root, "merge-base", base, "HEAD").strip()
             changed = [p for p in _git(root, "diff", "--name-only", mb, "HEAD").splitlines() if p.strip()]
             r.add("outside-folder", outside_folder(changed, folder, opts.outside_folder_allow))
+            for p in changed:
+                if not p.startswith(folder.rstrip("/") + "/") and (root / p).is_file():
+                    material += source_material_problems(p, (root / p).read_bytes())
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         r.add("git", [str(exc)])
+    r.add("source-material", material)
     if build_cmd:
         r.add("build", build_problems(root, build_cmd.format(module=f"{opts.active_dir}.{name}.Suggested")))
     return r

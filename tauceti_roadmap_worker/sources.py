@@ -23,15 +23,21 @@ The manifest is `packages/<Name>/sources.toml` (see docs/SOURCES.md):
     fetched_at = "2026-10-20T09:15:00Z"
     sha256 = "<64 hex>"               # of those bytes
     licence_class = "open-repository" # see LICENCE_CLASSES, or "none" when no text was read
-    status = "certified"              # certified | uncertified | waived
+    status = "certified"              # certified | uncertified | waived | local
+    local_name = ""                   # operator-local texts: the file name in `[sources] local_dirs`
     accessed = "2026-10-20"
     version_note = "arXiv v2; numbering agrees with the published version"
-    resolution = ""                   # set by the board: the comment that attached, named or waived it
+    resolution = ""                   # set by the board: the comment that answered for it
     cited_for = ["1.2", "Layer 3"]
+
+`local` is a text operators hold under that file name and nobody has hashed yet; the first lane
+that reads it on an operator's machine records it as `certified` with its hash.
 
 Cache: `<state>/sources/<sha256>.<ext>` with its line-numbered text extraction beside it as
 `<sha256>.txt`, so that reviewers can quote locators by line. Files are named by content, so two
-roadmaps citing the same text share one copy and a recorded hash always finds its bytes.
+roadmaps citing the same text share one copy and a recorded hash always finds its bytes. The cache
+is the only copy: no source and no extracted text ever enters a repository or an issue (the gates
+refuse them in every submission).
 """
 
 from __future__ import annotations
@@ -53,17 +59,18 @@ from .paths import SANDBOX
 
 SCHEMA = "tauceti-roadmap-sources/v1"
 LOCATOR_SCHEMES = ("theorem", "page", "section", "tag", "chapter", "equation")
-STATUSES = ("certified", "uncertified", "waived")
+STATUSES = ("certified", "uncertified", "waived", "local")
 NO_TEXT = "none"   # licence class of a citation whose text was not read (uncertified or waived)
 REQUIRED = ("id", "authors", "title", "year", "locator_scheme", "licence_class", "status")
 REQUIRED_WAIVED = ("id", "authors", "title", "year", "status")
+REQUIRED_LOCAL = ("id", "authors", "title", "year", "status", "licence_class", "local_name")
 FIELD_ORDER = ("id", "authors", "title", "year", "venue", "doi", "arxiv", "locator_scheme", "locator", "url",
-               "fetched_from", "fetched_at", "sha256", "licence_class", "status", "accessed", "version_note",
-               "resolution", "cited_for")
+               "fetched_from", "fetched_at", "sha256", "licence_class", "status", "local_name", "accessed",
+               "version_note", "resolution", "cited_for")
 # Where the text came from: replaced as a group whenever an entry gets a new text (or none), so a
 # record never mixes the URL of one copy with the hash of another.
-PROVENANCE = ("url", "fetched_from", "fetched_at", "sha256", "arxiv", "licence_class", "status", "accessed",
-              "version_note", "resolution")
+PROVENANCE = ("url", "fetched_from", "fetched_at", "sha256", "arxiv", "licence_class", "status", "local_name",
+              "accessed", "version_note", "resolution")
 DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -146,7 +153,7 @@ def validate_manifest(data: dict, allow: dict[str, list[str]], deny: list[str], 
     for k, s in enumerate(entries, 1):
         where = f"source {k} ({s.get('id', '?')})"
         status, cls = s.get("status"), s.get("licence_class")
-        for key in REQUIRED_WAIVED if status == "waived" else REQUIRED:
+        for key in {"waived": REQUIRED_WAIVED, "local": REQUIRED_LOCAL}.get(status, REQUIRED):
             if key not in s or s[key] in ("", None):
                 problems.append(f"{where}: missing {key}")
         if s.get("id") in seen:
@@ -176,6 +183,10 @@ def validate_manifest(data: dict, allow: dict[str, list[str]], deny: list[str], 
                 found = classify_url(s["fetched_from"], allow, deny)
                 if found not in ("unknown", cls) and found != "denied":
                     problems.append(f"{where}: fetched from a {found} host but recorded as {cls}")
+        if status == "local" and cls != "operator-local":
+            problems.append(f"{where}: a local text is of licence class operator-local")
+        if s.get("local_name") and not re.fullmatch(r"[^/\\]+", str(s["local_name"])):
+            problems.append(f"{where}: local_name is a file name, never a path")
         if status == "uncertified" and not uncertified_ok:
             problems.append(f"{where}: uncertified citations are not accepted by this project (needs-references)")
     return problems
@@ -363,6 +374,16 @@ def cache_root(state: Path) -> Path:
     return Path(state) / "sources"
 
 
+def enclosing_checkout(path: Path) -> Path | None:
+    """The git checkout `path` lies in (it need not exist yet), or None. The sources cache and the
+    state directory must never be inside one."""
+    path = Path(path).expanduser().absolute()
+    for parent in (path, *path.parents):
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
 def cache_paths(root: Path, sha256: str, ext: str = "pdf") -> tuple[Path, Path]:
     """(file, line-numbered text extraction) for a cached source."""
     return Path(root) / f"{sha256}.{ext.lstrip('.')}", Path(root) / f"{sha256}.txt"
@@ -386,7 +407,7 @@ class HashMismatch(Exception):
 
 def store_bytes(root: Path, data: bytes, ext: str, expected: str = "") -> Path:
     """Write `data` into the cache under its hash and verify the written file. With `expected`, the
-    data must have that SHA-256 (a recorded text, or the hash a human stated for an attachment)."""
+    data must have that SHA-256 (a recorded text, or the hash a human stated for a local file)."""
     sha = sha256_bytes(data)
     if expected and sha != expected.lower():
         raise HashMismatch(f"SHA-256 {sha} differs from the expected {expected.lower()}")

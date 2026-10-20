@@ -1,0 +1,230 @@
+"""Sources live only on the operator's machine (docs/DESIGN.md §5): a `local:` answer gates who may
+resume a job, nothing is downloaded from an issue, and every submission gate refuses source
+documents, extracted text, manifests that embed text and long pasted passages."""
+
+import dataclasses
+import subprocess
+import zipfile
+from io import BytesIO
+from types import SimpleNamespace
+
+import pytest
+
+from tauceti_roadmap_worker import board, cli, gates, intake, references, sources, worker
+from tauceti_roadmap_worker.board import Board, allowed_paths, file_problems, new_job
+from tauceti_roadmap_worker.lanes import Context, lane_for
+from tauceti_roadmap_worker.paths import HERE
+
+from .fakes import FakeClaims, FakeIssuesGH, example_config, job_issue, make_pdf
+from .test_gate_scanners import CLEAN_LEAN, CLEAN_README
+from .test_lane_dry_run import ctx  # noqa: F401 - the shared lane fixture
+
+PDF = make_pdf(["Satz 2.3 " * 40])
+SHA = sources.sha256_bytes(PDF)
+NEED = {"key": "Ket67", "name": "Kettle1967.pdf", "sha256": ""}
+
+
+# --- who may resume a job answered with `local:` ---------------------------------------------------
+
+def held(tmp_path, name="Kettle1967.pdf"):
+    lib = tmp_path / "library"
+    lib.mkdir(exist_ok=True)
+    (lib / name).write_bytes(PDF)
+    return [str(lib)]
+
+
+def test_only_an_operator_who_holds_the_local_text_may_take_the_job(ctx, tmp_path):  # noqa: F811
+    job = new_job("DESIGN-Foo", inputs={"local_sources": [NEED]})
+    lane = lane_for(job)
+    assert lane.eligible(job, ctx) == "needs local source Kettle1967.pdf"
+    ctx.cfg.sources.local_dirs = held(tmp_path)
+    assert lane.eligible(job, ctx) == ""
+    by_hash = new_job("DESIGN-Foo", inputs={"local_sources": [{**NEED, "name": "other name.pdf", "sha256": SHA}]})
+    assert lane.eligible(by_hash, ctx) == ""                     # a hash finds the text under any name
+
+
+def test_a_worker_without_the_text_leaves_the_job_unclaimed_and_uncounted(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    cfg = example_config()
+    gh = FakeIssuesGH([job_issue(1, "DESIGN-Foo", "available", inputs={"local_sources": [NEED]})])
+    wctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=FakeClaims(), worker_id="w1", operator="alice",
+                   agent="codex", model="m")
+    lines = []
+    result = worker.work_once(wctx, None, log=lines.append)
+    assert result.status == "idle" and lines == ["skip DESIGN-Foo: needs local source Kettle1967.pdf"]
+    assert wctx.claims.acquired == [] and gh.states(1) == ["available"] and worker.failures(wctx) == {}
+    assert [w for w in gh.writes] == []
+
+
+def test_the_spec_update_keeps_the_rest_of_the_issue(tmp_path):
+    cfg = example_config()
+    issue = job_issue(1, "TARGET-Foo", "needs-references")
+    issue["body"] = "The filed form, quoted.\n\n" + issue["body"]
+    gh = FakeIssuesGH([issue])
+    b = Board(cfg, gh)
+    job = b.all_jobs()[0]
+    job.inputs["local_sources"] = [NEED]
+    b.update_spec(job)
+    assert gh.issues[1]["body"].startswith("The filed form, quoted.\n\n")
+    assert b.all_jobs()[0].inputs["local_sources"] == [NEED]
+
+
+def test_a_lane_that_reads_a_local_text_records_its_hash(ctx, tmp_path):  # noqa: F811
+    run_ctx = dataclasses.replace(ctx, dry_run=False)
+    run_ctx.cfg.sources.local_dirs = held(tmp_path)
+    for job_id, recorded in (("DESIGN-Foo", True), ("REV-DESIGN-Foo", False)):
+        job = new_job(job_id)
+        lane = lane_for(job)
+        ws = lane.prepare(job, run_ctx)
+        manifest = ws.package(run_ctx.cfg, "Foo") / "sources.toml"
+        data = sources.new_manifest("Foo")
+        data["source"] = [{"id": "Ket67", "authors": "R. Kettle", "title": "T", "year": 1967, "status": "local",
+                           "licence_class": "operator-local", "local_name": "Kettle1967.pdf"}]
+        sources.save_manifest(manifest, data)
+        lane.prepare_sources(job, run_ctx, ws)
+        assert "Ket67" in ws.extra["source_texts"] and str(run_ctx.state / "sources") in ws.extra["source_texts"]
+        [entry] = sources.load_manifest(manifest)["source"]
+        assert (entry["status"], entry.get("sha256")) == (("certified", SHA) if recorded else ("local", None)), job_id
+        assert not (ws.scratch / "needs-references.toml").exists()
+
+
+# --- the gates -------------------------------------------------------------------------------------
+
+def epub() -> bytes:
+    out = BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        z.writestr("OEBPS/a.xhtml", "<p>text</p>")
+    return out.getvalue()
+
+
+@pytest.mark.parametrize("path,data", [
+    ("packages/Foo/Kettle1967.pdf", b""),
+    ("packages/Foo/scan.djvu", b""),
+    ("packages/Foo/notes.md", PDF),                       # a PDF under another name
+    ("packages/Foo/book.bin", b"AT&TFORM\x00\x00"),
+    ("TauCetiRoadmap/Foo/a.ps", b"%!PS-Adobe-3.0"),
+    ("packages/Foo/book", epub()),
+    ("packages/Foo/Ket67.txt", b"x" * (33 * 1024)),
+    ("packages/Foo/reports/X.md", ("   1  === page 1 ===\n" + "   2  line\n" * 4000).encode()),
+])
+def test_source_material_is_refused(path, data):
+    [problem] = gates.source_material_problems(path, data)
+    assert problem.startswith(path) and "never enters a repository" in problem
+
+
+def test_ordinary_files_pass_the_source_material_check():
+    assert gates.source_material_problems("packages/Foo/Ket67.txt", b"short notes\n") == []
+    assert gates.source_material_problems("packages/Foo/README.md", b"# Foo\n" + b"word " * 20000) == []
+
+
+def test_manifest_entries_that_embed_text_are_refused():
+    data = sources.new_manifest("Foo")
+    data["source"] = [{"id": "A", "title": "T", "excerpt": "Satz 2.3. Jede ..."},
+                      {"id": "B", "title": "T", "locator": "x" * 1200}, {"id": "C", "title": "T", "locator": "Thm 1"}]
+    problems = gates.manifest_text_problems("packages/Foo/sources.toml", sources.dump_manifest(data))
+    assert [p.split(": ", 2)[1] for p in problems] == ["source 1 (A)", "source 2 (B)"]
+
+
+def fence(lang: str, n: int, line: str = "a passage of the source") -> str:
+    return f"intro\n```{lang}\n" + f"{line}\n" * n + "```\nafter\n"
+
+
+def test_long_fenced_passages_are_refused_unless_lean_or_a_table():
+    assert [h.line for h in gates.scan_long_fences(fence("text", 41))] == [2]
+    assert gates.scan_long_fences(fence("", 41)) and gates.scan_long_fences(fence("text", 40)) == []
+    assert gates.scan_long_fences(fence("lean", 200, "theorem foo : True := trivial")) == []
+    assert gates.scan_long_fences(fence("", 60, "| a | b |")) == []
+    assert gates.scan_long_fences("~~~~\n" + "x\n" * 50 + "~~~~\n")[0].line == 1
+
+
+def test_board_submissions_refuse_source_material():
+    job = new_job("PKG-Foo")
+    allowed = allowed_paths(job, "packages")
+    assert "never enters a repository" in file_problems("packages/Foo/paper.pdf", "", allowed)[0]
+    report = "packages/Foo/reports/PKG-Foo.md"
+    assert "fenced block" in file_problems(report, fence("text", 45), allowed)[0]
+    assert file_problems(report, fence("lean", 45), allowed) == []
+    manifest = sources.dump_manifest({**sources.new_manifest("Foo"), "source": [{"id": "A", "quote": "..."}]})
+    assert "embeds text" in file_problems("packages/Foo/sources.toml", manifest, allowed)[0]
+
+
+class IntakeGH:
+    """The packages repository as the intake reads it: one submission pull request."""
+
+    def __init__(self, files: dict[str, str]):
+        self.files, self.writes = files, []
+
+    def api(self, path, paginate=False):
+        if path.endswith("/pulls/12"):
+            return {"number": 12, "state": "open", "draft": False, "user": {"login": "alice"},
+                    "body": board.encode_submission("PKG-Foo", "w1", "alice", "codex"),
+                    "head": {"sha": "abc", "repo": {"full_name": "alice/jobs"}}}
+        if "/pulls/12/files" in path:
+            return [{"filename": f, "status": "added"} for f in self.files]
+        if "/check-runs" in path:
+            return {"check_runs": []}
+        raise AssertionError(path)
+
+    def raw_file(self, repo, path, ref=""):
+        return self.files[path]
+
+    def write(self, method, path, payload=None):
+        self.writes.append((method, path, payload))
+
+
+def test_the_intake_refuses_a_submission_carrying_a_passage():
+    job = new_job("PKG-Foo")
+    job.number, job.state = 3, "submitted"
+    gh = IntakeGH({"packages/Foo/reports/PKG-Foo.md": fence("text", 45), "packages/Foo/Ket67.pdf": "%PDF-1.4"})
+    bot = SimpleNamespace(cfg=example_config(), gh=gh,
+                          board=SimpleNamespace(all_jobs=lambda: [job], find=lambda jid, jobs: job))
+    line = intake.intake(bot, 12, yes=True)
+    assert line.startswith("#12: not merged: ") and "fenced block" in line and "Ket67.pdf: a source document" in line
+    assert not any(m == "PUT" for m, *_ in gh.writes)
+
+
+def git(cwd, *args):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.org", "-c", "commit.gpgsign=false", *args],
+                   cwd=cwd, check=True, capture_output=True)
+
+
+def test_the_push_gate_refuses_source_material_in_the_roadmap_folder(tmp_path):
+    folder = tmp_path / "wt" / "TauCetiRoadmap" / "Toy"
+    folder.mkdir(parents=True)
+    git(tmp_path / "wt", "init", "-q")
+    (folder / "README.md").write_text(CLEAN_README)
+    (folder / "Suggested.lean").write_text(CLEAN_LEAN)
+    (folder / "metadata.toml").write_text('topic = "math.GR"\n')
+    (folder / "refs").mkdir()
+    (folder / "refs" / "Kettle1967.pdf").write_bytes(PDF)
+    git(tmp_path / "wt", "add", "-A")
+    git(tmp_path / "wt", "commit", "-q", "-m", "toy")
+    result = gates.run_gate(tmp_path / "wt", "Toy", gates.GateOptions())
+    assert result.counts["source-material"] == 1 and not result.ok
+    assert result.details["source-material"][0].startswith("TauCetiRoadmap/Toy/refs/Kettle1967.pdf: a source document")
+
+
+# --- the cache stays in the state directory ---------------------------------------------------------
+
+def test_the_cache_lives_in_the_state_directory_and_never_in_a_checkout(ctx, tmp_path):  # noqa: F811
+    assert ctx.sources_fetcher().cache == ctx.state / "sources"
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    assert sources.enclosing_checkout(repo / "state" / "sources") == repo
+    assert sources.enclosing_checkout(HERE.parent / "no-such-dir-anywhere" / "x") in (None, HERE.parent)
+
+
+def test_ocr_output_is_never_written_into_a_checkout(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    args = ["--conf", str(HERE / "tauceti-roadmap.toml.example"), "sources", "ocr", str(tmp_path / "scan.pdf"),
+            "--out", str(repo / "packages" / "Foo" / "scan.txt")]
+    assert cli.main(args) == 2 and "never enters a repository" in capsys.readouterr().err
+
+
+def test_answer_forms_in_the_request_template():
+    text = references.request_comment("DESIGN-Foo", "Foo", references.parse_missing(
+        {"missing": [{"title": "T", "needed_for": "x", "authors": "A", "year": 1999}]}))
+    assert "`local: KEY" in text and "`source: KEY" in text and "`waive: KEY`" in text
+    assert "attach:" not in text and "never downloaded" in text

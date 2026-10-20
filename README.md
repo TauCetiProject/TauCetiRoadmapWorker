@@ -55,8 +55,9 @@ field is documented in [tauceti-roadmap.toml.example](tauceti-roadmap.toml.examp
    texts the roadmap's `sources.toml` records into the sources cache, render the lane's brief from
    `prompts/`, and run the agent on it.
 4. If the agent could not read a source legally, park the job in `state:needs-references` with a
-   request naming exactly what is missing; humans answer it on the board (attach the text, name a
-   legal source, or waive the citation) and the intake releases the job. Otherwise check the result
+   request naming exactly what is missing; humans answer it on the board (name a legal source, name
+   the file operators hold locally, or waive the citation; sources never enter a repository or an
+   issue) and the intake releases the job. Otherwise check the result
    mechanically (the gates), do
    the lane's last mile (push, open the draft pull request, reply to reviewers), and submit the
    report and deliverables to the board as a pull request that names the job.

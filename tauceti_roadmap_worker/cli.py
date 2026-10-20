@@ -128,6 +128,11 @@ def doctor(args) -> int:
             add((OK, "state directory", str(state)))
         except OSError as exc:
             add((FAIL, "state directory", f"{state}: {exc}"))
+        cache = sources.cache_root(state)
+        inside = sources.enclosing_checkout(cache)
+        add((FAIL, "sources cache", (f"{cache} is inside the git checkout {inside}: sources never enter a repository "
+                                     "(set TAUCETI_PROJECT_STATE or XDG_STATE_HOME outside it)")) if inside
+            else (OK, "sources cache", f"{cache} (outside every repository)"))
         dummy = {}
         for lane in prompts.BRIEFS:
             dummy |= {k: "x" for k in prompts.placeholders(lane)}
@@ -413,6 +418,11 @@ def _fetch(args, cfg: config.Config, fet: fetcher.Fetcher) -> int:
 
 
 def _ocr(cfg: config.Config, pdf: Path, out: str) -> int:
+    inside = sources.enclosing_checkout(Path(out)) if out else None
+    if inside:
+        print(f"--out {out} is inside the git checkout {inside}: extracted text never enters a repository "
+              "(write it outside, or let the sources cache keep it)", file=sys.stderr)
+        return 2
     reason = sources.ocr_status()
     if reason:
         print(reason, file=sys.stderr)

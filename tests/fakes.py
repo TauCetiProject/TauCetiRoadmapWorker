@@ -110,6 +110,7 @@ class FakeBoard:
         self.jobs = jobs or []
         self.posted: list[tuple[int, str]] = []
         self.states: list[tuple[str, str]] = []
+        self.specs: list[tuple[str, dict]] = []
         self.created: list = []
 
     def comments(self, number: int) -> list[dict]:
@@ -123,6 +124,9 @@ class FakeBoard:
     def set_state(self, job, state: str, comment: str = "") -> None:
         self.states.append((job.id, state))
         job.state = state
+
+    def update_spec(self, job) -> None:
+        self.specs.append((job.id, job.spec()))
 
     def list_jobs(self, states=("available",), kinds=None):
         return [j for j in self.jobs if j.state in states and (not kinds or j.kind in kinds)]
@@ -168,6 +172,8 @@ class FakeIssuesGH:
             return copy.deepcopy(self.issues[int(parts[4])]["labels"])
         if len(parts) == 6 and parts[3] == "issues" and parts[5] == "events":
             return copy.deepcopy(self.events[int(parts[4])])
+        if len(parts) == 5 and parts[3] == "issues":
+            return copy.deepcopy(self.issues[int(parts[4])])
         raise GHError(f"GET {path}: not faked")
 
     def add_label(self, number: int, name: str) -> None:
@@ -179,26 +185,29 @@ class FakeIssuesGH:
         self.writes.append((method, path, payload or {}))
         parts = path.split("/")
         number = int(parts[4])
-        if parts[5] == "labels" and method == "POST":
+        if len(parts) > 5 and parts[5] == "labels" and method == "POST":
             for name in payload["labels"]:
                 if name not in self.labels(number):
                     self.add_label(number, name)
             return copy.deepcopy(self.issues[number]["labels"])
-        if parts[5] == "labels" and method == "DELETE":
+        if len(parts) > 6 and parts[5] == "labels" and method == "DELETE":
             name = unquote(parts[6])
             if self.fail_removals or name not in self.labels(number):
                 raise GHError(f"DELETE {path}: 404")
             self.issues[number]["labels"] = [x for x in self.issues[number]["labels"] if x["name"] != name]
             return copy.deepcopy(self.issues[number]["labels"])
-        if parts[5] == "comments":
+        if len(parts) == 6 and parts[5] == "comments":
             self.comments.setdefault(number, []).append(payload["body"])
             return {"id": len(self.writes)}
+        if len(parts) == 5 and method == "PATCH":
+            self.issues[number].update(payload)
+            return copy.deepcopy(self.issues[number])
         raise GHError(f"{method} {path}: not faked")
 
 
-def job_issue(number: int, job_id: str, *states: str, namespace: str = "roadmap-job") -> dict:
-    """A board issue carrying the job `job_id` with the given state labels."""
-    job = board.new_job(job_id)
+def job_issue(number: int, job_id: str, *states: str, namespace: str = "roadmap-job", **spec) -> dict:
+    """A board issue carrying the job `job_id` (spec fields as keywords) with the given state labels."""
+    job = board.new_job(job_id, **spec)
     labels = [namespace, f"kind:{job.kind}"] + [f"state:{s}" for s in states]
     return {"number": number, "title": board.title_for(job), "body": board.encode_spec(job),
             "labels": [{"name": label} for label in labels]}

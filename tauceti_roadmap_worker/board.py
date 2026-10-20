@@ -401,10 +401,21 @@ def allowed_paths(job: Job, packages_dir: str) -> set[str]:
     return report
 
 
-def file_problems(path: str, text: str, allowed: set[str]) -> list[str]:
+def file_problems(path: str, text: str, allowed: set[str], data: bytes | None = None) -> list[str]:
+    """Why a file of a board submission cannot be merged: not a deliverable, source material (a
+    source document, extracted text, a manifest embedding text, a long pasted passage), a local path,
+    or invalid JSON or TOML. `data` are the file's bytes when the caller has them."""
+    from .gates import manifest_text_problems, scan_long_fences, source_material_problems
+    material = source_material_problems(path, data if data is not None else (text or "").encode("utf-8"))
+    if material:
+        return material
     if path not in allowed:
         return [f"{path} is not a deliverable of this job"]
     problems = []
+    if path.endswith(".md"):
+        problems += [f"{path} line {h.line}: {h.text}" for h in scan_long_fences(text or "")]
+    if path.endswith("sources.toml"):
+        problems += manifest_text_problems(path, text or "")
     if PRIVATE_PATH.search(text or ""):
         problems.append(f"local path in {path}")
     if path.endswith(".json"):
@@ -625,6 +636,19 @@ class Board:
         issues = self.gh.api(f"repos/{self.repo}/issues?labels={self.ns}&state=open&per_page=100", paginate=True)
         jobs = (self._job_from_issue(i) for i in issues if not i.get("pull_request"))
         return [job for job in jobs if job and len(state_labels(job.labels)) > 1]
+
+    def update_spec(self, job: Job) -> None:
+        """Write the job's spec back into its issue (the last marker is the spec; the rest of the body
+        is left as it is)."""
+        issue = self.gh.api(f"repos/{self.repo}/issues/{job.number}")
+        body = issue.get("body") or ""
+        found = list(SPEC_RE.finditer(body))
+        if found:
+            last = found[-1]
+            body = body[:last.start()] + encode_spec(job) + body[last.end():]
+        else:
+            body = body.rstrip() + "\n\n" + encode_spec(job)
+        self.gh.write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"body": body})
 
     def comment(self, number: int, body: str) -> None:
         self.gh.write("POST", f"repos/{self.repo}/issues/{number}/comments", {"body": body})

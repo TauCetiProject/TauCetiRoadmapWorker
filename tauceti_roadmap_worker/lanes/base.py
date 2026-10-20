@@ -229,6 +229,11 @@ class Lane:
                                                 ctx.claims.recorded_authors(job.independent_of))
             if problem:
                 return problem
+        # A `local:` answer: the text never travels, so only an operator who holds it resumes the job.
+        index = sources.cache_root(ctx.state) / "local-index.json"
+        for need in references.local_needs(job):
+            if not fetcher.local_source(ctx.cfg.sources.local_dirs, need["name"], need.get("sha256", ""), index):
+                return f"needs local source {need['name']}"
         return ""
 
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
@@ -336,6 +341,7 @@ class Lane:
             ws.extra["source_texts"] = f"none: the manifest does not parse ({exc})"
             return
         available = ctx.sources_fetcher().materialize(manifest, offline=ctx.dry_run)
+        self.record_local_hashes(job, ctx, manifest_path, manifest, available)
         lines = []
         for a in available:
             if a.text:
@@ -352,6 +358,20 @@ class Lane:
                 needed_for=", ".join(entry.get("cited_for", [])) or f"the roadmap's citations of {a.id}",
                 tried=[a.problem], key=a.id, doi=str(entry.get("doi", "")), url=str(entry.get("url", "")),
                 locator_scheme=str(entry.get("locator_scheme", "")), sha256=str(entry.get("sha256", ""))))
+
+    def record_local_hashes(self, job: Job, ctx: Context, path: Path, manifest: dict, available: list) -> None:
+        """A `local` text read here gets its hash recorded, as `certified`, in the manifest this job
+        submits (a review leaves the author's entries as they are)."""
+        if not self.edits_manifest(job, ctx) or self.manifest_add_only:
+            return
+        found, changed = {a.id: a.sha256 for a in available if a.sha256}, False
+        for entry in manifest.get("source", []):
+            sha = found.get(str(entry.get("id", "")))
+            if sha and entry.get("status") == "local":
+                entry.update(status="certified", sha256=sha, accessed=dt.date.today().isoformat())
+                changed = True
+        if changed:
+            sources.save_manifest(path, manifest)
 
     def missing_references(self, ws: Workspace) -> list[references.MissingReference]:
         return references.read_missing(ws.scratch / "needs-references.toml")
@@ -394,8 +414,8 @@ class Lane:
             raise LaneError("the agent changed files outside the job's deliverables: " + ", ".join(outside[:10]))
         problems = []
         for path in changed:
-            text = (ws.board / path).read_text(encoding="utf-8", errors="replace") if (ws.board / path).is_file() else ""
-            problems += board.file_problems(path, text, allowed)
+            data = (ws.board / path).read_bytes() if (ws.board / path).is_file() else b""
+            problems += board.file_problems(path, data.decode("utf-8", errors="replace"), allowed, data)
         if problems:
             raise LaneError("; ".join(problems))
         if not changed:

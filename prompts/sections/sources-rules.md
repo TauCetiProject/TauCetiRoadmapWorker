@@ -34,5 +34,9 @@
   statement or section that needs it, `tried` = where you looked, `locator_scheme`, `locator`,
   `note`). If that file already exists when you start, the worker could not fetch the texts it
   lists: keep a table only if your work needs that text. Finish everything that does not depend on a
-  missing text and say so in your report; the worker parks the job until a human attaches the
-  text, names an alternative legal source, or waives the citation.
+  missing text and say so in your report; the worker parks the job until a human names an
+  alternative legal source, names a text operators hold locally, or waives the citation.
+- Sources stay on the operator's machine: never copy a source file or its extracted text into the
+  repository you work in (not into the package folder, not into a report), and never paste a
+  passage. Quote locators (`<source id> line N`, a theorem or page number); a fenced block of more
+  than 40 lines that is neither Lean nor a table is refused at submission.

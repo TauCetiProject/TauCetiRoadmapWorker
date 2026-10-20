@@ -64,58 +64,54 @@ def test_request_comment_carries_a_marker_that_cannot_be_closed_early():
 
 def test_parse_answers():
     keys = ["Ket67", "BLR90"]
-    body = (f"Here you go:\n- attach: ket67 [Ket67.pdf]({LINK}) sha256: {SHA.upper()}\n"
+    body = (f"Here you go:\n- local: ket67 `Kettle 1967.pdf` sha256: {SHA.upper()}\n"
             "- source: BLR90 [arXiv](https://arxiv.org/abs/2101.00001)\n"
             "waive: BLR90, Nope\n"
-            "attach: Ket67 (forgot the link)\n")
+            "local: Ket67 ~/library/Kettle1967.pdf\n")
     answers, notes = parse_answers(body, keys)
-    assert [(a.key, a.action) for a in answers] == [("Ket67", "attach"), ("BLR90", "source"), ("BLR90", "waive")]
-    assert answers[0].value == LINK and answers[0].sha256 == SHA and answers[1].value == "https://arxiv.org/abs/2101.00001"
-    assert notes == ["`Nope` is not a key of this request", "`attach: Ket67` carries no GitHub attachment link"]
-    bare, _ = parse_answers(f"[scan.pdf]({LINK.replace('Ket67', 'scan')})", ["Ket67"])
-    assert bare[0].key == "Ket67"                      # one key: a bare attachment answers it
-    by_name, _ = parse_answers("[BLR90.pdf](https://github.com/o/r/files/77/BLR90.pdf)", keys)
-    assert by_name[0].key == "BLR90"
-    _, notes = parse_answers(f"[scan.pdf]({LINK.replace('Ket67', 'scan')})", keys)
-    assert "names no key" in notes[0]
+    assert [(a.key, a.action) for a in answers] == [("Ket67", "local"), ("BLR90", "source"), ("BLR90", "waive")]
+    assert answers[0].value == "Kettle 1967.pdf" and answers[0].sha256 == SHA
+    assert answers[1].value == "https://arxiv.org/abs/2101.00001"
+    assert notes == ["`Nope` is not a key of this request",
+                     "`local: Ket67` needs a file name (no directory): the file in `[sources] local_dirs`"]
     assert parse_answers("source: Ket67 https://not-an-attachment.example/x.pdf", keys)[0][0].action == "source"
+
+
+def test_attachments_are_never_answers():
+    keys = ["Ket67"]
+    for body in (f"attach: Ket67 [Ket67.pdf]({LINK})", f"[Ket67.pdf]({LINK})", f"local: Ket67 {LINK}"):
+        answers, notes = parse_answers(body, keys)
+        assert answers == [] and len(notes) == 1 and "attachments are not used" in notes[0], body
 
 
 def test_only_trusted_associations_answer():
     keys = ["Ket67"]
     comments = [comment(1, "waive: Ket67", "NONE", "drive-by"),
                 comment(2, "waive: Ket67", "MEMBER", "board-bot"),
-                comment(3, f"attach: Ket67 {LINK}", "COLLABORATOR"),
+                comment(3, "local: Ket67 Kettle1967.pdf", "COLLABORATOR"),
                 comment(4, "Intake: ... <!-- tauceti-roadmap-references-progress {} -->", "MEMBER")]
     latest, notes, read = collect_answers(comments, keys, ["OWNER", "MEMBER", "COLLABORATOR"], ["board-bot"])
-    assert latest["Ket67"].action == "attach" and latest["Ket67"].comment == 3 and read == {3}
+    assert latest["Ket67"].action == "local" and latest["Ket67"].comment == 3 and read == {3}
     assert latest["Ket67"].url.endswith("#issuecomment-3")
 
 
 # --- carrying out an answer -----------------------------------------------------------------------
 
-def test_attachment_is_downloaded_and_verified(tmp_path):
-    t = FakeTransport().redirect(LINK, "https://objects.githubusercontent.com/x?sig=1") \
-        .add("https://objects.githubusercontent.com/x?sig=1", PDF)
+def test_a_local_answer_records_the_file_and_downloads_nothing(tmp_path):
+    t = FakeTransport()
     fet = make_fetcher(tmp_path, t)
     item = items()[0]
-    res = resolve(references.Answer("Ket67", "attach", LINK, SHA, 3, "https://c/3"), item, None, fet, True)
-    assert res.ok and res.entry["sha256"] == SHA and res.entry["licence_class"] == "operator-local"
-    assert res.entry["status"] == "certified" and res.entry["fetched_from"] == LINK and res.entry["locator"] == "Satz 2.3"
-    assert res.entry["resolution"] == "https://c/3" and (tmp_path / "cache" / f"{SHA}.txt").is_file()
-    bad = resolve(references.Answer("Ket67", "attach", LINK, "f" * 64), item, None, fet, True)
-    assert not bad.ok and "does not match the stated hash" in bad.detail
+    res = resolve(references.Answer("Ket67", "local", "Kettle1967.pdf", "", 3, "https://c/3"), item, None, fet, True)
+    assert res.ok and res.entry["status"] == "local" and res.entry["licence_class"] == "operator-local"
+    assert res.entry["local_name"] == "Kettle1967.pdf" and res.entry["locator"] == "Satz 2.3"
+    assert res.entry["resolution"] == "https://c/3" and "sha256" not in res.entry and t.requests == []
+    hashed = resolve(references.Answer("Ket67", "local", "Kettle1967.pdf", SHA), item, None, fet, True)
+    assert hashed.entry["status"] == "certified" and hashed.entry["sha256"] == SHA
+    assert sources.validate_manifest({"schema": sources.SCHEMA, "source": [res.entry, {**hashed.entry, "id": "K2"}]},
+                                     example_config().sources.allow, []) == []
     item.sha256 = "e" * 64
-    differs = resolve(references.Answer("Ket67", "attach", LINK), item, None, fet, True)
+    differs = resolve(references.Answer("Ket67", "local", "Kettle1967.pdf", SHA), item, None, fet, True)
     assert differs.ok and "checked again" in differs.entry["version_note"]
-
-
-def test_attachment_that_is_a_web_page_or_not_an_attachment_is_refused(tmp_path):
-    fet = make_fetcher(tmp_path, FakeTransport().add(LINK, b"<html>Sign in</html>", headers={"Content-Type": "text/html"}))
-    res = resolve(references.Answer("Ket67", "attach", LINK), items()[0], None, fet, True)
-    assert not res.ok and "a web page" in res.detail
-    res = resolve(references.Answer("Ket67", "attach", "https://example.org/x.pdf"), items()[0], None, fet, True)
-    assert not res.ok and "only GitHub attachment links" in res.detail
 
 
 def test_waiver_and_named_source(tmp_path):
@@ -143,12 +139,12 @@ def parked_job():
 
 def test_resume_job_end_to_end(tmp_path):
     request = request_comment("DESIGN-Foo", "Foo", items())
-    t = FakeTransport().add(LINK, PDF)
+    t = FakeTransport()
     existing = 'schema = "tauceti-roadmap-sources/v1"\nroadmap = "Foo"\n\n[[source]]\nid = "Sam73"\ntitle = "A course"\n'
     gh = FakeGH({"packages/Foo/sources.toml": existing})
     board = FakeBoard({7: [comment(1, request, "CONTRIBUTOR", "operator"),
                            comment(2, "waive: Ket67", "NONE", "drive-by"),
-                           comment(3, f"attach: Ket67 [Ket67.pdf]({LINK})")]})
+                           comment(3, f"local: Ket67 Kettle1967.pdf sha256: {SHA}")]})
     job = parked_job()
     ctx = bot_context(gh=gh, board=board)
     fet = make_fetcher(tmp_path, t)
@@ -158,8 +154,12 @@ def test_resume_job_end_to_end(tmp_path):
     assert line == "DESIGN-Foo: recorded Ket67; still missing BLR90"
     data = tomllib.loads(gh.files["packages/Foo/sources.toml"])
     assert [s["id"] for s in data["source"]] == ["Sam73", "Ket67"] and data["source"][1]["sha256"] == SHA
+    assert data["source"][1]["local_name"] == "Kettle1967.pdf" and t.requests == []
     assert gh.writes[0][2]["sha"] == f"blob-{len(existing)}"
     assert "Still needed: `BLR90`" in board.posted[-1][1] and board.states == []
+    # The job records the requirement before it is released, so only an operator who holds it resumes it.
+    assert job.inputs["local_sources"] == [{"key": "Ket67", "name": "Kettle1967.pdf", "sha256": SHA}]
+    assert board.specs[-1] == ("DESIGN-Foo", job.spec())
 
     writes = len(gh.writes)
     assert resume_job(ctx, job, fet, yes=True) == "DESIGN-Foo: waiting for an answer on BLR90"
@@ -183,13 +183,28 @@ def test_resume_job_end_to_end(tmp_path):
                         "source 1 (Sam73): missing status"]     # only the hand-written stub entry
 
 
+def test_a_later_answer_drops_the_local_requirement(tmp_path):
+    board = FakeBoard({7: [comment(1, request_comment("DESIGN-Foo", "Foo", items()[:1]), "CONTRIBUTOR"),
+                           comment(2, "local: Ket67 Kettle1967.pdf")]})
+    job, ctx, fet = parked_job(), bot_context(board=board), make_fetcher(tmp_path, FakeTransport())
+    job.inputs["local_sources"] = [{"key": "Ket67", "name": "Old.pdf", "sha256": ""}]
+    assert resume_job(ctx, job, fet, yes=True) == "DESIGN-Foo: references resolved; available again"
+    assert job.inputs["local_sources"] == [{"key": "Ket67", "name": "Kettle1967.pdf", "sha256": ""}]
+    board.threads[7] += [comment(3, request_comment("DESIGN-Foo", "Foo", items()[:1]), "CONTRIBUTOR"),
+                         comment(4, "waive: Ket67")]
+    job.state = "needs-references"
+    assert resume_job(ctx, job, fet, yes=True) == "DESIGN-Foo: references resolved; available again"
+    assert "local_sources" not in job.inputs and len(board.specs) == 2
+
+
 def test_resume_job_creates_a_manifest_and_reports_unusable_answers(tmp_path):
     request = request_comment("DESIGN-Foo", "Foo", items()[:1])
     board = FakeBoard({7: [comment(1, request), comment(2, "attach: Ket67 https://github.com/user-attachments/files/9/x.pdf")]})
     gh = FakeGH()
-    line = resume_job(bot_context(gh=gh, board=board), parked_job(), make_fetcher(tmp_path, FakeTransport()), yes=True)
+    t = FakeTransport()
+    line = resume_job(bot_context(gh=gh, board=board), parked_job(), make_fetcher(tmp_path, t), yes=True)
     assert line == "DESIGN-Foo: recorded nothing; still missing Ket67"
-    assert "could not be downloaded" in board.posted[-1][1] and gh.writes == []
+    assert "attachments are not used" in board.posted[-1][1] and gh.writes == [] and t.requests == []
 
 
 def test_resume_without_a_request_is_left_alone(tmp_path):
@@ -248,13 +263,15 @@ def test_a_release_that_failed_is_retried(tmp_path):
 
 def test_network_trouble_in_an_answer_is_retried(tmp_path):
     from .fakes import transient
+    feed = "https://export.arxiv.org/api/query?id_list=2101.00001&max_results=1"
     board = FakeBoard({7: [comment(1, request_comment("DESIGN-Foo", "Foo", items()[:1]), "CONTRIBUTOR"),
-                           comment(2, f"attach: Ket67 {LINK}")]})
+                           comment(2, "source: Ket67 arXiv:2101.00001")]})
     ctx = bot_context(board=board)
-    flaky = make_fetcher(tmp_path, FakeTransport({LINK: transient(LINK)}))
+    flaky = make_fetcher(tmp_path, FakeTransport({feed: transient(feed)}))
     assert resume_job(ctx, parked_job(), flaky, yes=True) == "DESIGN-Foo: recorded nothing; still missing Ket67"
     assert "tried again on the next run" in board.posted[-1][1]
-    back = make_fetcher(tmp_path, FakeTransport().add(LINK, PDF))
+    back = make_fetcher(tmp_path, FakeTransport().add(feed, arxiv_feed([{"id": "2101.00001v1", "title": "T"}]))
+                        .add("https://arxiv.org/pdf/2101.00001v1", PDF))
     assert resume_job(ctx, parked_job(), back, yes=True) == "DESIGN-Foo: references resolved; available again"
 
 
@@ -262,7 +279,7 @@ def test_an_answer_replaces_the_old_provenance(tmp_path):
     existing = {"id": "Ket67", "title": "Theorem A und Theorem B", "authors": "R. Kettle", "year": 1967,
                 "status": "certified", "sha256": "d" * 64, "fetched_from": "https://arxiv.org/pdf/x", "arxiv": "x",
                 "version_note": "arXiv v2", "licence_class": "open-repository", "locator_scheme": "theorem"}
-    fet = make_fetcher(tmp_path, FakeTransport().add(LINK, PDF))
-    res = resolve(references.Answer("Ket67", "attach", LINK), items()[0], existing, fet, True)
-    assert res.entry["fetched_from"] == LINK and "arxiv" not in res.entry and res.entry["locator_scheme"] == "theorem"
-    assert "checked again" in res.entry["version_note"]
+    fet = make_fetcher(tmp_path, FakeTransport())
+    res = resolve(references.Answer("Ket67", "local", "Kettle1967.pdf", SHA), items()[0], existing, fet, True)
+    assert res.entry["local_name"] == "Kettle1967.pdf" and "fetched_from" not in res.entry and "arxiv" not in res.entry
+    assert res.entry["locator_scheme"] == "theorem" and "checked again" in res.entry["version_note"]

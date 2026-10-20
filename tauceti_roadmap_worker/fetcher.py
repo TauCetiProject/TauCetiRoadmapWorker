@@ -472,6 +472,20 @@ def local_by_hash(dirs: list[str], sha256: str, index: Path) -> Path | None:
     return found
 
 
+def local_by_name(dirs: list[str], name: str) -> Path | None:
+    """The local text with this file name (case-insensitive) in the configured directories."""
+    want = (name or "").strip().lower()
+    return next((p for p in local_files(dirs) if p.name.lower() == want), None) if want else None
+
+
+def local_source(dirs: list[str], name: str, sha256: str, index: Path) -> Path | None:
+    """The operator's copy of a local text: by its hash when one is recorded (whatever the file is
+    called here), else by its file name."""
+    if sha256 and sources.SHA_RE.match(sha256):
+        return local_by_hash(dirs, sha256, index)
+    return local_by_name(dirs, name)
+
+
 # --- fetching -------------------------------------------------------------------------------------
 
 @dataclass
@@ -743,9 +757,12 @@ class Fetcher:
         out = []
         for s in manifest.get("source", []):
             sid, sha = str(s.get("id", "?")), str(s.get("sha256", ""))
+            label = f"{s.get('authors', '')}, {s.get('title', '')}, {s.get('year', '')}".strip(", ")
+            if s.get("status") == "local":
+                out.append(self.local_text(sid, label, str(s.get("local_name", ""))))
+                continue
             if s.get("status") != "certified" or not sources.SHA_RE.match(sha):
                 continue
-            label = f"{s.get('authors', '')}, {s.get('title', '')}, {s.get('year', '')}".strip(", ")
             file, txt = sources.cached_file(self.cache, sha), sources.cache_paths(self.cache, sha)[1]
             if file and txt.is_file():
                 out.append(Available(sid, label, txt))
@@ -760,7 +777,8 @@ class Fetcher:
                 elif s.get("licence_class") == "operator-local" and not s.get("fetched_from"):
                     local = local_by_hash(self.cfg.local_dirs, sha, self.cache / "local-index.json")
                     if not local:
-                        out.append(Available(sid, label, None, "an operator-local text this host does not hold", True))
+                        # Not gone: another operator holds it, and it never travels; no request.
+                        out.append(Available(sid, label, None, needs_local(s.get("local_name") or sid)))
                         continue
                     data = local.read_bytes()
                     _, txt, _ = self.keep(data, sources.sniff(data), f"local text {local.name}", sha)
@@ -779,6 +797,19 @@ class Fetcher:
             out.append(Available(sid, label, txt))
         return out
 
+    def local_text(self, sid: str, label: str, name: str) -> Available:
+        """A `local` entry: the operator's file of that name, hashed and kept in the cache."""
+        local = local_by_name(self.cfg.local_dirs, name)
+        if not local:
+            return Available(sid, label, None, needs_local(name or sid))
+        data = local.read_bytes()
+        path, txt, _ = self.keep(data, sources.sniff(data), f"local text {local.name}")
+        return Available(sid, label, txt, sha256=path.name.split(".", 1)[0])
+
+
+def needs_local(name: str) -> str:
+    return f"needs local source {name} (an operator-local text this host does not hold)"
+
 
 @dataclass
 class Available:
@@ -787,3 +818,4 @@ class Available:
     text: Path | None
     problem: str = ""
     permanent: bool = False
+    sha256: str = ""         # a `local` text: the hash of the file read, for the manifest

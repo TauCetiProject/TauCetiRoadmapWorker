@@ -23,17 +23,17 @@ after the latest request, from the author associations `[sources] answer_associa
 text of anyone else is ignored, and every comment is data: only the three answer forms below are
 read), one line at a time:
 
-    attach: KEY <attachment link> [sha256: <hex>]   a file attached to the comment (GitHub attachment
-                                                    links only); with one item, a bare link will do
     source: KEY <DOI | arXiv id | URL>               an alternative legal source, fetched by the service
+    local: KEY <file name> [sha256: <hex>]          a text operators hold in `[sources] local_dirs`
     waive: KEY[, KEY ...]                           cite by locator alone
 
-Attachments are downloaded into the cache and verified (a stated `sha256:` must match; a hash the
-manifest recorded is compared and a difference noted), named sources go through the same policy as
-`sources fetch`, and waivers are recorded as `status = "waived"`. The roadmap's `sources.toml` on
-the packages repository is updated, and when every requested key is answered the job returns to
-`state:available`, where the next worker finds the texts in the cache (downloading them again from
-the recorded URL and checking the hash).
+Sources never enter a repository or an issue: an attachment is never downloaded, and a comment that
+carries one gets a note asking for one of the three answers. A named source goes through the same
+policy as `sources fetch`; a local text is recorded as `operator-local` with its file name (status
+`local`, or `certified` when the hash is given), and the job records the requirement, so that only
+an operator who holds the file resumes it; a waiver is recorded as `status = "waived"`. The
+roadmap's `sources.toml` on the packages repository is updated, and when every requested key is
+answered the job returns to `state:available`.
 """
 
 from __future__ import annotations
@@ -53,8 +53,12 @@ REQUEST_MARK = "tauceti-roadmap-needs-references"
 PROGRESS_MARK = "tauceti-roadmap-references-progress"
 REQUEST_RE = re.compile(r"<!--\s*" + REQUEST_MARK + r"\s*(\{.*?\})\s*-->", re.S)
 PROGRESS_RE = re.compile(r"<!--\s*" + PROGRESS_MARK + r"\s*(\{.*?\})\s*-->", re.S)
+# Recognised only to say that attachments are not used: a source never enters an issue.
 ATTACHMENT = re.compile(r"https://github\.com/(?:user-attachments/(?:files|assets)/[^\s)\]>\"'<]+"
                         r"|[\w.-]+/[\w.-]+/files/\d+/[^\s)\]>\"'<]+)")
+NO_ATTACHMENTS = ("attachments are not used (sources never enter a repository or an issue): answer with "
+                  "`local: KEY <file name>`, `source: KEY <DOI, arXiv id or URL>` or `waive: KEY`")
+FILE_NAME = re.compile(r"^[^/\\]+$")
 KEY = r"[^\s,:;`*]+"
 SHA = re.compile(r"\bsha256\s*[:=]\s*([0-9a-fA-F]{64})\b")
 
@@ -210,9 +214,9 @@ def latest_request(comments: list[dict], job_id: str, trusted: list[str], bot_lo
 @dataclass
 class Answer:
     key: str
-    action: str              # attach | source | waive
-    value: str = ""          # the attachment link, or the citation of the alternative source
-    sha256: str = ""         # stated for an attachment
+    action: str              # source | local | waive
+    value: str = ""          # the citation of the alternative source, or the local file name
+    sha256: str = ""         # stated for a local file
     comment: int = 0
     url: str = ""            # the comment's link, recorded as the entry's resolution
 
@@ -223,14 +227,18 @@ def _markdown_url(text: str) -> str:
 
 
 def parse_answers(body: str, keys: list[str]) -> tuple[list[Answer], list[str]]:
-    """Answers in one comment, and notes on lines that name an unknown key or an unassigned link."""
+    """Answers in one comment, and notes on lines that name an unknown key, an unusable file name or
+    an attachment (which is never used)."""
     canon = {k.lower(): k for k in keys}
     answers, notes = [], []
     for raw in (body or "").splitlines():
         line = re.sub(r"^\s*(?:[-*+]|\d+\.)\s+", "", raw).strip()
-        m = re.match(rf"(?i)^(attach|source|waive)\s*:\s*({KEY}(?:\s*,\s*{KEY})*)\s*(.*)$", line)
+        m = re.match(rf"(?i)^(attach|source|local|waive)\s*:\s*({KEY}(?:\s*,\s*{KEY})*)\s*(.*)$", line)
         if m:
             action, rest = m.group(1).lower(), m.group(3)
+            if action == "attach":
+                notes.append(f"`attach:` {NO_ATTACHMENTS}")
+                continue
             named = [k.strip() for k in m.group(2).split(",")] if action == "waive" else [m.group(2)]
             for k in named:
                 if k.lower() not in canon:
@@ -244,21 +252,17 @@ def parse_answers(body: str, keys: list[str]) -> tuple[list[Answer], list[str]]:
                     else:
                         notes.append(f"`source: {k}` names no source")
                 else:
-                    link = ATTACHMENT.search(rest)
                     sha = SHA.search(rest)
-                    if link:
-                        answers.append(Answer(canon[k.lower()], "attach", link.group(0), sha.group(1).lower() if sha else ""))
+                    name = SHA.sub("", rest).strip().strip("`\"'")
+                    if ATTACHMENT.search(rest):
+                        notes.append(f"`local: {k}` {NO_ATTACHMENTS}")
+                    elif name and FILE_NAME.match(name):
+                        answers.append(Answer(canon[k.lower()], "local", name, sha.group(1).lower() if sha else ""))
                     else:
-                        notes.append(f"`attach: {k}` carries no GitHub attachment link")
+                        notes.append(f"`local: {k}` needs a file name (no directory): the file in `[sources] local_dirs`")
             continue
-        for link in ATTACHMENT.findall(line):
-            stem = Path(link.rsplit("/", 1)[-1]).stem.lower()
-            sha = SHA.search(line)
-            key = canon.get(stem) or (keys[0] if len(keys) == 1 else "")
-            if key:
-                answers.append(Answer(key, "attach", link, sha.group(1).lower() if sha else ""))
-            else:
-                notes.append(f"an attachment ({link.rsplit('/', 1)[-1]}) names no key: write `attach: KEY <link>`")
+        if ATTACHMENT.search(line):
+            notes.append(f"an attachment: {NO_ATTACHMENTS}")
     return answers, notes
 
 
@@ -308,7 +312,8 @@ def _base_entry(item: MissingReference, existing: dict | None) -> dict:
 
 def resolve(answer: Answer, item: MissingReference, existing: dict | None, fet: fetcher.Fetcher,
             uncertified_ok: bool) -> Resolution:
-    """Carry out one answer: fetch and verify the file, or fetch the named source, or record the waiver."""
+    """Carry out one answer: fetch the named source, record the local text, or record the waiver.
+    Nothing is ever downloaded from an issue."""
     base = _base_entry(item, existing)
     if answer.action == "waive":
         base.update(status="waived", licence_class=sources.NO_TEXT, resolution=answer.url)
@@ -326,36 +331,24 @@ def resolve(answer: Answer, item: MissingReference, existing: dict | None, fet: 
                               + ("" if uncertified_ok else ", which this project does not accept"), entry)
         return Resolution(item.key, False, "the named source could not be fetched: " + "; ".join(out.tried[-3:]),
                           transient=out.transient)
-    if not ATTACHMENT.fullmatch(answer.value):
-        return Resolution(item.key, False, "only GitHub attachment links are downloaded")
-    try:
-        r = fet.client.get(answer.value)
-    except fetcher.FetchError as exc:
-        return Resolution(item.key, False, f"the attachment could not be downloaded: {exc}", transient=not exc.permanent)
-    kind = sources.sniff(r.body, r.header("content-type"))
-    if kind not in fetcher.DOCUMENT_KINDS:
-        return Resolution(item.key, False, "the link returned " + ("a web page" if kind == "html" else "an unrecognised file")
-                          + ", not the text (attachments of a private board need a signed-in download: attach it "
-                            "to a public issue or name a legal source)")
-    try:
-        path, _txt, note = fet.keep(r.body, kind, answer.value, expected=answer.sha256)
-    except sources.HashMismatch as exc:
-        return Resolution(item.key, False, f"the attachment does not match the stated hash: {exc}")
-    sha = path.name.split(".", 1)[0]
-    now = fet.now()
-    base.update(status="certified", licence_class="operator-local", fetched_from=answer.value,
-                fetched_at=now.isoformat().replace("+00:00", "Z"), sha256=sha, accessed=now.date().isoformat(),
-                resolution=answer.url)
-    base.setdefault("url", answer.value)
-    recorded = item.sha256 or str((existing or {}).get("sha256", ""))
-    detail = f"attached file verified (sha256 {sha[:12]}…)"
-    if recorded and recorded != sha:
-        base["version_note"] = (f"the attached text differs from the one recorded earlier (sha256 {recorded[:12]}…): "
-                                "its locators must be checked again")
-        detail += "; it differs from the text recorded earlier, so its locators must be checked again"
-    if note:
-        detail += f"; {note}"
-    return Resolution(item.key, True, detail, base)
+    if answer.action == "local":
+        # The text stays on the operators' machines: the board records its name (and hash, if given);
+        # the lane that resumes the job finds it in `[sources] local_dirs` and reads it there.
+        for key in sources.PROVENANCE:
+            base.pop(key, None)
+        base.update(licence_class="operator-local", local_name=answer.value, resolution=answer.url)
+        if answer.sha256:
+            base.update(status="certified", sha256=answer.sha256)
+        else:
+            base.update(status="local")
+        recorded = item.sha256 or str((existing or {}).get("sha256", ""))
+        detail = f"held locally as `{answer.value}`" + (f" (sha256 {answer.sha256[:12]}…)" if answer.sha256 else "")
+        if recorded and answer.sha256 and recorded != answer.sha256:
+            base["version_note"] = (f"the local text differs from the one recorded earlier (sha256 {recorded[:12]}…): "
+                                    "its locators must be checked again")
+            detail += "; it differs from the text recorded earlier, so its locators must be checked again"
+        return Resolution(item.key, True, detail + "; only an operator who holds it resumes the job", base)
+    return Resolution(item.key, False, f"unknown answer {answer.action!r}")
 
 
 def board_manifest(ctx, name: str) -> tuple[dict, str | None]:
@@ -429,8 +422,8 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
                                             else " (still missing)") for r in results]
     lines += [f"- note: {n}" for n in notes]
     if missing:
-        lines += ["", "Still needed: " + ", ".join(f"`{k}`" for k in missing) + ". Answer with `attach: KEY <link>`, "
-                  "`source: KEY <DOI, arXiv id or URL>` or `waive: KEY`."]
+        lines += ["", "Still needed: " + ", ".join(f"`{k}`" for k in missing) + ". Answer with "
+                  "`source: KEY <DOI, arXiv id or URL>`, `local: KEY <file name>` or `waive: KEY`."]
     else:
         lines += ["", "Every requested source is answered; the job is available again."]
     lines += ["", _marker(PROGRESS_MARK, {"handled": sorted((handled | read) - retry), "resolved": done})]
@@ -440,11 +433,37 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
     if changed:
         write_board_manifest(ctx, job.name, manifest, blob,
                              f"Sources: answers to the references request of {job.id} ({', '.join(changed)})")
+    record_local_needs(ctx, job, results)
     ctx.board.comment(job.number, "\n".join(lines))
     if not missing:
         ctx.board.set_state(job, board.transition("needs-references", "references-resolved"))
         return f"{job.id}: references resolved; available again"
     return f"{job.id}: recorded {', '.join(changed) or 'nothing'}; still missing {', '.join(missing)}"
+
+
+def local_needs(job: board.Job) -> list[dict]:
+    """The local texts a job may be resumed with only by an operator who holds them:
+    [{key, name, sha256}] from its spec."""
+    return [n for n in job.inputs.get("local_sources", []) if isinstance(n, dict) and n.get("name")]
+
+
+def record_local_needs(ctx, job: board.Job, results: list[Resolution]) -> None:
+    """Keep the job's spec in step with its answers: a `local:` answer adds its file to the job's
+    requirements, any other answer for the key drops it. Written before the job is released."""
+    needs = {n["key"]: n for n in local_needs(job)}
+    before = dict(needs)
+    for r in results:
+        if r.ok and r.entry and r.entry.get("local_name"):
+            needs[r.key] = {"key": r.key, "name": r.entry["local_name"], "sha256": r.entry.get("sha256", "")}
+        elif r.ok:
+            needs.pop(r.key, None)
+    if needs == before:
+        return
+    if needs:
+        job.inputs["local_sources"] = list(needs.values())
+    else:
+        job.inputs.pop("local_sources", None)
+    ctx.board.update_spec(job)
 
 
 def resume_all(ctx, fet: fetcher.Fetcher, yes: bool = False) -> list[str]:

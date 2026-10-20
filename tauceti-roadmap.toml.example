@@ -166,8 +166,9 @@ ocr = false
 # Rendering resolution for OCR, and the characters per page below which a page counts as image-only.
 ocr_dpi = 300
 ocr_min_chars = 250
-# GitHub author associations whose comments may answer a needs-references request (attach a file,
-# name an alternative source, `waive: <key>`). Anyone else's comment on the job is ignored.
+# GitHub author associations whose comments may answer a needs-references request (`source:` an
+# alternative legal source, `local:` a file operators hold, `waive:`). Anyone else's comment on the
+# job is ignored. Files attached to an issue are never downloaded: sources never enter a repository.
 answer_associations = ["OWNER", "MEMBER", "COLLABORATOR"]
 # Whose request comments (posted by the lanes under the operator's account) the intake reads; the
 # board's bot_logins always count. A request from anyone else is ignored.
