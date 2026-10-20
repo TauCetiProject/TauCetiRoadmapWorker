@@ -1,108 +1,163 @@
 # TauCetiRoadmapWorker
 
-`tauceti-roadmap` plans Tau Ceti roadmaps with a "bring your own agent" approach, one level above
-[TauCetiWorker](https://github.com/TauCetiProject/TauCetiWorker): humans name targets, operators'
-agents design the roadmaps that reach them, independent agents review the plans, and the result is
-a draft pull request to [TauCetiRoadmap](https://github.com/TauCetiProject/TauCetiRoadmap) that a
-human merges. The contract it implements is [docs/DESIGN.md](docs/DESIGN.md); how to run a fleet is
-[docs/OPERATORS.md](docs/OPERATORS.md); the sources rules are [docs/SOURCES.md](docs/SOURCES.md).
+`tauceti-roadmap` plans [Tau Ceti](https://github.com/TauCetiProject/TauCeti) roadmaps with agents
+that operators run on their own machines. Humans file targets on a job board; workers triage them,
+design the roadmaps, write the roadmap packages, review each other's work independently, and port
+accepted packages to [TauCetiRoadmap](https://github.com/TauCetiProject/TauCetiRoadmap) as draft
+pull requests. Nothing merges into the roadmap repository without a human.
 
-It runs as your authenticated `gh` account. You author through **your own forks** (created on first
-use), so you need no write access to the canonical repositories. Several workers per operator and
-several operators per project coexist through leases in a claims namespace; a reviewer is never the
-author's operator.
+The contract is [docs/DESIGN.md](docs/DESIGN.md), the operators' and maintainers' guide is
+[docs/OPERATORS.md](docs/OPERATORS.md), and the sources rules are [docs/SOURCES.md](docs/SOURCES.md).
 
-## Quickstart
+## Install
 
-You need `gh`, `git`, `uv`, and at least one agent CLI. The port, red-team fix and gate lanes also
-need an `elan`/`lake` toolchain. Log `gh` in as the account the worker should act as, and log in to
-each subscription agent you want to use:
+You need `git`, `gh`, `uv` and at least one agent CLI (Codex, Claude, or both). The port, red-team
+fix and gate lanes also need an `elan`/`lake` toolchain.
 
 ```bash
-gh auth login
-codex login            # for --agent codex
-claude auth login      # for --agent claude
-```
-
-Install it as a tool, no clone needed:
-
-```bash
+gh auth login                      # the GitHub account your workers act as
+codex login                        # and/or: claude auth login
 uv tool install git+https://github.com/TauCetiProject/TauCetiRoadmapWorker
 
-CONF=https://raw.githubusercontent.com/<owner>/<repo>/main/tauceti-roadmap.toml
-
-tauceti-roadmap --conf $CONF doctor                               # tools, credentials, repositories, claims, sandbox
-tauceti-roadmap --conf $CONF work --worker-id alice-1             # one round of the most useful job, then exit
-tauceti-roadmap --conf $CONF work --worker-id alice-2 --only review,redteam --loop   # a focused reviewer
-tauceti-roadmap --conf $CONF work --worker-id alice-3 --loop      # keep picking the most useful job
-tauceti-roadmap --conf $CONF targets list                         # targets and designs on the board
-tauceti-roadmap --conf $CONF targets file --statement "..." --why "..." --name PrismaticCohomology
-tauceti-roadmap --conf $CONF sources fetch arXiv:2101.00001 --manifest sources.toml   # a legal source, cached and recorded
+CONF=https://raw.githubusercontent.com/TauCetiProject/TauCetiRoadmapJobs/main/tauceti-roadmap.toml
+tauceti-roadmap --conf $CONF doctor
 ```
 
-Ctrl-C stops a worker. `--dry-run` prints every GitHub write instead of making it (and writes the
-brief without running the agent). The configuration is a human-owned `tauceti-roadmap.toml`; every
-field is documented in [tauceti-roadmap.toml.example](tauceti-roadmap.toml.example).
+`doctor` checks the tools, your `gh` login, access to the repositories, the claims namespace, the
+state directory and the sources cache, the briefs, PDF text extraction, OCR and the sandbox, and
+exits 1 on any failure. The configuration is a human-owned `tauceti-roadmap.toml`; every field is
+explained in [tauceti-roadmap.toml.example](tauceti-roadmap.toml.example). You need write access
+only to your own forks, which are created on first use.
 
-## What a round does
+## Run a worker
 
-1. List the available jobs on the board (GitHub issues labelled `kind:*` and `state:*`), rank them
-   (humans waiting on a pull request first, then work in flight, then new work; bottom-up in the
-   merge order), and take the first one this worker may do: the right agent, not the author's
-   operator for a review, the branch owner for work on a pull request, the daily design cap.
-2. Take a lease on it (`refs/tauceti-claims/roadmap/<project>/job/<JOB>`), renewed while it runs.
-3. Prepare fresh checkouts under `~/.local/state/tauceti/projects/<project>/workers/<id>/`, bring the
-   texts the roadmap's `sources.toml` records into the sources cache, render the lane's brief from
-   `prompts/`, and run the agent on it.
-4. If the agent could not read a source legally, park the job in `state:needs-references` with a
-   request naming exactly what is missing; humans answer it on the board (name a legal source, name
-   the file operators hold locally, or waive the citation; sources never enter a repository or an
-   issue) and the intake releases the job. Otherwise check the result
-   mechanically (the gates), do
-   the lane's last mile (push, open the draft pull request, reply to reviewers), and submit the
-   report and deliverables to the board as a pull request that names the job.
-5. The board's intake merges valid submissions and creates the next jobs.
+```bash
+tauceti-roadmap --conf $CONF work --worker-id alice-1 --loop                    # the most useful job, round after round
+tauceti-roadmap --conf $CONF work --worker-id alice-2 --only review,redteam --loop
+tauceti-roadmap --conf $CONF work --worker-id alice-3 --agent claude --loop      # pin the agent family
+tauceti-roadmap --conf $CONF work --worker-id alice-1 --dry-run                  # write the brief, run nothing
+```
 
-| Kind | Lane |
+Each round takes the most useful job this worker may do, leases it, runs the lane's agent in fresh
+checkouts, checks the result, and submits it to the board as a pull request; a round that stops
+early puts the job back. `--worker-id` names the worker (its folder, branch prefix and lease owner);
+run several with distinct ids. `--only` limits it to some job kinds; `--agent` pins the family and
+leaves the model to the lane. Ctrl-C (or a stop signal) ends the round cleanly.
+
+To keep a worker running in the background, a user service does well:
+
+```bash
+systemd-run --user --unit rmw-alice-1 --collect --setenv=PYTHONUNBUFFERED=1 \
+  --setenv=PATH="$HOME/.elan/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+  /usr/bin/bash -lc "exec tauceti-roadmap --conf $CONF work --worker-id alice-1 --loop \
+    >> $HOME/.local/state/tauceti/projects/TauCetiRoadmap/logs/alice-1.log 2>&1"
+systemctl --user stop rmw-alice-1                                   # stop it (the job is released)
+```
+
+If several `gh` accounts are logged in on the machine, pin the one the worker uses (for example
+`--setenv=GH_TOKEN=...`; the token is then readable in the unit's environment by your user).
+
+Watch it:
+
+```bash
+tauceti-roadmap --conf $CONF tail --worker-id alice-1      # its rounds and the agent's live output
+tauceti-roadmap --conf $CONF status                        # the board's jobs by state, ages, claimants
+```
+
+## Where things live
+
+Everything a worker writes stays on your machine, under the project's state directory
+`~/.local/state/tauceti/projects/<project>/` (`$TAUCETI_PROJECT_STATE` or `$XDG_STATE_HOME`
+override it; it must not lie inside a git checkout):
+
+| Path | What |
 | --- | --- |
-| `target` | triage a filed target: new roadmap, Part II, or already owned elsewhere |
-| `design` | the roadmap plan: layers, targets with locators, suppliers by name and section, consumers, sources manifest |
-| `package` | the roadmap folder: README at upstream density, `Suggested.lean`, `metadata.toml` |
-| `review` | independent review of a design or package: seeded locator sample, adversarial pass, duplication and supplier-order audits |
-| `fix` | resolve a review's findings (package files only), or a red-team round's findings on the pull request branch |
-| `port` | copy the accepted package into the roadmap repository, run the gates, open the draft pull request |
-| `redteam` | two independent whole-document passes by different agents, each round followed by a fix; optionally one more pass per README section |
-| `gate` | answer the human reviewers: ingest every review since the last reply, fix, push, reply finding by finding |
+| `workers/<id>/board`, `workers/<id>/content` | the worker's checkouts of the board and the roadmap repository, reset to their main branches every round |
+| `workers/<id>/jobs/<JOB>/brief.md` | the brief the agent got |
+| `workers/<id>/jobs/<JOB>/run-N.out`, `run-N.err` | the agent's output, run by run |
+| `workers/<id>/jobs/<JOB>/scratch/` | the agent's scratch space, and a pending `needs-references.toml` |
+| `workers/<id>/jobs/<JOB>/unsubmitted/` | what a round left behind without submitting it |
+| `workers/<id>/rounds.log`, `attempts.json` | the round log `tail` follows; failures per job |
+| `sources/<sha256>.pdf`, `sources/<sha256>.txt` | the sources cache: each text under its hash, with a line-numbered extraction beside it |
+| `logs/` | where the service example above writes the worker's output |
 
-## The gates
-
-`tauceti-roadmap gate <worktree> <Name> --base origin/main` runs every push gate on one roadmap
-folder and exits 1 on any failure: `set_option`, pinned blob links, LaTeX and TeX residue,
-pull-request numbers, sorry'd data and admitted examples, process residue, local paths,
-`import Mathlib.<submodule>`, the line cap, configured forbidden patterns and dropped roadmaps,
-README names missing from the Lean, empty Lean sections, process-named labels, the dependency check
-against the merge order, a dirty tree and the outside-folder diff (`--build` adds the targeted
-build). Call it directly, never through a pipe; `--out FILE` keeps the structured result.
+The full list is in [docs/OPERATORS.md](docs/OPERATORS.md#the-state-directory).
 
 ## Sources
 
-`tauceti-roadmap sources fetch <DOI | arXiv id | URL | "Authors, Title, Year">` resolves a citation to
-a legal source (the operator's own texts, arXiv, HAL, Numdam, GDZ, EuDML, Project Euclid open
-content, publisher open archives, author pages, institutional repositories), never a pirate mirror
-and never past a paywall, keeps it in `~/.local/state/tauceti/projects/<project>/sources/` under its
-SHA-256 with a line-numbered text beside it, and records `url`, `fetched_from`, `fetched_at`,
-`sha256` and `licence_class` in the roadmap's `sources.toml`. A citation that resolves only to a
-paywall is recorded as `uncertified` with its DOI and locator. Image-only scans go through OCR when
-the optional extra is installed. The rules and the hand-off are in [docs/SOURCES.md](docs/SOURCES.md).
+Agents fetch the sources they cite themselves, through `tauceti-roadmap sources fetch`, and only
+from legal places: open repositories (arXiv, HAL, Numdam, GDZ, EuDML, Project Euclid open content,
+the Stacks project), publisher open archives, author pages, institutional repositories, and the
+texts you hold. Pirate mirrors are refused and paywalls are never circumvented; a published theorem
+behind a paywall may be cited by its locator alone (`uncertified`). Each text is kept in your
+sources cache under its SHA-256, and the roadmap's `sources.toml` records where it came from, its
+hash, its licence class and the locators the roadmap cites.
 
-## Status of this version
+**Sources never enter a repository, a pull request or an issue.** The cache on your machine is
+their only copy; reports and READMEs quote locators (`AB21 line 120`, a theorem or page number),
+never passages. The submission gates refuse PDF, DjVu, PostScript and EPUB files, extracted text,
+manifests that embed text, and long pasted passages.
 
-Build-plan steps 1 to 4 are in place: the scaffold, the job board and intake, the port, red-team and
-gate lanes (with optional section-sharded red-team passes), and the sources service with the
-manifest, cache, deny and paywall policy, OCR and the `needs-references` hand-off. Intentions on the
-roadmap repository become targets with `targets import-intentions`. The harness is standalone for
-now; running its lanes as TauCetiWorker `only=` kinds under a TauCetiTools project configuration is
-the intended integration.
+**Texts you hold.** The project's configuration sets `[sources] local_dirs = ["~/tauceti-sources"]`:
+put a paper you hold there under a plain file name, such as `~/tauceti-sources/Kettle1967.pdf`
+(create the directory if it does not exist). The sources service looks there first, and the file
+never leaves your machine. To give its hash in an answer, run
+`sha256sum ~/tauceti-sources/Kettle1967.pdf`.
+
+**Answering a needs-references request.** When a worker cannot read a source legally it parks the
+job in `state:needs-references` and posts what is missing on the job's issue. Answer each key in a
+comment, one line per key:
+
+```text
+source: BLR90 arXiv:2101.00001            an alternative legal source, fetched by the worker
+local: Ket67 Kettle1967.pdf               a text operators hold in [sources] local_dirs (sha256: <hex> optional)
+waive: Tan71                              cite it by its locator alone
+```
+
+Never attach a file: attachments are not read. After a `local:` answer, only a worker whose
+operator holds that file (by name, or by hash when one is given) takes the job up; other workers
+leave it alone. The board's intake records the answers in `sources.toml` and makes the job
+available again once every key is answered.
+
+## The jobs
+
+| Kind | What the lane does |
+| --- | --- |
+| `target` | triage a filed target: a new roadmap, a Part II, a duplicate, or a merge into another open target or design |
+| `design` | the roadmap plan: layers, targets with locators, suppliers by name and section, consumers, the sources manifest |
+| `package` | the roadmap folder: README, `Suggested.lean`, `metadata.toml` |
+| `review` | an independent review of a design or a package: a seeded sample of locators, an adversarial pass, duplication and supplier-order audits |
+| `fix` | resolve a review's findings in the package files, or a red-team round's findings on the pull request branch |
+| `port` | copy the accepted package into the roadmap repository, run the gates, open the draft pull request |
+| `redteam` | independent passes on the draft pull request by different agents, each round followed by a fix |
+| `gate` | answer the human reviewers of the draft pull request: fix, push, reply finding by finding |
+
+## Filing targets
+
+A target names a statement or topic, why it matters for the library, the sources you know and a
+suggested name. File it with the issue template on the job board, or from the command line:
+
+```bash
+tauceti-roadmap --conf $CONF targets file --statement "..." --why "..." --name PrismaticCohomology
+tauceti-roadmap --conf $CONF targets file-many --from targets.toml           # dry run
+tauceti-roadmap --conf $CONF targets file-many --from targets.toml --yes     # file them
+```
+
+`targets.toml` holds `[[target]]` tables with `statement`, `why` and optionally `sources`, `name`,
+`licence` and `title` (a JSON Lines file with the same fields works too); a target whose roadmap
+name the board already has is skipped. The board's maintenance (`board sync`) turns filed targets
+into jobs; see [docs/OPERATORS.md](docs/OPERATORS.md#board-maintenance).
+
+## Reviews
+
+Every design and package is reviewed by an agent of another operator (or, where the project allows
+it, of another agent and model) before it moves on, and every fix round gets a fresh review; a
+fixer's own acceptance never counts. Reviews and red-team passes run on the review models the
+configuration pins (Fable on Claude, Astra on Codex), whichever family a worker runs. A browser
+model such as ChatGPT Pro reviews by reading the review pull request on the board, following the
+brief pinned as its first comment, and leaving its review as a comment in the shape that brief
+gives (a first line `Review (<agent>) of <sha7>`, a `Verdict:` line and numbered findings), which
+the board's intake reads like any other review; this flow is landing in pass 2.
 
 ## Development
 
@@ -113,10 +168,9 @@ python3 -m compileall -q tauceti_roadmap_worker
 ```
 
 The package uses the standard library only; the optional extras are `pdf` (pypdf, when poppler's
-`pdftotext` is missing) and `ocr` (RapidOCR with pypdfium2). The tests never touch the network: a
-fixture refuses real requests and the sources tests run on canned responses. Briefs live in `prompts/` (one per lane plus shared
-`sections/`); every brief carries the principles of DESIGN.md section 1 verbatim, and the tests
-enforce it.
+`pdftotext` is missing) and `ocr` (RapidOCR with pypdfium2). The tests never touch the network.
+Briefs live in `prompts/`, one per lane plus shared `sections/`; every brief carries the principles
+of DESIGN.md section 1, and the tests enforce it.
 
 ## Licence
 
