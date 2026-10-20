@@ -22,7 +22,8 @@ The policy is enforced on every request and every redirect hop:
   the caller named together with its class; metadata services (the arXiv API, Crossref, the HAL
   API, doi.org) are read but never recorded as where a text came from;
 * one plain GET per hop with a declared User-Agent: no credentials, no cookies, no retries around a
-  refusal; arXiv gets one request every three seconds.
+  refusal; arXiv gets one request every three seconds from all the processes of a host that share
+  the state directory (a lock file in the cache paces them together).
 
 Everything goes through a `Transport`, so the tests run on canned responses.
 """
@@ -30,7 +31,9 @@ Everything goes through a `Transport`, so the tests run on canned responses.
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import html.parser
+import http.client
 import json
 import os
 import re
@@ -94,21 +97,30 @@ class UrllibTransport:
                     raise FetchError(f"{url}: larger than the {self.max_bytes >> 20} MB cap ([sources] max_megabytes)")
                 return Response(r.status, url, {k.lower(): v for k, v in r.headers.items()}, body)
         except urllib.error.HTTPError as exc:
-            body = exc.read(1 << 16) if exc.fp else b""
+            try:
+                body = exc.read(1 << 16) if exc.fp else b""
+            except (OSError, http.client.HTTPException):
+                body = b""
             return Response(exc.code, url, {k.lower(): v for k, v in (exc.headers or {}).items()}, body)
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except http.client.InvalidURL as exc:
+            raise FetchError(f"{url!r}: not a valid URL ({exc})") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+            # connection trouble, a truncated body (IncompleteRead), a malformed status line
             raise FetchError(f"{host_of(url)}: {getattr(exc, 'reason', exc)}", permanent=False) from exc
+        except ValueError as exc:            # urllib's "unknown url type" and the like
+            raise FetchError(f"{url!r}: {exc}") from exc
 
 
 class Client:
     """GETs under the sources policy: deny list, paywalls, redirects checked hop by hop, pacing."""
 
     def __init__(self, transport, *, allow: dict[str, list[str]], deny: list[str], paywalled: list[str],
-                 user_agent: str = "", pace: dict[str, float] | None = None, sleep=time.sleep, clock=time.monotonic):
+                 user_agent: str = "", pace: dict[str, float] | None = None, sleep=time.sleep, clock=time.time,
+                 pace_dir: Path | None = None):
         self.transport, self.allow, self.deny, self.paywalled = transport, allow, deny, paywalled
         self.user_agent = user_agent or f"tauceti-roadmap-worker/{__version__} (legal sources only)"
         self.pace = {".arxiv.org": 3.0} if pace is None else pace
-        self.sleep, self.clock, self.last = sleep, clock, {}
+        self.sleep, self.clock, self.last, self.pace_dir = sleep, clock, {}, pace_dir
         self.log: list[str] = []
 
     def classify(self, url: str) -> str:
@@ -125,11 +137,30 @@ class Client:
 
     def _wait(self, host: str) -> None:
         for rule, gap in self.pace.items():
-            if host_matches(host, rule):
+            if not host_matches(host, rule):
+                continue
+            if self.pace_dir is None:
                 wait = self.last.get(rule, -1e9) + gap - self.clock()
                 if wait > 0:
                     self.sleep(wait)
                 self.last[rule] = self.clock()
+                continue
+            # Shared with every process using this state directory: the time of the last request is
+            # kept in a lock file, read and written under an exclusive lock.
+            self.pace_dir.mkdir(parents=True, exist_ok=True)
+            with open(self.pace_dir / f".pace{rule}", "a+", encoding="utf-8") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.seek(0)
+                try:
+                    last = float(f.read().strip() or "-1e9")
+                except ValueError:
+                    last = -1e9
+                wait = last + gap - self.clock()
+                if wait > 0:
+                    self.sleep(wait)
+                f.seek(0)
+                f.truncate()
+                f.write(repr(self.clock()))
 
     def get(self, url: str, accept: str = "*/*") -> Response:
         for _ in range(10):
@@ -157,7 +188,8 @@ class Client:
 def client_from_config(cfg, transport=None) -> Client:
     s = cfg.sources
     return Client(transport or UrllibTransport(max_bytes=s.max_megabytes << 20), allow=s.allow,
-                  deny=sources.deny_list(s.deny), paywalled=s.paywalled, user_agent=s.user_agent)
+                  deny=sources.deny_list(s.deny), paywalled=s.paywalled, user_agent=s.user_agent,
+                  pace_dir=sources.cache_root(cfg.state_dir()))
 
 
 # --- citations ------------------------------------------------------------------------------------
@@ -202,8 +234,35 @@ def parse_citation(text: str, *, authors: str = "", title: str = "", year: str =
         return Citation("file", raw, **extra)
     quoted = re.search(r"[\"“«]([^\"”»]{8,})[\"”»]", raw)
     found_year = YEAR.findall(raw)
-    return Citation("text", raw, authors=authors, title=title or (quoted.group(1).strip() if quoted else ""),
+    return Citation("text", raw, authors=authors or leading_authors(raw),
+                    title=title or (quoted.group(1).strip() if quoted else ""),
                     year=extra["year"] or (found_year[-1] if found_year else ""))
+
+
+def leading_authors(text: str) -> str:
+    """The author part of 'A. Author, B. Writer, Title, Year' or 'A. Author, "Title", ...': the
+    leading comma-separated pieces that look like names (initials and at most three words)."""
+    head = re.sub(r"\s+and\s+|\s*&\s*", ", ", re.split(r"[\"“«]", text, maxsplit=1)[0])
+    names = []
+    for piece in head.split(","):
+        piece = piece.strip()
+        tokens = piece.split()
+        if not tokens or len(tokens) > 4 or not re.match(r"^[^\W\d_]", piece):
+            break
+        if not any(re.fullmatch(r"(?:[^\W\d_]\.-?)+", t) for t in tokens) and names:
+            break                                     # a piece without initials after the names: the title
+        if not any(re.fullmatch(r"(?:[^\W\d_]\.-?)+", t) for t in tokens) and len(tokens) > 1:
+            break
+        names.append(piece)
+    return ", ".join(names)
+
+
+def year_compatible(found: str, wanted: str) -> bool:
+    """A hit from long after the cited year is a different text (a later edition, a reprint, a
+    lecture course of the same title); preprints come before publication. Unknown years pass."""
+    if not (str(found).isdigit() and str(wanted).isdigit()):
+        return True
+    return int(found) <= int(wanted) + 2
 
 
 STOPWORDS = {"the", "of", "on", "and", "in", "for", "to", "with", "by", "its", "de", "la", "le", "les",
@@ -480,6 +539,9 @@ class Fetcher:
                 if not exc.permanent:
                     meta["_transient"] = True
                 return default
+            except (ValueError, KeyError, TypeError, IndexError, AttributeError) as exc:
+                notes.append(f"{what}: an unexpected answer ({type(exc).__name__})")
+                return default
 
         if cit.kind == "file":
             path = Path(os.path.expanduser(cit.value))
@@ -535,7 +597,7 @@ class Fetcher:
             return
         url = arxiv_query_url(title=title, authors=meta.get("authors", ""), text="" if title else query)
         for hit in guard("arXiv search", lambda: self._arxiv(url), []):
-            if title_matches(hit["title"], query, free) and surnames_match(hit["authors"], meta.get("authors", "")):
+            if self._hit_matches(hit["title"], hit["authors"], hit["year"], query, free, meta):
                 for key, value in (("title", hit["title"]), ("year", hit["year"]), ("authors", ", ".join(hit["authors"]))):
                     if not meta.get(key):
                         meta[key] = value
@@ -543,7 +605,7 @@ class Fetcher:
                 yield self._arxiv_candidate(hit["arxiv"])
                 break
         for h in guard("HAL search", lambda: parse_hal(self.client.get(hal_query_url(title=query), accept="application/json").body), []):
-            if h["file"] and title_matches(h["title"], query, free):
+            if h["file"] and self._hit_matches(h["title"], h["authors"], h["year"], query, free, meta):
                 yield Candidate(h["file"], "HAL", canonical=h["url"])
                 break
         if cit.kind == "text" and not doi:
@@ -552,10 +614,17 @@ class Fetcher:
                           .get("message", {}).get("items", []), [])
             for item in items:
                 work = crossref_meta(item)
-                if work["doi"] and title_matches(work["title"], query, free):
+                if work["doi"] and self._hit_matches(work["title"], work["authors"], work["year"], query, free, meta):
                     yield from self.candidates(Citation("doi", work["doi"], meta.get("authors", ""), work["title"],
                                                         meta.get("year", "")), meta, notes, search=False)
                     break
+
+    @staticmethod
+    def _hit_matches(title: str, authors, year: str, query: str, free: bool, meta: dict) -> bool:
+        """A search hit is the cited work: the title matches, an author's surname occurs, and the
+        year does not contradict the citation."""
+        return (title_matches(title, query, free) and surnames_match(authors, meta.get("authors", ""))
+                and year_compatible(year, str(meta.get("year", ""))))
 
     def _try(self, cand: Candidate, licence_class: str, tried: list[str], paywall: list[str], meta: dict):
         """(data, kind, final URL, licence class) of a candidate, or None with the reason recorded."""
@@ -570,8 +639,13 @@ class Fetcher:
                 tried.append(f"{cand.via}: not a document")
                 return None
             return data, kind, "", "operator-local"
-        # A class named by the caller vouches for the URL the caller named, never for discovered ones.
-        forced = cand.licence_class or (licence_class if cand.via == "the given URL" else "")
+        # A class named by the caller vouches for the URL the caller named, on that URL's host only:
+        # never for discovered URLs, a redirect to another host, or a link to another host.
+        named = licence_class if cand.via == "the given URL" else ""
+
+        def vouched(url: str) -> str:
+            return cand.licence_class or (named if host_of(url) == host_of(cand.url) else "")
+        forced = vouched(cand.url)
         pre = self.client.classify(cand.url)
         if not forced and not cand.landing and pre == "unknown":
             tried.append(f"{cand.via} {cand.url}: {host_of(cand.url)} is in no licence class")
@@ -580,7 +654,7 @@ class Fetcher:
             r = self.client.get(cand.url)
             kind = sources.sniff(r.body, r.header("content-type"))
             if kind == "html" and cand.landing:
-                cls = forced or self.client.classify(r.url)
+                cls = vouched(r.url) or self.client.classify(r.url)
                 if cls in ("unknown", "denied"):
                     tried.append(f"{cand.via}: the landing page {r.url} is on a host in no licence class "
                                  "(fetch its PDF explicitly with --licence-class once you have checked it is open)")
@@ -592,8 +666,6 @@ class Fetcher:
                     tried.append(f"{cand.via} {r.url}: {why}")
                     return None
                 landing_url = r.url
-                if forced and host_of(pdf) != host_of(landing_url):
-                    forced = ""                 # the caller vouched for this page's host, not for where it links
                 r = self.client.get(pdf)
                 kind = sources.sniff(r.body, r.header("content-type"))
                 if kind == "html":
@@ -609,7 +681,7 @@ class Fetcher:
             tried.append(f"{cand.via} {r.url}: returned {'a web page' if kind == 'html' else 'an unrecognised file'}, "
                          "not a document")
             return None
-        cls = forced or self.client.classify(r.url)
+        cls = vouched(r.url) or self.client.classify(r.url)
         if cls in ("unknown", "denied"):
             tried.append(f"{cand.via} {r.url}: {host_of(r.url)} is in no licence class (pass --licence-class "
                          "after checking that it is a legal source)")

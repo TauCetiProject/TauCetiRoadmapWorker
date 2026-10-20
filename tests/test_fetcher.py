@@ -42,6 +42,28 @@ def test_parse_free_text_citation():
     assert parse_citation("Sample, A course in examples", year="1973").year == "1973"
 
 
+def test_leading_authors_and_years():
+    assert fetcher.leading_authors("J. H. Example, The arithmetic of widgets, 1986") == "J. H. Example"
+    assert fetcher.leading_authors('A. Author and B. Writer, "A title", 2021') == "A. Author, B. Writer"
+    assert fetcher.leading_authors("Example, The arithmetic of widgets, 1986") == "Example"
+    assert fetcher.leading_authors("The arithmetic of widgets in many words, Example, 1986") == ""
+    assert fetcher.year_compatible("1985", "1986") and fetcher.year_compatible("2021", "")
+    assert not fetcher.year_compatible("2024", "1986")
+
+
+def test_free_text_never_certifies_another_authors_text(tmp_path):
+    text = "J. H. Example, The arithmetic of widgets, 1986"
+    t = FakeTransport()
+    t.routes[fetcher.arxiv_query_url(text=text, authors="J. H. Example")] = fetcher.Response(200, "", {}, arxiv_feed(
+        [{"id": "2401.00001v1", "title": "The arithmetic of widgets", "authors": ["Some Lecturer"], "year": "2024"}]))
+    t.add("https://arxiv.org/pdf/2401.00001v1", PDF)
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(text))
+    assert out.status == "failed" and "https://arxiv.org/pdf/2401.00001v1" not in t.requests
+    t.routes[fetcher.arxiv_query_url(text=text, authors="J. H. Example")] = fetcher.Response(200, "", {}, arxiv_feed(
+        [{"id": "2401.00001v1", "title": "The arithmetic of widgets", "authors": ["Jo H. Example"], "year": "2024"}]))
+    assert make_fetcher(tmp_path, t).fetch(parse_citation(text)).status == "failed"     # a 2024 text is not the 1986 one
+
+
 def test_title_and_author_matching():
     assert title_matches("Théorèmes de finitude", "Theoremes de finitude")
     assert title_matches("Theorem A und Theorem B", "theorem a und theorem b")
@@ -269,6 +291,52 @@ def test_a_named_class_covers_the_named_page_and_its_own_host_only(tmp_path):
     assert out.status == "failed" and "files.example.net is in no licence class" in " ".join(out.tried)
 
 
+def test_a_named_class_does_not_follow_a_redirect_to_another_host(tmp_path):
+    url = "https://author.example.edu/paper.pdf"
+    t = FakeTransport().redirect(url, "https://mirror.unknown-host.net/paper.pdf") \
+        .add("https://mirror.unknown-host.net/paper.pdf", PDF)
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(url), licence_class="author-page")
+    assert out.status == "failed" and "mirror.unknown-host.net is in no licence class" in " ".join(out.tried)
+    same = FakeTransport().redirect(url, "https://author.example.edu/v2/paper.pdf").add("https://author.example.edu/v2/paper.pdf", PDF)
+    assert make_fetcher(tmp_path, same).fetch(parse_citation(url), licence_class="author-page").status == "fetched"
+
+
+def test_malformed_metadata_answers_do_not_crash(tmp_path):
+    doi = "10.24033/asens.9999"
+    t = FakeTransport().add(f"https://api.crossref.org/works/{doi}", b"<html>maintenance</html>") \
+        .add(fetcher.hal_query_url(doi=doi), b'{"response": {"docs": "oops"}}')
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(doi))
+    assert out.status == "failed" and any("Crossref: an unexpected answer" in x for x in out.tried)
+
+
+def test_transport_maps_protocol_errors(monkeypatch):
+    import http.client
+
+    class Broken:
+        def open(self, req, timeout):
+            raise http.client.IncompleteRead(b"partial")
+    tr = fetcher.UrllibTransport.__new__(fetcher.UrllibTransport)
+    tr.timeout, tr.max_bytes, tr.opener = 5, 100, Broken()
+    monkeypatch.undo()                          # the conftest guard refuses real requests; this one is faked
+    with pytest.raises(FetchError) as exc:
+        tr.request("https://example.org/x.pdf", {})
+    assert not exc.value.permanent
+    tr.opener = type("Bad", (), {"open": lambda self, req, timeout: (_ for _ in ()).throw(http.client.InvalidURL("x y"))})()
+    with pytest.raises(FetchError) as exc:
+        tr.request("https://example.org/x y.pdf", {})
+    assert exc.value.permanent
+
+
+def test_arxiv_pacing_is_shared_through_the_state_directory(tmp_path):
+    waits, now = [], [1000.0]
+    t = FakeTransport().add("https://arxiv.org/a", b"x").add("https://export.arxiv.org/b", b"y")
+    first = client(t, sleep=waits.append, clock=lambda: now[0], pace_dir=tmp_path)
+    second = client(t, sleep=waits.append, clock=lambda: now[0], pace_dir=tmp_path)    # another process
+    first.get("https://arxiv.org/a")
+    second.get("https://export.arxiv.org/b")
+    assert waits == [3.0] and (tmp_path / ".pace.arxiv.org").is_file()
+
+
 def test_pirate_mirrors_are_refused_without_a_request(tmp_path):
     t = FakeTransport()
     out = make_fetcher(tmp_path, t).fetch(parse_citation("https://libgen.is/book/index.php?md5=x"), licence_class="author-page")
@@ -300,7 +368,7 @@ def test_local_texts_come_first_and_need_no_network(tmp_path):
 def test_free_text_search_through_crossref_and_arxiv(tmp_path):
     text = "A. Author, An example paper, 2021"
     t = FakeTransport()
-    t.routes[fetcher.arxiv_query_url(text=text, authors="")] = fetcher.Response(200, "", {}, arxiv_feed(
+    t.routes[fetcher.arxiv_query_url(text=text, authors="A. Author")] = fetcher.Response(200, "", {}, arxiv_feed(
         [{"id": "2101.00001v3", "title": "An example paper", "authors": ["A. Author"]}]))
     t.add("https://arxiv.org/pdf/2101.00001v3", PDF)
     out = make_fetcher(tmp_path, t).fetch(parse_citation(text))
