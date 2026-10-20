@@ -309,6 +309,9 @@ alternative for operators who already use it.
 * Attachments are downloaded without credentials: on a private board, humans name a legal source
   or attach the file to a public issue instead.
 * The weekly digest issue of open `needs-references` requests is not implemented; use the label.
+* The intake reads a request only from the board's logins and `[sources] request_associations`: an
+  operator with no association on the board yet (before a first merged submission) has their request
+  ignored, and a maintainer reposts it with `sources request ... --post`.
 * Which README sections get a sharded red-team pass is a heuristic on the headings (layers, and
   sections with bold-labelled statements, numbered subsections or Lean, minus framing sections).
 * The dropped-names file lives in each host's state directory, so every operator keeps a copy.

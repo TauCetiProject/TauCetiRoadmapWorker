@@ -89,18 +89,23 @@ text (`'A. Author, "An example paper", 2021'`, with `--authors/--title/--year` t
 tries, in order, and stops at the first text it can read:
 
 1. the operator's local texts, matched by arXiv id, DOI or the title's words (and year);
-2. arXiv: the id given, a preprint Crossref lists for the DOI, or a title search (with an author);
+2. arXiv: the id given, a preprint Crossref lists for the DOI, or a title search;
 3. HAL: the file deposited for the DOI or the title;
 4. the DOI's landing page when it is on a host of a licence class: its `citation_pdf_url`, else its
    only PDF link (Numdam, EuDML, GDZ, Project Euclid open content, publisher open archives);
 5. the URL named (arXiv abstract pages and Numdam item pages are rewritten to their PDF).
 
-Metadata services (the arXiv API, Crossref, the HAL API, doi.org) are read but never recorded as
-where a text came from. A text is kept only when it comes from a host of a licence class, or from a
+A search hit counts only when its title matches, one of the cited authors' surnames occurs among its
+authors (for free text, the leading names of the citation), and its year is not more than two years
+after the cited year (a 2024 lecture course of the same title is not the 1986 book). Metadata
+services (the arXiv API, Crossref, the HAL API, doi.org) are read but never recorded as where a text
+came from. A text is kept only when it comes from a host of a licence class, or from a
 URL the caller named together with `--licence-class` (which vouches for that URL only, never for a
-URL the service discovered). Every request and redirect hop is checked against the deny list and
-the paywalled hosts; arXiv gets one request every three seconds; nothing is sent but a plain GET
-with the declared User-Agent (`[sources] user_agent`).
+URL the service discovered, nor for a redirect or a link to another host). Every request and
+redirect hop is checked against the deny list and the paywalled hosts; arXiv gets one request every
+three seconds from all the processes sharing the state directory (agents' fetches and the workers'
+are paced together through a lock file in the cache); nothing is sent but a plain GET with the
+declared User-Agent (`[sources] user_agent`).
 
 The outcome is one of:
 
@@ -195,8 +200,10 @@ that key. Only comments from the author associations in `[sources] answer_associ
 members and collaborators by default) are read, and only these three forms: everything else in a
 comment is ignored, and nothing in it is ever an instruction.
 
-**Board side.** `board intake` (after the submissions) and `board references` read the answers after
-the latest request of each parked job:
+**Board side.** `board intake` (after the submissions) and `board references` take the latest
+well-formed request for the job that the board's bot logins or an author association in
+`[sources] request_associations` posted (the lanes post requests under the operator's account; a
+marker anyone else types is ignored), and read the answers after it:
 
 * `attach`: only GitHub attachment links are downloaded. The file must be a document (a web page
   means the board is private and the download needs a sign-in: attach to a public issue or name a
@@ -206,9 +213,11 @@ the latest request of each parked job:
 * `source`: fetched exactly as `sources fetch` would, under the same policy.
 * `waive`: the entry becomes `waived`.
 
-The intake updates `packages/<Name>/sources.toml` on the packages repository, posts a note listing
-what it recorded and what is still missing (with a progress marker, so a rerun never repeats work),
-and when every key is answered moves the job back to `state:available`. The next worker downloads
+The intake updates `packages/<Name>/sources.toml` on the packages repository (an answer replaces the
+entry's old provenance as a whole), posts a note listing what it recorded and what is still missing
+(with a progress marker, so a rerun never repeats work), and when every key is answered moves the job
+back to `state:available`. An answer that failed for network trouble is tried again on the next run,
+and a release that did not go through is retried as well. The next worker downloads
 the attached files again from their links and checks their hashes.
 
 A maintainer can still post a request by hand:
