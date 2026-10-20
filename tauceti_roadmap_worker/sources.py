@@ -194,14 +194,19 @@ def find_source(data: dict, *, id: str = "", doi: str = "", arxiv: str = "", sha
     return None
 
 
-def upsert_source(data: dict, entry: dict) -> str:
+def upsert_source(data: dict, entry: dict, replace: bool = False) -> str:
     """Add `entry` to the manifest or update the entry with its id; 'added' or 'updated'. Fields of the
-    new entry win, except that `cited_for` lists are merged and empty values never erase."""
+    new entry win, except that `cited_for` lists are merged and empty values never erase. With
+    `replace`, the entry with that id is replaced as a whole (in place)."""
     data.setdefault("source", [])
     current = find_source(data, id=entry.get("id", ""))
     if current is None:
         data["source"].append({k: v for k, v in entry.items() if v not in ("", None, [])})
         return "added"
+    if replace:
+        current.clear()
+        current.update({k: v for k, v in entry.items() if v not in ("", None, [])})
+        return "updated"
     for key, value in entry.items():
         if value in ("", None, []):
             continue

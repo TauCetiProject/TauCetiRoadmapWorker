@@ -165,10 +165,16 @@ def test_resume_job_end_to_end(tmp_path):
     assert resume_job(ctx, job, fet, yes=True) == "DESIGN-Foo: waiting for an answer on BLR90"
     assert len(gh.writes) == writes                            # nothing new: no write, no comment
 
+    data = tomllib.loads(gh.files["packages/Foo/sources.toml"])
+    data["source"].append({"id": "BLR90", "title": "Example models", "status": "certified", "sha256": "d" * 64,
+                           "fetched_from": "https://example.org/gone.pdf", "licence_class": "open-repository"})
+    gh.files["packages/Foo/sources.toml"] = sources.dump_manifest(data)
     board.threads[7].append(comment(5, "waive: BLR90"))
     assert resume_job(ctx, job, fet, yes=True) == "DESIGN-Foo: references resolved; available again"
     data = tomllib.loads(gh.files["packages/Foo/sources.toml"])
     assert {s["id"]: s["status"] for s in data["source"] if "status" in s} == {"Ket67": "certified", "BLR90": "waived"}
+    waived = sources.find_source(data, id="BLR90")
+    assert "sha256" not in waived and "fetched_from" not in waived and waived["licence_class"] == "none"
     assert board.states == [("DESIGN-Foo", "available")]
     assert "Every requested source is answered" in board.posted[-1][1]
     problems = sources.validate_manifest(data, example_config().sources.allow, [])

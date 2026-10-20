@@ -88,6 +88,8 @@ def test_upsert_merges_and_never_erases():
     assert entry["cited_for"] == ["1.2", "2.1"] and entry["locator"] == "Theorem 3" and "venue" not in entry
     assert upsert_source(data, {"id": "Sam73", "title": "A course", "doi": ""}) == "added"
     assert data["source"][1] == {"id": "Sam73", "title": "A course"}
+    assert upsert_source(data, {"id": "AB21", "status": "waived", "title": "An example paper"}, replace=True) == "updated"
+    assert data["source"][0] == {"id": "AB21", "status": "waived", "title": "An example paper"}
 
 
 def test_find_source():

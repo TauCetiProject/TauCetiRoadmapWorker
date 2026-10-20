@@ -139,6 +139,8 @@ def doctor(args) -> int:
         reason = sources.ocr_status()
         if cfg.sources.ocr:
             add((OK if not reason else WARN, "ocr", "RapidOCR available" if not reason else reason))
+        else:
+            add((OK, "ocr", "off ([sources] ocr = false): image-only scans keep their text layer only"))
         pdf = shutil.which("pdftotext")
         add((OK, "pdf text", pdf) if pdf else (WARN, "pdf text", "pdftotext not found: install poppler-utils, "
                                                                   "or the `pdf` extra for a slower fallback"))

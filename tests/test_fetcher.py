@@ -257,6 +257,18 @@ def test_a_named_class_never_vouches_for_discovered_urls(tmp_path):
     assert out.status == "failed" and "https://journal.example.com/a.pdf" not in t.requests
 
 
+def test_a_named_class_covers_the_named_page_and_its_own_host_only(tmp_path):
+    page = "https://www.math.example.edu/~someone/papers.html"
+    t = FakeTransport().add(page, b'<html><a href="/~someone/widgets.pdf">PDF</a></html>') \
+        .add("https://www.math.example.edu/~someone/widgets.pdf", PDF)
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(page), licence_class="author-page")
+    assert out.status == "fetched" and out.entry["fetched_from"].endswith("/widgets.pdf")
+    elsewhere = FakeTransport().add(page, b'<html><a href="https://files.example.net/widgets.pdf">PDF</a></html>') \
+        .add("https://files.example.net/widgets.pdf", PDF)
+    out = make_fetcher(tmp_path, elsewhere).fetch(parse_citation(page), licence_class="author-page")
+    assert out.status == "failed" and "files.example.net is in no licence class" in " ".join(out.tried)
+
+
 def test_pirate_mirrors_are_refused_without_a_request(tmp_path):
     t = FakeTransport()
     out = make_fetcher(tmp_path, t).fetch(parse_citation("https://libgen.is/book/index.php?md5=x"), licence_class="author-page")

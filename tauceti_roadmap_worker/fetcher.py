@@ -592,6 +592,8 @@ class Fetcher:
                     tried.append(f"{cand.via} {r.url}: {why}")
                     return None
                 landing_url = r.url
+                if forced and host_of(pdf) != host_of(landing_url):
+                    forced = ""                 # the caller vouched for this page's host, not for where it links
                 r = self.client.get(pdf)
                 kind = sources.sniff(r.body, r.header("content-type"))
                 if kind == "html":

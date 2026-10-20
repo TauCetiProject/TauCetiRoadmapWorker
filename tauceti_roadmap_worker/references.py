@@ -373,7 +373,7 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
         res = resolve(answer, items[key], sources.find_source(manifest, id=key), fet, s.uncertified_ok)
         results.append(res)
         if res.entry:
-            sources.upsert_source(manifest, res.entry)
+            sources.upsert_source(manifest, res.entry, replace=True)   # the entry already starts from the old one
         if res.ok:
             done[key] = res.detail
     changed = [r.key for r in results if r.entry]
