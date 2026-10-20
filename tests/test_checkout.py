@@ -36,8 +36,8 @@ def test_sync_checkout_forces_the_remote_copy(tmp_path, monkeypatch):
     assert calls == [("fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main"),
                      ("checkout", "-q", "--force", "--detach", "origin/main"),
                      ("reset", "-q", "--hard", "origin/main"),
-                     ("clean", "-qfd"),
-                     ("clean", "-qfdx", "--", PKG),
+                     ("clean", "-qffd"),
+                     ("clean", "-qffdx", "--", PKG),
                      ("rev-parse", "HEAD")]
 
 
@@ -85,6 +85,7 @@ def left_by_a_parked_round(ws):
     (pkg / "target.md").write_text("Verdict: design\nedited by the agent\n")
     (pkg / "notes.log").write_text("ignored, but inside the package folder\n")
     (ws.board / "elsewhere.log").write_text("ignored, outside the package folder\n")
+    run(pkg, "init", "-q", "cloned")              # a repository an agent cloned for reference
 
 
 @needs_git
@@ -103,10 +104,27 @@ def test_the_board_copy_wins_over_what_a_parked_round_left(live):
     assert (pkg / "sources.toml").read_text() == "# the board's copy: waivers\n"
     assert (pkg / "target.md").read_text() == "Verdict: design\n"
     assert not (pkg / "notes.log").exists() and (ws.board / "elsewhere.log").exists()
+    assert not (pkg / "cloned").exists()
     assert gitops.current_branch(ws.board) == "w1/TARGET-QSeries" and gitops.changed_files(ws.board) == []
     kept = ws.job_dir / "unsubmitted" / PKG
     assert (kept / "sources.toml").read_text() == "# the agent's copy\n"
     assert (kept / "target.md").read_text().endswith("edited by the agent\n")
+
+
+@needs_git
+def test_committed_but_unpushed_work_is_set_aside_and_a_bare_round_keeps_the_copy(live):
+    ctx, _ = live
+    job = new_job(f"TARGET-{NAME}")
+    lane = lane_for(job)
+    ws = lane.prepare(job, ctx)
+    (ws.board / PKG / "target.md").write_text("Verdict: design\ncommitted, never pushed\n")
+    run(ws.board, "commit", "-q", "-am", "the submission's commit; its push failed")
+    ws = lane.prepare(job, ctx)
+    kept = ws.job_dir / "unsubmitted" / PKG / "target.md"
+    assert kept.read_text().endswith("never pushed\n")
+    assert (ws.board / PKG / "target.md").read_text() == "Verdict: design\n"
+    lane.prepare(job, ctx)                       # a round that left nothing behind
+    assert kept.read_text().endswith("never pushed\n")
 
 
 @needs_git

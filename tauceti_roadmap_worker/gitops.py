@@ -40,17 +40,18 @@ def sync_checkout(repo: str, dest: Path, ref: str = "main", scrub: tuple[str, ..
 
     Whatever an earlier round left in the tree is discarded and the remote's copy wins: edits to
     tracked files, and untracked files, including one the new commit now tracks (a plain checkout
-    refuses to overwrite it, and then every later round fails the same way). Under the `scrub`
-    paths ignored files go too. A caller that wants to keep unsubmitted work copies it first."""
+    refuses to overwrite it, and then every later round fails the same way), nested repositories an
+    agent cloned into the tree included. Under the `scrub` paths ignored files go too. A caller that
+    wants to keep unsubmitted work copies it first."""
     if not (dest / ".git").exists():
         dest.parent.mkdir(parents=True, exist_ok=True)
         git(None, "clone", "-q", "--filter=blob:none", "--no-checkout", url(repo), str(dest))
     git(dest, "fetch", "-q", "origin", f"+refs/heads/{ref}:refs/remotes/origin/{ref}")
     git(dest, "checkout", "-q", "--force", "--detach", f"origin/{ref}")
     git(dest, "reset", "-q", "--hard", f"origin/{ref}")
-    git(dest, "clean", "-qfd")
+    git(dest, "clean", "-qffd")
     if scrub:
-        git(dest, "clean", "-qfdx", "--", *scrub)
+        git(dest, "clean", "-qffdx", "--", *scrub)
     return git(dest, "rev-parse", "HEAD").strip()
 
 
@@ -62,7 +63,7 @@ def checkout_pr(repo: str, dest: Path, number: int) -> str:
     git(dest, "fetch", "-q", "origin", f"pull/{number}/head", "main")
     git(dest, "checkout", "-q", "--force", "--detach", "FETCH_HEAD")
     git(dest, "reset", "-q", "--hard", "FETCH_HEAD")
-    git(dest, "clean", "-qfd")
+    git(dest, "clean", "-qffd")
     return git(dest, "rev-parse", "HEAD").strip()
 
 

@@ -72,15 +72,17 @@ def test_a_target_lane_submits_the_manifest_it_extended(live, tmp_path, monkeypa
 
 
 def test_altered_entries():
-    before = {"source": [WAIVED, FOUND]}
-    grown = {"source": [{**WAIVED, "cited_for": ["F1", "F2"]},
-                        {**FOUND, "status": "certified", "sha256": "a" * 64, "licence_class": "open-repository",
-                         "fetched_from": "https://arxiv.org/pdf/0807.4834v1"},
-                        {**FOUND, "id": "New2020"}]}
+    certified = {**FOUND, "id": "Cert", "status": "certified", "sha256": "a" * 64, "licence_class": "open-repository",
+                 "fetched_from": "https://arxiv.org/pdf/0807.4834v1"}
+    before = {"source": [WAIVED, FOUND, certified]}
+    grown = {"source": [{**WAIVED, "cited_for": ["F1", "F2"]}, {**FOUND, "version_note": "thesis pagination"},
+                        certified, {**FOUND, "id": "New2020"}]}
     assert sources.altered_entries(before, grown) == []
-    rewritten = {"source": [{**WAIVED, "locator": "Section 9", "cited_for": []}]}
+    rewritten = {"source": [{**WAIVED, "locator": "Section 9", "cited_for": []},
+                            {**FOUND, "id": "Cert", "status": "uncertified", "licence_class": "none"}]}
     assert sources.altered_entries(before, rewritten) == ["GasperRahman2004: locator, cited_for changed",
-                                                         "Zwegers2002: removed"]
+                                                         "Zwegers2002: removed",
+                                                         "Cert: status, licence_class, sha256, fetched_from changed"]
 
 
 @needs_git

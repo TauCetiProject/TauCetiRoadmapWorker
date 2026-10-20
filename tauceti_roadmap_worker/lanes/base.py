@@ -174,24 +174,31 @@ def dropped_names(cfg: Config) -> list[str]:
 UNSUBMITTED = "unsubmitted"
 
 
-def set_aside(checkout: Path, jobs: Path, worker: str) -> Path | None:
-    """Copy what the last round left uncommitted in the board checkout to `jobs/<JOB>/unsubmitted/`
-    of the job whose branch (`<worker>/<JOB>`) is checked out, replacing an older copy, before the
-    checkout is reset to the board's main. Returns that folder, or None when nothing was left.
-    Best effort: a checkout git cannot read is reset all the same."""
+def set_aside(checkout: Path, jobs: Path, worker: str, base: str = "main") -> Path | None:
+    """Copy what the last round left in the board checkout beyond the board's main (uncommitted
+    files, and files a submission committed but may not have pushed) to `jobs/<JOB>/unsubmitted/`
+    of the job whose branch (`<worker>/<JOB>`) is checked out, before the checkout is reset. A round
+    that left nothing keeps the copy of an earlier one. Returns the folder when this round left
+    files, else None. Best effort: a checkout git cannot read is reset all the same."""
     try:
         branch = gitops.current_branch(checkout)
         if not branch.startswith(worker + "/"):
             return None
-        files = [p for p in gitops.changed_files(checkout) if (checkout / p).is_file()]
+        try:
+            changed = gitops.changed_files(checkout, f"refs/remotes/origin/{base}")
+        except gitops.GitError:
+            changed = gitops.changed_files(checkout)
+        files = [p for p in changed if (checkout / p).is_file()]
     except gitops.GitError:
+        return None
+    if not files:
         return None
     dest = jobs / branch.split("/", 1)[1] / UNSUBMITTED
     shutil.rmtree(dest, ignore_errors=True)
     for rel in files:
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(checkout / rel, dest / rel)
-    return dest if files else None
+    return dest
 
 
 def library_description(content: Path) -> str:
@@ -208,6 +215,7 @@ class Lane:
     kind = ""
     prompt = ""
     resumes_checkpoint = False  # carries on from what its last run left unsubmitted (no lane does yet)
+    manifest_add_only = False   # its fetches add to the manifest, never rewrite an entry (reviews)
 
     # -- hooks --
     def eligible(self, job: Job, ctx: Context) -> str:
@@ -308,6 +316,8 @@ class Lane:
         args = ["sources", "fetch"]
         if self.edits_manifest(job, ctx):
             args += ["--manifest", str(ws.package(ctx.cfg, job.name) / "sources.toml")]
+            if self.manifest_add_only:
+                args.append("--add-only")
         return ctx.cli(*args, "--missing-out", str(ws.scratch / "needs-references.toml"))
 
     def prepare_sources(self, job: Job, ctx: Context, ws: Workspace) -> None:

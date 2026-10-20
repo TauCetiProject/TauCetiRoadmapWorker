@@ -198,16 +198,28 @@ def find_source(data: dict, *, id: str = "", doi: str = "", arxiv: str = "", sha
     return None
 
 
-def upsert_source(data: dict, entry: dict, replace: bool = False) -> str:
-    """Add `entry` to the manifest or update the entry with its id; 'added' or 'updated'. Fields of the
-    new entry win, except that `cited_for` lists are merged and empty values never erase; an entry
-    that carries a status or a hash replaces the old provenance fields as a group. With `replace`, the
-    entry with that id is replaced as a whole (in place)."""
+def upsert_source(data: dict, entry: dict, replace: bool = False, add_only: bool = False) -> str:
+    """Add `entry` to the manifest or update the entry with its id; 'added', 'updated' or 'kept'.
+    Fields of the new entry win, except that `cited_for` lists are merged and empty values never
+    erase; an entry that carries a status or a hash replaces the old provenance fields as a group.
+    With `replace`, the entry with that id is replaced as a whole (in place). With `add_only` (a
+    reviewer's fetch), an existing entry keeps every value it has: `cited_for` references are added
+    and absent citation fields filled, its provenance is never touched."""
     data.setdefault("source", [])
     current = find_source(data, id=entry.get("id", ""))
     if current is None:
         data["source"].append({k: v for k, v in entry.items() if v not in ("", None, [])})
         return "added"
+    if add_only:
+        before = dict(current)
+        for key, value in entry.items():
+            if value in ("", None, []) or key in PROVENANCE:
+                continue
+            if key == "cited_for":
+                current[key] = list(dict.fromkeys([*current.get(key, []), *value]))
+            elif current.get(key) in ("", None, []):
+                current[key] = value
+        return "kept" if current == before else "updated"
     if replace:
         current.clear()
         current.update({k: v for k, v in entry.items() if v not in ("", None, [])})
@@ -226,9 +238,9 @@ def upsert_source(data: dict, entry: dict, replace: bool = False) -> str:
 
 
 def altered_entries(before: dict, after: dict) -> list[str]:
-    """How the manifest `after` alters the entries `before` recorded: an entry removed, a field of
-    what it cites changed (any field but its provenance), or a `cited_for` reference dropped. New
-    entries, new fields and a new provenance (another legal copy was read) are additions."""
+    """How the manifest `after` alters the entries `before` recorded: an entry removed, a value
+    changed (provenance included: a lost hash or a downgraded status loses the text), or a
+    `cited_for` reference dropped. New entries and fields an entry did not have are additions."""
     out = []
     for old in before.get("source", []):
         key = str(old.get("id", ""))
@@ -236,7 +248,7 @@ def altered_entries(before: dict, after: dict) -> list[str]:
         if new is None:
             out.append(f"{key}: removed")
             continue
-        changed = [f for f, v in old.items() if f not in PROVENANCE and f != "cited_for" and new.get(f) != v]
+        changed = [f for f, v in old.items() if f != "cited_for" and new.get(f) != v]
         if not set(old.get("cited_for", [])) <= set(new.get("cited_for", [])):
             changed.append("cited_for")
         if changed:

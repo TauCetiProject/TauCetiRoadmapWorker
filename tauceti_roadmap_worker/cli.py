@@ -380,7 +380,7 @@ def _fetch(args, cfg: config.Config, fet: fetcher.Fetcher) -> int:
             print(f"  tried: {line}")
     accepted = out.status == "fetched" or (out.status == "uncertified" and s.uncertified_ok)
     if accepted and manifest is not None:
-        action = sources.upsert_source(manifest, entry)
+        action = sources.upsert_source(manifest, entry, add_only=args.add_only)
         sources.save_manifest(path, manifest)
         if not args.json:
             print(f"{action} {entry['id']} in {path}")
@@ -511,6 +511,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--locator-scheme", default="", choices=["", *sources.LOCATOR_SCHEMES])
     s.add_argument("--locator", default="")
     s.add_argument("--cited-for", action="append", default=[], help="a README section or target citing it (repeatable)")
+    s.add_argument("--add-only", action="store_true",
+                   help="fetch: an entry the manifest has keeps its values (a review adds, never rewrites)")
     s.add_argument("--licence-class", default="", help="fetch: the class of a URL on a host no list names, once checked")
     s.add_argument("--missing-out", default="", help="fetch: on failure, add a [[missing]] table to this file")
     s.add_argument("--json", action="store_true")

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -98,6 +99,14 @@ class DesignLane(Lane):
     def prepare(self, job: Job, ctx: Context) -> Workspace:
         ws = super().prepare(job, ctx)
         ws.extra["readme"] = ws.package(ctx.cfg, job.name) / "design" / "README.md"
+        # A triage that renamed the roadmap left its sources (and the answers to its references
+        # requests) in the target's folder: the design starts from them and submits them as its own.
+        target = job.inputs.get("target", "")
+        origin = board.parse_job_id(target).name if target else job.name
+        mine, theirs = ws.package(ctx.cfg, job.name) / "sources.toml", ws.package(ctx.cfg, origin) / "sources.toml"
+        if origin != job.name and theirs.is_file() and not mine.exists():
+            mine.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(theirs, mine)
         if not ctx.dry_run:
             record_design(ctx.state, ctx.operator, job.id)
         return ws

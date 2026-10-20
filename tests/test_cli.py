@@ -91,6 +91,24 @@ def test_sources_fetch_records_the_entry(tmp_path, capsys, fake_net):
     assert capsys.readouterr().out.startswith("Aut21\t") and len(fake_net.requests) == 2      # cached: no new request
 
 
+def test_a_reviewers_fetch_adds_but_never_rewrites(tmp_path, capsys, fake_net):
+    manifest = tmp_path / "packages" / "Foo" / "sources.toml"
+    data = sources.new_manifest("Foo")
+    data["source"] = [{"id": "Aut21", "authors": "A. Author (as the author wrote it)", "title": "An example paper",
+                       "year": 2021, "arxiv": "2101.00001v2", "locator_scheme": "theorem", "locator": "Theorem 2.3",
+                       "status": "uncertified", "licence_class": "none", "cited_for": ["1.2"]}]
+    sources.save_manifest(manifest, data)
+    before = tomllib.loads(manifest.read_text())
+    args = ["--conf", EXAMPLE, "sources", "fetch", "arXiv:2101.00001", "--manifest", str(manifest), "--add-only",
+            "--locator", "Theorem 9.9", "--cited-for", "Layer 2"]
+    assert cli.main(args) == 0
+    assert "updated Aut21" in capsys.readouterr().out
+    after = tomllib.loads(manifest.read_text())
+    [entry] = after["source"]
+    assert entry == {**before["source"][0], "cited_for": ["1.2", "Layer 2"]}
+    assert sources.altered_entries(before, after) == []
+
+
 def test_sources_fetch_failure_writes_the_request(tmp_path, capsys, fake_net):
     request = tmp_path / "scratch" / "needs-references.toml"
     args = ["--conf", EXAMPLE, "sources", "fetch", "R. Kettle, \"Theorem A und Theorem B\", 1967", "--authors", "R. Kettle",

@@ -147,9 +147,10 @@ the agent starts and lists their line-numbered files in the brief; agents fetch 
 A worker never carries files from one round to the next in its checkouts. Each round fetches the
 main branches of the board (packages) and content repositories and checks them out with `--force`:
 edits, untracked files and, inside the roadmap's package folder, ignored files that an earlier
-round left behind are discarded, and the board's copy wins. Whatever the last round left
-uncommitted in the board checkout is first copied to `workers/<id>/jobs/<JOB>/unsubmitted/` (the job
-whose branch was checked out) for the operator to inspect. A lane gets those files back only if it
+round left behind are discarded, and the board's copy wins. Whatever the last round left in the
+board checkout beyond the board's main (uncommitted, or committed by a submission whose push or pull
+request may have failed) is first copied to `workers/<id>/jobs/<JOB>/unsubmitted/` (the job whose
+branch was checked out) for the operator to inspect. A lane gets those files back only if it
 declares that it resumes a checkpoint (`resumes_checkpoint`; no lane does today), and only for the
 same job.
 
@@ -281,7 +282,7 @@ machine are here:
 | `workers/<id>/port/<Name>`, `pr/<Name>` | worktrees for the port lane and for work on a pull request branch |
 | `workers/<id>/jobs/<JOB>/` | brief, agent logs (`run-N.out` with START/EXIT lines), scratch, problems, gate result |
 | `workers/<id>/attempts.json` | failures per job on this worker |
-| `workers/<id>/jobs/<JOB>/unsubmitted/` | what the job's last round left uncommitted in the board checkout, set aside before the next round reset it |
+| `workers/<id>/jobs/<JOB>/unsubmitted/` | what the job's last round that left anything left in the board checkout beyond the board's main, set aside before the next round reset it |
 | `rev/<pr>/` | read-only checkouts of open roadmap pull requests at their heads (was `/tmp/rev/<pr>`) |
 | `prs.json` | open roadmap pull requests: number, roadmap, head, branch, owner (was `/tmp/rev-list.txt` and `/tmp/watch-prs`) |
 | `claims/<repo>.git` | scratch object store for lease refs |

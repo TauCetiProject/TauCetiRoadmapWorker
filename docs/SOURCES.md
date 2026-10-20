@@ -122,7 +122,9 @@ The outcome is one of:
 
 `--json` prints the outcome as JSON. The agents get this command, with `--manifest` only where their
 job may edit the manifest (target, design, package, review, and the design and package fixes), in
-the sources section of every brief.
+the sources section of every brief. A review's command adds `--add-only`: an entry the manifest has
+keeps every value (its `cited_for` may grow), so a reviewer records new sources without rewriting
+the author's.
 
 ## The cache and its texts
 

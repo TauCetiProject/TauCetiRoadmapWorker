@@ -72,7 +72,8 @@ def test_fetch_command_edits_the_manifest_only_where_the_job_may(ctx):  # noqa: 
     assert cmd.endswith("/scratch/needs-references.toml") and "packages/Foo/sources.toml" in cmd
     for job_id in ("TARGET-Foo", "PKG-Foo", "REV-DESIGN-Foo", "REV-PKG-Foo~2", "FIX-PKG-Foo~2"):
         job = new_job(job_id)
-        assert "--manifest" in lane_for(job).fetch_command(job, ctx, ws), job_id
+        cmd = lane_for(job).fetch_command(job, ctx, ws)
+        assert "--manifest" in cmd and (("--add-only" in cmd) == job_id.startswith("REV-")), job_id
     for job_id in ("PORT-Foo", "RT-Foo~1a", "FIX-RT-Foo~1", "GATE-Foo~1"):
         job = new_job(job_id)
         assert "--manifest" not in lane_for(job).fetch_command(job, ctx, ws), job_id
@@ -104,3 +105,12 @@ def test_a_request_parks_the_job_with_its_marker(ctx, monkeypatch):  # noqa: F81
     result = lane_for(job).run(job, run_ctx)
     assert result.status == "needs-references" and result.detail.endswith("Ket67")
     assert ("comment", 7) in run_ctx.board.calls and ("state", "needs-references") in run_ctx.board.calls
+
+
+def test_a_renamed_design_starts_from_the_targets_manifest(ctx):  # noqa: F811
+    old = ctx.wdir / "board" / "packages" / "Foo" / "sources.toml"
+    old.parent.mkdir(parents=True)
+    old.write_text("# the target's sources and the answers to its request\n")
+    job = new_job("DESIGN-FooPartII", inputs={"target": "TARGET-Foo"})
+    ws = lane_for(job).prepare(job, ctx)
+    assert (ws.package(ctx.cfg, "FooPartII") / "sources.toml").read_text() == old.read_text()

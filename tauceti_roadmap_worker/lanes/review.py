@@ -60,6 +60,7 @@ def verdict_problems(data: dict, job_id: str) -> list[str]:
 class ReviewLane(Lane):
     kind = "review"
     prompt = "review"
+    manifest_add_only = True
 
     def subject(self, job: Job) -> str:
         return "design" if board.parse_job_id(job.id).subject == "DESIGN" else "package"
@@ -110,8 +111,8 @@ class ReviewLane(Lane):
 
 
 def manifest_record_problems(ctx: Context, ws: Workspace, manifest: str) -> list[str]:
-    """A review records in the sources manifest what it fetched to check a locator: it may add
-    sources and provenance, never remove or rewrite what the author cited."""
+    """A review records in the sources manifest the sources it fetched that the manifest lacked
+    (its fetches run with `--add-only`): it never removes or rewrites an entry the author recorded."""
     path = ws.board / manifest
     if not path.is_file():
         return ["a review keeps the sources manifest: sources.toml was deleted"]
