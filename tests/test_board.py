@@ -173,3 +173,15 @@ def test_state_transitions():
     assert transition("needs-references", "references-resolved") == "available"
     with pytest.raises(ValueError):
         transition("done", "claim")
+
+
+def test_target_form_parsing():
+    body = ("### Statement or topic\n\nPrismatic cohomology of p-adic formal schemes.\n\n"
+            "### Why it matters for the library\n\nComparison theorems.\n\n### Known sources\n\n_No response_\n\n"
+            "### Suggested name\n\nPrismaticCohomology\n\n### Licence class of the sources\n\nOpen repository (arXiv)\n")
+    form = board.parse_target_form(body)
+    assert form == {"statement": "Prismatic cohomology of p-adic formal schemes.", "why": "Comparison theorems.",
+                    "name": "PrismaticCohomology", "licence": "Open repository (arXiv)"}
+    assert board.camel_name("PrismaticCohomology") == "PrismaticCohomology"
+    assert board.camel_name("[Target] prismatic cohomology, part II") == "PrismaticCohomologyPartII"
+    assert board.camel_name("") == ""

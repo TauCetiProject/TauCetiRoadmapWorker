@@ -425,6 +425,35 @@ def issue_body(job: Job, packages_repo: str, packages_dir: str) -> str:
     return "\n".join(lines)
 
 
+# --- target issues ---------------------------------------------------------------------------------
+
+FORM_FIELDS = {"statement or topic": "statement", "why it matters for the library": "why", "known sources": "sources",
+               "suggested name": "name", "licence class of the sources": "licence"}
+
+
+def parse_target_form(body: str) -> dict[str, str]:
+    """Fields of a target issue form (GitHub renders each field as `### <label>` then the answer).
+    The values are untrusted text: they are quoted into briefs as data, never as instructions."""
+    out = {}
+    parts = re.split(r"^###\s+(.+?)\s*$", body or "", flags=re.M)
+    for label, value in zip(parts[1::2], parts[2::2]):
+        key = FORM_FIELDS.get(label.strip().lower())
+        value = re.sub(r"<!--.*?-->", "", value, flags=re.S).strip()
+        if key and value and value != "_No response_":
+            out[key] = value
+    return out
+
+
+def camel_name(text: str) -> str:
+    """A CamelCase roadmap name: the suggested name if it is one, else built from the words."""
+    text = (text or "").strip()
+    if re.fullmatch(NAME_RE, text):
+        return text
+    words = re.findall(r"[A-Za-z0-9]+", re.sub(r"^\[Target\]\s*", "", text))
+    name = "".join(w[:1].upper() + w[1:] for w in words)[:60]
+    return name if re.fullmatch(NAME_RE, name) else ""
+
+
 # --- I/O ------------------------------------------------------------------------------------------
 
 class Board:

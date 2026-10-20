@@ -1,0 +1,57 @@
+name: Roadmap target
+description: Name a target for a new Tau Ceti roadmap. The board turns it into a design job.
+title: "[Target] "
+labels: ["roadmap-job", "kind:target"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A target is a statement or a topic the Lean library should reach. Operators' agents plan the
+        roadmap, independent agents review it, and the result is a draft pull request to the roadmap
+        repository that a human merges. Roadmaps develop a general library: name the general result,
+        not a shortcut to one application.
+  - type: textarea
+    id: statement
+    attributes:
+      label: Statement or topic
+      description: The theorem, definition or area, stated as precisely as you can, with its hypotheses.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters for the library
+      description: What it unlocks, which existing roadmaps it builds on, who would use it.
+    validations:
+      required: true
+  - type: textarea
+    id: sources
+    attributes:
+      label: Known sources
+      description: Papers and books with exact locators (theorem, section, page) and where to read them legally (arXiv, HAL, Numdam, GDZ, EuDML, an author's page, an institutional repository).
+    validations:
+      required: false
+  - type: input
+    id: name
+    attributes:
+      label: Suggested name
+      description: A CamelCase roadmap folder name, e.g. PrismaticCohomology. For an extension of an existing roadmap, use <Existing>PartII.
+      placeholder: PrismaticCohomology
+    validations:
+      required: false
+  - type: dropdown
+    id: licence
+    attributes:
+      label: Licence class of the sources
+      description: Where the texts can be read. Paywalled texts may be cited by locator without the text; they are never circumvented.
+      multiple: true
+      options:
+        - Open repository (arXiv, HAL, Numdam, GDZ, EuDML, Project Euclid open content)
+        - Publisher open archive
+        - Author page
+        - Institutional repository
+        - Held locally by me (I can attach it to the job)
+        - Paywalled (cite by locator only)
+        - Unknown
+    validations:
+      required: true
