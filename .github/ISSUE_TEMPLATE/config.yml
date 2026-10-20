@@ -1,0 +1,7 @@
+# Issues on this repository are for the tool itself (bugs, features, documentation). Roadmap
+# targets are read only on the jobs board.
+blank_issues_enabled: true
+contact_links:
+  - name: File a roadmap target
+    url: https://github.com/TauCetiProject/TauCetiRoadmapJobs/issues/new/choose
+    about: Targets are read only on the jobs board (TauCetiRoadmapJobs); this repository's issues are for the tool itself.
