@@ -13,7 +13,7 @@ CLEAN_README = textwrap.dedent("""\
 
     ### 1.1 The order
 
-    Define `Toy.order` as the cardinality of the carrier. Prove `Toy.order_one` (Lang, *Algebra*, Thm I.2.1, p. 23).
+    Define `Toy.order` as the cardinality of the carrier. Prove `Toy.order_one` (Author, *Example Book*, Thm I.2.1, p. 23).
     The value is `Nat.card G` written in a code span, and `f $ x` in code is fine.
 
     **Checks.**

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import shlex
 import tomllib
@@ -210,6 +211,11 @@ class Lane:
         board_dir, content_dir = ctx.wdir / "board", ctx.wdir / "content"
         gitops.sync_checkout(cfg.repositories.packages_repo(), board_dir, "main")
         gitops.sync_checkout(cfg.repositories.content, content_dir, cfg.project.branch)
+        shared = os.environ.get("TAUCETI_ROADMAP_LAKE_PACKAGES")
+        if shared and Path(shared).is_dir() and not (content_dir / ".lake" / "packages").exists():
+            # One built Mathlib/Tau Ceti for every worker of the host (never build it per worker).
+            (content_dir / ".lake").mkdir(parents=True, exist_ok=True)
+            os.symlink(Path(shared).resolve(), content_dir / ".lake" / "packages")
         branch = f"{sanitize_worker_id(ctx.worker_id)}/{claims.ref_safe(job.id)}"
         gitops.git(board_dir, "checkout", "-q", "-B", branch)
         pkg = board_dir / board.package_dir(cfg.board.packages_dir, job.name)

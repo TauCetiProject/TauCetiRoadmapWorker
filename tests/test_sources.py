@@ -7,12 +7,12 @@ SHA = "a" * 64
 
 
 def manifest(**over):
-    entry = {"id": "BS22", "authors": "B. Bhatt, P. Scholze", "title": "Prisms and prismatic cohomology", "year": 2022,
-             "locator_scheme": "theorem", "url": "https://arxiv.org/abs/1905.08229",
-             "fetched_from": "https://arxiv.org/pdf/1905.08229v3", "sha256": SHA, "licence_class": "open-repository",
+    entry = {"id": "AB21", "authors": "A. Author, B. Author", "title": "An example paper", "year": 2021,
+             "locator_scheme": "theorem", "url": "https://arxiv.org/abs/2101.00001",
+             "fetched_from": "https://arxiv.org/pdf/2101.00001v2", "sha256": SHA, "licence_class": "open-repository",
              "status": "certified"}
     entry.update(over)
-    return {"schema": "tauceti-roadmap-sources/v1", "roadmap": "Prismatic", "source": [entry]}
+    return {"schema": "tauceti-roadmap-sources/v1", "roadmap": "ExampleRoadmap", "source": [entry]}
 
 
 def test_classify_url():

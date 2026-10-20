@@ -9,19 +9,19 @@ The manifest is `packages/<Name>/sources.toml` (see docs/SOURCES.md):
     roadmap = "<Name>"
 
     [[source]]
-    id = "BS22"                       # the key the README's References section uses
-    authors = "B. Bhatt, P. Scholze"
-    title = "Prisms and prismatic cohomology"
-    year = 2022
-    venue = "Ann. of Math. 196"       # optional
+    id = "AB21"                       # the key the README's References section uses
+    authors = "A. Author, B. Author"
+    title = "An example paper"
+    year = 2021
+    venue = "J. Example Math. 12"     # optional
     locator_scheme = "theorem"        # theorem | page | section | tag | chapter | equation
-    url = "https://arxiv.org/abs/1905.08229"
-    fetched_from = "https://arxiv.org/pdf/1905.08229v3"   # the exact bytes hashed ('' if not fetched)
+    url = "https://arxiv.org/abs/2101.00001"
+    fetched_from = "https://arxiv.org/pdf/2101.00001v2"   # the exact bytes hashed ('' if not fetched)
     sha256 = "<64 hex>"               # of those bytes
     licence_class = "open-repository" # see LICENCE_CLASSES
     status = "certified"              # certified | uncertified | waived
     accessed = "2026-10-20"
-    version_note = "arXiv v3; numbering agrees with the published version"
+    version_note = "arXiv v2; numbering agrees with the published version"
     cited_for = ["1.2", "Layer 3"]
 
 Cache: `<state>/sources/<sha256[:2]>/<sha256>.<ext>` with the text extraction beside it as

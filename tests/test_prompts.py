@@ -52,9 +52,12 @@ def test_inserted_values_are_not_rescanned():
     assert fence.index("```") > fence.index("rm -rf")    # the inserted text cannot close the fence
 
 
-FORBIDDEN = [r"/home/", r"/Users/", r"/tmp/", r"~/", r"CBirkbeck", r"\bchris\b", r"roed", r"Coram", r"tdupu",
-             r"#\d{3,4}\b", r"2026-10-\d\d", r"citesweep", r"tauceti-worker-cc", r"atlas-library", r"Mario",
-             r"Fable", r"Haiku", r"Sonnet", r"gpt-6", r"Tate's thesis"]
+FORBIDDEN = [r"/home/", r"/Users/", r"/tmp/", r"~/",            # machine paths
+             r"(?<!check )(?<![\w`])@[A-Za-z][A-Za-z0-9-]+",       # @-mentions of people (Lean's `#check @f` is fine)
+             r"#\d{3,4}\b", r"2026-10-\d\d",                     # pull-request numbers, dated campaign rules
+             r"citesweep", r"tauceti-worker-cc", r"atlas-library",  # the maintainer's local tooling
+             r"Fable", r"Haiku", r"Sonnet", r"gpt-6",                # one operator's model tiering
+             r"Tate's thesis"]                                      # a campaign-specific rule
 
 
 @pytest.mark.parametrize("path", sorted(PROMPTS.rglob("*.md")), ids=lambda p: str(p.relative_to(PROMPTS)))
