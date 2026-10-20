@@ -60,7 +60,10 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   (`[agents.lanes.<kind>]`, default `[agents] default`), and a red-team pass on the agent it requires,
   if that agent is installed.
 * `--loop` keeps going: after a usage limit it sleeps until the reset time the agent printed; when
-  nothing is eligible it sleeps ten minutes. Without `--loop` it does one round and exits.
+  nothing is eligible it sleeps `[worker] idle_seconds` (default 600). The first poll after a
+  failure comes within a minute, and while a job it parked for references waits, it looks every
+  minute whether the board answered it and polls at once when it did. Without `--loop` it does one
+  round and exits.
 * `--dry-run` takes no lease, writes the brief to the job folder and prints every GitHub write.
 
 A round that stops before it submits or parks its job (the lane fails, git or GitHub raises, the

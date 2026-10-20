@@ -187,6 +187,14 @@ class Prompts:
 
 
 @dataclass
+class Worker:
+    # Seconds a `--loop` worker sleeps when no job is eligible; every poll is a board listing on the
+    # operator's GitHub quota. After a failure, and once the board answers a job the worker parked
+    # for references, the next poll comes within a minute whatever this says.
+    idle_seconds: int = 600
+
+
+@dataclass
 class Config:
     schema_version: int = 1
     project: Project = field(default_factory=Project)
@@ -201,6 +209,7 @@ class Config:
     sandbox: Sandbox = field(default_factory=Sandbox)
     replies: Replies = field(default_factory=Replies)
     prompts: Prompts = field(default_factory=Prompts)
+    worker: Worker = field(default_factory=Worker)
     path: str = ""
     warnings: list[str] = field(default_factory=list)
 
@@ -287,6 +296,8 @@ def validate(cfg: Config) -> None:
         problems.append("board.max_rounds must be at least 1")
     if cfg.design.daily_cap < 0:
         problems.append("design.daily_cap must be >= 0")
+    if cfg.worker.idle_seconds < 30:
+        problems.append("worker.idle_seconds must be at least 30")
     if cfg.roadmap.merge_order_repo not in ("packages", "content", "local"):
         problems.append("roadmap.merge_order_repo must be packages, content or local")
     for cls in cfg.sources.allow:

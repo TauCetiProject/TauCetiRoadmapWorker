@@ -131,6 +131,13 @@ timeout_minutes = 360
 # agent = "claude"
 # model = ""
 
+[worker]
+# Seconds a `--loop` worker sleeps when no job is eligible (at least 30). Every poll is a board
+# listing on the operator's GitHub quota, shared by all of the operator's workers. Whatever this
+# says, the first poll after a failure comes within a minute, and while a job the worker parked for
+# references waits, it looks every minute whether the board answered it and polls at once when it did.
+idle_seconds = 600
+
 [sources]
 # Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through
 # the bundled deny list. A leading dot covers every subdomain.

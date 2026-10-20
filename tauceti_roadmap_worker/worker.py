@@ -161,19 +161,65 @@ def release(ctx: Context, job: Job, result: LaneResult) -> None:
         pass  # no write access to the board: `board stale --release` frees the claim later
 
 
-def work_loop(ctx: Context, only, order_fn, idle_sleep: int = 600, log=print) -> None:
-    """Rounds until interrupted: sleep through usage limits and idle periods."""
+QUICK_POLL = 60     # seconds: the latest first poll after a failure or after a parked job is answered
+AFTER_ROUND = 20    # seconds between a round that did something and the next
+
+
+def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=print, sleep=time.sleep) -> None:
+    """Rounds until interrupted: sleep through usage limits and idle periods. An idle worker sleeps
+    `[worker] idle_seconds`, except that the next poll comes within QUICK_POLL seconds after a
+    failure (the job was released and may be due again), and after the board answers a job this
+    worker parked for references (looked up every QUICK_POLL seconds while one waits)."""
+    idle = idle_sleep or ctx.cfg.worker.idle_seconds
+    parked: set[str] = set()     # jobs this worker parked, until the board answers them
+    quick = False                # the next idle wait is short
     while True:
         result = work_once(ctx, only, order=order_fn(), log=log)
-        log(f"{dt.datetime.now(dt.timezone.utc):%Y-%m-%dT%H:%MZ} {result.job or '-'} {result.status}: {result.detail}")
+        log(f"{now():%Y-%m-%dT%H:%MZ} {result.job or '-'} {result.status}: {result.detail}")
+        if result.status == "needs-references":
+            parked.add(result.job)
+        else:
+            parked.discard(result.job)
         if result.status == "limited":
             wake = result.retry_at
-            delay = max(300, (wake - dt.datetime.now(wake.tzinfo)).total_seconds() + 300) if wake else 1800
-            time.sleep(delay)
+            sleep(max(300, (wake - dt.datetime.now(wake.tzinfo)).total_seconds() + 300) if wake else 1800)
+        elif result.status == "idle" and quick:
+            quick = False
+            sleep(min(QUICK_POLL, idle))
         elif result.status == "idle":
-            time.sleep(idle_sleep)
+            answered = wait_idle(ctx, idle, parked, sleep)
+            if answered:
+                log(f"{now():%Y-%m-%dT%H:%MZ} {', '.join(sorted(answered))} answered on the board: polling now")
+            quick = bool(answered)
         else:
-            time.sleep(20)
+            quick = result.status == "failed"    # the job was released: if the next poll misses it, retry soon
+            sleep(AFTER_ROUND)
+
+
+def wait_idle(ctx: Context, seconds: float, parked: set[str], sleep=time.sleep) -> set[str]:
+    """Sleep up to `seconds`. While jobs this worker parked are waiting for references, look every
+    QUICK_POLL seconds whether one has left `state:needs-references` (the board answered it): then
+    stop early, forget those jobs and return them."""
+    left = seconds
+    while left > 0:
+        step = min(left, QUICK_POLL) if parked else left
+        sleep(step)
+        left -= step
+        if not parked:
+            continue
+        try:
+            waiting = {job.id for job in ctx.board.list_jobs(("needs-references",))}
+        except GHError:
+            continue
+        answered = parked - waiting
+        if answered:
+            parked -= answered
+            return answered
+    return set()
+
+
+def now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
 
 
 __all__ = ["work_once", "work_loop", "rank"]
