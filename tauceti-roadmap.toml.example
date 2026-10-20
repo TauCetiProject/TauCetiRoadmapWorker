@@ -98,10 +98,11 @@ require_depcheck = true
 # Rounds of red-teaming on the draft pull request. Each round runs every pass below
 # independently, then one fix lane merges their findings on the pull request branch.
 rounds = 2
-# The passes of one round: two different agents, so that the reviews are independent.
+# The passes of one round: two different agents, so that the reviews are independent. Each pass job
+# requires its agent and, when one is named, its model (red-team passes run on the review models).
 passes = [
-  { agent = "codex", model = "" },
-  { agent = "claude", model = "" },
+  { agent = "codex", model = "gpt-6-astra" },
+  { agent = "claude", model = "fable" },
 ]
 # Add section-sharded passes: after its whole-document pass, every red-team job runs one more pass
 # per top-level README section that states targets (`## Layer ...`), instantiating every statement
@@ -126,10 +127,13 @@ codex_model = "gpt-6.1-sol"
 claude_model = "claude-opus-5-5"
 # Wall-clock limit of one agent run.
 timeout_minutes = 360
-# Per-lane overrides, e.g. reviews on a different agent family from authoring:
-# [agents.lanes.review]
-# agent = "claude"
-# model = ""
+# Per-lane overrides: `agent` pins the family, `model` its model; `codex_model` and `claude_model` pin
+# the model per family and leave the family to the worker. Reviews run only on the review models,
+# whichever family a worker runs; a worker pinned with --model to another model skips them (one
+# pinned with --agent only picks the family). Authoring lanes keep the family defaults above.
+[agents.lanes.review]
+codex_model = "gpt-6-astra"
+claude_model = "fable"
 
 [worker]
 # Seconds a `--loop` worker sleeps when no job is eligible (at least 30). Every poll is a board

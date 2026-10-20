@@ -112,8 +112,10 @@ class Design:
 
 @dataclass
 class LaneAgent:
-    agent: str = ""
-    model: str = ""
+    agent: str = ""          # pin the family (codex | claude); '' leaves it to the worker
+    model: str = ""          # pin the model of `agent` (or of the default family)
+    codex_model: str = ""    # pin the model per family, leaving the family free
+    claude_model: str = ""
 
 
 @dataclass
@@ -220,8 +222,20 @@ class Config:
         """(agent, model) for a lane: the lane override, else the default agent and its model."""
         lane = self.agents.lanes.get(kind)
         agent = (lane.agent if lane and lane.agent else self.agents.default)
-        model = lane.model if lane and lane.model else ""
-        return agent, model or self.model_for(agent)
+        return agent, self.lane_model(kind, agent) or self.model_for(agent)
+
+    def lane_model(self, kind: str, agent: str) -> str:
+        """The model a lane pins for an agent family, or '' when it pins none for that family."""
+        lane = self.agents.lanes.get(kind)
+        if not lane:
+            return ""
+        if lane.model and (not lane.agent or lane.agent == agent):
+            return lane.model
+        return {"codex": lane.codex_model, "claude": lane.claude_model}.get(agent, "")
+
+    def lane_models(self, kind: str) -> dict[str, str]:
+        """agent family -> the model the lane pins for it (only pinned families)."""
+        return {a: m for a in AGENTS if (m := self.lane_model(kind, a))}
 
     def model_for(self, agent: str) -> str:
         return self.agents.claude_model if agent == "claude" else self.agents.codex_model

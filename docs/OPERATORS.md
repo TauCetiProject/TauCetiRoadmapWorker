@@ -56,9 +56,16 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   (`<login>/<worker-id>`). Use distinct ids for concurrent workers.
 * `--only` pins a worker to some kinds (`target, design, package, review, fix, port, redteam, gate`);
   without it the worker takes whatever is most useful.
-* `--agent` pins the agent. Without it, each job runs on its lane's configured agent
+* `--agent` pins the agent family. Without it, each job runs on its lane's configured agent
   (`[agents.lanes.<kind>]`, default `[agents] default`), and a red-team pass on the agent it requires,
   if that agent is installed.
+* The model comes from the job and its lane: a red-team pass requires the model of its pass
+  (`[redteam] passes`), a review the model `[agents.lanes.review]` pins for the worker's family
+  (`codex_model`, `claude_model`: Astra on Codex, Fable on Claude), and the authoring lanes use the
+  family's default model. `--model` pins the model as well: such a worker skips every job that needs
+  another model, with a line like `skip REV-PKG-X: REV-PKG-X needs gpt-6-astra or fable; this worker is
+  pinned to gpt-6.1-sol`. A worker pinned with `--agent` alone lets the lane pick the model. `doctor`
+  warns when neither family of the review models is installed on the host.
 * `--loop` keeps going: after a usage limit it sleeps until the reset time the agent printed; when
   nothing is eligible it sleeps `[worker] idle_seconds` (default 600). The first poll after a
   failure comes within a minute, and while a job it parked for references waits, it looks every

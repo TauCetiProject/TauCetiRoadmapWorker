@@ -69,19 +69,29 @@ class Heartbeat:
         self.stop.set()
 
 
-def for_job(ctx: Context, job: Job) -> Context | None:
-    """The context a job runs in: the operator's pinned agent, or (unpinned) the agent the job
-    requires or its lane's configured agent, if that agent is installed here."""
-    if ctx.agent_fixed:
-        return ctx
-    agent, model = ctx.cfg.lane_agent(job.kind)
+def for_job(ctx: Context, job: Job) -> tuple[Context | None, str]:
+    """(the context a job runs in, '') or (None, why this worker leaves it). The family is the
+    operator's `--agent`, else the agent the job requires, else its lane's. The model is the one the
+    job requires (a red-team pass), else the one its lane pins for that family (`[agents.lanes.<kind>]
+    model`, `codex_model`, `claude_model`), else the family's default. A worker pinned with `--model`
+    leaves a job that needs another model; one pinned with `--agent` only lets the lane pick it."""
+    cfg = ctx.cfg
+    agent = ctx.agent if ctx.agent_fixed else (job.requires_agent or cfg.lane_agent(job.kind)[0])
     if job.requires_agent and job.requires_agent != agent:
-        agent, model = job.requires_agent, ctx.cfg.model_for(job.requires_agent)
+        return None, f"needs agent {job.requires_agent}"
+    want = job.requires_model or cfg.lane_model(job.kind, agent)
+    if ctx.model_fixed:
+        if want and ctx.model != want:
+            allowed = [job.requires_model] if job.requires_model else list(cfg.lane_models(job.kind).values())
+            return None, f"{job.id} needs {' or '.join(dict.fromkeys(allowed))}; this worker is pinned to {ctx.model}"
+        model = ctx.model
+    else:
+        model = want or (ctx.model if agent == ctx.agent else cfg.model_for(agent))
     if agent == ctx.agent and model == ctx.model:
-        return ctx
-    if not shutil.which(agent):
-        return None
-    return dataclasses.replace(ctx, agent=agent, model=model)
+        return ctx, ""
+    if agent != ctx.agent and not shutil.which(agent):
+        return None, "its agent is not installed here"
+    return dataclasses.replace(ctx, agent=agent, model=model), ""
 
 
 def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", order: list[str] | None = None,
@@ -94,9 +104,9 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
         if failed_before.get(job.id, 0) >= MAX_ATTEMPTS:
             log(f"skip {job.id}: failed {MAX_ATTEMPTS} times on this worker (see its jobs/ folder)")
             continue
-        ctx = for_job(base, job)
+        ctx, why = for_job(base, job)
         if ctx is None:
-            log(f"skip {job.id}: its agent is not installed here")
+            log(f"skip {job.id}: {why}")
             continue
         lane = lane_for(job)
         reason = lane.eligible(job, ctx)

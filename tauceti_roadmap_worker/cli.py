@@ -102,6 +102,8 @@ def doctor(args) -> int:
         add((FAIL, "agents", "neither codex nor claude is installed"))
     if cfg and cfg.agents.default not in agents_found:
         add((WARN, "agents.default", f"{cfg.agents.default} is not installed here; pass --agent"))
+    if cfg:
+        rows += review_model_rows(cfg, agents_found)
     if cfg and (cfg.gates.build or cfg.gates.elaborate):
         lake = shutil.which("lake")
         add((OK if lake else WARN, "lake", lake or "not found: package elaboration and the port/fix/gate builds are unavailable"))
@@ -173,6 +175,23 @@ def doctor(args) -> int:
     for status, item, detail in rows:
         print(f"{status:<4}  {item:<{width}}  {detail}")
     return 1 if any(r[0] == FAIL for r in rows) else 0
+
+
+def review_model_rows(cfg: config.Config, installed: list[str]) -> list[tuple[str, str, str]]:
+    """Whether this host can run the models reviews and red-team passes are pinned to."""
+    rows = []
+    for kind in ("review", "redteam"):
+        pins = cfg.lane_models(kind)
+        if kind == "redteam":
+            pins = {**pins, **{p.agent: p.model for p in cfg.redteam.passes if p.model}}
+        if not pins:
+            continue
+        named = " or ".join(f"{m} ({a})" for a, m in pins.items())
+        usable = [f"{m} ({a})" for a, m in pins.items() if a in installed]
+        rows.append((OK, f"{kind} models", ", ".join(usable) + f" (pinned: {named})") if usable else
+                    (WARN, f"{kind} models", (f"pinned to {named}, and neither agent is installed: this host takes "
+                                              f"no {kind} jobs")))
+    return rows
 
 
 def _sandbox_rows(cfg: config.Config) -> list[tuple[str, str, str]]:
@@ -257,7 +276,7 @@ def work(args) -> int:
     cl = claims.open_claims(cfg, gh, operator, paths.sanitize_worker_id(args.worker_id), dry_run=args.dry_run)
     ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=cl, worker_id=paths.sanitize_worker_id(args.worker_id),
                   operator=operator, agent=agent, model=model, conf=_local_conf(args, cfg), dry_run=args.dry_run,
-                  agent_fixed=bool(args.agent))
+                  agent_fixed=bool(args.agent), model_fixed=bool(args.model))
     log = watch.round_logger(ctx.wdir)
     log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}")
     # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.

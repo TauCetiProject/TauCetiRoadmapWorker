@@ -77,7 +77,12 @@ checkout, submits a PR to the board, and the intake advances the state.
    source locators, an adversarial pass over every statement, a duplication audit against the
    current library and roadmaps, and a supplier-order audit. Verdict `accepted` or
    `needs_changes` with concrete findings. A fix worker's self-acceptance never counts; every
-   fix round is followed by a fresh independent review.
+   fix round is followed by a fresh independent review. Reviews and red-team passes run only on
+   the review models the configuration pins, Fable (agent `claude`, model `fable`) or Astra
+   (agent `codex`, model `gpt-6-astra`): `[agents.lanes.review]` pins a model per family and
+   leaves the family free, and every red-team pass job carries the agent and model of its pass
+   (`requires_agent`, `requires_model`). Authoring lanes (design, package, fix, port, gate) run on
+   the family defaults.
 5. `fix` — resolves a review's findings in the package files only.
 6. `port` — copies the accepted package into the content repository on a fork branch, runs
    the gates (build of the module, mechanical identifier check, dependency check against the

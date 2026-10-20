@@ -45,6 +45,7 @@ class Context:
     conf: str = ""
     dry_run: bool = False
     agent_fixed: bool = True   # False: each job runs on its lane's configured agent (or the one it requires)
+    model_fixed: bool = False  # True: --model pinned; jobs whose lane pins another model are skipped
     transport: object = None   # the sources service's HTTP transport (None: urllib); tests pass a fake
 
     def sources_fetcher(self) -> fetcher.Fetcher:
@@ -240,6 +241,8 @@ class Lane:
         """'' when this worker may take the job, else the reason it may not."""
         if job.requires_agent and job.requires_agent != ctx.agent:
             return f"needs agent {job.requires_agent}"
+        if job.requires_model and job.requires_model != ctx.model:
+            return f"needs model {job.requires_model}"
         if job.requires_operator and job.requires_operator.lower() != ctx.operator.lower():
             return f"needs the branch owner {job.requires_operator}"
         if job.independent_of and ctx.claims:

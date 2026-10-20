@@ -155,6 +155,7 @@ class Job:
     independent_of: list[str] = field(default_factory=list)
     inputs: dict = field(default_factory=dict)
     requires_agent: str = ""
+    requires_model: str = ""
     requires_operator: str = ""
     note: str = ""
     # Filled from GitHub, never stored in the spec:
@@ -203,7 +204,7 @@ def job_from_spec(data) -> Job | None:
         job = new_job(data["id"])
     except (TypeError, KeyError, JobIdError):
         return None
-    for key in ("after", "independent_of", "inputs", "requires_agent", "requires_operator", "note"):
+    for key in ("after", "independent_of", "inputs", "requires_agent", "requires_model", "requires_operator", "note"):
         if key in data:
             setattr(job, key, data[key])
     return job
@@ -283,9 +284,12 @@ class Outcome:
 
 
 def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_rounds: int = 2,
-               redteam_agents: tuple[str, ...] = ("codex", "claude")) -> list[Job]:
-    """The jobs a finished job releases. Pure: the intake creates what this returns."""
+               redteam_agents: tuple[str, ...] = ("codex", "claude"), redteam_models: tuple[str, ...] = ()) -> list[Job]:
+    """The jobs a finished job releases. Pure: the intake creates what this returns. Red-team pass
+    jobs name the agent (`requires_agent`) and, when `[redteam] passes` pins one, the model
+    (`requires_model`) of their pass."""
     j = parse_job_id(job.id)
+    models = tuple(redteam_models) + ("",) * (len(redteam_agents) - len(redteam_models))
     name = j.name
     if job.kind == "target":
         if outcome.verdict in ("design", "part-ii"):
@@ -306,9 +310,10 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
     if job.kind == "port":
         if not outcome.pr or redteam_rounds < 1:
             return []
-        return [new_job(rt, after=[job.id], independent_of=[job.id], requires_agent=agent,
+        return [new_job(rt, after=[job.id], independent_of=[job.id], requires_agent=agent, requires_model=model,
                         inputs={"pr": outcome.pr, "operator": outcome.operator})
-                for rt, agent in zip(redteam_passes(name, 1, len(redteam_agents)), redteam_agents, strict=True)]
+                for rt, agent, model in zip(redteam_passes(name, 1, len(redteam_agents)), redteam_agents, models,
+                                            strict=True)]
     if job.kind == "redteam":
         if not outcome.round_complete:
             return []
@@ -322,9 +327,11 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
             return []
         fix_id = job.id
         return [new_job(rt, after=[fix_id], independent_of=[make_id("port", name), fix_id], requires_agent=agent,
+                        requires_model=model,
                         inputs={"pr": job.inputs.get("pr"), "operator": job.inputs.get("operator", ""),
                                 "previous": job.inputs.get("reviews", []), "repair": fix_id})
-                for rt, agent in zip(redteam_passes(name, j.round + 1, len(redteam_agents)), redteam_agents, strict=True)]
+                for rt, agent, model in zip(redteam_passes(name, j.round + 1, len(redteam_agents)), redteam_agents,
+                                            models, strict=True)]
     return []
 
 
@@ -497,7 +504,8 @@ def issue_body(job: Job, packages_repo: str, packages_dir: str, preamble: str = 
     if job.independent_of:
         lines.append("Must be done by an operator who did none of: " + ", ".join(f"`{a}`" for a in job.independent_of))
     if job.requires_agent:
-        lines.append(f"Agent: `{job.requires_agent}` (a different agent family does the other pass).")
+        lines.append(f"Agent: `{job.requires_agent}`" + (f", model `{job.requires_model}`" if job.requires_model else "")
+                     + " (a different agent family does the other pass).")
     if job.requires_operator:
         lines.append(f"Operator: @{job.requires_operator} (owns the pull request branch).")
     if job.inputs.get("pr"):

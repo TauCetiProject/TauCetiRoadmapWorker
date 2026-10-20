@@ -130,9 +130,9 @@ def intake(ctx, number: int, yes: bool = False) -> str:
 
 def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
     cfg = ctx.cfg
-    agents = tuple(p.agent for p in cfg.redteam.passes)
-    new = board.successors(job, outcome, max_rounds=cfg.board.max_rounds,
-                           redteam_rounds=cfg.redteam.rounds, redteam_agents=agents)
+    new = board.successors(job, outcome, max_rounds=cfg.board.max_rounds, redteam_rounds=cfg.redteam.rounds,
+                           redteam_agents=tuple(p.agent for p in cfg.redteam.passes),
+                           redteam_models=tuple(p.model for p in cfg.redteam.passes))
     existing = {j.id for j in jobs}
     created = []
     for s in new:
