@@ -172,7 +172,7 @@ open-repository = ["arxiv.org", ".arxiv.org", "hal.science", ".hal.science", ".a
                    "numdam.org", ".numdam.org",
                    "gdz.sub.uni-goettingen.de", "eudml.org", ".eudml.org", "projecteuclid.org",
                    "stacks.math.columbia.edu", "zbmath.org", ".zbmath.org"]
-publisher-open = ["msp.org", "ems.press", "doi.org"]
+publisher-open = ["doi.org"]   # subscription publishers are not open by default; add a host only when its content is open
 author-page = []
 institutional = []
 

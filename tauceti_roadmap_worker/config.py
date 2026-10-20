@@ -132,7 +132,7 @@ class Sources:
                             "numdam.org", ".numdam.org",
                             "gdz.sub.uni-goettingen.de", "eudml.org", ".eudml.org", "projecteuclid.org",
                             "stacks.math.columbia.edu", "zbmath.org", ".zbmath.org"],
-        "publisher-open": ["msp.org", "ems.press", "doi.org"],
+        "publisher-open": ["doi.org"],
         "author-page": [],
         "institutional": [],
     })
