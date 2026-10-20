@@ -329,10 +329,23 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
                             inputs={"review": job.id, **{k: v for k, v in job.inputs.items()
                                                          if k in ("board_pr", "operator")}})]
         return []
+    if job.kind == "port":
+        # A package accepted before the board pull requests (its port follows the review, not a
+        # red-team fix): the red team runs on the roadmap pull request, as it did then.
+        if redteam_rounds < 1 or not outcome.pr or any(a.startswith("FIX-RT-") for a in job.after):
+            return []
+        return redteam_round(1, [job.id], [job.id], {"pr": outcome.pr, "operator": outcome.operator})
     if job.kind == "redteam":
         if not outcome.round_complete:
             return []
         passes = redteam_passes(name, j.round, len(redteam_agents))
+        if not job.inputs.get("board_pr") and job.inputs.get("pr"):
+            # A red team on a roadmap pull request, from before the board pull requests: its fix
+            # repairs that pull request's branch.
+            return [new_job(make_id("fix", name, j.round, "RT"), after=passes,
+                            requires_operator=job.inputs.get("operator", ""),
+                            inputs={"pr": job.inputs.get("pr"), "operator": job.inputs.get("operator", ""),
+                                    "reviews": passes})]
         return [new_job(make_id("fix", name, j.round, "RT"), after=passes,
                         requires_operator=job.inputs.get("operator", ""),
                         inputs={"board_pr": job.inputs.get("board_pr"), "operator": job.inputs.get("operator", ""),
