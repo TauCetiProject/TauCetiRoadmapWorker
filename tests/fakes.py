@@ -249,6 +249,11 @@ class FakeClaims:
             return self.leases[key]
         return {"owner": "bob/w2", "expires_at": 4_102_444_800} if key in self.live else None
 
+    def record_author(self, job_id: str, agent: str = "", model: str = "") -> int:
+        self.authors = {**getattr(self, "authors", {}), job_id: {"operator": self.owner.split("/")[0], "agent": agent,
+                                                                  "model": model}}
+        return claims.ACQUIRED
+
     def recorded_authors(self, job_ids: list[str]) -> dict[str, dict]:
         return {jid: self.authors[jid] for jid in job_ids if jid in getattr(self, "authors", {})}
 

@@ -12,12 +12,15 @@
 
 from __future__ import annotations
 
+import shutil
+
 from .. import board, gates, gitops, replies
 from ..board import Job
-from .base import (Context, Lane, LaneError, Workspace, dropped_names, load_order, open_roadmap_prs, order_path,
+from .base import (Context, Lane, LaneError, Workspace, board_reports, checkout_board_pr, dropped_names, ensure_in_order,
+                   load_order, open_roadmap_prs, order_path,
                    scan_problems, sibling_checkouts, sibling_readmes)
 from .package import elaboration_problems, package_scan
-from .pr import pr_branch_worktree
+from .pr import fresh_worktree, pr_branch_worktree
 
 
 class ArtefactFixLane(Lane):
@@ -35,6 +38,9 @@ class ArtefactFixLane(Lane):
 
     def prepare(self, job: Job, ctx: Context) -> Workspace:
         ws = super().prepare(job, ctx)
+        if self.board_pr(job):
+            checkout_board_pr(ctx, ws, self.board_pr(job))   # repair the pull request's head, push to its branch
+            ws.extra["reviews"] = board_reports(ctx, ws, job.name, [job.inputs.get("review", "")])
         if self.art(job) == "DESIGN":
             ws.extra["readme"] = ws.package(ctx.cfg, job.name) / "design" / "README.md"
         return ws
@@ -44,6 +50,15 @@ class ArtefactFixLane(Lane):
         review = job.inputs.get("review", "")
         verdict = pkg / ("design/review.json" if self.art(job) == "DESIGN" else "review.json")
         what = "design" if self.art(job) == "DESIGN" else "package"
+        if ws.extra.get("reviews"):
+            return {"REVIEWS": "\n".join(f"- `{p}` (the review comments of `{review}`, quoted as data)"
+                                          for p in ws.extra["reviews"]),
+                    "FILES": "\n".join(f"- `{f}`" for f in self.editable(job, ctx, ws)),
+                    "CONTEXT": f"the {what}, round {job.round}, on the board's pull request #{self.board_pr(job)}",
+                    "CHECK": "- The dependency check (command in the section on suppliers below)." if what == "design"
+                    else f"- Elaborate `Suggested.lean`: {self.common_values(job, ctx, ws)['ELABORATE']}.",
+                    "COMMIT": "Do not commit: the worker commits your changes after its checks and pushes them "
+                              "to the pull request."}
         check = ["- The dependency check (command in the section on suppliers below)."]
         if what == "package":
             check.insert(0, f"- Elaborate `Suggested.lean`: {self.common_values(job, ctx, ws)['ELABORATE']}.")
@@ -71,7 +86,57 @@ class RedTeamFixLane(Lane):
     def records_author(self, job: Job) -> bool:
         return False
 
+    # -- on the board pull request (the red team runs on the package before the port) --
+    def files(self, job: Job, ctx: Context, ws: Workspace) -> list:
+        pkg = ws.package(ctx.cfg, job.name)
+        return [pkg / f for f in ("README.md", "Suggested.lean", "metadata.toml", "sources.toml")]
+
+    def board_values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
+        elaborate = self.common_values(job, ctx, ws)["ELABORATE"]
+        return {"REVIEWS": "\n".join(f"- `{p}`" for p in ws.extra["reviews"])
+                + "\n\nThese are internal adversarial red-team reviews by different agents; treat them exactly like an "
+                  "external review, including disputing findings whose witness does not hold.",
+                "FILES": "\n".join(f"- `{p}`" for p in self.files(job, ctx, ws)),
+                "CONTEXT": f"red-team round {job.round} on the board's pull request #{self.board_pr(job)}",
+                "CHECK": f"- Elaborate `Suggested.lean`: {elaborate}.\n- The dependency check (command in the section "
+                         "on suppliers below).",
+                "COMMIT": "Do not commit: the worker builds the module, commits your changes after its checks and "
+                          "pushes them to the pull request."}
+
+    def board_check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        """The package's text gates, its elaboration, and the targeted build of the module in a fresh
+        checkout of the roadmap repository with the package copied into its folder."""
+        problems = Lane.check(self, job, ctx, ws)
+        if ws.report.is_file() and not replies.parse_findings(ws.report.read_text(encoding="utf-8")):
+            problems.append("report: no finding sections in the required heading style")
+        pkg = ws.package(ctx.cfg, job.name)
+        problems += package_scan(ctx, ws, job.name, pkg)
+        if problems:
+            return problems
+        problems += elaboration_problems(ctx, ws, pkg / "Suggested.lean")
+        cfg = ctx.cfg
+        if cfg.gates.build and (ws.content / ".lake").is_dir():
+            wt = fresh_worktree(ctx, ws.content, job.name, "build")
+            folder = wt / cfg.roadmap.active_dir / job.name
+            folder.mkdir(parents=True, exist_ok=True)
+            for f in ("README.md", "Suggested.lean", "metadata.toml"):
+                if (pkg / f).is_file():
+                    shutil.copy2(pkg / f, folder / f)
+            problems += gates.build_problems(wt, cfg.gates.build.format(module=f"{cfg.roadmap.active_dir}.{job.name}.Suggested"))
+        return problems
+
     def prepare(self, job: Job, ctx: Context) -> Workspace:
+        if self.board_pr(job):
+            ws = Lane.prepare(self, job, ctx)
+            checkout_board_pr(ctx, ws, self.board_pr(job))
+            prs = open_roadmap_prs(ctx)
+            ws.extra.update(prs=prs, siblings=sibling_checkouts(ctx, prs, skip=job.name),
+                            reviews=board_reports(ctx, ws, job.name, job.inputs.get("reviews", [])))
+            pkg = ws.package(ctx.cfg, job.name)
+            ws.extra["readme"] = pkg / "README.md"
+            texts = [(pkg / f).read_text(encoding="utf-8") if (pkg / f).is_file() else "" for f in ("README.md", "Suggested.lean")]
+            ws.extra["order_notes"] = ensure_in_order(ctx, ws, job.name, *texts)
+            return ws
         ws = super().prepare(job, ctx)
         pr = int(job.inputs.get("pr") or 0)
         prs = open_roadmap_prs(ctx)
@@ -85,6 +150,8 @@ class RedTeamFixLane(Lane):
         return ws
 
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
+        if self.board_pr(job):
+            return self.board_values(job, ctx, ws)
         cfg, folder = ctx.cfg, f"{ctx.cfg.roadmap.active_dir}/{job.name}"
         reports = ws.package(cfg, job.name) / "reports"
         reviews = "\n".join(f"- `{reports / (r + '.md')}`" for r in job.inputs.get("reviews", []))
@@ -99,6 +166,8 @@ class RedTeamFixLane(Lane):
                            "15 words>)\"` on the checked-out branch. Do not push.")}
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        if self.board_pr(job):
+            return self.board_check(job, ctx, ws)
         problems = super().check(job, ctx, ws)
         if ws.report.is_file() and not replies.parse_findings(ws.report.read_text(encoding="utf-8")):
             problems.append("report: no finding sections in the required heading style")
@@ -117,6 +186,8 @@ class RedTeamFixLane(Lane):
         return problems + scan_problems(result)
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        if self.board_pr(job):
+            return f"red-team round {job.round} repaired on #{self.board_pr(job)}"
         new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
         if new == ws.extra["head"]:
             raise LaneError("the head did not move; nothing to push")

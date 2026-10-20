@@ -1,9 +1,10 @@
-# Section red-team pass on a draft pull request — job __JOB__, section __SECTION_INDEX__ of __SECTION_COUNT__
+# Section red-team pass on a package — job __JOB__, section __SECTION_INDEX__ of __SECTION_COUNT__
 
-You are an adversarial reviewer for pull request #__PR__ of `__CONTENT_REPO__`, roadmap folder
-`__ACTIVE_DIR__/__ROADMAP__/` at head `__HEAD__`. A whole-document pass of the same job has already
+You are an adversarial reviewer of the package of the roadmap `__ROADMAP__` on the job board's pull
+request #__PR__, at head `__HEAD__`: the folder `__FOLDER__`, which becomes `__ACTIVE_DIR__/__ROADMAP__/`
+of `__CONTENT_REPO__`. A whole-document pass of the same job has already
 read the roadmap end to end. Your pass is narrow and deep: **__SECTION_TITLE__**, lines
-__SECTION_LINES__ of `__WORKDIR__/__ACTIVE_DIR__/__ROADMAP__/README.md`, and the declarations of
+__SECTION_LINES__ of `__FOLDER__/README.md`, and the declarations of
 `Suggested.lean` that state its targets. You are pass __PASS__; a repair worker will apply the union
 of every pass's findings, so every finding comes with a witness it can verify in minutes.
 
@@ -54,8 +55,8 @@ theorem, identity, convention, normalisation and Check, and its Lean declaration
 
 ## Inputs
 
-The repository's rules: `__WORKDIR__/README.md` and `__WORKDIR__/CONTRIBUTING.md`. The roadmaps on main
-under `__WORKDIR__/__ACTIVE_DIR__/` and `__WORKDIR__/__COMPLETED_DIR__/`. The other open roadmap pull
+The roadmap repository's rules: `__CONTENT__/README.md` and `__CONTENT__/CONTRIBUTING.md`. The roadmaps on main
+under `__CONTENT__/__ACTIVE_DIR__/` and `__CONTENT__/__COMPLETED_DIR__/`. The other open roadmap pull
 requests at their heads, read-only: __SIBLINGS__. The pinned libraries (grep, read-only): __LIBRARY__.
 The merge order: `__ORDER__`.
 

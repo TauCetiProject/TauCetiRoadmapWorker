@@ -578,7 +578,8 @@ def board_cmd(args) -> int:
     if args.action == "sync":
         for line in (filers.refresh(ctx) + intake.sync_targets(ctx) + intake.sync_states(ctx, shared)
                      + intake.sync_expired(ctx, shared)
-                     + intake.sync_leases(ctx, shared) + intake.sync_pull_requests(ctx)):
+                     + intake.sync_leases(ctx, shared) + intake.sync_pull_requests(ctx)
+                     + boardpr.review_queue(ctx, yes=write)):
             print(line)
         return 0
     for line in intake.stale(ctx, shared, release=args.release):

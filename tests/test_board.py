@@ -84,6 +84,8 @@ def test_design_to_package_to_red_team_to_port_chain():
     assert ids(passes) == ["RT-Foo~1a", "RT-Foo~1b"]                 # the red team follows the review
     assert passes[0].inputs["board_pr"] == 12 and passes[0].independent_of == ["PKG-Foo"]
     assert ids(successors(pkg_review, Outcome(verdict="accepted"), redteam_rounds=0)) == ["PORT-Foo"]
+    legacy = new_job("REV-PKG-Foo")                                    # reviewed before the board pull requests
+    assert ids(successors(legacy, Outcome(verdict="accepted"))) == ["PORT-Foo"]
     assert successors(new_job("PORT-Foo"), Outcome(pr=905, operator="alice")) == []   # humans review the roadmap PR
 
 

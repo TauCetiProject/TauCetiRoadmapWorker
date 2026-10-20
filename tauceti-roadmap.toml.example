@@ -114,8 +114,9 @@ passes = [
 sharded = false
 # At most this many section passes per red-team job; adjacent sections are grouped beyond it.
 shard_max = 8
-# Mark the pull request ready for review after the last round (false: it stays a draft and a
-# human marks it ready).
+# The red team runs on the package's board pull request, before the port. true: the port opens the
+# roadmap pull request ready for review; false: as a draft (roadmap.open_as_draft) for a human to
+# mark ready.
 ready_after = false
 
 [design]

@@ -16,9 +16,9 @@ import random
 import re
 import tomllib
 
-from .. import board, gitops, sources
+from .. import board, gitops, prreviews, sources
 from ..board import Job
-from .base import Context, Lane, Workspace
+from .base import Context, Lane, Workspace, checkout_board_pr
 from .design import manifest_problems
 
 TARGET_HEADING = re.compile(r"^\*\*([A-Z][^*\n]{2,150})\*\*", re.M)
@@ -64,6 +64,25 @@ class ReviewLane(Lane):
 
     def subject(self, job: Job) -> str:
         return "design" if board.parse_job_id(job.id).subject == "DESIGN" else "package"
+
+    def prepare(self, job: Job, ctx: Context) -> Workspace:
+        ws = super().prepare(job, ctx)
+        if self.board_pr(job):
+            checkout_board_pr(ctx, ws, self.board_pr(job))   # the design or package under review is its head
+        return ws
+
+    def submit_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
+        """The review as a comment on the pull request, in the shape the board reads."""
+        try:
+            status = json.loads(self.verdict_file(job, ctx, ws).read_text(encoding="utf-8"))["review"]["status"]
+        except (OSError, ValueError, KeyError, TypeError):
+            status = "needs_changes"
+        body = prreviews.render(prreviews.review_head(ctx.agent, ws.extra["head"]), status,
+                                ws.report.read_text(encoding="utf-8"), self.marker(job, ctx, ws))
+        url = self.comment_on_board_pr(job, ctx, ws, body)
+        if not ctx.dry_run:
+            self.after_board_submission(job, ctx)
+        return url
 
     def files(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         pkg = ws.package(ctx.cfg, job.name)

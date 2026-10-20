@@ -317,7 +317,8 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
         if outcome.verdict == "accepted" and j.subject == "DESIGN":
             return [new_job(make_id("package", name), after=[job.id])]
         if outcome.verdict == "accepted":
-            if redteam_rounds < 1:
+            if redteam_rounds < 1 or not (outcome.pr or job.inputs.get("board_pr")):
+                # No red team configured, or a review from before the board pull requests (no PR to red-team on).
                 return [new_job(make_id("port", name), after=[job.id])]
             return redteam_round(1, [job.id], authors_of_round("PKG", name, j.round),
                                  {"board_pr": outcome.pr or job.inputs.get("board_pr"),

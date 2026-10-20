@@ -195,3 +195,84 @@ def test_a_worker_holding_the_review_is_not_preempted(monkeypatch):
     gh.say("roed-math", "reviewing")
     gh.say("roed-math", review("chatgpt", "a" * 40, "accepted"))
     assert boardpr.scan(ctx, Shared(), yes=True) == [] and rev.state == "claimed"     # waits for the worker
+
+
+# --- the worker side: a review comments, a fix pushes to the pull request's branch ------------------
+
+def test_a_worker_review_and_a_worker_fix_on_the_board_pull_request(tmp_path, monkeypatch):
+    import dataclasses
+    import json
+
+    from tauceti_roadmap_worker import gitops
+    from tauceti_roadmap_worker.lanes import lane_for
+
+    from .fakes import FakeBoard, FakeClaims, FakeGH
+    from .test_lane_dry_run import fake_checkout, fake_git
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    monkeypatch.setattr(gitops, "git", fake_git)
+    monkeypatch.setattr(gitops, "sync_checkout", fake_checkout)
+    pushed = []
+    monkeypatch.setattr(gitops, "commit_paths", lambda wt, paths, msg, login: pushed.append(("commit", sorted(paths))))
+    monkeypatch.setattr(gitops, "ensure_fork", lambda gh, repo, login: f"{login}/TauCetiRoadmapJobs")
+    monkeypatch.setattr(gitops, "push_branch", lambda wt, fork, branch: pushed.append(("push", fork, branch)))
+    monkeypatch.setattr(gitops, "changed_files", lambda wt, base="HEAD": ["packages/Foo/README.md"])
+    gh = FakeGH()
+    gh.api = lambda path, paginate=False: {"head": {"ref": "w1/PKG-Foo", "repo": {"full_name": "alice/TauCetiRoadmapJobs"}},
+                                           "user": {"login": "alice"}}
+    gh.raw_file = lambda repo, path, ref="": "Review (chatgpt) of ccccccc\n\nVerdict: needs_changes\n\n1. **F01** (P1) x\n"
+    from tauceti_roadmap_worker.lanes import Context
+    ctx = Context(cfg=example_config(), gh=gh, board=FakeBoard(), claims=FakeClaims(), worker_id="alice-1",
+                  operator="alice", agent="claude", model="fable")
+
+    rev = new_job("REV-PKG-Foo~2", inputs={"board_pr": 12})
+    lane = lane_for(rev)
+    ws = lane.prepare(rev, ctx)
+    lane.verdict_file(rev, ctx, ws).write_text(json.dumps({"review": {"status": "needs_changes"}}))
+    ws.report.write_text("# Review of Foo (package, round 2)\n**Verdict:** needs changes\n\n## R01 (P1) — Wrong\nbody\n")
+    lane.submit(rev, ctx, ws, "review")
+    [(_m, _p, payload)] = [w for w in gh.writes if w[1].endswith("/issues/12/comments")]
+    parsed = prreviews.parse(payload["body"])
+    assert (parsed.kind, parsed.agent, parsed.verdict, parsed.findings) == ("review", "claude", "needs_changes", [("F01", "P1")])
+    assert parsed.worker["job"] == "REV-PKG-Foo~2" and ctx.board.states == [("REV-PKG-Foo~2", "submitted")]
+
+    fix = new_job("FIX-PKG-Foo~3", inputs={"board_pr": 12, "review": "REV-PKG-Foo~2"})
+    lane = lane_for(fix)
+    ws = lane.prepare(fix, ctx)
+    gh.writes.clear()
+    lane.submit(dataclasses.replace(fix), ctx, ws, "repairs")
+    assert pushed == [("commit", ["packages/Foo/README.md"]), ("push", "alice/TauCetiRoadmapJobs", "w1/PKG-Foo")]
+    [(_m, _p, note)] = [w for w in gh.writes if w[1].endswith("/issues/12/comments")]
+    assert note["body"].startswith("Fix `FIX-PKG-Foo~3` pushed") and '"agent": "claude"' in note["body"]
+    assert "Verdict: needs_changes" in (ws.scratch / "reviews" / "REV-PKG-Foo_r2.md").read_text()
+
+
+def test_the_review_queue_lists_open_reviews_and_is_edited_in_place():
+    rev = new_job("REV-PKG-Foo~2", inputs={"board_pr": 12})
+    rev.number, rev.state = 5, "available"
+    done = new_job("REV-PKG-Foo", inputs={"board_pr": 12})
+    done.number, done.state = 4, "done"
+    board, gh = Board([rev, done]), GH("c" * 40)
+    gh.pr["labels"] = [{"name": "needs-review"}]
+    issues, pinned = [], []
+    api = gh.api
+    gh.api = lambda path, paginate=False: issues if "labels=review-queue" in path else api(path, paginate)
+    write = gh.write
+
+    def write_(method, path, payload=None):
+        if path.endswith("/issues") and method == "POST":
+            issues.append({"number": 50, "body": payload["body"]})
+            return {"number": 50}
+        if path.endswith("/issues/50") and method == "PATCH":
+            issues[0]["body"] = payload["body"]
+            return {}
+        return write(method, path, payload)
+    gh.write = write_
+    gh.cli_write = lambda *args: pinned.append(args)
+    ctx = bot_context(cfg=example_config(), gh=gh, board=board)
+    assert boardpr.review_queue(ctx, yes=True) == ["review queue #50 created"] and pinned == [("issue", "pin", "50", "-R",
+                                                                                                "TauCetiProject/TauCetiRoadmapJobs")]
+    assert "`REV-PKG-Foo~2` (available), head `ccccccc`" in issues[0]["body"] and "REV-PKG-Foo`" not in issues[0]["body"]
+    assert boardpr.review_queue(ctx, yes=True) == []                     # unchanged: no write
+    rev.state = "done"
+    assert boardpr.review_queue(ctx, yes=True) == ["review queue #50 updated"]
+    assert "Nothing is waiting for a review." in issues[0]["body"]

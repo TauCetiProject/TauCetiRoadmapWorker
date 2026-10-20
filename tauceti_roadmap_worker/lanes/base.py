@@ -254,6 +254,40 @@ def ensure_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: s
     return [f"{name} placed in the merge order {where}"] + notes
 
 
+def checkout_board_pr(ctx: Context, ws: Workspace, number: int) -> None:
+    """Check the head of the board pull request a job works on out in the board checkout, on the
+    job's branch, and note where its branch lives (only its owner pushes to it)."""
+    pr = {}
+    if ctx.gh is not None:
+        try:
+            pr = ctx.gh.api(f"repos/{ctx.cfg.repositories.packages_repo()}/pulls/{number}") or {}
+        except GHError:
+            pr = {}
+    gitops.git(ws.board, "fetch", "-q", "origin", f"pull/{number}/head")
+    gitops.git(ws.board, "checkout", "-q", "--force", "-B", ws.branch, "FETCH_HEAD")
+    head = pr.get("head") or {}
+    ws.extra.update(board_pr=number, head=gitops.git(ws.board, "rev-parse", "HEAD").strip(),
+                    pr_ref=head.get("ref", ""), pr_repo=(head.get("repo") or {}).get("full_name", ""),
+                    pr_owner=(pr.get("user") or {}).get("login", ""))
+
+
+def board_reports(ctx: Context, ws: Workspace, name: str, job_ids: list[str], folder: str = "reviews") -> list[Path]:
+    """The reports the intake copied to the board's main for these jobs (reviews and passes on the
+    pull request), fetched into the scratch folder for the agent."""
+    out = []
+    pkg = board.package_dir(ctx.cfg.board.packages_dir, name)
+    for jid in job_ids:
+        path = ws.scratch / folder / f"{claims.ref_safe(jid)}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            text = ctx.gh.raw_file(ctx.cfg.repositories.packages_repo(), f"{pkg}/reports/{jid}.md") if ctx.gh else ""
+        except GHError:
+            text = ""
+        path.write_text(text or f"(no report of {jid} on the board yet)\n", encoding="utf-8")
+        out.append(path)
+    return out
+
+
 def library_description(content: Path) -> str:
     m, t = content / ".lake" / "packages" / "mathlib" / "Mathlib", content / ".lake" / "packages" / "TauCeti" / "TauCeti"
     if m.is_dir() and t.is_dir():
@@ -303,6 +337,15 @@ class Lane:
 
     def records_author(self, job: Job) -> bool:
         return bool(board.artefact_of(job.id)) and job.kind != "review"
+
+    @staticmethod
+    def board_pr(job: Job) -> int:
+        """The board pull request the job works on (reviews, red-team passes and fixes in the
+        comment flow), or 0."""
+        try:
+            return int(job.inputs.get("board_pr") or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def edits_manifest(self, job: Job, ctx: Context) -> bool:
         """Whether the job's deliverables include the roadmap's sources.toml (the board decides)."""
@@ -515,9 +558,54 @@ class Lane:
                     f" What it wrote is kept in `{kept}` (laid out like the repository). Start from it: put what is sound "
                     "back in place and repair the listed problems, rather than starting over." if kept.is_dir() else ""))
 
+    def comment_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, body: str) -> str:
+        if ctx.dry_run:
+            return f"[dry-run] would comment on #{self.board_pr(job)}"
+        made = ctx.gh.write("POST", f"repos/{ctx.cfg.repositories.packages_repo()}/issues/{self.board_pr(job)}/comments",
+                            {"body": body}) or {}
+        return made.get("html_url", "")
+
+    def marker(self, job: Job, ctx: Context, ws: Workspace) -> dict:
+        return {"job": job.id, "worker": ctx.worker_id, "agent": ctx.agent, "model": ctx.model,
+                "head": ws.extra.get("head", "")}
+
+    def submit_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
+        """A fix on the board pull request: commit the job's files on top of its head, push them to
+        its branch (the job's operator owns it), and say so on the pull request with the worker's
+        marker; the intake opens the next round."""
+        changed = gitops.changed_files(ws.board)
+        if not changed:
+            raise LaneError("nothing to push")
+        if ctx.dry_run:
+            return f"[dry-run] would push {', '.join(changed)} to #{self.board_pr(job)}"
+        gitops.commit_paths(ws.board, changed, f"{job.id}: {summary}\n\nAI-assisted: {ctx.agent} ({ctx.model}), "
+                                               f"worker {ctx.worker_id}.", ctx.operator)
+        fork = gitops.ensure_fork(ctx.gh, ctx.cfg.repositories.packages_repo(), ctx.operator)
+        if ws.extra.get("pr_repo") and ws.extra["pr_repo"].lower() != fork.lower():
+            raise LaneError(f"the pull request's branch is in {ws.extra['pr_repo']}; only its owner pushes to it")
+        gitops.push_branch(ws.board, fork, ws.extra.get("pr_ref") or ws.branch)
+        head = gitops.git(ws.board, "rev-parse", "HEAD").strip()
+        marker = {**self.marker(job, ctx, ws), "head": head}
+        url = self.comment_on_board_pr(job, ctx, ws, f"Fix `{job.id}` pushed `{head[:7]}` by @{ctx.operator} "
+                                                     f"({ctx.agent}, {ctx.model}): {summary}\n\n"
+                                                     f"<!-- tauceti-roadmap-review {json.dumps(marker, sort_keys=True)} -->\n")
+        self.after_board_submission(job, ctx)
+        return url
+
+    def after_board_submission(self, job: Job, ctx: Context) -> None:
+        if ctx.claims:
+            ctx.claims.record_author(job.id, ctx.agent, ctx.model)
+        try:
+            ctx.board.set_state(job, "submitted")
+        except GHError:
+            pass
+
     def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
         """Commit the job's own files on the worker's board branch, push it to the operator's fork
-        and open the submission pull request that names the job."""
+        and open the submission pull request that names the job (or, for a job on a board pull
+        request, push to it or comment on it)."""
+        if self.board_pr(job):
+            return self.submit_on_board_pr(job, ctx, ws, summary)
         cfg = ctx.cfg
         problems = self.submission_problems(job, ctx, ws)
         if problems:

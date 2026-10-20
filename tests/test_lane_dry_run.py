@@ -75,6 +75,12 @@ JOBS = [
     ("RT-Foo~2b", {"pr": 905, "operator": "alice", "previous": ["RT-Foo~1a", "RT-Foo~1b"], "repair": "FIX-RT-Foo~1"}),
     ("FIX-RT-Foo~1", {"pr": 905, "operator": "alice", "reviews": ["RT-Foo~1a", "RT-Foo~1b"]}),
     ("GATE-Foo~1", {"pr": 905, "operator": "alice"}),
+    # The comment flow: reviews, red-team passes and fixes on the package's board pull request.
+    ("REV-PKG-Foo~3", {"board_pr": 12, "operator": "alice"}),
+    ("FIX-PKG-Foo~3", {"board_pr": 12, "operator": "alice", "review": "REV-PKG-Foo~2"}),
+    ("RT-Foo~1b", {"board_pr": 12, "operator": "alice"}),
+    ("RT-Foo~2a", {"board_pr": 12, "operator": "alice", "previous": ["RT-Foo~1a", "RT-Foo~1b"], "repair": "FIX-RT-Foo~1"}),
+    ("FIX-RT-Foo~2", {"board_pr": 12, "operator": "alice", "reviews": ["RT-Foo~2a", "RT-Foo~2b"]}),
 ]
 
 
@@ -110,3 +116,15 @@ def test_lane_base_values_cover_common_placeholders(ctx):
     values = lane_base.Lane().common_values(job, ctx, ws)
     assert values["DEPCHECK"].startswith("tauceti-roadmap --conf /conf.toml gate --depcheck ")
     assert values["SUPPLIERS"] == "none yet" and values["DROPPED"] == "none"
+
+
+def test_board_pull_request_jobs_check_out_its_head_and_read_the_board_reports(ctx, monkeypatch):
+    calls = []
+    monkeypatch.setattr(gitops, "git", lambda cwd, *args, **kw: calls.append(args) or fake_git(cwd, *args, **kw))
+    job = new_job("RT-Foo~2a", inputs={"board_pr": 12, "previous": ["RT-Foo~1a"], "repair": "FIX-RT-Foo~1"})
+    job.number = 9
+    assert lane_for(job).run(job, ctx).status == "dry-run"
+    assert ("fetch", "-q", "origin", "pull/12/head") in calls
+    brief = (ctx.wdir / "jobs" / "RT-Foo_r2a" / "brief.md").read_text()
+    assert "request #12, at head" in brief and "packages/Foo" in brief
+    assert str(ctx.wdir / "jobs" / "RT-Foo_r2a" / "scratch" / "previous" / "FIX-RT-Foo_r1.md") in brief

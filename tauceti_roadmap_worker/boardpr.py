@@ -285,7 +285,8 @@ def conclude_review(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Jo
         if design:
             announce_gaps(ctx, design, jobs)
     elif job.kind == "review" and verdict == "accepted":
-        job.inputs["accepted_review"] = verdict_record(job, reviews, "accepted")
+        job.inputs["accepted_review"] = verdict_record(job, reviews, "accepted")   # written when the PR merges
+        ctx.board.update_spec(job)
     return f"#{number}: {job.id} {verdict}; " + advance_on(ctx, job, outcome, jobs, number, pr)
 
 
@@ -376,3 +377,51 @@ def scan(ctx, shared=None, yes: bool = False) -> list[str]:
             out.append(conclude(ctx, job, found, number, pr, jobs, yes))
             jobs = ctx.board.all_jobs()
     return out
+
+
+# --- the review queue: what a browser reviewer can pick up ---------------------------------------------
+
+QUEUE_LABEL = "review-queue"
+QUEUE_MARK = "<!-- tauceti-roadmap-review-queue -->"
+
+
+def queue_body(ctx, jobs: list[Job], pulls: list[dict]) -> str:
+    """Every open review and red-team pass on a board pull request, with direct links."""
+    lines = [("Reviews and red-team passes open on the job board's pull requests. To take one: open the pull "
+              "request, read the brief pinned as its first comment, comment `reviewing`, then leave your review as "
+              "one comment in the shape the brief gives. Comments are read only from the logins the project lists."), ""]
+    rows = []
+    for pr in sorted(pulls, key=lambda p: p["number"]):
+        if NEEDS_REVIEW not in {label["name"] for label in pr.get("labels", [])}:
+            continue
+        number, head = pr["number"], pr["head"]["sha"]
+        for job in sorted((j for j in jobs_of(number, jobs) if j.kind in ("review", "redteam") and j.state != "done"),
+                          key=lambda j: j.id):
+            rows.append(f"- [#{number}](https://github.com/{repo(ctx)}/pull/{number}) `{job.name}`: `{job.id}` "
+                        f"({job.state}), head `{head[:7]}`")
+    lines += rows or ["Nothing is waiting for a review."]
+    return "\n".join(lines) + "\n\n" + QUEUE_MARK + "\n"
+
+
+def review_queue(ctx, yes: bool = False) -> list[str]:
+    """Keep the board's pinned "Review queue" issue current (edited in place, never a new comment)."""
+    board_repo = ctx.cfg.repositories.board_repo()
+    pulls = ctx.gh.api(f"repos/{repo(ctx)}/pulls?state=open&per_page=100", paginate=True) or []
+    body = queue_body(ctx, ctx.board.all_jobs(), pulls)
+    issues = ctx.gh.api(f"repos/{board_repo}/issues?labels={QUEUE_LABEL}&state=open&per_page=100", paginate=True) or []
+    mine = next((i for i in issues if QUEUE_MARK in (i.get("body") or "")), None)
+    if mine and mine.get("body") == body:
+        return []
+    if not yes:
+        return ["review queue: would update" if mine else "review queue: would create and pin it"]
+    if mine:
+        ctx.gh.write("PATCH", f"repos/{board_repo}/issues/{mine['number']}", {"body": body})
+        return [f"review queue #{mine['number']} updated"]
+    made = ctx.gh.write("POST", f"repos/{board_repo}/issues", {"title": "Review queue", "body": body,
+                                                                 "labels": [QUEUE_LABEL]}) or {}
+    if made.get("number"):
+        try:
+            ctx.gh.cli_write("issue", "pin", str(made["number"]), "-R", board_repo)
+        except GHError:
+            pass
+    return [f"review queue #{made.get('number', '?')} created"]

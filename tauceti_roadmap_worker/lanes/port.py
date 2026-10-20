@@ -119,7 +119,8 @@ class PortLane(Lane):
         fork = gitops.ensure_fork(ctx.gh, cfg.repositories.content, ctx.operator)
         gitops.push(ws.workdir, fork, ws.extra["branch"])
         pr = gitops.open_pull_request(ctx.gh, cfg.repositories.content, f"{ctx.operator}:{ws.extra['branch']}",
-                                      cfg.project.branch, title, body, draft=cfg.roadmap.open_as_draft)
+                                      cfg.project.branch, title, body,
+                                      draft=cfg.roadmap.open_as_draft and not cfg.redteam.ready_after)
         number = int(pr["number"])
         try:
             ctx.gh.write("POST", f"repos/{cfg.repositories.content}/issues/{number}/labels",

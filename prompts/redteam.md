@@ -1,8 +1,10 @@
-# Red-team pass on a draft pull request — job __JOB__
+# Red-team pass on a package — job __JOB__
 
-You are an adversarial reviewer for pull request #__PR__ of `__CONTENT_REPO__`, roadmap folder
-`__ACTIVE_DIR__/__ROADMAP__/` (README.md and Suggested.lean) at head `__HEAD__`. Your job is to find
-every defect an expert external reviewer would find, before that reviewer sees the pull request.
+You are an adversarial reviewer of the package of the roadmap `__ROADMAP__` on the job board's pull
+request #__PR__, at head `__HEAD__`: the folder `__FOLDER__` (README.md and Suggested.lean), which
+becomes `__ACTIVE_DIR__/__ROADMAP__/` of `__CONTENT_REPO__` once the red team is done. Your job is to
+find every defect an expert external reviewer would find, before any reviewer of the roadmap
+repository sees it.
 You are pass __PASS__; an independent reviewer of a different model family runs the same pass, and a
 repair worker will apply the union of your findings. Precision matters as much as recall: every
 finding comes with a witness a repair worker can verify in minutes.
@@ -35,9 +37,9 @@ __SECOND_PASS__
 
 ## Inputs
 
-The whole README and the whole Suggested.lean: read every line, do not sample. The repository's
-rules: `__WORKDIR__/README.md` and `__WORKDIR__/CONTRIBUTING.md`. The roadmaps on main under
-`__WORKDIR__/__ACTIVE_DIR__/` and `__WORKDIR__/__COMPLETED_DIR__/`. The other open roadmap pull requests
+The whole README and the whole Suggested.lean: read every line, do not sample. The roadmap
+repository's rules: `__CONTENT__/README.md` and `__CONTENT__/CONTRIBUTING.md`. The roadmaps on main
+under `__CONTENT__/__ACTIVE_DIR__/` and `__CONTENT__/__COMPLETED_DIR__/`. The other open roadmap pull requests
 at their heads, read-only: __SIBLINGS__ (use these, not the web, for sibling names and section
 numbers). The pinned libraries (grep, read-only): __LIBRARY__. The merge order: `__ORDER__`.
 
@@ -62,8 +64,8 @@ context, and of every bold README target. For each:
    copied from a source, and citations that do not support the claim as stated.
 6. **Checks and examples**: each definition has at least three discriminating Checks; flag Checks that
    are false, vacuous or restatements, and statable Checks with no Lean `example`.
-7. **Policy**: the pull request changes nothing outside its folder (`__OUTSIDE_CHECK__` must print
-   nothing); no pull-request numbers or process narrative in the README or docstrings; `theorem`,
+7. **Policy**: the package is only its folder (`__OUTSIDE_CHECK__` shows what the pull request
+   changes); no pull-request numbers or process narrative in the README or docstrings; `theorem`,
    not `lemma`; every target has a locator; no `set_option`; no computational algorithms.
 8. **Headlines**: flag a missing easy headline theorem and a forced one (both major).
 

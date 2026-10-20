@@ -92,6 +92,14 @@ def push(worktree: Path, fork: str, branch: str, dry_run: bool = False) -> None:
     git(worktree, "push", "-q", "--force-with-lease", "fork", f"HEAD:refs/heads/{branch}")
 
 
+def push_branch(worktree: Path, fork: str, branch: str) -> None:
+    """Push HEAD onto an existing branch of the fork as a fast-forward (a fix on a pull request's
+    branch: never a force push over someone else's work)."""
+    remote = git(worktree, "remote").split()
+    git(worktree, "remote", "add" if "fork" not in remote else "set-url", "fork", url(fork))
+    git(worktree, "push", "-q", "fork", f"HEAD:refs/heads/{branch}")
+
+
 def current_branch(worktree: Path) -> str:
     """The branch checked out in `worktree`, or '' (detached, or not a checkout yet)."""
     if not (worktree / ".git").exists():

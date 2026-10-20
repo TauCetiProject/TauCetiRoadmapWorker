@@ -18,9 +18,19 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .. import board, gitops, prompts
+from .. import board, gitops, prompts, prreviews
 from ..board import Job
-from .base import Context, Lane, LaneError, Workspace, open_roadmap_prs, rev_dir, sibling_checkouts
+from .base import (
+    Context,
+    Lane,
+    LaneError,
+    Workspace,
+    board_reports,
+    checkout_board_pr,
+    open_roadmap_prs,
+    rev_dir,
+    sibling_checkouts,
+)
 from .review import sample_items
 
 FENCE = re.compile(r"^\s*(```|~~~)")
@@ -185,6 +195,16 @@ class RedTeamLane(Lane):
 
     def prepare(self, job: Job, ctx: Context) -> Workspace:
         ws = super().prepare(job, ctx)
+        if self.board_pr(job):
+            # The package on its board pull request, read-only, before any port.
+            checkout_board_pr(ctx, ws, self.board_pr(job))
+            prs = open_roadmap_prs(ctx)
+            ws.extra.update(prs=prs, siblings=sibling_checkouts(ctx, prs, skip=job.name), pr=self.board_pr(job),
+                            folder=ws.package(ctx.cfg, job.name), readme=ws.package(ctx.cfg, job.name) / "README.md")
+            ws.extra["previous"] = board_reports(ctx, ws, job.name, job.inputs.get("previous", []) +
+                                                 ([job.inputs["repair"]] if job.inputs.get("repair") else []), "previous")
+            ws.workdir = ws.board
+            return ws
         pr = int(job.inputs.get("pr") or 0)
         if not pr:
             raise LaneError(f"{job.id} names no pull request")
@@ -198,6 +218,7 @@ class RedTeamLane(Lane):
         gitops.checkout_pr(ctx.cfg.repositories.content, rev, pr)
         ws.workdir, ws.extra["pr"], ws.extra["head"], ws.extra["branch"] = rev, pr, mine["head"], mine["branch"]
         ws.extra["readme"] = rev / ctx.cfg.roadmap.active_dir / job.name / "README.md"
+        ws.extra["folder"] = rev / ctx.cfg.roadmap.active_dir / job.name
         return ws
 
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
@@ -205,22 +226,29 @@ class RedTeamLane(Lane):
         pkg_reports = ws.package(ctx.cfg, job.name) / "reports"
         second = ""
         if j.round > 1:
-            previous = ", ".join(f"`{pkg_reports / (p + '.md')}`" for p in job.inputs.get("previous", []))
-            repair = job.inputs.get("repair", "")
+            if ws.extra.get("previous"):
+                *earlier, repair_report = ws.extra["previous"]
+                previous, repair_path = ", ".join(f"`{p}`" for p in earlier), repair_report
+            else:
+                previous = ", ".join(f"`{pkg_reports / (p + '.md')}`" for p in job.inputs.get("previous", []))
+                repair_path = pkg_reports / (job.inputs.get("repair", "") + ".md")
             second = (f"**This is round {j.round}.** The earlier passes are {previous or 'in the reports folder'} and their "
-                      f"repairs are described in `{pkg_reports / (repair + '.md')}`; the head you review carries those repairs. "
+                      f"repairs are described in `{repair_path}`; the head you review carries those repairs. "
                       "First verify, finding by finding, that each earlier finding is repaired at this head (quote the repaired "
                       "passage; mark it repaired, partly repaired or not repaired, with the witness) and that no repair "
                       "introduced a new error; then run the full pass again, with fresh attention to the classes the earlier "
                       "passes did not find. Number new findings from S01.")
         else:
-            second = ("This is a freshly ported roadmap: expect port-level defects (supplier names that do not match the "
-                      "siblings' current heads, missing Lean mirrors, locators copied from the package) as well as "
-                      "mathematical ones.")
-        outside = (f"git -C {ws.workdir} diff --stat origin/{ctx.cfg.project.branch}...HEAD -- . "
-                   f"':!{ctx.cfg.roadmap.active_dir}/{job.name}'")
+            second = ("This is the first red-team round of an independently reviewed package: expect what the review "
+                      "missed (supplier names that do not match the siblings' current heads, missing Lean mirrors, "
+                      "locators the sample did not cover) as well as mathematical defects.")
+        if self.board_pr(job):
+            outside = f"git -C {ws.workdir} diff --stat origin/main...HEAD"
+        else:
+            outside = (f"git -C {ws.workdir} diff --stat origin/{ctx.cfg.project.branch}...HEAD -- . "
+                       f"':!{ctx.cfg.roadmap.active_dir}/{job.name}'")
         return {"PR": str(ws.extra["pr"]), "HEAD": ws.extra["head"][:7], "PASS": f"{j.pass_} ({ctx.agent})",
-                "SECOND_PASS": second, "OUTSIDE_CHECK": outside}
+                "SECOND_PASS": second, "OUTSIDE_CHECK": outside, "FOLDER": str(ws.extra.get("folder", ""))}
 
     def briefs(self, job: Job, ctx: Context, ws: Workspace, values: dict) -> list[tuple[str, str]]:
         runs = super().briefs(job, ctx, ws, values)
@@ -267,9 +295,22 @@ class RedTeamLane(Lane):
             j = board.parse_job_id(job.id)
             problems += report_problems(ws.report.read_text(encoding="utf-8"), ws.extra["pr"], job.name,
                                         ws.extra["head"][:7], f"{j.pass_} ({ctx.agent})")
-        if gitops.git(ws.workdir, "status", "--short").strip():
+        mine = {str(ws.report.relative_to(ws.board))} if ws.report.is_relative_to(ws.board) else set()
+        if any(p not in mine for p in gitops.changed_files(ws.workdir)):
             problems.append("the red-team pass changed the read-only checkout")
         return problems
+
+    def submit_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
+        """The pass as a comment on the board pull request, in the shape the board reads."""
+        j = board.parse_job_id(job.id)
+        report = ws.report.read_text(encoding="utf-8")
+        verdict = "needs_changes" if prreviews.report_findings(report)[0] else "accepted"
+        body = prreviews.render(prreviews.redteam_head(j.round, j.pass_, ctx.agent, ws.extra["head"]), verdict, report,
+                                self.marker(job, ctx, ws))
+        url = self.comment_on_board_pr(job, ctx, ws, body)
+        if not ctx.dry_run:
+            self.after_board_submission(job, ctx)
+        return url
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         return f"red-team pass {job.id} on #{ws.extra['pr']} at {ws.extra['head'][:7]}"
