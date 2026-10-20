@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 
 from . import (
     __version__,
+    boardpr,
     build,
     claims,
     config,
@@ -558,6 +559,9 @@ def board_cmd(args) -> int:
                 print(intake.intake(ctx, n, yes=write))
         if not args.pr:
             for line in references.resume_all(ctx, ctx.sources_fetcher(), yes=write):
+                print(line)
+        if args.action == "intake":
+            for line in boardpr.scan(ctx, shared, yes=write):
                 print(line)
         return 0
     if args.action == "import-explorer":

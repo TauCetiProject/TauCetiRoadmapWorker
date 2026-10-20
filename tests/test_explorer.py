@@ -67,7 +67,8 @@ def plan(checkout, **kw):
 def test_each_explorer_stage_becomes_the_matching_board_job(checkout):
     steps = plan(checkout)
     assert {n: s.job.id for n, s in steps.items() if not s.skip} == {
-        "Alpha": "PORT-Alpha", "Beta": "REV-PKG-Beta", "Gamma": "PKG-Gamma", "Delta": "REV-DESIGN-Delta", "Eps": "TARGET-Eps"}
+        "Alpha": "RT-Alpha~1a", "Beta": "REV-PKG-Beta", "Gamma": "PKG-Gamma", "Delta": "REV-DESIGN-Delta", "Eps": "TARGET-Eps"}
+    assert [(j.id, j.requires_agent) for j in steps["Alpha"].extra] == [("RT-Alpha~1b", "claude")]   # red team, not port
     assert sorted(steps["Alpha"].files) == ["packages/Alpha/README.md", "packages/Alpha/Suggested.lean",
                                             "packages/Alpha/metadata.toml", "packages/Alpha/review.json"]
     assert "packages/Beta/review.json" not in steps["Beta"].files          # a fixer's acceptance is not carried
@@ -81,7 +82,7 @@ def test_each_explorer_stage_becomes_the_matching_board_job(checkout):
     assert steps["Iota"].skip == "waiting in import pull request #12"
     table = explorer.summary(list(steps.values()))
     assert table.splitlines()[0].split()[:3] == ["Roadmap", "Stage", "Explorer"]
-    assert "PORT-Alpha" in table and "in flight in the explorer" in table and table.endswith("target: 1")
+    assert "RT-Alpha~1a" in table and "in flight in the explorer" in table and table.endswith("target: 1")
 
 
 def test_a_ported_roadmap_is_skipped_and_the_lookup_reads_the_content_repository_once(checkout, tmp_path):
@@ -115,7 +116,7 @@ def test_a_ported_roadmap_is_skipped_and_the_lookup_reads_the_content_repository
 def test_kinds_and_names_filter(checkout):
     assert sorted(plan(checkout, kinds=("design",))) == ["Delta", "Gamma"]
     named = plan(checkout, names=("Alpha", "Nope"))
-    assert named["Alpha"].job.id == "PORT-Alpha" and named["Nope"].skip == "the explorer has nothing for it"
+    assert named["Alpha"].job.id == "RT-Alpha~1a" and named["Nope"].skip == "the explorer has nothing for it"
     rerun = plan(checkout, jobs=[new_job("PORT-Alpha")], names=("Alpha",))
     assert rerun["Alpha"].skip == "already on the board: PORT-Alpha"
 
@@ -156,9 +157,9 @@ def test_the_import_opens_one_pull_request_per_roadmap_and_creates_targets(check
     steps = explorer.import_explorer(ctx, checkout, names=("Alpha", "Eps"), yes=True)
     assert [s.outcome for s in steps] == ["pull request #61", "created #501"]
     [(head, title, body)] = opened
-    assert head == "maintainer:import/explorer-alpha" and "PORT-Alpha" in title
+    assert head == "maintainer:import/explorer-alpha" and "RT-Alpha~1a" in title
     found = explorer.decode_import(body)
-    assert [j.id for j in found["jobs"]] == ["PORT-Alpha"] and len(found["files"]) == 4
+    assert [j.id for j in found["jobs"]] == ["RT-Alpha~1a", "RT-Alpha~1b"] and len(found["files"]) == 4
     assert (tmp_path / "state" / "import" / "board" / "packages" / "Alpha" / "review.json").is_file()
     [(job, state, preamble)] = ctx.board.created
     assert job.id == "TARGET-Eps" and state == "available" and "issues/44" in preamble

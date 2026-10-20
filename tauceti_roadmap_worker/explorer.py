@@ -9,13 +9,15 @@ each roadmap the most advanced stage decides:
 
 | Explorer state                                                  | Board job        | Files under packages/<Name>/ |
 | --------------------------------------------------------------- | ---------------- | ---------------------------- |
-| package accepted by an independent review (`independent-review-`) | PORT-<Name>     | README.md, Suggested.lean, metadata.toml, review.json |
+| package accepted by an independent review (`independent-review-`) | RT-<Name>~1a, ~1b | README.md, Suggested.lean, metadata.toml, review.json |
 | package accepted only by its fixer (`fix-`), or not reviewed yet | REV-PKG-<Name>   | README.md, Suggested.lean, metadata.toml |
 | design accepted by its review, not packaged                      | PKG-<Name>       | design/README.md, design/plan.json |
 | design written, its review not done                              | REV-DESIGN-<Name> | design/README.md, design/plan.json |
 | design queued, not written                                       | TARGET-<Name>    | none |
 
 A fixer's acceptance never counts, so a self-accepted package gets the independent review here.
+An accepted package goes to its red-team rounds, which run on the import pull request itself (kept
+open, as a submitted package's pull request is); the port follows the last round.
 Skipped, and said so: a roadmap already ported (its folder is on the roadmap repository's main,
 active or completed, or an open pull request there adds `<active_dir>/<Name>/README.md`), a roadmap
 with an explorer job in flight (`external`, or claimed on its issue), a review that asks for
@@ -107,6 +109,7 @@ class Step:
     issue: int = 0
     skip: str = ""                   # why nothing is imported
     outcome: str = ""                # what the run did
+    extra: list[Job] = field(default_factory=list)          # more jobs of the same step (red-team passes)
 
 
 def finished(job: dict) -> str:
@@ -124,7 +127,8 @@ def explorer_inputs(ex: Explorer, source: str) -> dict:
     return {"explorer": {"repo": EXPLORER, "job": source, "issue": ex.issue(source)}}
 
 
-def plan_roadmap(ex: Explorer, name: str, packages_dir: str) -> Step | None:
+def plan_roadmap(ex: Explorer, name: str, packages_dir: str,
+                 redteam: tuple[tuple[str, str], ...] = (("codex", ""), ("claude", ""))) -> Step | None:
     """What the import does for one roadmap (None: the explorer has nothing for it). Pure."""
     mine = ex.of(name)
     pkg, dest = ex.bp / "packages" / name, board.package_dir(packages_dir, name)
@@ -138,7 +142,7 @@ def plan_roadmap(ex: Explorer, name: str, packages_dir: str) -> Step | None:
         return Step(name, stage, source=j["id"], issue=ex.issue(j["id"]),
                     skip=f"in flight in the explorer: {j['id']} is {j['state']}")
     if stage == "package":
-        return plan_package(ex, name, pkg, dest, mine)
+        return plan_package(ex, name, pkg, dest, mine, redteam)
     if stage == "design":
         if not (readme.is_file() and packet.is_file()):
             return Step(name, stage, skip="the explorer's design README or plan packet is missing")
@@ -171,7 +175,8 @@ def plan_roadmap(ex: Explorer, name: str, packages_dir: str) -> Step | None:
     return Step(name, stage, job, {}, d["id"], ex.issue(d["id"]))
 
 
-def plan_package(ex: Explorer, name: str, pkg: Path, dest: str, mine: list[dict]) -> Step:
+def plan_package(ex: Explorer, name: str, pkg: Path, dest: str, mine: list[dict],
+                 redteam: tuple[tuple[str, str], ...] = (("codex", ""), ("claude", ""))) -> Step:
     files = {f"{dest}/{f}": pkg / f for f in ("README.md", "Suggested.lean", "metadata.toml") if (pkg / f).is_file()}
     try:
         review = json.loads((pkg / "review.json").read_text(encoding="utf-8")).get("review", {})
@@ -181,9 +186,11 @@ def plan_package(ex: Explorer, name: str, pkg: Path, dest: str, mine: list[dict]
     if status == "accepted" and reviewer.startswith("independent-review-"):
         source = reviewer[len("independent-review-"):]
         files[f"{dest}/review.json"] = pkg / "review.json"
-        job = new_job(make_id("port", name), inputs=explorer_inputs(ex, source),
-                      note=f"Imported from the explorer: the package was accepted by the independent review {source}.")
-        return Step(name, "package", job, files, source, ex.issue(source))
+        passes = [new_job(rt, requires_agent=agent, requires_model=model, inputs=explorer_inputs(ex, source),
+                          note=f"Imported from the explorer: the package was accepted by the independent review {source}; "
+                               "its red-team rounds run here.")
+                  for rt, (agent, model) in zip(board.redteam_passes(name, 1, len(redteam)), redteam, strict=True)]
+        return Step(name, "package", passes[0], files, source, ex.issue(source), extra=passes[1:])
     if status in ("needs_changes", "rejected"):
         return Step(name, "package", source=reviewer, skip=f"the explorer's package review says {status} ({reviewer})")
     if status == "accepted" and reviewer.startswith("fix-"):
@@ -198,14 +205,15 @@ def plan_package(ex: Explorer, name: str, pkg: Path, dest: str, mine: list[dict]
 
 def plan_import(ex: Explorer, packages_dir: str, jobs: list[Job], pending: dict[str, int],
                 kinds: tuple[str, ...] = STAGES, names: tuple[str, ...] = (),
-                ported: dict[str, str] | None = None) -> list[Step]:
+                ported: dict[str, str] | None = None,
+                redteam: tuple[tuple[str, str], ...] = (("codex", ""), ("claude", ""))) -> list[Step]:
     """Every roadmap's step, filtered by stage and name, with what is already done marked as
     skipped. `pending` maps roadmap names to open import pull requests, `ported` to where the roadmap
     repository has them already. Pure."""
     ported = ported or {}
     steps = []
     for name in names or ex.names():
-        step = plan_roadmap(ex, name, packages_dir)
+        step = plan_roadmap(ex, name, packages_dir, redteam)
         if step is None:
             if names:
                 steps.append(Step(name, "-", skip="the explorer has nothing for it"))
@@ -226,7 +234,8 @@ def plan_import(ex: Explorer, packages_dir: str, jobs: list[Job], pending: dict[
 # --- the pull request and its marker ------------------------------------------------------------------
 
 def encode_import(steps: list[Step]) -> str:
-    data = {"source": EXPLORER, "jobs": [s.job.spec() for s in steps], "files": sorted(f for s in steps for f in s.files)}
+    data = {"source": EXPLORER, "jobs": [j.spec() for s in steps for j in [s.job, *s.extra]],
+            "files": sorted(f for s in steps for f in s.files)}
     return f"<!-- {IMPORT_MARK} " + comment_json(data) + " -->"
 
 
@@ -312,7 +321,7 @@ def import_explorer(ctx, root: Path, kinds: tuple[str, ...] = STAGES, names: tup
                     yes: bool = False) -> list[Step]:
     ex = Explorer.read(root)
     steps = plan_import(ex, ctx.cfg.board.packages_dir, ctx.board.all_jobs(), open_imports(ctx), kinds, names,
-                        ported_roadmaps(ctx))
+                        ported_roadmaps(ctx), tuple((p.agent, p.model) for p in ctx.cfg.redteam.passes))
     for step in steps:
         if step.skip:
             step.outcome = "skipped: " + step.skip
@@ -375,7 +384,12 @@ def intake_import(ctx, number: int, pr: dict, found: dict, yes: bool) -> str:
             ctx.gh.write("POST", f"repos/{repo}/issues/{number}/comments",
                          {"body": "Intake: import left for the maintainer, because " + "; ".join(problems) + "."})
         return f"#{number}: import not merged: " + "; ".join(problems)
-    existing = {j.id for j in ctx.board.all_jobs()}
+    all_jobs = ctx.board.all_jobs()
+    if any(j.kind in ("review", "redteam") for j in found["jobs"]):
+        # Reviewed or red-teamed on the import pull request itself, which stays open until then.
+        from .boardpr import open_for_review
+        return open_for_review(ctx, number, pr, found["jobs"], all_jobs, yes)
+    existing = {j.id for j in all_jobs}
     todo = [j for j in found["jobs"] if j.id not in existing]
     if not yes:
         return f"#{number}: would merge the import and create {', '.join(j.id for j in todo) or 'nothing'} (dry run)"

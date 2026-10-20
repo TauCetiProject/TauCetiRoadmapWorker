@@ -73,20 +73,28 @@ def ids(jobs):
     return [j.id for j in jobs]
 
 
-def test_design_to_package_to_port_chain():
+def test_design_to_package_to_red_team_to_port_chain():
     design = new_job("DESIGN-Foo")
     [review] = successors(design, Outcome())
     assert review.id == "REV-DESIGN-Foo" and review.independent_of == ["DESIGN-Foo"]
     assert ids(successors(review, Outcome(verdict="accepted"))) == ["PKG-Foo"]
-    [pkg_review] = successors(new_job("PKG-Foo"), Outcome())
-    assert pkg_review.id == "REV-PKG-Foo"
-    assert ids(successors(pkg_review, Outcome(verdict="accepted"))) == ["PORT-Foo"]
+    [pkg_review] = successors(new_job("PKG-Foo", inputs={"board_pr": 12, "operator": "alice"}), Outcome())
+    assert pkg_review.id == "REV-PKG-Foo" and pkg_review.inputs == {"board_pr": 12, "operator": "alice"}
+    passes = successors(pkg_review, Outcome(verdict="accepted", pr=12, operator="alice"))
+    assert ids(passes) == ["RT-Foo~1a", "RT-Foo~1b"]                 # the red team follows the review
+    assert passes[0].inputs["board_pr"] == 12 and passes[0].independent_of == ["PKG-Foo"]
+    assert ids(successors(pkg_review, Outcome(verdict="accepted"), redteam_rounds=0)) == ["PORT-Foo"]
+    assert successors(new_job("PORT-Foo"), Outcome(pr=905, operator="alice")) == []   # humans review the roadmap PR
 
 
 def test_needs_changes_sends_to_fix_then_fresh_review_until_cap():
     review = new_job("REV-PKG-Foo")
     [fix] = successors(review, Outcome(verdict="needs_changes"), max_rounds=3)
     assert fix.id == "FIX-PKG-Foo~2"
+    on_pr = new_job("REV-PKG-Foo", inputs={"board_pr": 12, "operator": "alice"})
+    [pr_fix] = successors(on_pr, Outcome(verdict="needs_changes"))
+    assert pr_fix.requires_operator == "alice" and pr_fix.inputs == {"review": "REV-PKG-Foo", "board_pr": 12,
+                                                                     "operator": "alice"}
     [review2] = successors(fix, Outcome())
     assert review2.id == "REV-PKG-Foo~2"
     # every author of round 2 is excluded from reviewing it
@@ -105,19 +113,22 @@ def test_target_triage():
     assert successors(target, Outcome(verdict="duplicate")) == []
 
 
-def test_port_and_redteam_rounds():
-    port = new_job("PORT-Foo")
-    passes = successors(port, Outcome(pr=901, operator="alice"), redteam_rounds=2, redteam_agents=("codex", "claude"))
-    assert ids(passes) == ["RT-Foo~1a", "RT-Foo~1b"]
-    assert [p.requires_agent for p in passes] == ["codex", "claude"]
-    assert passes[0].inputs == {"pr": 901, "operator": "alice"}
+def test_red_team_rounds_on_the_board_pull_request_then_the_port():
+    review = new_job("REV-PKG-Foo~2", inputs={"board_pr": 12, "operator": "alice"})
+    passes = successors(review, Outcome(verdict="accepted", pr=12, operator="alice"), redteam_rounds=2,
+                        redteam_agents=("codex", "claude"))
+    assert ids(passes) == ["RT-Foo~1a", "RT-Foo~1b"] and [p.requires_agent for p in passes] == ["codex", "claude"]
+    assert passes[0].independent_of == ["PKG-Foo", "FIX-PKG-Foo~2"]   # every author of the package
     assert successors(passes[0], Outcome(round_complete=False)) == []
     [fix] = successors(passes[1], Outcome(round_complete=True))
     assert fix.id == "FIX-RT-Foo~1" and fix.after == ["RT-Foo~1a", "RT-Foo~1b"]
-    assert fix.requires_operator == "alice"          # only the branch owner can push to the PR
+    assert fix.requires_operator == "alice" and fix.inputs["board_pr"] == 12   # the branch owner pushes to it
     second = successors(fix, Outcome(), redteam_rounds=2)
     assert ids(second) == ["RT-Foo~2a", "RT-Foo~2b"]
-    assert successors(new_job("FIX-RT-Foo~2", inputs={"pr": 901}), Outcome(), redteam_rounds=2) == []
+    assert second[0].independent_of == ["PKG-Foo", "FIX-PKG-Foo~2", "FIX-RT-Foo~1"]
+    assert second[0].inputs["previous"] == ["RT-Foo~1a", "RT-Foo~1b"] and second[0].inputs["repair"] == "FIX-RT-Foo~1"
+    last = successors(second[1], Outcome(round_complete=True), redteam_rounds=2)[0]
+    assert last.id == "FIX-RT-Foo~2" and ids(successors(last, Outcome(), redteam_rounds=2)) == ["PORT-Foo"]
 
 
 # --- specs, titles, submissions -------------------------------------------------------------------

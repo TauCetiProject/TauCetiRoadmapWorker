@@ -21,7 +21,7 @@ import base64
 import datetime as dt
 import json
 
-from . import board, claims, depgraph, explorer, filers, replies
+from . import board, boardpr, claims, depgraph, explorer, filers, replies
 from .board import Job, Outcome
 from .gh import GHError
 from .lanes.base import open_roadmap_prs
@@ -118,6 +118,9 @@ def intake(ctx, number: int, yes: bool = False) -> str:
         if yes:
             ctx.gh.write("POST", f"repos/{repo}/issues/{number}/comments", {"body": note})
         return f"#{number}: not merged: " + "; ".join(problems)
+    if board.artefact_of(job.id) and job.kind != "review":
+        # A design or package is reviewed (and a package red-teamed) on its open pull request.
+        return boardpr.submission_under_review(ctx, number, pr, sub, job, jobs, yes)
     if not yes:
         return f"#{number}: would merge {job.id} (dry run; pass --yes)"
     ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash"})
@@ -152,11 +155,6 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
         notes.append("parked")
     if job.kind == "review" and outcome.verdict == "accepted" and board.parse_job_id(job.id).subject == "DESIGN":
         notes.append(add_to_order(ctx, job.name))
-    if job.kind == "fix" and board.parse_job_id(job.id).subject == "RT" and not new and cfg.redteam.ready_after:
-        pr = job.inputs.get("pr")
-        if pr and not _held(ctx, int(pr)):
-            ctx.gh.cli_write("pr", "ready", str(pr), "-R", cfg.repositories.content)
-            notes.append(f"#{pr} marked ready")
     return "created " + (", ".join(created) if created else "nothing") + (f" ({'; '.join(notes)})" if notes else "")
 
 

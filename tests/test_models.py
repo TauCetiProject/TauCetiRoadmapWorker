@@ -53,13 +53,13 @@ def test_a_worker_pinned_to_another_model_leaves_reviews(monkeypatch):
 
 def test_red_team_passes_carry_their_model_into_the_job():
     cfg = example_config()
-    port = new_job("PORT-Foo")
-    passes = board.successors(port, Outcome(pr=905, operator="alice"), redteam_agents=("codex", "claude"),
-                              redteam_models=tuple(p.model for p in cfg.redteam.passes))
+    review = new_job("REV-PKG-Foo")
+    passes = board.successors(review, Outcome(verdict="accepted", pr=12, operator="alice"),
+                              redteam_agents=("codex", "claude"), redteam_models=tuple(p.model for p in cfg.redteam.passes))
     assert [(j.id, j.requires_agent, j.requires_model) for j in passes] == [
         ("RT-Foo~1a", "codex", "gpt-6-astra"), ("RT-Foo~1b", "claude", "fable")]
     assert decode_spec(encode_spec(passes[1])).requires_model == "fable"
-    fix = new_job("FIX-RT-Foo~1", inputs={"pr": 905, "operator": "alice", "reviews": []})
+    fix = new_job("FIX-RT-Foo~1", inputs={"board_pr": 12, "operator": "alice", "reviews": []})
     nxt = board.successors(fix, Outcome(), redteam_agents=("codex", "claude"), redteam_models=("gpt-6-astra",))
     assert [j.requires_model for j in nxt] == ["gpt-6-astra", ""]
     job = passes[1]

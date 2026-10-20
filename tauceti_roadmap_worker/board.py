@@ -285,12 +285,24 @@ class Outcome:
 
 def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_rounds: int = 2,
                redteam_agents: tuple[str, ...] = ("codex", "claude"), redteam_models: tuple[str, ...] = ()) -> list[Job]:
-    """The jobs a finished job releases. Pure: the intake creates what this returns. Red-team pass
-    jobs name the agent (`requires_agent`) and, when `[redteam] passes` pins one, the model
-    (`requires_model`) of their pass."""
+    """The jobs a finished job releases. Pure: the intake creates what this returns.
+
+    The order is design -> review (-> fix -> review ...) -> package -> review (-> fix -> review ...)
+    -> red-team rounds -> port. The red-team passes and their fixes run on the package's open board
+    pull request (`board_pr`, owned by `operator`), like its reviews; the port follows the last
+    round's fix, and the roadmap pull request then gets human reviews only. Red-team pass jobs name
+    the agent (`requires_agent`) and, when `[redteam] passes` pins one, the model
+    (`requires_model`) of their pass; they are independent of every author of the package."""
     j = parse_job_id(job.id)
-    models = tuple(redteam_models) + ("",) * (len(redteam_agents) - len(redteam_models))
     name = j.name
+    models = tuple(redteam_models) + ("",) * (len(redteam_agents) - len(redteam_models))
+
+    def redteam_round(round_: int, after: list[str], independent_of: list[str], inputs: dict) -> list[Job]:
+        return [new_job(rt, after=after, independent_of=independent_of, requires_agent=agent, requires_model=model,
+                        inputs=dict(inputs))
+                for rt, agent, model in zip(redteam_passes(name, round_, len(redteam_agents)), redteam_agents, models,
+                                            strict=True)]
+
     if job.kind == "target":
         if outcome.verdict in ("design", "part-ii"):
             return [new_job(make_id("design", outcome.name or name), after=[job.id],
@@ -299,39 +311,38 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
     art = artefact_of(job.id)
     if art and j.prefix != "REV":
         review = review_of(job.id)
-        return [new_job(review, after=[job.id], independent_of=authors_of_round(art, name, j.round))]
+        return [new_job(review, after=[job.id], independent_of=authors_of_round(art, name, j.round),
+                        inputs={k: v for k, v in job.inputs.items() if k in ("board_pr", "operator")})]
     if job.kind == "review":
+        if outcome.verdict == "accepted" and j.subject == "DESIGN":
+            return [new_job(make_id("package", name), after=[job.id])]
         if outcome.verdict == "accepted":
-            nxt = make_id("package", name) if j.subject == "DESIGN" else make_id("port", name)
-            return [new_job(nxt, after=[job.id])]
+            if redteam_rounds < 1:
+                return [new_job(make_id("port", name), after=[job.id])]
+            return redteam_round(1, [job.id], authors_of_round("PKG", name, j.round),
+                                 {"board_pr": outcome.pr or job.inputs.get("board_pr"),
+                                  "operator": outcome.operator or job.inputs.get("operator", ""),
+                                  "authors": authors_of_round("PKG", name, j.round)})
         if outcome.verdict == "needs_changes" and j.round < max_rounds:
-            return [new_job(fix_after(job.id), after=[job.id], inputs={"review": job.id})]
+            return [new_job(fix_after(job.id), after=[job.id], requires_operator=job.inputs.get("operator", ""),
+                            inputs={"review": job.id, **{k: v for k, v in job.inputs.items()
+                                                         if k in ("board_pr", "operator")}})]
         return []
-    if job.kind == "port":
-        if not outcome.pr or redteam_rounds < 1:
-            return []
-        return [new_job(rt, after=[job.id], independent_of=[job.id], requires_agent=agent, requires_model=model,
-                        inputs={"pr": outcome.pr, "operator": outcome.operator})
-                for rt, agent, model in zip(redteam_passes(name, 1, len(redteam_agents)), redteam_agents, models,
-                                            strict=True)]
     if job.kind == "redteam":
         if not outcome.round_complete:
             return []
         passes = redteam_passes(name, j.round, len(redteam_agents))
         return [new_job(make_id("fix", name, j.round, "RT"), after=passes,
                         requires_operator=job.inputs.get("operator", ""),
-                        inputs={"pr": job.inputs.get("pr"), "operator": job.inputs.get("operator", ""),
-                                "reviews": passes})]
+                        inputs={"board_pr": job.inputs.get("board_pr"), "operator": job.inputs.get("operator", ""),
+                                "reviews": passes, "authors": job.inputs.get("authors", [])})]
     if job.kind == "fix" and j.subject == "RT":
         if j.round >= redteam_rounds:
-            return []
-        fix_id = job.id
-        return [new_job(rt, after=[fix_id], independent_of=[make_id("port", name), fix_id], requires_agent=agent,
-                        requires_model=model,
-                        inputs={"pr": job.inputs.get("pr"), "operator": job.inputs.get("operator", ""),
-                                "previous": job.inputs.get("reviews", []), "repair": fix_id})
-                for rt, agent, model in zip(redteam_passes(name, j.round + 1, len(redteam_agents)), redteam_agents,
-                                            models, strict=True)]
+            return [new_job(make_id("port", name), after=[job.id])]
+        authors = list(job.inputs.get("authors", []))
+        return redteam_round(j.round + 1, [job.id], authors + [job.id],
+                             {"board_pr": job.inputs.get("board_pr"), "operator": job.inputs.get("operator", ""),
+                              "previous": job.inputs.get("reviews", []), "repair": job.id, "authors": authors})
     return []
 
 
