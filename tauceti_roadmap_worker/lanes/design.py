@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .. import board, depgraph, gates, sources
 from ..board import Job
-from .base import Context, Lane, Workspace, load_order, order_path, sibling_readmes
+from .base import Context, Lane, Workspace, count, load_order, order_path, sibling_readmes
 
 PREREQ = re.compile(r"^(?:mathlib|tauceti):[A-Za-z_][\w.'!?]*$|^roadmap:[A-Z][A-Za-z0-9]*(?:\s.*)?$|^target:[\w.]+$"
                     r"|^gap:[A-Za-z0-9][\w.-]*$")
@@ -89,6 +89,17 @@ def supplier_gaps(plan: dict) -> list[dict]:
             and (g.get("slug") or g.get("id"))]
 
 
+def design_summary(name: str, plan: dict) -> str:
+    """`design of Name: 6 layers, 41 targets, 27 tests, 5 gaps (5 for suppliers)`."""
+    layers = [layer for layer in plan.get("layers", []) if isinstance(layer, dict)]
+    targets = [t for layer in layers for t in layer.get("targets", []) if isinstance(t, dict)]
+    tests = sum(len(t.get("tests") or []) for t in targets)
+    gaps = [g for g in plan.get("gaps", []) if isinstance(g, dict)]
+    owed = len(supplier_gaps(plan))
+    return (f"design of {name}: {count(len(layers), 'layer')}, {count(len(targets), 'target')}, "
+            f"{count(tests, 'test')}, {count(len(gaps), 'gap')}" + (f" ({owed} for suppliers)" if owed else ""))
+
+
 def ledger_path(state: Path) -> Path:
     return state / "design-ledger.jsonl"
 
@@ -149,6 +160,13 @@ class DesignLane(Lane):
         name = board.parse_job_id(target).name if target else job.name
         return {"TARGET_FILE": str(ws.package(ctx.cfg, name) / "target.md"),
                 "ABSORBED": absorbed_text(job, ws.board, ctx.cfg.board.packages_dir)}
+
+    def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        try:
+            plan = json.loads((ws.package(ctx.cfg, job.name) / "design" / "plan.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        return design_summary(job.name, plan) if isinstance(plan, dict) else ""
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)

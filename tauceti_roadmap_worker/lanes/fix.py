@@ -16,9 +16,9 @@ import shutil
 
 from .. import board, gates, gitops, replies
 from ..board import Job
-from .base import (Context, Lane, LaneError, Workspace, board_reports, checkout_board_pr, dropped_names, ensure_in_order,
-                   load_order, open_roadmap_prs, order_path,
-                   scan_problems, sibling_checkouts, sibling_readmes)
+from .base import (Context, Lane, LaneError, Workspace, board_reports, checkout_board_pr, count, dropped_names,
+                   ensure_in_order, load_order, open_roadmap_prs, order_path, scan_problems, sibling_checkouts,
+                   sibling_readmes)
 from .package import elaboration_problems, package_scan
 from .pr import fresh_worktree, pr_branch_worktree
 
@@ -66,6 +66,16 @@ class ArtefactFixLane(Lane):
                 "FILES": "\n".join(f"- `{f}`" for f in self.editable(job, ctx, ws)),
                 "CONTEXT": f"the {what}, round {job.round}, in the board's package folder",
                 "CHECK": "\n".join(check), "COMMIT": "Do not commit: the worker commits your changes after its checks."}
+
+    def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        """`round 2 of the Name design repaired: 4 of 5 findings applied`."""
+        try:
+            rows = replies.parse_findings(ws.report.read_text(encoding="utf-8"))
+        except OSError:
+            rows = []
+        applied = sum(1 for _f, how, _b in rows if how.lower().startswith("applied"))
+        what = "design" if self.art(job) == "DESIGN" else "package"
+        return f"round {job.round} of the {job.name} {what} repaired: {applied} of {count(len(rows), 'finding')} applied"
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)

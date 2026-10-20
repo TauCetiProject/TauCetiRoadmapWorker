@@ -341,6 +341,9 @@ class Lane:
         return [] if ws.report.is_file() else [f"no report at {ws.report}"]
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        """After the checks passed: the lane's last steps, and the one-line summary of what the
+        round did (the round log's `submitted:` line, the commit subject and the submission's
+        description); '' falls back to `<kind> of <Name>`."""
         return ""
 
     def records_author(self, job: Job) -> bool:
@@ -699,12 +702,17 @@ class Lane:
             (ws.job_dir / "problems.txt").write_text("\n".join(problems) + "\n", encoding="utf-8")
             return LaneResult(job.id, "failed", "; ".join(problems[:5]))
         (ws.job_dir / "problems.txt").unlink(missing_ok=True)
-        note = self.finish(job, ctx, ws)
+        note = self.finish(job, ctx, ws) or f"{board.TITLE[job.kind].lower()} of {job.name}"
         try:
-            url = self.submit(job, ctx, ws, note or f"{board.TITLE[job.kind].lower()} of {job.name}")
+            url = self.submit(job, ctx, ws, note)
         except (LaneError, gitops.GitError, GHError) as exc:
             return LaneResult(job.id, "failed", str(exc))
         return LaneResult(job.id, "submitted", note, url)
+
+
+def count(n: int, noun: str) -> str:
+    """`3 targets`, `1 gap`."""
+    return f"{n} {noun}" + ("" if n == 1 else "s")
 
 
 def repair_brief(brief: str, problems: list[str]) -> str:

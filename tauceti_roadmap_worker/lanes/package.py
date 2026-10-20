@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 from .. import gates
 from ..board import Job
-from .base import Context, Lane, Workspace, dropped_names, load_order, order_path, scan_problems, sibling_readmes
+from .base import Context, Lane, Workspace, count, dropped_names, load_order, order_path, scan_problems, sibling_readmes
 from .design import manifest_problems
+from .review import sample_items
 
 PACKAGE_FILES = ("README.md", "Suggested.lean", "metadata.toml", "sources.toml")
 
@@ -34,6 +36,21 @@ def elaboration_problems(ctx: Context, ws: Workspace, lean: Path) -> list[str]:
     return gates.build_problems(ws.content, ctx.cfg.gates.elaborate.format(file=str(lean.resolve())))
 
 
+def package_summary(name: str, pkg: Path, what: str = "package") -> str:
+    """`package of Name: 38 targets, 52 Lean declarations, 9 sources`."""
+    try:
+        readme = (pkg / "README.md").read_text(encoding="utf-8")
+        lean = (pkg / "Suggested.lean").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    try:
+        manifest = tomllib.loads((pkg / "sources.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        manifest = {}
+    return (f"{what} of {name}: {count(len(sample_items(readme)), 'target')}, "
+            f"{count(len(gates.lean_names(lean)), 'Lean declaration')}, {count(len(manifest.get('source', [])), 'source')}")
+
+
 class PackageLane(Lane):
     kind = "package"
     prompt = "package"
@@ -45,3 +62,6 @@ class PackageLane(Lane):
         if not problems:
             problems += elaboration_problems(ctx, ws, pkg / "Suggested.lean")
         return problems
+
+    def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        return package_summary(job.name, ws.package(ctx.cfg, job.name))

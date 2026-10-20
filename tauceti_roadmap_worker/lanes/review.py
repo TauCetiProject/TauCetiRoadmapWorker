@@ -18,7 +18,7 @@ import tomllib
 
 from .. import board, gitops, prreviews, sources
 from ..board import Job
-from .base import Context, Lane, Workspace, checkout_board_pr
+from .base import Context, Lane, Workspace, checkout_board_pr, count
 from .design import manifest_problems
 
 TARGET_HEADING = re.compile(r"^\*\*([A-Z][^*\n]{2,150})\*\*", re.M)
@@ -57,6 +57,18 @@ def verdict_problems(data: dict, job_id: str) -> list[str]:
     return problems
 
 
+def review_summary(what: str, verdict: dict, report: str) -> str:
+    """`review of the Name package, round 2 at abc1234: needs changes, 5 findings (2 P1/P2)`: the
+    findings are the report's `## R01 (P1)` blocks, else the verdict file's blocking count."""
+    findings, _rest = prreviews.report_findings(report)
+    blocking = sum(1 for severity, _t, _b in findings if severity in ("P1", "P2"))
+    if not findings:
+        blocking = int(verdict.get("blocking") or 0)
+    status = str(verdict.get("status") or "?").replace("_", " ")
+    tally = f"{count(len(findings), 'finding')} ({blocking} P1/P2)" if findings else f"{blocking} blocking"
+    return f"{what}: {status}, {tally}"
+
+
 class ReviewLane(Lane):
     kind = "review"
     prompt = "review"
@@ -78,6 +90,16 @@ class ReviewLane(Lane):
             status = "needs_changes"
         return prreviews.render(prreviews.review_head(ctx.agent, ws.extra["head"]), status,
                                 ws.report.read_text(encoding="utf-8"), self.marker(job, ctx, ws))
+
+    def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        try:
+            verdict = json.loads(self.verdict_file(job, ctx, ws).read_text(encoding="utf-8"))["review"]
+            report = ws.report.read_text(encoding="utf-8") if ws.report.is_file() else ""
+        except (OSError, ValueError, KeyError, TypeError):
+            return ""
+        at = f" at {ws.extra['head'][:7]}" if self.board_pr(job) and ws.extra.get("head") else ""
+        what = f"review of the {job.name} {self.subject(job)}, round {job.round}{at}"
+        return review_summary(what, verdict if isinstance(verdict, dict) else {}, report)
 
     def submit_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
         """The review as a comment on the pull request, in the shape the board reads."""
