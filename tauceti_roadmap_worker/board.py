@@ -589,7 +589,7 @@ class Board:
                 current = label_names(self.gh.api(f"repos/{self.repo}/issues/{job.number}/labels")) or []
             except GHError:
                 current = []
-        for label in sorted({*current, *job.labels}):
+        for label in current or job.labels:
             if label.startswith("state:") and label != new:
                 try:
                     self.gh.write("DELETE", f"repos/{self.repo}/issues/{job.number}/labels/{quote(label, safe=':')}")
