@@ -182,6 +182,36 @@ AFTER_ROUND = 20    # seconds between a round that did something and the next
 PARKED_WATCH = 3 * 3600   # idle seconds a parked job is watched for its answer; then the idle poll finds it
 
 
+def release_leftovers(ctx: Context, log=print) -> list[str]:
+    """Leases this worker id still holds from a process that ended without releasing them (killed
+    before it could, or crashed). A worker id runs one process at a time, so at startup they are
+    released and their jobs put back to `state:available`. Returns the jobs released."""
+    if not ctx.claims or ctx.dry_run:
+        return []
+    prefix = f"roadmap/{ctx.cfg.project.name}/job/"
+    try:
+        keys = ctx.claims.live_keys(prefix)
+    except Exception:  # noqa: BLE001 - fail-open, like every lease operation
+        return []
+    mine = [k for k in keys if (ctx.claims.read(k) or {}).get("owner") == ctx.claims.owner]
+    if not mine:
+        return []
+    claimed = {claims.job_key(ctx.cfg.project.name, j.id): j for j in ctx.board.list_jobs(("claimed",))}
+    out = []
+    for key in mine:
+        ctx.claims.release(key)
+        job = claimed.get(key)
+        if job:
+            try:
+                ctx.board.set_state(job, "available", f"Released by worker `{ctx.worker_id}` at its start: its previous "
+                                                      "process ended without releasing the job.")
+            except GHError:
+                pass
+        out.append(job.id if job else key[len(prefix):])
+        log(f"released {out[-1]}: left claimed by this worker's previous process")
+    return out
+
+
 def current_build() -> str:
     from .build import build_id
     return build_id()

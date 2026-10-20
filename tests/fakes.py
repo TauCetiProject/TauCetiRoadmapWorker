@@ -221,12 +221,18 @@ def job_issue(number: int, job_id: str, *states: str, namespace: str = "roadmap-
 
 
 class FakeClaims:
-    """A claims namespace: every acquire succeeds; `live` keys read as live leases of another worker."""
+    """A claims namespace: every acquire succeeds; `live` keys read as live leases of another worker,
+    `leases` as the lease records given."""
 
-    def __init__(self, live: tuple[str, ...] = ()):
+    def __init__(self, live: tuple[str, ...] = (), leases: dict | None = None, owner: str = "alice/w1"):
         self.live = set(live)
+        self.leases = dict(leases or {})
+        self.owner = owner
         self.acquired: list[str] = []
         self.released: list[str] = []
+
+    def live_keys(self, prefix: str) -> list[str]:
+        return sorted(k for k in {*self.live, *self.leases} if k.startswith(prefix))
 
     def acquire(self, key: str, ttl: int = claims.JOB_TTL, extra: dict | None = None) -> int:
         self.acquired.append(key)
@@ -239,6 +245,8 @@ class FakeClaims:
         self.released.append(key)
 
     def read(self, key: str) -> dict | None:
+        if key in self.leases:
+            return self.leases[key]
         return {"owner": "bob/w2", "expires_at": 4_102_444_800} if key in self.live else None
 
     def recorded_authors(self, job_ids: list[str]) -> dict[str, dict]:

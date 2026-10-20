@@ -273,6 +273,24 @@ def sync_states(ctx, shared: claims.Claims | None) -> list[str]:
     return out
 
 
+def sync_expired(ctx, shared: claims.Claims | None) -> list[str]:
+    """Claimed jobs whose lease has expired: the worker stopped renewing it (it was killed, or lost
+    its network) and never released the job, so it goes back to `state:available` now rather than
+    after `stale_hours`. A claim with no lease at all (a worker that could not register one) is
+    left to `board stale`."""
+    if not shared:
+        return []
+    out, now = [], int(dt.datetime.now(dt.UTC).timestamp())
+    for job in ctx.board.list_jobs(("claimed",)):
+        lease = shared.read(claims.job_key(ctx.cfg.project.name, job.id))
+        if lease and not claims.lease_live(lease, now):
+            ended = dt.datetime.fromtimestamp(int(lease.get("expires_at", 0)), dt.UTC)
+            ctx.board.set_state(job, "available", f"Released: the lease of `{lease.get('owner', '?')}` expired at "
+                                                  f"{ended:%Y-%m-%d %H:%MZ} without a release.")
+            out.append(f"{job.id}: released (lease of {lease.get('owner', '?')} expired)")
+    return out
+
+
 def sync_leases(ctx, shared: claims.Claims | None) -> list[str]:
     if not shared:
         return ["leases not mirrored (no readable claims namespace)"]

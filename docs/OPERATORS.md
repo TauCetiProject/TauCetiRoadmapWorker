@@ -270,7 +270,11 @@ Leases use the TauCetiTools format (TauCetiWorker `scripts/claim.sh`): refs
 `refs/tauceti-claims/roadmap/<project>/job/<JOB>` updated with an atomic compare-and-swap push. The
 namespace is `$CLAIM_REPO` if set, else `[repositories] claims` when your account can push there,
 else your own fork (then your workers de-duplicate only among themselves). Leases are cooperative
-and fail-open: a lease that cannot be registered is logged and the round proceeds.
+and fail-open: a lease that cannot be registered is logged and the round proceeds. A worker id
+runs one process at a time: at its start a worker releases any lease its previous process left
+behind (killed before it could release, or crashed) and puts those jobs back to `state:available`;
+and `board sync` puts back every claimed job whose lease has expired (the worker stopped renewing
+it), without waiting for `board stale`.
 
 When a design, package or fix is submitted, the worker also records an author lease
 (`roadmap/<project>/author/<JOB>`, with the operator login, agent and model inside). A review job
@@ -290,7 +294,8 @@ run unless `--yes` is given.
 
 ```bash
 tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; one state label per job;
-                                                   # leases → state:claimed; PR labels;
+                                                   # expired leases released, live ones → state:claimed;
+                                                   # PR labels;
                                                    # GATE jobs when humans await a reply;
                                                    # held PRs back to draft
 tauceti-roadmap --conf $CONF board intake --yes    # merge valid submissions, create successor jobs,

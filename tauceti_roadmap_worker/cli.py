@@ -261,7 +261,7 @@ def _stop(signum, frame):
 def work(args) -> int:
     from .lanes import Context
     from .mergeorder import _order
-    from .worker import work_loop, work_once
+    from .worker import release_leftovers, work_loop, work_once
     cfg = _load(args)
     gh = GH(dry_run=args.dry_run)
     try:
@@ -283,6 +283,7 @@ def work(args) -> int:
     build.snapshot(ctx.wdir, started)
     log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}, "
         f"build {started}")
+    release_leftovers(ctx, log)
     # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
     signal.signal(signal.SIGTERM, _stop)
     if args.loop:
@@ -548,8 +549,8 @@ def board_cmd(args) -> int:
         print(explorer.summary(steps))
         return 0
     if args.action == "sync":
-        for line in (intake.sync_targets(ctx) + intake.sync_states(ctx, shared) + intake.sync_leases(ctx, shared)
-                     + intake.sync_pull_requests(ctx)):
+        for line in (intake.sync_targets(ctx) + intake.sync_states(ctx, shared) + intake.sync_expired(ctx, shared)
+                     + intake.sync_leases(ctx, shared) + intake.sync_pull_requests(ctx)):
             print(line)
         return 0
     for line in intake.stale(ctx, shared, release=args.release):
