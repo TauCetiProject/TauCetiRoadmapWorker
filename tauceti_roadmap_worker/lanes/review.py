@@ -1,0 +1,101 @@
+"""The `review` lane: an independent review of a design or a package, read-only on the artefact.
+
+The reviewer is never the author's operator: `independent_of` lists every job that wrote the
+round under review, and both the lease namespace (before the run) and the intake (on submission)
+refuse a reviewer who did any of them. Source locators are checked on a seeded sample: the seed is
+the job id, so the sample is reproducible and differs between rounds.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import random
+import re
+
+from .. import board, gitops
+from ..board import Job
+from .base import Context, Lane, Workspace
+
+TARGET_HEADING = re.compile(r"^\*\*([A-Z][^*\n]{2,150})\*\*", re.M)
+NOT_TARGETS = ("Checks", "Summary", "Dependencies", "Examples", "Verdict", "Needs", "Merge order")
+SUBSECTION = re.compile(r"^###\s+(\d+\.\d+.*)$", re.M)
+SAMPLE_SIZE = 15
+
+
+def sample_items(readme: str) -> list[str]:
+    """The README's targets (bold target paragraphs, else `### k.n` subsections), in order."""
+    bold = [m.group(1).strip().rstrip(".") for m in TARGET_HEADING.finditer(readme)
+            if not m.group(1).startswith(NOT_TARGETS)]
+    return bold or [m.group(1).strip() for m in SUBSECTION.finditer(readme)]
+
+
+def seeded_sample(items: list[str], k: int, seed: str) -> list[str]:
+    """k items chosen reproducibly from the seed, kept in document order."""
+    if len(items) <= k:
+        return list(items)
+    rng = random.Random(int.from_bytes(hashlib.sha256(seed.encode()).digest()[:8], "big"))
+    picked = set(rng.sample(range(len(items)), k))
+    return [item for i, item in enumerate(items) if i in picked]
+
+
+def verdict_problems(data: dict, job_id: str) -> list[str]:
+    review = data.get("review") if isinstance(data, dict) else None
+    if not isinstance(review, dict):
+        return ["verdict file: no review object"]
+    problems = []
+    if review.get("status") not in ("accepted", "needs_changes", "rejected"):
+        problems.append("verdict file: status must be accepted, needs_changes or rejected")
+    if review.get("reviewer") != f"independent-review-{job_id}":
+        problems.append(f"verdict file: reviewer must be independent-review-{job_id}")
+    if review.get("status") == "accepted" and int(review.get("blocking") or 0) > 0:
+        problems.append("verdict file: accepted with blocking findings")
+    return problems
+
+
+class ReviewLane(Lane):
+    kind = "review"
+    prompt = "review"
+
+    def subject(self, job: Job) -> str:
+        return "design" if board.parse_job_id(job.id).subject == "DESIGN" else "package"
+
+    def files(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        pkg = ws.package(ctx.cfg, job.name)
+        if self.subject(job) == "design":
+            return [str(pkg / "design" / "README.md"), str(pkg / "design" / "plan.json"), str(pkg / "sources.toml")]
+        return [str(pkg / f) for f in ("README.md", "Suggested.lean", "metadata.toml", "sources.toml")]
+
+    def verdict_file(self, job: Job, ctx: Context, ws: Workspace):
+        pkg = ws.package(ctx.cfg, job.name)
+        return pkg / "design" / "review.json" if self.subject(job) == "design" else pkg / "review.json"
+
+    def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
+        pkg = ws.package(ctx.cfg, job.name)
+        readme = pkg / ("design/README.md" if self.subject(job) == "design" else "README.md")
+        items = sample_items(readme.read_text(encoding="utf-8")) if readme.is_file() else []
+        sample = seeded_sample(items, SAMPLE_SIZE, job.id)
+        j = board.parse_job_id(job.id)
+        previous = ""
+        if j.round > 1:
+            prev_id = board.format_job_id(board.JobId("REV", j.name, j.round - 1, j.subject))
+            fix_id = board.format_job_id(board.JobId("FIX", j.name, j.round, j.subject))
+            previous = (f"`{pkg / 'reports' / (prev_id + '.md')}` (its repair report: "
+                        f"`{pkg / 'reports' / (fix_id + '.md')}`)")
+        return {"SUBJECT": self.subject(job), "FILES": "\n".join(f"- `{f}`" for f in self.files(job, ctx, ws)),
+                "SAMPLE": "; ".join(f"“{s}”" for s in sample) or f"a random sample of {SAMPLE_SIZE} targets (none found by heading)",
+                "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)), "PREVIOUS": previous or "none"}
+
+    def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        problems = super().check(job, ctx, ws)
+        vf = self.verdict_file(job, ctx, ws)
+        try:
+            problems += verdict_problems(json.loads(vf.read_text(encoding="utf-8")), job.id)
+        except (OSError, ValueError) as exc:
+            problems.append(f"verdict file: {exc}")
+        if ws.report.is_file() and not ws.report.read_text(encoding="utf-8").startswith(f"# Review of {job.name}"):
+            problems.append("report: first line must be '# Review of <Name> (...)'")
+        touched = [p for p in gitops.changed_files(ws.board) if str(ws.board / p) in self.files(job, ctx, ws)]
+        if touched:
+            problems.append("a review changes none of the reviewed files: " + ", ".join(touched))
+        return problems

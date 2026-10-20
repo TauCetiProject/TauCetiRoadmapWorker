@@ -1,0 +1,340 @@
+"""What every lane shares: the run context, the workspace, the brief, the agent run, the
+`needs-references` hand-off and the submission to the board.
+
+A lane run is: eligible? -> prepare checkouts -> render the brief -> run the agent -> parked on
+missing references? -> mechanical checks -> lane-specific finish (push, open a PR, reply) ->
+submit the report and deliverables to the board as a pull request that names the job.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import re
+import shlex
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .. import agents, board, claims, gates, gitops, prompts, sources
+from ..board import Board, Job
+from ..config import Config
+from ..depgraph import read_order
+from ..gh import GH, GHError
+from ..paths import sanitize_worker_id
+
+PR_MARKER = "tauceti-roadmap-pr"
+
+
+@dataclass
+class Context:
+    cfg: Config
+    gh: GH
+    board: Board
+    claims: claims.Claims | None
+    worker_id: str
+    operator: str
+    agent: str
+    model: str
+    conf: str = ""
+    dry_run: bool = False
+
+    @property
+    def state(self) -> Path:
+        return self.cfg.state_dir()
+
+    @property
+    def wdir(self) -> Path:
+        return self.state / "workers" / sanitize_worker_id(self.worker_id)
+
+    def cli(self, *args: str) -> str:
+        """A command line agents can run to call this harness (gate, depcheck)."""
+        conf = f"--conf {shlex.quote(self.conf)} " if self.conf else ""
+        return f"tauceti-roadmap {conf}" + " ".join(shlex.quote(a) for a in args)
+
+
+@dataclass
+class Workspace:
+    job_dir: Path
+    scratch: Path
+    board: Path
+    content: Path
+    workdir: Path
+    report: Path
+    branch: str
+    extra: dict = field(default_factory=dict)
+
+    def package(self, cfg: Config, name: str) -> Path:
+        return self.board / board.package_dir(cfg.board.packages_dir, name)
+
+
+@dataclass
+class LaneResult:
+    job: str
+    status: str            # submitted | failed | limited | needs-references | skipped | dry-run
+    detail: str = ""
+    url: str = ""
+    retry_at: dt.datetime | None = None
+
+
+class LaneError(Exception):
+    pass
+
+
+# --- shared lookups -------------------------------------------------------------------------------
+
+def open_roadmap_prs(ctx: Context) -> list[dict]:
+    """Open pull requests the port lane opened (label `roadmap.pr_label`, marker in the body):
+    [{pr, name, head, branch, owner}], cached in the state directory for the gate CLI."""
+    repo = ctx.cfg.repositories.content
+    items = ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True)
+    out = []
+    for pr in items:
+        if ctx.cfg.roadmap.pr_label not in {label["name"] for label in pr.get("labels", [])}:
+            continue
+        marker = re.search(r"<!--\s*" + PR_MARKER + r"\s*(\{.*?\})\s*-->", pr.get("body") or "", re.S)
+        try:
+            data = json.loads(marker.group(1)) if marker else {}
+        except ValueError:
+            data = {}
+        if data.get("roadmap"):
+            out.append({"pr": pr["number"], "name": data["roadmap"], "head": pr["head"]["sha"],
+                        "branch": pr["head"]["ref"], "owner": pr["user"]["login"]})
+    (ctx.state / "prs.json").parent.mkdir(parents=True, exist_ok=True)
+    (ctx.state / "prs.json").write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8")
+    return out
+
+
+def cached_prs(state: Path) -> list[dict]:
+    try:
+        return json.loads((state / "prs.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+
+
+def rev_dir(state: Path, pr: int) -> Path:
+    return state / "rev" / str(pr)
+
+
+def sibling_checkouts(ctx: Context, prs: list[dict], skip: str = "") -> list[tuple[int, str, Path]]:
+    out = []
+    for p in prs:
+        if p["name"] == skip:
+            continue
+        dest = rev_dir(ctx.state, p["pr"])
+        try:
+            gitops.checkout_pr(ctx.cfg.repositories.content, dest, p["pr"])
+        except gitops.GitError:
+            continue
+        out.append((p["pr"], p["name"], dest / ctx.cfg.roadmap.active_dir / p["name"]))
+    return out
+
+
+def sibling_readmes(state: Path, active_dir: str, prs: list[dict] | None = None) -> dict[str, str]:
+    out = {}
+    for p in prs if prs is not None else cached_prs(state):
+        path = rev_dir(state, p["pr"]) / active_dir / p["name"] / "README.md"
+        if path.is_file():
+            out[p["name"]] = path.read_text(encoding="utf-8", errors="replace")
+    return out
+
+
+def order_path(cfg: Config, ws_board: Path, ws_content: Path) -> Path:
+    base = {"packages": ws_board, "content": ws_content, "local": cfg.state_dir()}[cfg.roadmap.merge_order_repo]
+    return base / cfg.roadmap.merge_order_file
+
+
+def load_order(path: Path) -> list[str]:
+    try:
+        return read_order(path.read_text(encoding="utf-8"))
+    except OSError:
+        return []
+
+
+def dropped_names(cfg: Config) -> list[str]:
+    if not cfg.gates.dropped_names_file:
+        return []
+    try:
+        return read_order((cfg.state_dir() / cfg.gates.dropped_names_file).read_text(encoding="utf-8"))
+    except OSError:
+        return []
+
+
+def library_description(content: Path) -> str:
+    m, t = content / ".lake" / "packages" / "mathlib" / "Mathlib", content / ".lake" / "packages" / "TauCeti" / "TauCeti"
+    if m.is_dir() and t.is_dir():
+        return f"Mathlib at `{m}` and Tau Ceti at `{t}` (the pins of `{content}/lake-manifest.json`)"
+    return (f"Mathlib and Tau Ceti on GitHub at the commits pinned in `{content}/lake-manifest.json` (search with "
+            "Loogle, LeanSearch, the documentation or GitHub code search, then read the file at the pinned commit)")
+
+
+# --- the lane -------------------------------------------------------------------------------------
+
+class Lane:
+    kind = ""
+    prompt = ""
+
+    # -- hooks --
+    def eligible(self, job: Job, ctx: Context) -> str:
+        """'' when this worker may take the job, else the reason it may not."""
+        if job.requires_agent and job.requires_agent != ctx.agent:
+            return f"needs agent {job.requires_agent}"
+        if job.requires_operator and job.requires_operator.lower() != ctx.operator.lower():
+            return f"needs the branch owner {job.requires_operator}"
+        if job.independent_of and ctx.claims:
+            problem = claims.separation_problem(job.independent_of, ctx.operator,
+                                                ctx.claims.recorded_authors(job.independent_of))
+            if problem:
+                return problem
+        return ""
+
+    def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
+        return {}
+
+    def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        return [] if ws.report.is_file() else [f"no report at {ws.report}"]
+
+    def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        return ""
+
+    def records_author(self, job: Job) -> bool:
+        return bool(board.artefact_of(job.id)) and job.kind != "review"
+
+    # -- shared steps --
+    def prepare(self, job: Job, ctx: Context) -> Workspace:
+        cfg = ctx.cfg
+        job_dir = ctx.wdir / "jobs" / claims.ref_safe(job.id)
+        scratch = job_dir / "scratch"
+        scratch.mkdir(parents=True, exist_ok=True)
+        board_dir, content_dir = ctx.wdir / "board", ctx.wdir / "content"
+        gitops.sync_checkout(cfg.repositories.packages_repo(), board_dir, "main")
+        gitops.sync_checkout(cfg.repositories.content, content_dir, cfg.project.branch)
+        branch = f"{sanitize_worker_id(ctx.worker_id)}/{claims.ref_safe(job.id)}"
+        gitops.git(board_dir, "checkout", "-q", "-B", branch)
+        pkg = board_dir / board.package_dir(cfg.board.packages_dir, job.name)
+        report = pkg / "reports" / f"{job.id}.md"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        return Workspace(job_dir=job_dir, scratch=scratch, board=board_dir, content=content_dir,
+                         workdir=board_dir, report=report, branch=branch)
+
+    def common_values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
+        cfg = ctx.cfg
+        order_file = order_path(cfg, ws.board, ws.content)
+        order = load_order(order_file)
+        prs = ws.extra.get("prs") or cached_prs(ctx.state)
+        sibs = ws.extra.get("siblings") or []
+        earlier = order[:order.index(job.name)] if job.name in order else order
+        dropped = dropped_names(cfg)
+        extra_rules = ""
+        if cfg.prompts.extra_rules_file:
+            path = ws.board / cfg.prompts.extra_rules_file
+            if path.is_file():
+                extra_rules = "## Project rules\n\n" + path.read_text(encoding="utf-8").strip()
+        elaborate = "not available (say so in the report)"
+        if cfg.gates.elaborate and (ws.content / ".lake").is_dir():
+            elaborate = f"`{cfg.gates.elaborate.format(file='<absolute path of Suggested.lean>')}` run from `{ws.content}`"
+        return {
+            "JOB": job.id, "ROADMAP": job.name, "ROUND": str(job.round), "WORKDIR": str(ws.workdir),
+            "SCRATCH": str(ws.scratch), "REPORT": str(ws.report), "CONTENT_REPO": cfg.repositories.content,
+            "CONTENT": str(ws.content), "ACTIVE_DIR": cfg.roadmap.active_dir, "COMPLETED_DIR": cfg.roadmap.completed_dir,
+            "PACKAGES": str(ws.board / cfg.board.packages_dir), "PACKAGE": str(ws.package(cfg, job.name)),
+            "ORDER": str(order_file), "SUPPLIERS": ", ".join(earlier) or "none yet",
+            "DROPPED": ", ".join(dropped) or "none",
+            "DEPCHECK": ctx.cli("gate", "--depcheck", str(ws.extra.get("readme") or ws.package(cfg, job.name) / "README.md"),
+                                "--name", job.name, "--order", str(order_file)),
+            "LIBRARY": library_description(ws.content),
+            "SIBLINGS": "; ".join(f"{name} at `{path}`" for _pr, name, path in sibs) or
+                        ("; ".join(p["name"] for p in prs) or "none"),
+            "MAX_LEAN_LINES": str(cfg.gates.max_lean_lines), "ELABORATE": elaborate, "EXTRA_RULES": extra_rules,
+        }
+
+    def missing_references(self, ws: Workspace) -> list[sources.MissingReference]:
+        path = ws.scratch / "needs-references.toml"
+        if not path.is_file():
+            return []
+        try:
+            return sources.parse_missing(tomllib.loads(path.read_text(encoding="utf-8")))
+        except tomllib.TOMLDecodeError:
+            return []
+
+    def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
+        """Commit the job's own files on the worker's board branch, push it to the operator's fork
+        and open the submission pull request that names the job."""
+        cfg = ctx.cfg
+        allowed = board.allowed_paths(job, cfg.board.packages_dir)
+        changed = gitops.changed_files(ws.board)
+        outside = [p for p in changed if p not in allowed]
+        if outside:
+            raise LaneError("the agent changed files outside the job's deliverables: " + ", ".join(outside[:10]))
+        problems = []
+        for path in changed:
+            text = (ws.board / path).read_text(encoding="utf-8", errors="replace") if (ws.board / path).is_file() else ""
+            problems += board.file_problems(path, text, allowed)
+        if problems:
+            raise LaneError("; ".join(problems))
+        if not changed:
+            raise LaneError("nothing to submit")
+        message = (f"{job.id}: {summary}\n\nAI-assisted: {ctx.agent} ({ctx.model}), worker {ctx.worker_id}.")
+        if ctx.dry_run:
+            return f"[dry-run] would submit {', '.join(changed)}"
+        gitops.commit_paths(ws.board, changed, message, ctx.operator)
+        repo = cfg.repositories.packages_repo()
+        fork = gitops.ensure_fork(ctx.gh, repo, ctx.operator)
+        gitops.push(ws.board, fork, ws.branch)
+        body = (f"Refs #{job.number}\n\n{summary}\n\nAgent: {ctx.agent} ({ctx.model}); operator @{ctx.operator}; "
+                f"worker `{ctx.worker_id}`. Files: " + ", ".join(f"`{p}`" for p in changed) + "\n\n"
+                + board.encode_submission(job.id, ctx.worker_id, ctx.operator, ctx.agent))
+        pr = gitops.open_pull_request(ctx.gh, repo, f"{ctx.operator}:{ws.branch}", "main",
+                                      f"{board.title_for(job)}: submission", body, draft=False)
+        if self.records_author(job) and ctx.claims:
+            ctx.claims.record_author(job.id)
+        try:
+            ctx.board.set_state(job, "submitted")
+        except GHError:
+            pass  # operators without write access on the board: `board sync` mirrors the state
+        return (pr or {}).get("html_url", "")
+
+    def run(self, job: Job, ctx: Context) -> LaneResult:
+        reason = self.eligible(job, ctx)
+        if reason:
+            return LaneResult(job.id, "skipped", reason)
+        ws = self.prepare(job, ctx)
+        values = {**self.common_values(job, ctx, ws), **self.values(job, ctx, ws)}
+        brief = prompts.render(self.prompt, values)
+        (ws.job_dir / "brief.md").write_text(brief, encoding="utf-8")
+        if ctx.dry_run:
+            return LaneResult(job.id, "dry-run", f"brief written to {ws.job_dir / 'brief.md'}")
+        attempt = len(list(ws.job_dir.glob("run-*.out"))) + 1
+        result = agents.run_agent(agents.AgentRun(
+            agent=ctx.agent, model=ctx.model, workdir=ws.workdir, brief=brief,
+            log_out=ws.job_dir / f"run-{attempt}.out", log_err=ws.job_dir / f"run-{attempt}.err",
+            timeout=ctx.cfg.agents.timeout_minutes * 60, sandbox_profile=ctx.cfg.sandbox.profile,
+            proxy_url=ctx.cfg.sandbox.proxy_url, netjail=ctx.cfg.sandbox.netjail,
+            claude_hook=ctx.cfg.sandbox.claude_hook, settings_dir=ctx.wdir / "settings"))
+        if result.limited:
+            return LaneResult(job.id, "limited", "usage limit", retry_at=result.reset_at)
+        if result.exit_code != 0:
+            return LaneResult(job.id, "failed", f"agent exited {result.exit_code}" + (" (timeout)" if result.timed_out else ""))
+        missing = self.missing_references(ws)
+        if missing:
+            ctx.board.comment(job.number, sources.needs_references_comment(job.id, job.name, missing))
+            try:
+                ctx.board.set_state(job, "needs-references")
+            except GHError:
+                pass
+            return LaneResult(job.id, "needs-references", f"{len(missing)} source(s) missing")
+        problems = self.check(job, ctx, ws)
+        if problems:
+            (ws.job_dir / "problems.txt").write_text("\n".join(problems) + "\n", encoding="utf-8")
+            return LaneResult(job.id, "failed", "; ".join(problems[:5]))
+        note = self.finish(job, ctx, ws)
+        try:
+            url = self.submit(job, ctx, ws, note or f"{board.TITLE[job.kind].lower()} of {job.name}")
+        except (LaneError, gitops.GitError, GHError) as exc:
+            return LaneResult(job.id, "failed", str(exc))
+        return LaneResult(job.id, "submitted", note, url)
+
+
+def scan_problems(result: gates.GateResult) -> list[str]:
+    return [f"{k}={v}: " + "; ".join(str(getattr(h, "text", h)) for h in result.details.get(k, [])[:3])
+            for k, v in result.counts.items() if v]

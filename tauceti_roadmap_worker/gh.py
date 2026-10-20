@@ -75,6 +75,14 @@ class GH:
         out = self._run(["api", "-X", method, path, "--input", "-"], stdin=json.dumps(payload or {}))
         return json.loads(out) if out.strip() else None
 
+    def cli_write(self, *args: str) -> str:
+        """A `gh` subcommand that writes (for the few operations REST lacks, such as marking a pull
+        request ready or back to draft); printed instead in dry-run mode."""
+        if self.dry_run:
+            print("[dry-run] gh " + " ".join(args))
+            return ""
+        return self._run(list(args))
+
     def login(self) -> str:
         return self._run(["api", "user", "--jq", ".login"]).strip()
 

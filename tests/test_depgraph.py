@@ -85,3 +85,12 @@ def test_scc_is_iterative():
     chain["N5000"] = {"N0"}
     [comp] = strongly_connected(chain)
     assert len(comp) == 5001
+
+
+def test_insert_into_order_after_last_supplier():
+    from tauceti_roadmap_worker.depgraph import insert_into_order
+    text = "# order\nAlpha\nBeta  # note\nGamma\n"
+    assert insert_into_order(text, "Delta", {"Alpha", "Beta"}) == "# order\nAlpha\nBeta  # note\nDelta\nGamma\n"
+    assert insert_into_order(text, "Delta", set()) == text + "Delta\n"
+    assert insert_into_order(text, "Beta", {"Gamma"}) == text
+    assert read_order(insert_into_order(text, "Delta", {"Gamma", "Alpha"})) == ["Alpha", "Beta", "Gamma", "Delta"]

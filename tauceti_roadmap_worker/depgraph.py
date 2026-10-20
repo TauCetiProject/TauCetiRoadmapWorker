@@ -259,3 +259,18 @@ def dependency_paragraph(name: str, readme: str, open_prs: dict[str, int], order
     return ("Dependencies (cited in the README by roadmap name and section; the Lean imports none of them). "
             f"In open roadmap pull requests of this project: {listed}. Roadmaps on main are cited by name; "
             "everything else named in the README is a consumer, not a prerequisite.")
+
+
+def insert_into_order(text: str, name: str, suppliers: set[str]) -> str:
+    """The merge-order file with `name` inserted right after its last supplier (appended when none of
+    its suppliers is listed). Comments and other lines are kept; an already listed name is left alone."""
+    lines = text.splitlines()
+    names = [line.split("#", 1)[0].strip() for line in lines]
+    if name in names:
+        return text
+    last = max((i for i, n in enumerate(names) if n and n in suppliers), default=None)
+    if last is None:
+        lines.append(name)
+    else:
+        lines.insert(last + 1, name)
+    return "\n".join(lines) + "\n"

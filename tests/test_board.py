@@ -185,3 +185,9 @@ def test_target_form_parsing():
     assert board.camel_name("PrismaticCohomology") == "PrismaticCohomology"
     assert board.camel_name("[Target] prismatic cohomology, part II") == "PrismaticCohomologyPartII"
     assert board.camel_name("") == ""
+
+
+def test_triage_can_rename_the_roadmap():
+    target = new_job("TARGET-PrismaticStuff")
+    [design] = successors(target, Outcome(verdict="part-ii", name="PrismaticCohomologyPartII"))
+    assert design.id == "DESIGN-PrismaticCohomologyPartII"

@@ -223,6 +223,7 @@ class Outcome:
     verdict: str = ""        # review: accepted | needs_changes | rejected; target: design | part-ii | duplicate
     pr: int = 0              # port: the draft pull request
     operator: str = ""       # port: the login that owns the pull request branch
+    name: str = ""           # target: the roadmap name the triage chose (default: the target's)
     round_complete: bool = False  # redteam: every pass of this round is done
 
 
@@ -233,7 +234,8 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
     name = j.name
     if job.kind == "target":
         if outcome.verdict in ("design", "part-ii"):
-            return [new_job(make_id("design", name), after=[job.id], inputs={"target": job.id, **job.inputs})]
+            return [new_job(make_id("design", outcome.name or name), after=[job.id],
+                            inputs={"target": job.id, **job.inputs})]
         return []
     art = artefact_of(job.id)
     if art and j.prefix != "REV":
