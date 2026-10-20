@@ -129,7 +129,7 @@ class FakeBoard:
 
     def create(self, job, state: str = "available", preamble: str = "") -> int:
         self.created.append((job, state, preamble))
-        return 500 + len(self.created)
+        return 500 + len(self.created)       # like GitHub's listing, all_jobs() may not show it yet
 
 
 def comment(cid: int, body: str, association: str = "MEMBER", login: str = "maintainer") -> dict:

@@ -164,6 +164,12 @@ def _sandbox_rows(cfg: config.Config) -> list[tuple[str, str, str]]:
 
 def targets(args) -> int:
     cfg = _load(args)
+    if args.action == "import-intentions":
+        from .intentions import import_intentions
+        ctx = _bot_context(args, cfg, args.dry_run or not args.yes)
+        for line in import_intentions(ctx, yes=args.yes and not args.dry_run, limit=args.limit, number=args.number):
+            print(line)
+        return 0
     gh = GH(dry_run=args.dry_run)
     b = Board(cfg, gh)
     if args.action == "list":
@@ -448,8 +454,11 @@ def parser() -> argparse.ArgumentParser:
 
     sub.add_parser("doctor", help="report the tools, credentials and configuration this host can use")
 
-    t = sub.add_parser("targets", help="list targets, or file one")
-    t.add_argument("action", choices=["list", "file"])
+    t = sub.add_parser("targets", help="list targets, file one, or import the roadmap repository's intentions")
+    t.add_argument("action", choices=["list", "file", "import-intentions"])
+    t.add_argument("--yes", action="store_true", help="import-intentions: create the jobs (default: dry run)")
+    t.add_argument("--limit", type=int, default=10, help="import-intentions: at most this many per run (0: all)")
+    t.add_argument("--number", type=int, default=0, help="import-intentions: only this intention issue")
     t.add_argument("--statement", default="")
     t.add_argument("--why", default="")
     t.add_argument("--sources", default="")

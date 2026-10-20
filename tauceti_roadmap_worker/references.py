@@ -138,9 +138,7 @@ def _template_body() -> str:
 
 
 def _marker(mark: str, data: dict) -> str:
-    # '<' and '>' only occur inside JSON strings, so escaping them keeps the comment closed.
-    payload = json.dumps(data, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
-    return f"<!-- {mark} {payload} -->"
+    return f"<!-- {mark} {board.comment_json(data)} -->"
 
 
 def request_comment(job_id: str, roadmap: str, items: list[MissingReference]) -> str:

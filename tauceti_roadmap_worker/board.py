@@ -173,17 +173,25 @@ def new_job(job_id: str, **kwargs) -> Job:
     return Job(id=format_job_id(j), kind=j.kind, name=j.name, round=j.round, **kwargs)
 
 
+def comment_json(data, **kwargs) -> str:
+    """JSON safe inside an HTML comment: '<' and '>' occur only inside JSON strings, so escaping them
+    there means quoted text (an arrow `-->` in a statement) can never close the comment early."""
+    return json.dumps(data, ensure_ascii=False, **kwargs).replace("<", "\\u003c").replace(">", "\\u003e")
+
+
 def encode_spec(job: Job) -> str:
-    return "<!-- tauceti-roadmap-job\n" + json.dumps(job.spec(), indent=1, ensure_ascii=False) + "\n-->"
+    return "<!-- tauceti-roadmap-job\n" + comment_json(job.spec(), indent=1) + "\n-->"
 
 
 def decode_spec(body: str) -> Job | None:
-    """The job spec embedded in an issue body, or None. Issue text outside the comment is ignored."""
-    m = SPEC_RE.search(body or "")
-    if not m:
+    """The job spec embedded in an issue body, or None. Issue text outside the comment is ignored,
+    and the spec is the last marker: the worker appends it after any quoted text, so a marker inside
+    quoted text can never stand in for it."""
+    found = SPEC_RE.findall(body or "")
+    if not found:
         return None
     try:
-        data = json.loads(m.group(1))
+        data = json.loads(found[-1])
         job = new_job(data["id"])
     except (ValueError, KeyError, JobIdError):
         return None
@@ -407,9 +415,16 @@ def authors_from_comments(comments: list[dict], bot_logins: list[str]) -> set[st
     return found
 
 
-def issue_body(job: Job, packages_repo: str, packages_dir: str) -> str:
+def neutralise(text: str) -> str:
+    """Quoted text for an issue body: it cannot open an HTML comment (and so cannot carry a marker)."""
+    return (text or "").replace("<!--", "&lt;!--").replace("-->", "--&gt;")
+
+
+def issue_body(job: Job, packages_repo: str, packages_dir: str, preamble: str = "") -> str:
     p = package_dir(packages_dir, job.name)
     lines = [f"**Job** `{job.id}` · {TITLE[job.kind]}", ""]
+    if preamble:
+        lines += [neutralise(preamble), ""]
     if job.after:
         lines.append("Follows: " + ", ".join(f"`{a}`" for a in job.after))
     if job.independent_of:
@@ -433,17 +448,22 @@ FORM_FIELDS = {"statement or topic": "statement", "why it matters for the librar
                "suggested name": "name", "licence class of the sources": "licence"}
 
 
-def parse_target_form(body: str) -> dict[str, str]:
-    """Fields of a target issue form (GitHub renders each field as `### <label>` then the answer).
-    The values are untrusted text: they are quoted into briefs as data, never as instructions."""
+def form_fields(body: str) -> dict[str, str]:
+    """Every field of a GitHub issue form (rendered as `### <label>` then the answer), keyed by the
+    lower-cased label; empty answers and HTML comments are dropped. The values are untrusted text."""
     out = {}
     parts = re.split(r"^###\s+(.+?)\s*$", body or "", flags=re.M)
     for label, value in zip(parts[1::2], parts[2::2], strict=True):
-        key = FORM_FIELDS.get(label.strip().lower())
         value = re.sub(r"<!--.*?-->", "", value, flags=re.S).strip()
-        if key and value and value != "_No response_":
-            out[key] = value
+        if value and value != "_No response_":
+            out[label.strip().lower()] = value
     return out
+
+
+def parse_target_form(body: str) -> dict[str, str]:
+    """Fields of a target issue form. The values are untrusted text: they are quoted into briefs as
+    data, never as instructions."""
+    return {FORM_FIELDS[label]: value for label, value in form_fields(body).items() if label in FORM_FIELDS}
 
 
 def camel_name(text: str) -> str:
@@ -500,9 +520,9 @@ class Board:
                 return job
         return None
 
-    def create(self, job: Job, state: str = "available") -> int:
+    def create(self, job: Job, state: str = "available", preamble: str = "") -> int:
         payload = {"title": title_for(job), "body": issue_body(job, self.cfg.repositories.packages_repo(),
-                                                               self.cfg.board.packages_dir),
+                                                               self.cfg.board.packages_dir, preamble),
                    "labels": labels_for(job, state, self.ns)}
         created = self.gh.write("POST", f"repos/{self.repo}/issues", payload)
         return int(created["number"]) if created else 0
