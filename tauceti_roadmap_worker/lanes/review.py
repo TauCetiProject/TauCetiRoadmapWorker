@@ -71,18 +71,20 @@ class ReviewLane(Lane):
             checkout_board_pr(ctx, ws, self.board_pr(job))   # the design or package under review is its head
         return ws
 
-    def submit_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
-        """The review as a comment on the pull request, in the shape the board reads."""
+    def comment_body(self, job: Job, ctx: Context, ws: Workspace) -> str:
         try:
             status = json.loads(self.verdict_file(job, ctx, ws).read_text(encoding="utf-8"))["review"]["status"]
         except (OSError, ValueError, KeyError, TypeError):
             status = "needs_changes"
-        body = prreviews.render(prreviews.review_head(ctx.agent, ws.extra["head"]), status,
+        return prreviews.render(prreviews.review_head(ctx.agent, ws.extra["head"]), status,
                                 ws.report.read_text(encoding="utf-8"), self.marker(job, ctx, ws))
-        url = self.comment_on_board_pr(job, ctx, ws, body)
+
+    def submit_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
+        """The review as a comment on the pull request, in the shape the board reads."""
+        body = self.comment_body(job, ctx, ws)
         if not ctx.dry_run:
             self.after_board_submission(job, ctx)
-        return url
+        return self.comment_on_board_pr(job, ctx, ws, body)
 
     def files(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         pkg = ws.package(ctx.cfg, job.name)
@@ -126,6 +128,8 @@ class ReviewLane(Lane):
             problems.append("a review changes none of the reviewed files: " + ", ".join(touched))
         if manifest in changed:
             problems += manifest_record_problems(ctx, ws, manifest)
+        if self.board_pr(job) and not problems and ws.report.is_file():
+            problems += self.comment_problems(self.comment_body(job, ctx, ws))
         return problems
 
 

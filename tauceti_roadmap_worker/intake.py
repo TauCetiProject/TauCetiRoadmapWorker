@@ -77,6 +77,8 @@ def outcome_for(ctx, job: Job, pr: dict, all_jobs: list[Job]) -> Outcome:
 def intake(ctx, number: int, yes: bool = False) -> str:
     cfg, repo = ctx.cfg, ctx.cfg.repositories.packages_repo()
     pr = ctx.gh.api(f"repos/{repo}/pulls/{number}")
+    if boardpr.NEEDS_REVIEW in {label["name"] for label in pr.get("labels", [])}:
+        return f"#{number}: under review on the board (read by the review scan)"
     sub = board.decode_submission(pr.get("body") or "")
     if not sub:
         found = explorer.decode_import(pr.get("body") or "")

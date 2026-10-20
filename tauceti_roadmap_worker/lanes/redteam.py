@@ -298,19 +298,23 @@ class RedTeamLane(Lane):
         mine = {str(ws.report.relative_to(ws.board))} if ws.report.is_relative_to(ws.board) else set()
         if any(p not in mine for p in gitops.changed_files(ws.workdir)):
             problems.append("the red-team pass changed the read-only checkout")
+        if self.board_pr(job) and not problems and ws.report.is_file():
+            problems += self.comment_problems(self.comment_body(job, ctx, ws))
         return problems
 
-    def submit_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
-        """The pass as a comment on the board pull request, in the shape the board reads."""
+    def comment_body(self, job: Job, ctx: Context, ws: Workspace) -> str:
         j = board.parse_job_id(job.id)
         report = ws.report.read_text(encoding="utf-8")
         verdict = "needs_changes" if prreviews.report_findings(report)[0] else "accepted"
-        body = prreviews.render(prreviews.redteam_head(j.round, j.pass_, ctx.agent, ws.extra["head"]), verdict, report,
+        return prreviews.render(prreviews.redteam_head(j.round, j.pass_, ctx.agent, ws.extra["head"]), verdict, report,
                                 self.marker(job, ctx, ws))
-        url = self.comment_on_board_pr(job, ctx, ws, body)
+
+    def submit_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
+        """The pass as a comment on the board pull request, in the shape the board reads."""
+        body = self.comment_body(job, ctx, ws)
         if not ctx.dry_run:
             self.after_board_submission(job, ctx)
-        return url
+        return self.comment_on_board_pr(job, ctx, ws, body)
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         return f"red-team pass {job.id} on #{ws.extra['pr']} at {ws.extra['head'][:7]}"

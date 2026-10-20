@@ -34,7 +34,8 @@ from .gh import GHError
 
 NEEDS_REVIEW = "needs-review"
 BRIEF_MARK = "tauceti-roadmap-review-brief"
-AUTHOR_NOTE = "Intake: authored by @{login} ({agent}, {model}) in #{pr}."
+AUTHOR_NOTE = "Intake: authored by @{login} ({agent}, {model}) in #{pr}."   # board.AUTHOR_NOTE reads it
+COMMENT_CLAIM_TTL = 4 * 3600   # a `reviewing` comment holds the review this long (a browser review takes hours)
 
 
 def now() -> dt.datetime:
@@ -46,7 +47,15 @@ def repo(ctx) -> str:
 
 
 def jobs_of(pr: int, jobs: list[Job]) -> list[Job]:
+    """The reviews, red-team passes and fixes working on a board pull request."""
     return [j for j in jobs if j.inputs.get("board_pr") == pr]
+
+
+def authors_of(pr: int, sub_job: str, jobs: list[Job]) -> list[Job]:
+    """The design or package a board pull request carries and the fixes pushed to it."""
+    return [j for j in jobs if (j.inputs.get("review_pr") == pr or j.id == sub_job
+                                or (j.kind == "fix" and j.inputs.get("board_pr") == pr))
+            and j.kind in ("design", "package", "fix")]
 
 
 def put_file(ctx, path: str, text: str, message: str) -> None:
@@ -132,22 +141,26 @@ def submission_under_review(ctx, number: int, pr: dict, sub: dict, job: Job, job
         return open_for_review(ctx, number, pr, new, jobs, yes)
     ctx.board.comment(job.number, AUTHOR_NOTE.format(login=login, agent=sub.get("agent") or "?",
                                                      model=sub.get("model") or "?", pr=number))
-    job.inputs["board_pr"] = number
+    job.inputs["review_pr"] = number      # not `board_pr`: a redone design or package opens its own pull request
     ctx.board.update_spec(job)
     return open_for_review(ctx, number, pr, new, jobs, yes)
 
 
 # --- reading the comments ----------------------------------------------------------------------------
 
-def trusted(ctx, login: str, parsed: prreviews.Parsed, job: Job) -> bool:
-    """A listed login, the board's bot, or the worker that claimed this job (its marker names the job
-    and its login wrote the claim note on the job's issue)."""
+def trusted(ctx, login: str, parsed: prreviews.Parsed, job: Job, shared=None) -> bool:
+    """A listed login, the board's bot, or the worker that did this job: its marker names the job,
+    and its login is the one the claims namespace recorded for the job, or the one that labelled
+    the job claimed (adding a label needs write access to the board; a comment anyone can write)."""
     if login in ctx.cfg.review.comment_reviewers or login in ctx.cfg.board.bot_logins:
         return True
     if parsed.worker.get("job") != job.id:
         return False
-    return any((c.get("user") or {}).get("login") == login and (c.get("body") or "").startswith(f"Claimed for `{job.id}`")
-               for c in ctx.board.comments(job.number))
+    if shared:
+        record = shared.recorded_authors([job.id]).get(job.id) or {}
+        if str(record.get("operator", "")).lower() == login.lower():
+            return True
+    return ctx.board.labelled_by(job, "state:claimed").lower() == login.lower()
 
 
 def independent(ctx, login: str, parsed: prreviews.Parsed, job: Job, jobs: list[Job], shared) -> bool:
@@ -171,7 +184,7 @@ def claim(ctx, job: Job, login: str, agent: str, shared) -> str:
     if shared:
         holder = claims.Claims(repo=shared.repo, gitdir=shared.gitdir, owner=f"{login}/comment", operator=login,
                                project=shared.project, dry_run=shared.dry_run)
-        if holder.acquire(claims.job_key(ctx.cfg.project.name, job.id), claims.AUTHOR_TTL,
+        if holder.acquire(claims.job_key(ctx.cfg.project.name, job.id), COMMENT_CLAIM_TTL,
                           extra={"agent": agent or "browser"}) == claims.HELD:
             return ""
     ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by @{login} ({agent or 'browser'}), by a comment on "
@@ -219,19 +232,21 @@ def reviews_for(ctx, job: Job, comments: list[dict], head: str, jobs: list[Job],
             continue
         if job.kind == "redteam" and (parsed.kind != "redteam" or parsed.round != j.round or parsed.pass_ != j.pass_):
             continue
-        if not trusted(ctx, login, parsed, job):
+        if not trusted(ctx, login, parsed, job, shared):
             continue
+        refused = ""
         if not head.startswith(parsed.sha):
+            refused = (f"Not counted: @{login}'s {parsed.kind} is of `{parsed.sha[:7]}`, but the head is `{head[:7]}`. "
+                       "Review the current head.")
+        elif not independent(ctx, login, parsed, job, jobs, shared):
+            refused = (f"Not counted for `{job.id}`: @{login} ({parsed.agent}) is not independent of its authors "
+                       f"(separation by {ctx.cfg.review.separation}).")
+        if refused:
             if cid not in handled:
-                note(ctx, number, f"Not counted: @{login}'s {parsed.kind} is of `{parsed.sha[:7]}`, but the head is "
-                                  f"`{head[:7]}`. Review the current head.")
+                note(ctx, number, refused)
                 handled.add(cid)
-            continue
-        if not independent(ctx, login, parsed, job, jobs, shared):
-            if cid not in handled:
-                note(ctx, number, f"Not counted for `{job.id}`: @{login} ({parsed.agent}) is not independent of its "
-                                  f"authors (separation by {ctx.cfg.review.separation}).")
-                handled.add(cid)
+                if parsed.worker and job.state in ("submitted", "claimed"):
+                    ctx.board.set_state(job, "available", f"Released by the board: {refused}")   # another worker retakes it
             continue
         found.append((c, parsed))
     if handled != set(job.inputs.get("handled", [])):
@@ -252,18 +267,55 @@ def finish_job(ctx, job: Job, text: str) -> None:
     ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}", {"state": "closed"})
 
 
-def merge(ctx, number: int, pr: dict, jobs: list[Job], verdict: dict | None) -> None:
-    """Merge the pull request, write its verdict file, and close the authoring jobs it carried."""
-    ctx.gh.write("PUT", f"repos/{repo(ctx)}/pulls/{number}/merge", {"merge_method": "squash"})
+def merge_problems(ctx, number: int, pr: dict, jobs: list[Job]) -> list[str]:
+    """The intake's checks again, on the head about to be merged (fixes pushed since the submission):
+    only the deliverables of the jobs that wrote it, no source material, local path or bad data,
+    and passing checks."""
+    from .intake import _checks
     sub = board.decode_submission(pr.get("body") or "") or {}
-    authoring = [j for j in jobs if (j.inputs.get("board_pr") == number or j.id == sub.get("job"))
-                 and j.kind in ("design", "package", "fix") and j.state != "done"]
-    for j in authoring:
-        finish_job(ctx, j, f"Intake: merged #{number} from @{pr['user']['login']} ({sub.get('agent') or '?'}, "
-                           f"{sub.get('model') or '?'}).")
+    od = board.order_file(ctx.cfg)
+    allowed = set().union(*(board.allowed_paths(j, ctx.cfg.board.packages_dir, od)
+                            for j in authors_of(number, sub.get("job", ""), jobs)), set())
+    if not allowed:
+        allowed = {f for j in jobs_of(number, jobs) for f in board.allowed_paths(j, ctx.cfg.board.packages_dir, od)}
+    problems = []
+    for f in ctx.gh.api(f"repos/{repo(ctx)}/pulls/{number}/files?per_page=100", paginate=True) or []:
+        if f.get("status") == "removed":
+            problems.append(f"{f['filename']} is deleted")
+            continue
+        text = ctx.gh.raw_file(pr["head"]["repo"]["full_name"], f["filename"], pr["head"]["sha"]) \
+            if f["filename"] in allowed else ""
+        problems += board.file_problems(f["filename"], text, allowed)
+    failed, running = _checks(ctx, repo(ctx), pr["head"]["sha"])
+    if running:
+        problems.append("checks still running")
+    if failed:
+        problems.append("checks failed: " + ", ".join(failed))
+    return problems
+
+
+def merge(ctx, number: int, pr: dict, jobs: list[Job], verdict: dict | None) -> str:
+    """Merge the pull request at the head that was reviewed, after the intake's checks; then write
+    its verdict file and close the jobs that wrote it. Returns '' when merged, else why not (then
+    nothing was closed and the next scan tries again)."""
+    problems = merge_problems(ctx, number, pr, jobs)
+    if problems:
+        note(ctx, number, "Intake: not merged yet, because " + "; ".join(problems) + ".")
+        return "; ".join(problems)
+    try:
+        ctx.gh.write("PUT", f"repos/{repo(ctx)}/pulls/{number}/merge", {"merge_method": "squash", "sha": pr["head"]["sha"]})
+    except GHError as exc:
+        return f"merge failed ({exc})"
+    pr["merged"] = True
+    sub = board.decode_submission(pr.get("body") or "") or {}
+    for j in authors_of(number, sub.get("job", ""), jobs):
+        if j.state != "done":
+            finish_job(ctx, j, f"Intake: merged #{number} from @{pr['user']['login']} ({sub.get('agent') or '?'}, "
+                               f"{sub.get('model') or '?'}).")
     if verdict:
-        path, data = verdict["path"], {"review": verdict["review"]}
-        put_file(ctx, path, json.dumps(data, indent=1) + "\n", f"Board: verdict of #{number}")
+        put_file(ctx, verdict["path"], json.dumps({"review": verdict["review"]}, indent=1) + "\n",
+                 f"Board: verdict of #{number}")
+    return ""
 
 
 def conclude_review(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Job], yes: bool) -> str:
@@ -273,13 +325,18 @@ def conclude_review(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Jo
     if not yes:
         return f"#{number}: {job.id} {verdict} (dry run)"
     pkg = board.package_dir(cfg.board.packages_dir, job.name)
+    j = board.parse_job_id(job.id)
+    if job.kind == "review" and verdict == "accepted" and j.subject == "DESIGN":
+        # Merge first: a merge that fails leaves the review open, and the next scan tries again.
+        why = merge(ctx, number, pr, jobs, {"path": f"{pkg}/design/review.json",
+                                            "review": verdict_record(job, reviews, "accepted")})
+        if why:
+            return f"#{number}: {job.id} accepted, but not merged yet ({why})"
     put_file(ctx, f"{pkg}/reports/{job.id}.md", report_text(reviews), f"Board: {job.id} ({verdict})")
     who = ", ".join(f"@{(c.get('user') or {}).get('login', '?')} ({p.agent})" for c, p in reviews)
     finish_job(ctx, job, f"Intake: {verdict} on #{number} by {who}.")
     outcome = Outcome(verdict=verdict, pr=number, operator=pr["user"]["login"])
-    j = board.parse_job_id(job.id)
     if job.kind == "review" and verdict == "accepted" and j.subject == "DESIGN":
-        merge(ctx, number, pr, jobs, {"path": f"{pkg}/design/review.json", "review": verdict_record(job, reviews, "accepted")})
         from .intake import announce_gaps
         design = next((x for x in jobs if x.id == board.make_id("design", job.name)), None)
         if design:
@@ -319,8 +376,11 @@ def advance_on(ctx, job: Job, outcome: Outcome, jobs: list[Job], number: int, pr
     from .intake import advance
     before = {j.id for j in ctx.board.all_jobs()}
     note_ = advance(ctx, job, outcome, jobs)
-    new = [j for j in ctx.board.all_jobs() if j.id not in before and j.kind in ("review", "redteam")
-           and j.inputs.get("board_pr") == number]
+    created = [j for j in ctx.board.all_jobs() if j.id not in before and j.inputs.get("board_pr") == number]
+    for fix in (j for j in created if j.kind == "fix"):
+        fix.inputs["base_head"] = pr["head"]["sha"]     # the head its push must move
+        ctx.board.update_spec(fix)
+    new = [j for j in created if j.kind in ("review", "redteam")]
     if new and not pr.get("merged"):
         comments = ctx.gh.api(f"repos/{repo(ctx)}/issues/{number}/comments?per_page=100", paginate=True) or []
         last = max((int(c.get("id") or 0) for c in comments), default=0)
@@ -331,11 +391,30 @@ def advance_on(ctx, job: Job, outcome: Outcome, jobs: list[Job], number: int, pr
     return note_
 
 
-def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool) -> str:
-    """A fix the pull request's owner pushed: done, and the next round (or the port) follows."""
+def pusher(comments: list[dict], fix: Job) -> dict:
+    """Who pushed a fix: the login and the marker of its `Fix ... pushed` comment."""
+    for c in reversed(comments):
+        parsed = prreviews.MARK_RE.findall(c.get("body") or "")
+        if parsed and (c.get("body") or "").startswith(f"Fix `{fix.id}` pushed"):
+            try:
+                marker = json.loads(parsed[-1])
+            except ValueError:
+                marker = {}
+            return {"login": (c.get("user") or {}).get("login", ""), **marker}
+    return {}
+
+
+def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool, comments: list[dict]) -> str:
+    """A fix the pull request's owner pushed: recorded as its author, done, and the next round (or,
+    after the last red-team round, the merge and the port) follows. A fix that did not move the
+    head goes back to available."""
     if not yes:
         return f"#{number}: {fix.id} pushed; the next round follows (dry run)"
-    finish_job(ctx, fix, f"Intake: fix pushed to #{number} at `{pr['head']['sha'][:7]}`.")
+    head = pr["head"]["sha"]
+    if fix.inputs.get("base_head") and head == fix.inputs["base_head"]:
+        ctx.board.set_state(fix, "available", f"Released by the board: #{number} is still at `{head[:7]}`; the fix "
+                                              "was not pushed.")
+        return f"#{number}: {fix.id} did not move the head; available again"
     nxt = board.successors(fix, Outcome(), max_rounds=ctx.cfg.board.max_rounds, redteam_rounds=ctx.cfg.redteam.rounds,
                            redteam_agents=tuple(p.agent for p in ctx.cfg.redteam.passes),
                            redteam_models=tuple(p.model for p in ctx.cfg.redteam.passes))
@@ -343,8 +422,17 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool)
         accepted = next((j.inputs.get("accepted_review") for j in jobs if j.kind == "review"
                          and j.inputs.get("board_pr") == number and j.inputs.get("accepted_review")), None)
         pkg = board.package_dir(ctx.cfg.board.packages_dir, fix.name)
-        merge(ctx, number, pr, jobs, {"path": f"{pkg}/review.json", "review": accepted} if accepted else None)
-        existing = {j.id for j in jobs}
+        why = merge(ctx, number, pr, jobs, {"path": f"{pkg}/review.json", "review": accepted} if accepted else None)
+        if why:
+            return f"#{number}: {fix.id} pushed, but not merged yet ({why})"
+    who = pusher(comments, fix)
+    if who.get("login"):
+        ctx.board.comment(fix.number, AUTHOR_NOTE.format(login=who["login"], agent=who.get("agent") or "?",
+                                                         model=who.get("model") or "?", pr=number))
+    if fix.state != "done":
+        finish_job(ctx, fix, f"Intake: fix pushed to #{number} at `{head[:7]}`.")
+    if any(j.kind == "port" for j in nxt):
+        existing = {j.id for j in ctx.board.all_jobs()}
         created = [f"{j.id} (#{ctx.board.create(j)})" for j in nxt if j.id not in existing]
         return f"#{number}: {fix.id} done; merged; created " + (", ".join(created) or "nothing")
     for j in nxt:
@@ -362,13 +450,13 @@ def scan(ctx, shared=None, yes: bool = False) -> list[str]:
         number, head = pr["number"], pr["head"]["sha"]
         mine = [j for j in jobs_of(number, jobs) if j.state != "done"]
         pushed = [j for j in mine if j.kind == "fix" and j.state == "submitted"]
-        if pushed:
-            out += [fix_pushed(ctx, f, number, pr, jobs, yes) for f in pushed]
-            continue
         open_jobs = [j for j in mine if j.kind in ("review", "redteam")]
-        if not open_jobs:
+        if not pushed and not open_jobs:
             continue
         comments = ctx.gh.api(f"repos/{repo(ctx)}/issues/{number}/comments?per_page=100", paginate=True) or []
+        if pushed:
+            out += [fix_pushed(ctx, f, number, pr, jobs, yes, comments) for f in pushed]
+            continue
         for job in sorted(open_jobs, key=lambda j: j.id):
             found = reviews_for(ctx, job, comments, head, jobs, shared, number, out)
             if not found or worker_pending(ctx, job, found, shared):

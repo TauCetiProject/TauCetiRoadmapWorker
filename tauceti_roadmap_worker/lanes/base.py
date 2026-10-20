@@ -22,7 +22,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import agents, board, claims, depgraph, fetcher, gates, gitops, prompts, references, sources
+from .. import agents, board, claims, depgraph, fetcher, gates, gitops, prompts, prreviews, references, sources
 from ..board import Board, Job
 from ..config import Config
 from ..depgraph import read_order
@@ -261,8 +261,12 @@ def checkout_board_pr(ctx: Context, ws: Workspace, number: int) -> None:
     if ctx.gh is not None:
         try:
             pr = ctx.gh.api(f"repos/{ctx.cfg.repositories.packages_repo()}/pulls/{number}") or {}
-        except GHError:
-            pr = {}
+        except GHError as exc:
+            raise LaneError(f"board pull request #{number} cannot be read ({exc})") from exc
+        if not ((pr.get("head") or {}).get("ref") and ((pr.get("head") or {}).get("repo") or {}).get("full_name")):
+            raise LaneError(f"board pull request #{number}: its branch is unknown (deleted fork?)")
+        if pr.get("state") != "open":
+            raise LaneError(f"board pull request #{number} is {pr.get('state') or 'not open'}")
     gitops.git(ws.board, "fetch", "-q", "origin", f"pull/{number}/head")
     gitops.git(ws.board, "checkout", "-q", "--force", "-B", ws.branch, "FETCH_HEAD")
     head = pr.get("head") or {}
@@ -279,8 +283,12 @@ def board_reports(ctx: Context, ws: Workspace, name: str, job_ids: list[str], fo
     for jid in job_ids:
         path = ws.scratch / folder / f"{claims.ref_safe(jid)}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
+        # A fix commits its report on the pull request's branch; reviews and passes are copied to main.
+        local = ws.board / pkg / "reports" / f"{jid}.md"
+        from_branch = jid.startswith("FIX-") and local.is_file()
         try:
-            text = ctx.gh.raw_file(ctx.cfg.repositories.packages_repo(), f"{pkg}/reports/{jid}.md") if ctx.gh else ""
+            text = local.read_text(encoding="utf-8") if from_branch else \
+                (ctx.gh.raw_file(ctx.cfg.repositories.packages_repo(), f"{pkg}/reports/{jid}.md") if ctx.gh else "")
         except GHError:
             text = ""
         path.write_text(text or f"(no report of {jid} on the board yet)\n", encoding="utf-8")
@@ -341,7 +349,9 @@ class Lane:
     @staticmethod
     def board_pr(job: Job) -> int:
         """The board pull request the job works on (reviews, red-team passes and fixes in the
-        comment flow), or 0."""
+        comment flow), or 0. A design or package job itself always opens its own pull request."""
+        if job.kind not in ("review", "redteam", "fix"):
+            return 0
         try:
             return int(job.inputs.get("board_pr") or 0)
         except (TypeError, ValueError):
@@ -593,12 +603,23 @@ class Lane:
         return url
 
     def after_board_submission(self, job: Job, ctx: Context) -> None:
+        """Record who did the job (the board trusts a worker's comment by this record) and mark it
+        submitted; for a review or a pass this comes before its comment, so the board can never
+        conclude the job and then see it flipped back."""
         if ctx.claims:
             ctx.claims.record_author(job.id, ctx.agent, ctx.model)
         try:
             ctx.board.set_state(job, "submitted")
         except GHError:
             pass
+
+    def comment_problems(self, body: str) -> list[str]:
+        """A comment the board would not read (no verdict, or changes asked for without a numbered
+        finding) is caught before it is posted."""
+        if prreviews.parse(body) is None:
+            return [("report: the board cannot read it as a review: give the verdict, and write every finding as "
+                     "`## R01 (P1) — <short title>`")]
+        return []
 
     def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
         """Commit the job's own files on the worker's board branch, push it to the operator's fork

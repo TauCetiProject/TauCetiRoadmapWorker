@@ -338,6 +338,13 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
                         inputs={"board_pr": job.inputs.get("board_pr"), "operator": job.inputs.get("operator", ""),
                                 "reviews": passes, "authors": job.inputs.get("authors", [])})]
     if job.kind == "fix" and j.subject == "RT":
+        if not job.inputs.get("board_pr") and job.inputs.get("pr"):
+            # A red team that began on a roadmap pull request, before the board pull requests.
+            if j.round >= redteam_rounds:
+                return []
+            return redteam_round(j.round + 1, [job.id], [make_id("port", name), job.id],
+                                 {"pr": job.inputs.get("pr"), "operator": job.inputs.get("operator", ""),
+                                  "previous": job.inputs.get("reviews", []), "repair": job.id})
         if j.round >= redteam_rounds:
             return [new_job(make_id("port", name), after=[job.id])]
         authors = list(job.inputs.get("authors", []))
@@ -431,7 +438,10 @@ def allowed_paths(job: Job, packages_dir: str, order_file: str = "") -> set[str]
         return report | manifest | {verdict}
     if job.kind == "fix" and art:
         return report | manifest | (design if art == "DESIGN" else package)
-    # port, redteam, fix-RT and gate change the content repository; on the board only their report.
+    if job.kind == "fix" and job.inputs.get("board_pr"):
+        return report | manifest | package       # a red-team fix repairs the package on its board pull request
+    # port, redteam, gate (and a red-team fix of a roadmap pull request) change the content
+    # repository; on the board only their report.
     return report
 
 
@@ -497,6 +507,8 @@ def decode_submission(body: str) -> dict | None:
 
 
 INTAKE_NOTE = re.compile(r"^Intake: merged #(\d+) from @([A-Za-z0-9-]+)(?: \(([^,)]*)(?:, ([^)]*))?\))?")
+# Written when a design or package goes under review, and for every fix pushed to its pull request.
+AUTHOR_NOTE = re.compile(r"^Intake: authored by @([A-Za-z0-9-]+) \(([^,)]*), ([^)]*)\) in #(\d+)")
 
 
 def authorship_from_comments(comments: list[dict], bot_logins: list[str]) -> list[dict]:
@@ -509,6 +521,9 @@ def authorship_from_comments(comments: list[dict], bot_logins: list[str]) -> lis
         m = INTAKE_NOTE.match(c.get("body") or "")
         if m:
             found.append({"login": m.group(2), "agent": (m.group(3) or "").strip(" ?"), "model": (m.group(4) or "").strip()})
+        a = AUTHOR_NOTE.match(c.get("body") or "")
+        if a:
+            found.append({"login": a.group(1), "agent": a.group(2).strip(" ?"), "model": a.group(3).strip(" ?")})
     return found
 
 
@@ -661,6 +676,19 @@ class Board:
         if comment:
             self.comment(job.number, comment)
         job.state = state
+
+    def labelled_by(self, job: Job, label: str) -> str:
+        """The login that last added `label` to the job's issue (adding labels needs write access to
+        the board), or ''."""
+        try:
+            events = self.gh.api(f"repos/{self.repo}/issues/{job.number}/events?per_page=100", paginate=True)
+        except GHError:
+            return ""
+        who = ""
+        for event in events or []:
+            if event.get("event") == "labeled" and (event.get("label") or {}).get("name") == label:
+                who = (event.get("actor") or {}).get("login", "")
+        return who
 
     def last_state_added(self, job: Job) -> str:
         """Of the state labels the issue carries, the one added last (from its events), or ''."""
