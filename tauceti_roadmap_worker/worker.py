@@ -243,7 +243,9 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
     while True:
         if build:
             installed = current_build()
-            if installed != build:
+            if not installed:
+                log(f"{now():%Y-%m-%dT%H:%MZ} the installed build cannot be read (being replaced?); going on with {build}")
+            elif installed != build:
                 log(f"{now():%Y-%m-%dT%H:%MZ} installed build changed ({build} → {installed}); exiting for restart")
                 return
         try:

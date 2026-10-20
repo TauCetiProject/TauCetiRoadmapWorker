@@ -20,14 +20,19 @@ PACKAGE = Path(__file__).resolve().parent
 
 
 def build_id() -> str:
-    """`<version>+<hash>` of the installed code, briefs and templates."""
-    digest = hashlib.sha256()
-    for root in (PACKAGE, paths.PROMPTS, paths.ISSUE_TEMPLATES):
-        files = sorted(p for p in Path(root).rglob("*") if p.is_file() and "__pycache__" not in p.parts
-                       and p.suffix in (".py", ".md", ".yml", ".yaml", ".json", ".toml", ".txt", ".sh", ".c"))
-        for p in files:
-            digest.update(str(p.relative_to(root)).encode() + b"\0" + p.read_bytes() + b"\0")
-    return f"{__version__}+{digest.hexdigest()[:10]}"
+    """`<version>+<hash>` of the installed code, briefs and templates, or '' when the install cannot
+    be read (it is being replaced, or is gone): unknown, never a different build."""
+    digest, count = hashlib.sha256(), 0
+    try:
+        for root in (PACKAGE, paths.PROMPTS, paths.ISSUE_TEMPLATES):
+            files = sorted(p for p in Path(root).rglob("*") if p.is_file() and "__pycache__" not in p.parts
+                           and p.suffix in (".py", ".md", ".yml", ".yaml", ".json", ".toml", ".txt", ".sh", ".c"))
+            for p in files:
+                digest.update(str(p.relative_to(root)).encode() + b"\0" + p.read_bytes() + b"\0")
+                count += 1
+    except OSError:
+        return ""
+    return f"{__version__}+{digest.hexdigest()[:10]}" if count else ""
 
 
 def snapshot(wdir: Path, build: str | None = None) -> Path:

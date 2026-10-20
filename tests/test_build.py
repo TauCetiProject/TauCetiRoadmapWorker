@@ -66,6 +66,20 @@ class BrokenBrief:
         raise PromptError("brief target: no value for __ABSORBED__")
 
 
+def test_an_unreadable_install_is_unknown_and_the_loop_goes_on(monkeypatch):
+    monkeypatch.setattr(build, "PACKAGE", build.PACKAGE / "no-such-dir")
+    monkeypatch.setattr(paths, "PROMPTS", paths.PROMPTS / "no-such-dir")
+    monkeypatch.setattr(paths, "ISSUE_TEMPLATES", paths.ISSUE_TEMPLATES / "no-such-dir")
+    assert build.build_id() == ""                       # never the hash of nothing
+    builds = iter(["", "0.1.0+aaaa", "0.1.0+bbbb"])
+    monkeypatch.setattr(worker, "current_build", lambda: next(builds))
+    rounds, lines = [], []
+    monkeypatch.setattr(worker, "work_once", lambda *a, **k: rounds.append(1) or worker.LaneResult("", "idle", "x"))
+    worker.work_loop(SimpleNamespace(cfg=example_config(), board=FakeBoard()), None, list, log=lines.append,
+                     sleep=lambda s: None, build="0.1.0+aaaa")
+    assert rounds == [1, 1] and "cannot be read" in lines[0] and lines[-1].endswith("exiting for restart")
+
+
 def test_a_fault_before_the_agent_runs_is_not_counted_and_not_retried(tmp_path, monkeypatch):
     monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
     cfg = example_config()
