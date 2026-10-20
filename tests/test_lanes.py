@@ -22,7 +22,7 @@ def test_lane_registry():
 
 def test_triage_header():
     text = "Verdict: part-ii\nName: FooPartII\nBase: Foo\nOwner: none\n\n## Scope\n"
-    assert parse_triage(text) == {"verdict": "part-ii", "name": "FooPartII", "base": "Foo", "owner": ""}
+    assert parse_triage(text) == {"verdict": "part-ii", "name": "FooPartII", "base": "Foo", "owner": "", "into": ""}
     assert triage_problems(text) == []
     assert triage_problems("Verdict: maybe\n")[0].startswith("target.md: Verdict")
     assert "names its Owner" in triage_problems("Verdict: duplicate\nName: none\n")[0]

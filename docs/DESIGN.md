@@ -60,7 +60,11 @@ Every job is an issue with `kind:` and `state:` labels (`available`, `claimed`, 
 checkout, submits a PR to the board, and the intake advances the state.
 
 1. `target` — filed by a human through an issue template: statement or topic, why it matters
-   for the library, known sources, suggested name. The intake turns it into one `design` job.
+   for the library, known sources, suggested name. The intake turns it into one `design` job,
+   unless the triage finds that it overlaps another open target or design: then it is merged into
+   that job (closed with `merged-into`, its statement and sources added to the survivor's inputs, a
+   target narrower than an open design becoming a note on that design), so that one design serves
+   every target it covers.
    Targets may also arrive as an "intention" on the roadmap repository's board, matching the
    convention TauCetiWorker already reads.
 2. `design` — one agent writes the roadmap plan: layers, targets with locators, supplier

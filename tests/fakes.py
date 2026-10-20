@@ -111,6 +111,7 @@ class FakeBoard:
         self.posted: list[tuple[int, str]] = []
         self.states: list[tuple[str, str]] = []
         self.specs: list[tuple[str, dict]] = []
+        self.labels: list[tuple[str, str]] = []
         self.created: list = []
 
     def comments(self, number: int) -> list[dict]:
@@ -127,6 +128,12 @@ class FakeBoard:
 
     def update_spec(self, job) -> None:
         self.specs.append((job.id, job.spec()))
+
+    def find(self, job_id, jobs=None):
+        return next((j for j in (jobs if jobs is not None else self.jobs) if j.id == job_id), None)
+
+    def add_label(self, job, label: str) -> None:
+        self.labels.append((job.id, label))
 
     def list_jobs(self, states=("available",), kinds=None):
         return [j for j in self.jobs if j.state in states and (not kinds or j.kind in kinds)]

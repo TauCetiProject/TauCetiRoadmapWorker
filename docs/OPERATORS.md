@@ -88,6 +88,17 @@ target ──triage──▶ DESIGN-Name ──▶ REV-DESIGN-Name ─accepted�
                                                      human review on the draft ─▶ GATE-Name~k (branch owner) ─▶ reply
 ```
 
+**Consolidation.** Before a target becomes a design, its triage compares it with every other open
+target and every open design on the board (names, statements, and the triage or design files that
+name their suppliers; the brief lists them). Besides `design`, `part-ii` and `duplicate`, the
+triage may answer `Verdict: merge-into <TARGET-Name or DESIGN-Name>` when the target overlaps that
+job. The intake then closes the target with the `merged-into` label and a link, and adds its
+statement and sources to the surviving job's inputs (`absorbed`); a target that merges into
+another target reaches that target's design brief, which lists every absorbed statement; a target
+merged into an open design (one narrower than the design) is also posted on the design's issue as
+a note for its author. A merge into a job that is not an open target or design is parked for a
+human.
+
 Job ids follow `KIND-NAME~roundN`. Round 1 of a design, package, review or design/package fix has
 no suffix; red-team passes (`RT-Name~1a`), red-team fixes (`FIX-RT-Name~1`) and gate rounds
 (`GATE-Name~1`) always name their round. A review that does not accept sends its artefact to a fix

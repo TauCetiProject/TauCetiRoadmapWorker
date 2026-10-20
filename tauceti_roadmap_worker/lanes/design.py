@@ -112,9 +112,11 @@ class DesignLane(Lane):
         return ws
 
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
+        from .target import absorbed_text
         target = job.inputs.get("target", "")
         name = board.parse_job_id(target).name if target else job.name
-        return {"TARGET_FILE": str(ws.package(ctx.cfg, name) / "target.md")}
+        return {"TARGET_FILE": str(ws.package(ctx.cfg, name) / "target.md"),
+                "ABSORBED": absorbed_text(job, ws.board, ctx.cfg.board.packages_dir)}
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)

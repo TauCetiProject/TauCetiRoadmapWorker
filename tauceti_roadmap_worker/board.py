@@ -274,10 +274,11 @@ def title_for(job: Job) -> str:
 @dataclass
 class Outcome:
     """What a finished job produced, as far as its successors care."""
-    verdict: str = ""        # review: accepted | needs_changes | rejected; target: design | part-ii | duplicate
+    verdict: str = ""        # review: accepted | needs_changes | rejected; target: design | part-ii | duplicate | merge-into
     pr: int = 0              # port: the draft pull request
     operator: str = ""       # port: the login that owns the pull request branch
     name: str = ""           # target: the roadmap name the triage chose (default: the target's)
+    into: str = ""           # target, merge-into: the open target or design job it joins
     round_complete: bool = False  # redteam: every pass of this round is done
 
 
@@ -659,6 +660,11 @@ class Board:
 
     def comment(self, number: int, body: str) -> None:
         self.gh.write("POST", f"repos/{self.repo}/issues/{number}/comments", {"body": body})
+
+    def add_label(self, job: Job, label: str) -> None:
+        self.gh.write("POST", f"repos/{self.repo}/issues/{job.number}/labels", {"labels": [label]})
+        if label not in job.labels:
+            job.labels.append(label)
 
     def comments(self, number: int) -> list[dict]:
         return self.gh.api(f"repos/{self.repo}/issues/{number}/comments?per_page=100", paginate=True)

@@ -28,6 +28,9 @@ class FakeBoard:
     def set_state(self, job, state, comment=""):
         self.calls.append(("state", state))
 
+    def list_jobs(self, states=("available",), kinds=None):
+        return []
+
 
 def fake_git(cwd, *args, check=True, timeout=900):
     if args[:1] == ("rev-parse",):

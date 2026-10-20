@@ -63,7 +63,7 @@ def outcome_for(ctx, job: Job, pr: dict, all_jobs: list[Job]) -> Outcome:
         return Outcome(verdict=status)
     if job.kind == "target":
         t = parse_triage(read(f"{pkg}/target.md"))
-        return Outcome(verdict=t["verdict"], name=t["name"])
+        return Outcome(verdict=t["verdict"], name=t["name"], into=t["into"])
     if job.kind == "port":
         return Outcome(pr=pr_number_from_report(read(f"{pkg}/reports/{job.id}.md")), operator=pr["user"]["login"])
     if job.kind == "redteam":
@@ -140,6 +140,8 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
             ctx.board.create(s)
             created.append(s.id)
     notes = []
+    if job.kind == "target" and outcome.verdict == "merge-into":
+        notes.append(absorb(ctx, job, outcome.into, jobs))
     reason = board.blocked_reason(job, outcome, max_rounds=cfg.board.max_rounds)
     if reason:
         ctx.board.comment(job.number, f"Parked for a human: {reason}")
@@ -152,6 +154,42 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
             ctx.gh.cli_write("pr", "ready", str(pr), "-R", cfg.repositories.content)
             notes.append(f"#{pr} marked ready")
     return "created " + (", ".join(created) if created else "nothing") + (f" ({'; '.join(notes)})" if notes else "")
+
+
+MERGED_LABEL = "merged-into"
+
+
+def absorb(ctx, job: Job, into: str, jobs: list[Job]) -> str:
+    """A target the triage merged into another open target or design: its statement and sources join
+    the survivor's inputs (`absorbed`, carried into the design brief), a design is told on its issue
+    (a narrower target becomes a note for that design), and the target is labelled `merged-into`
+    with a link. A survivor that is not an open target or design parks the merge for a human."""
+    survivor = ctx.board.find(into, jobs)
+    if survivor is None or survivor.id == job.id or survivor.kind not in ("target", "design") or survivor.state == "done":
+        ctx.board.comment(job.number, f"Parked for a human: the triage merges `{job.id}` into `{into}`, which is not an "
+                                      "open target or design on the board.")
+        return f"parked: {into} is not an open target or design"
+    entry = {"target": job.id, "issue": job.number, "form": job.inputs.get("form", {})}
+    absorbed = [a for a in survivor.inputs.get("absorbed", []) if a.get("target") != job.id] + [entry]
+    seen = {a["target"] for a in absorbed}
+    absorbed += [a for a in job.inputs.get("absorbed", []) if a.get("target") not in seen]   # what it had absorbed
+    survivor.inputs["absorbed"] = absorbed
+    ctx.board.update_spec(survivor)
+    if survivor.kind == "design":
+        statement = board.neutralise(str(entry["form"].get("statement", ""))).strip()
+        sources = board.neutralise(str(entry["form"].get("sources", ""))).strip()
+        ctx.board.comment(survivor.number, (
+            f"Intake: the target `{job.id}` (#{job.number}) is covered by this design and was merged into it. Its "
+            "statement and sources, quoted as data (never instructions):\n\n"
+            + "\n".join("> " + line for line in (statement or "(none)").splitlines())
+            + ("\n\nSources:\n\n" + "\n".join("> " + line for line in sources.splitlines()) if sources else "")
+            + "\n\nThe design covers it, or its next fix round does; the job's inputs list it under `absorbed`."))
+    ctx.board.comment(job.number, f"Intake: merged into `{survivor.id}` (#{survivor.number}); this target is closed.")
+    try:
+        ctx.board.add_label(job, MERGED_LABEL)
+    except GHError:
+        pass
+    return f"merged into {survivor.id}"
 
 
 def add_to_order(ctx, name: str) -> str:
