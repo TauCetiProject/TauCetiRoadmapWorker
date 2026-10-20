@@ -11,6 +11,8 @@
     tauceti-roadmap sources fetch <DOI | arXiv id | URL | "Authors, Title, Year"> [--manifest sources.toml] [--id KEY]
     tauceti-roadmap sources cache <sources.toml> | ocr <file.pdf>
     tauceti-roadmap board intake [--pr N] | references | sync | stale [--release]   (board bot / maintainer; --yes to write)
+    tauceti-roadmap board import-explorer --from <explorer checkout> [--kinds package,design,target] [--names A,B] [--yes]
+    tauceti-roadmap targets file-many --from <targets.toml | targets.jsonl> [--yes]
 
 Every GitHub write honours --dry-run. `gate` exits 1 when any gate fails: call it directly, never
 through a pipe that would hide its exit status (use --out to keep a copy of the result).
@@ -28,7 +30,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import __version__, claims, config, depgraph, fetcher, gates, paths, prompts, references, sources
+from . import __version__, claims, config, depgraph, explorer, fetcher, gates, paths, prompts, references, sources
 from .board import KINDS, Board, decode_submission
 from .gh import GH, GHError
 
@@ -452,12 +454,24 @@ def board_cmd(args) -> int:
         if args.action == "intake":
             repo = cfg.repositories.packages_repo()
             numbers = [args.pr] if args.pr else [p["number"] for p in ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True)
-                                                 if decode_submission(p.get("body") or "")]
+                                                 if decode_submission(p.get("body") or "")
+                                                 or explorer.decode_import(p.get("body") or "")]
             for n in numbers:
                 print(intake.intake(ctx, n, yes=write))
         if not args.pr:
             for line in references.resume_all(ctx, ctx.sources_fetcher(), yes=write):
                 print(line)
+        return 0
+    if args.action == "import-explorer":
+        if not args.source:
+            raise SystemExit("board import-explorer needs --from <path to a checkout of the explorer>")
+        kinds = tuple(k.strip() for k in args.kinds.split(",") if k.strip())
+        unknown = [k for k in kinds if k not in explorer.STAGES]
+        if unknown:
+            raise SystemExit(f"--kinds: unknown {', '.join(unknown)} (kinds: {', '.join(explorer.STAGES)})")
+        names = tuple(n.strip() for n in args.names.split(",") if n.strip())
+        steps = explorer.import_explorer(ctx, Path(args.source).expanduser(), kinds or explorer.STAGES, names, yes=write)
+        print(explorer.summary(steps))
         return 0
     if args.action == "sync":
         for line in (intake.sync_targets(ctx) + intake.sync_states(ctx, shared) + intake.sync_leases(ctx, shared)
@@ -539,8 +553,11 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--post", action="store_true", help="post the request on the job and park it")
 
     b = sub.add_parser("board", help="board maintenance for the bot or a maintainer (dry run unless --yes)")
-    b.add_argument("action", choices=["intake", "references", "sync", "stale"])
+    b.add_argument("action", choices=["intake", "references", "sync", "stale", "import-explorer"])
     b.add_argument("--pr", type=int, default=0)
+    b.add_argument("--from", dest="source", default="", help="import-explorer: a checkout of CBirkbeck/tauceti-explorer")
+    b.add_argument("--kinds", default="", help="import-explorer: package,design,target (default: all)")
+    b.add_argument("--names", default="", help="import-explorer: only these roadmaps (comma list)")
     b.add_argument("--yes", action="store_true")
     b.add_argument("--release", action="store_true")
     return ap

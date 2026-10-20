@@ -1,6 +1,7 @@
 """Board maintenance, run by the board's bot or a maintainer with write access (`board ...` commands).
 
-* `intake(pr)`: take in one submission pull request on the packages repository. It is merged only
+* `intake(pr)`: take in one submission pull request on the packages repository (or an explorer
+  import pull request: see explorer.py). It is merged only
   when it names an open job, changes only that job's deliverables, contains no local path, has
   valid JSON/TOML, its checks passed, and (for a job with `independent_of`) its author did none of
   the listed jobs. After the merge the job is done, the board records "Intake: merged #N from
@@ -20,7 +21,7 @@ import base64
 import datetime as dt
 import json
 
-from . import board, claims, depgraph, replies
+from . import board, claims, depgraph, explorer, replies
 from .board import Job, Outcome
 from .gh import GHError
 from .lanes.base import open_roadmap_prs
@@ -78,6 +79,9 @@ def intake(ctx, number: int, yes: bool = False) -> str:
     pr = ctx.gh.api(f"repos/{repo}/pulls/{number}")
     sub = board.decode_submission(pr.get("body") or "")
     if not sub:
+        found = explorer.decode_import(pr.get("body") or "")
+        if found:
+            return explorer.intake_import(ctx, number, pr, found, yes)
         return f"#{number}: not a submission (no marker); left for the maintainer"
     jobs = ctx.board.all_jobs()
     job = ctx.board.find(sub["job"], jobs)

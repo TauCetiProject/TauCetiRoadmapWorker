@@ -192,9 +192,16 @@ def decode_spec(body: str) -> Job | None:
     if not found:
         return None
     try:
-        data = json.loads(found[-1])
+        return job_from_spec(json.loads(found[-1]))
+    except ValueError:
+        return None
+
+
+def job_from_spec(data) -> Job | None:
+    """The job a spec dict describes, or None when it does not name a valid job id."""
+    try:
         job = new_job(data["id"])
-    except (ValueError, KeyError, JobIdError):
+    except (TypeError, KeyError, JobIdError):
         return None
     for key in ("after", "independent_of", "inputs", "requires_agent", "requires_operator", "note"):
         if key in data:

@@ -261,6 +261,7 @@ tauceti-roadmap --conf $CONF board references --yes   # only the needs-reference
 tauceti-roadmap --conf $CONF board stale --release --yes   # release lapsed claims and closed submissions
 tauceti-roadmap --conf $CONF merge-order           # refresh the chain paragraph on open roadmap PRs
 tauceti-roadmap --conf $CONF targets import-intentions --yes   # intentions → TARGET jobs (10 per run)
+tauceti-roadmap --conf $CONF board import-explorer --from ~/tauceti-explorer --yes   # see below
 ```
 
 The intake merges a submission only when it names an open job, changes only that job's deliverables
@@ -276,6 +277,34 @@ For every job parked in `state:needs-references`, the intake reads the humans' a
 latest request (source, local, waive; see [SOURCES.md](SOURCES.md)), records them in the roadmap's
 `sources.toml` on the packages repository, and makes the job available again once every key is
 answered. Its notes carry a progress marker, so running it every few minutes repeats nothing.
+
+### Importing from the explorer
+
+`board import-explorer --from <checkout of CBirkbeck/tauceti-explorer> [--kinds package,design,target]
+[--names A,B] [--yes]` carries the explorer's roadmap work onto this board, once per roadmap, and
+prints a table of what it did (a dry run without `--yes`). It reads `research/blueprint/queue.json`
+(job states), `issues.json` (explorer issue numbers), `packages/<Name>/` (with its `review.json`),
+`readmes/<Name>.md`, `packets/<Name>.json` and the design reviews in `reviews/`. Per roadmap:
+
+| Explorer state | Board job | Files carried to `packages/<Name>/` |
+| --- | --- | --- |
+| package accepted by an independent review (reviewer `independent-review-...`) | `PORT-<Name>` | README.md, Suggested.lean, metadata.toml, review.json |
+| package accepted only by its fixer (reviewer `fix-...`), or not reviewed yet | `REV-PKG-<Name>` | README.md, Suggested.lean, metadata.toml |
+| design accepted by its review, not packaged | `PKG-<Name>` | design/README.md (the design), design/plan.json (the packet) |
+| design written, its review not done | `REV-DESIGN-<Name>` | design/README.md, design/plan.json |
+| design queued, not written (`--kinds target`) | `TARGET-<Name>` | none |
+
+A fixer's acceptance never counts: such a package gets its independent review here. Skipped, with
+the reason in the table: a roadmap with an explorer job `external` or claimed (in flight), a review
+that asks for changes or has no readable verdict, a roadmap the board already has a job for, and one
+waiting in an open import pull request. Every job records the explorer job and issue it rests on
+(`inputs.explorer`), so reruns import nothing twice.
+
+Files never reach the board by a direct push: each roadmap gets one pull request from your fork,
+after the submission gates have passed on its files, with a marker naming the job. `board intake`
+merges an import pull request only from an owner, member or collaborator, only with the marker's
+files under the named roadmaps' folders and passing checks, and only then creates the job. A
+TARGET job carries no files and is created at once.
 
 `targets import-intentions` turns open issues of the content repository that carry every label of
 `[board] intention_labels` into TARGET jobs, oldest first, at most `--limit` (default 10) per run,
