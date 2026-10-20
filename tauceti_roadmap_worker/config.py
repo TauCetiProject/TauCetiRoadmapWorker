@@ -151,6 +151,7 @@ class Replies:
     review_markers: list[str] = field(default_factory=lambda: [
         "ChatGPT", "GPT-", "Astra", "\U0001f916", ":robot:", "AI-assisted", "Deep re-review", "Deep review"])
     approvers: list[str] = field(default_factory=list)
+    ignore_logins: list[str] = field(default_factory=lambda: ["github-actions[bot]"])
     awaiting_author: str = "awaiting-author"
     awaiting_review: str = "awaiting-review"
     housekeeping_prefixes: list[str] = field(default_factory=lambda: [

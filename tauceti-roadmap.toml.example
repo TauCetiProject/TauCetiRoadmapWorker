@@ -165,6 +165,8 @@ claude_hook = true
 review_markers = ["ChatGPT", "GPT-", "Astra", "🤖", ":robot:", "AI-assisted", "Deep re-review", "Deep review"]
 # Logins whose APPROVED review at the current head clears both labels (the human merger).
 approvers = []
+# Logins whose comments never count as reviews (bots posting build reports and the like).
+ignore_logins = ["github-actions[bot]"]
 # Label names on the content repository.
 awaiting_author = "awaiting-author"
 awaiting_review = "awaiting-review"
