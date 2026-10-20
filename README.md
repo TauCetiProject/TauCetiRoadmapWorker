@@ -146,7 +146,7 @@ available again once every key is answered.
 A target names a statement or topic, why it matters for the library, the sources you know and a
 suggested name. File it with the "Target" issue template on the job board,
 [TauCetiProject/TauCetiRoadmapJobs](https://github.com/TauCetiProject/TauCetiRoadmapJobs/issues/new/choose),
-or from the command line:
+or from the command line. For now, targets are filed by members of the TauCetiProject `humans` team.
 
 ```bash
 tauceti-roadmap --conf $CONF targets file --statement "..." --why "..." --name PrismaticCohomology

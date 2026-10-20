@@ -21,7 +21,7 @@ import base64
 import datetime as dt
 import json
 
-from . import board, claims, depgraph, explorer, replies
+from . import board, claims, depgraph, explorer, filers, replies
 from .board import Job, Outcome
 from .gh import GHError
 from .lanes.base import open_roadmap_prs
@@ -240,6 +240,17 @@ def sync_targets(ctx) -> list[str]:
         # Synced issues carry a state label (only the board sets one); an unsynced form is human text,
         # so any marker typed into it is neutralised before the board appends the real spec.
         if issue.get("pull_request") or any(label["name"].startswith("state:") for label in issue.get("labels", [])):
+            continue
+        author = (issue.get("user") or {}).get("login", "")
+        ok, note = filers.allowed(ctx, author)
+        if ok is None:
+            out.append(f"#{issue['number']}: may @{author} file targets? Unknown ({note}); left as it is")
+            continue
+        if not ok:
+            ctx.gh.write("POST", f"repos/{repo}/issues/{issue['number']}/comments", {"body": note})
+            ctx.gh.write("POST", f"repos/{repo}/issues/{issue['number']}/labels", {"labels": [filers.LABEL]})
+            ctx.gh.write("PATCH", f"repos/{repo}/issues/{issue['number']}", {"state": "closed"})
+            out.append(f"#{issue['number']}: closed, @{author} may not file targets")
             continue
         form = board.parse_target_form(issue.get("body") or "")
         name = board.camel_name(form.get("name") or issue.get("title", ""))

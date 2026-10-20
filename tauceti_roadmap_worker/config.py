@@ -65,6 +65,8 @@ class Board:
     intentions: bool = True
     # `targets import-intentions` imports open issues of the content repository carrying all of these.
     intention_labels: list[str] = field(default_factory=lambda: ["intention"])
+    # Who may file targets: logins, or teams as "team:<org>/<slug>". Empty: anyone.
+    target_filers: list[str] = field(default_factory=list)
 
 
 @dataclass

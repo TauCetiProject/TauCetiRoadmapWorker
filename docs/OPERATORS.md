@@ -408,7 +408,13 @@ alternative for operators who already use it.
 
 ## What a human does when
 
-* **A target**: use the issue template on the board (or `targets file`). `board sync` turns it into a
+* **A target**: use the issue template on the board (or `targets file`). For now only the logins and
+  teams of `[board] target_filers` file targets (here the members of the TauCetiProject `humans`
+  team, and `roed-math`): `board sync` closes a target issue from anyone else with one comment and
+  the `not-a-filer` label, and `targets file` refuses. Team members are read through the API and
+  kept for an hour in the state directory; a token that cannot read the organisation (the board
+  workflow's) uses the last list it read, then `board/filers.json` in the board repository, which
+  every run that can read the team keeps current; with no list at all nothing is closed. `board sync` turns it into a
   `TARGET-Name` job; the triage decides new roadmap, Part II, duplicate, or a merge into another
   open target or design. Many targets at once: `targets file-many --from targets.toml --yes` (a
   TOML file of `[[target]]` tables or a JSON Lines file, with `statement`, `why` and optionally

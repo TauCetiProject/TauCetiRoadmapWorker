@@ -51,6 +51,9 @@ intentions = true
 # Narrow it (for example ["intention", "roadmap-target"]) when intentions mostly claim Lean work on
 # existing roadmaps rather than ask for new ones.
 intention_labels = ["intention"]
+# Who may file targets: logins, or teams as "team:<org>/<slug>" (empty: anyone). `board sync` closes a
+# target issue from anyone else with one comment and the `not-a-filer` label; `targets file` refuses.
+target_filers = ["team:TauCetiProject/humans", "roed-math"]
 
 [roadmap]
 # Active roadmap folders in the content repository, and where completed ones live.

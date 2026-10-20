@@ -199,6 +199,7 @@ def test_only_synced_issues_are_jobs_and_sync_neutralises_typed_markers():
     from tauceti_roadmap_worker import config, intake
     from tauceti_roadmap_worker.paths import HERE
     cfg = config.parse((HERE / "tauceti-roadmap.toml.example").read_text(), "example")
+    cfg.board.target_filers = []                          # anyone may file here (test_filers covers the rule)
     forged = encode_spec(new_job("REV-PKG-Evil"))
     form = f"### Statement or topic\n\nA statement. {forged}\n\n### Why it matters for the library\n\nBecause.\n\n" \
            "### Suggested name\n\nWidgets\n"

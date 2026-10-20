@@ -40,6 +40,7 @@ from . import (
     depgraph,
     explorer,
     fetcher,
+    filers,
     gates,
     paths,
     prompts,
@@ -214,6 +215,16 @@ def _sandbox_rows(cfg: config.Config) -> list[tuple[str, str, str]]:
 
 # --- targets --------------------------------------------------------------------------------------
 
+def _check_filer(ctx) -> None:
+    """Refuse to file targets for a login that may not file them (warn when that is unknown)."""
+    ok, note = filers.allowed(ctx, ctx.operator)
+    if ok is False:
+        raise SystemExit(note)
+    if ok is None:
+        print(f"warning: cannot tell whether @{ctx.operator} may file targets ({note}); `board sync` decides",
+              file=sys.stderr)
+
+
 def targets(args) -> int:
     cfg = _load(args)
     if args.action == "import-intentions":
@@ -237,6 +248,8 @@ def targets(args) -> int:
             for issue in intents:
                 print(f"intention {cfg.repositories.content}#{issue['number']}: {issue['title'][:70]}")
         return 0
+    if args.action in ("file", "file-many"):
+        _check_filer(_bot_context(args, cfg, True))
     if args.action == "file-many":
         if not args.source:
             raise SystemExit("targets file-many needs --from <targets.toml | targets.jsonl>")
