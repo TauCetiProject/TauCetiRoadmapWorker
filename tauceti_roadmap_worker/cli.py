@@ -443,7 +443,8 @@ def board_cmd(args) -> int:
                 print(line)
         return 0
     if args.action == "sync":
-        for line in intake.sync_targets(ctx) + intake.sync_leases(ctx, shared) + intake.sync_pull_requests(ctx):
+        for line in (intake.sync_targets(ctx) + intake.sync_states(ctx, shared) + intake.sync_leases(ctx, shared)
+                     + intake.sync_pull_requests(ctx)):
             print(line)
         return 0
     for line in intake.stale(ctx, shared, release=args.release):

@@ -1,13 +1,16 @@
-"""Test doubles shared by the sources, references and intentions tests: canned HTTP responses, a
-minimal PDF writer, and a GitHub/board pair that records every write."""
+"""Test doubles shared by the sources, references, intentions, board and worker tests: canned HTTP
+responses, a minimal PDF writer, a GitHub/board pair that records every write, the board's job
+issues with their labels, and a claims namespace."""
 
 from __future__ import annotations
 
 import base64
+import copy
 import json
 from types import SimpleNamespace
+from urllib.parse import parse_qs, unquote, urlsplit
 
-from tauceti_roadmap_worker import config
+from tauceti_roadmap_worker import board, claims, config
 from tauceti_roadmap_worker.fetcher import Client, FetchError, Fetcher, Response
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.paths import HERE
@@ -130,6 +133,90 @@ class FakeBoard:
     def create(self, job, state: str = "available", preamble: str = "") -> int:
         self.created.append((job, state, preamble))
         return 500 + len(self.created)       # like GitHub's listing, all_jobs() may not show it yet
+
+
+class FakeIssuesGH:
+    """GitHub REST for the board's job issues: listings filtered by labels and state, label adds
+    (answered with the issue's labels, as GitHub does), label removals (an error for a label the
+    issue lacks, or for every removal while `fail_removals` is set) and comments."""
+
+    def __init__(self, issues: list[dict]):
+        self.issues = {i["number"]: {"state": "open", **i} for i in issues}
+        self.writes: list[tuple[str, str, dict]] = []
+        self.comments: dict[int, list[str]] = {}
+        self.fail_removals = False
+        self.dry_run = False
+
+    def labels(self, number: int) -> list[str]:
+        return [label["name"] for label in self.issues[number]["labels"]]
+
+    def states(self, number: int) -> list[str]:
+        return board.state_labels(self.labels(number))
+
+    def api(self, path: str, paginate: bool = False):
+        url = urlsplit(path)
+        parts, query = url.path.split("/"), parse_qs(url.query)
+        if parts[3:] == ["issues"]:
+            want = set((query.get("labels") or [""])[0].split(",")) - {""}
+            state = (query.get("state") or ["open"])[0]
+            return [copy.deepcopy(i) for n, i in self.issues.items()
+                    if want <= set(self.labels(n)) and state in ("all", i["state"])]
+        if len(parts) == 6 and parts[3] == "issues" and parts[5] == "labels":
+            return copy.deepcopy(self.issues[int(parts[4])]["labels"])
+        raise GHError(f"GET {path}: not faked")
+
+    def write(self, method: str, path: str, payload: dict | None = None):
+        self.writes.append((method, path, payload or {}))
+        parts = path.split("/")
+        number = int(parts[4])
+        if parts[5] == "labels" and method == "POST":
+            for name in payload["labels"]:
+                if name not in self.labels(number):
+                    self.issues[number]["labels"].append({"name": name})
+            return copy.deepcopy(self.issues[number]["labels"])
+        if parts[5] == "labels" and method == "DELETE":
+            name = unquote(parts[6])
+            if self.fail_removals or name not in self.labels(number):
+                raise GHError(f"DELETE {path}: 404")
+            self.issues[number]["labels"] = [x for x in self.issues[number]["labels"] if x["name"] != name]
+            return copy.deepcopy(self.issues[number]["labels"])
+        if parts[5] == "comments":
+            self.comments.setdefault(number, []).append(payload["body"])
+            return {"id": len(self.writes)}
+        raise GHError(f"{method} {path}: not faked")
+
+
+def job_issue(number: int, job_id: str, *states: str, namespace: str = "roadmap-job") -> dict:
+    """A board issue carrying the job `job_id` with the given state labels."""
+    job = board.new_job(job_id)
+    labels = [namespace, f"kind:{job.kind}"] + [f"state:{s}" for s in states]
+    return {"number": number, "title": board.title_for(job), "body": board.encode_spec(job),
+            "labels": [{"name": label} for label in labels]}
+
+
+class FakeClaims:
+    """A claims namespace: every acquire succeeds; `live` keys read as live leases of another worker."""
+
+    def __init__(self, live: tuple[str, ...] = ()):
+        self.live = set(live)
+        self.acquired: list[str] = []
+        self.released: list[str] = []
+
+    def acquire(self, key: str, ttl: int = claims.JOB_TTL, extra: dict | None = None) -> int:
+        self.acquired.append(key)
+        return claims.ACQUIRED
+
+    def renew(self, key: str, ttl: int = claims.JOB_TTL) -> int:
+        return claims.ACQUIRED
+
+    def release(self, key: str) -> None:
+        self.released.append(key)
+
+    def read(self, key: str) -> dict | None:
+        return {"owner": "bob/w2", "expires_at": 4_102_444_800} if key in self.live else None
+
+    def recorded_authors(self, job_ids: list[str]) -> dict[str, str]:
+        return {}
 
 
 def comment(cid: int, body: str, association: str = "MEMBER", login: str = "maintainer") -> dict:

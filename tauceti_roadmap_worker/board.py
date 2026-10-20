@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field
+from urllib.parse import quote
 
 from .gh import GH, GHError
 
@@ -205,9 +206,40 @@ def labels_for(job: Job, state: str, namespace: str) -> list[str]:
     return [namespace, f"kind:{job.kind}", f"state:{state}"]
 
 
+def state_labels(labels: list[str]) -> list[str]:
+    """The states an issue's labels name (normally exactly one)."""
+    return [label.split(":", 1)[1] for label in labels if label.startswith("state:")]
+
+
 def state_from_labels(labels: list[str]) -> str:
-    states = [label.split(":", 1)[1] for label in labels if label.startswith("state:")]
+    states = state_labels(labels)
     return states[0] if len(states) == 1 and states[0] in STATES else ("blocked" if states else "")
+
+
+# A state that holds a job beyond its claim, in the order one wins over another: the board's own
+# (done, blocked), then a worker's end of round (needs-references, submitted).
+HOLDING = ("done", "blocked", "needs-references", "submitted")
+
+
+def repaired_state(states: list[str], lease_live: bool | None) -> str:
+    """The one state kept on an issue that carries several (a label removal failed, or two writers
+    raced). A holding state wins: whoever set it ended a round, and the board's own commands move
+    the job on from there (intake, `board references`, `board stale`). Between `claimed` and
+    `available` the lease decides: a live lease means a worker holds the job, none means nobody does.
+    With no lease information (`None`) a `claimed` label stands."""
+    for state in HOLDING:
+        if state in states:
+            return state
+    if lease_live is None:
+        return "claimed" if "claimed" in states else "available"
+    return "claimed" if lease_live else "available"
+
+
+def label_names(data) -> list[str] | None:
+    """Label names from a GitHub label list (what adding labels returns, or a label listing)."""
+    if isinstance(data, list) and all(isinstance(x, dict) and "name" in x for x in data):
+        return [x["name"] for x in data]
+    return None
 
 
 def title_for(job: Job) -> str:
@@ -532,21 +564,38 @@ class Board:
         return int(created["number"]) if created else 0
 
     def set_state(self, job: Job, state: str, comment: str = "") -> None:
-        """Add the new state label first, then remove the others, so a failure in between never leaves
-        a job without a state (and out of every listing)."""
+        """Make `state:<state>` the issue's only state label, whatever it carried before. The new
+        label goes on first, so a failure part-way never leaves a job without a state (and out of
+        every listing). Then every other `state:` label is removed: those on the issue now, as the
+        add reports them (or a fresh read), not only those of the job's listing, which may be stale
+        (another worker, `board sync` or a human may have added one since). A removal that fails
+        leaves two labels, which `board sync` repairs."""
         if state not in STATES:
             raise ValueError(state)
-        self.gh.write("POST", f"repos/{self.repo}/issues/{job.number}/labels", {"labels": [f"state:{state}"]})
-        for label in job.labels:
-            if label.startswith("state:") and label != f"state:{state}":
+        new = f"state:{state}"
+        current = label_names(self.gh.write("POST", f"repos/{self.repo}/issues/{job.number}/labels",
+                                            {"labels": [new]}))
+        if current is None:
+            try:
+                current = label_names(self.gh.api(f"repos/{self.repo}/issues/{job.number}/labels")) or []
+            except GHError:
+                current = []
+        for label in sorted({*current, *job.labels}):
+            if label.startswith("state:") and label != new:
                 try:
-                    self.gh.write("DELETE", f"repos/{self.repo}/issues/{job.number}/labels/{label}")
+                    self.gh.write("DELETE", f"repos/{self.repo}/issues/{job.number}/labels/{quote(label, safe=':')}")
                 except GHError:
                     pass
-        job.labels = [label for label in job.labels if not label.startswith("state:")] + [f"state:{state}"]
+        job.labels = [label for label in (current or job.labels) if not label.startswith("state:")] + [new]
         if comment:
             self.comment(job.number, comment)
         job.state = state
+
+    def state_conflicts(self) -> list[Job]:
+        """Open job issues that carry more than one `state:` label."""
+        issues = self.gh.api(f"repos/{self.repo}/issues?labels={self.ns}&state=open&per_page=100", paginate=True)
+        jobs = (self._job_from_issue(i) for i in issues if not i.get("pull_request"))
+        return [job for job in jobs if job and len(state_labels(job.labels)) > 1]
 
     def comment(self, number: int, body: str) -> None:
         self.gh.write("POST", f"repos/{self.repo}/issues/{number}/comments", {"body": body})

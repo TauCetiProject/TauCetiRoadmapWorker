@@ -6,7 +6,8 @@
   the listed jobs. After the merge the job is done, the board records "Intake: merged #N from
   @login" (the authorship record the separation check reads), and the job's successors are created.
   Port of the explorer's intake.py merge path.
-* `sync()`: target issues become TARGET jobs; live leases are mirrored as `state:claimed`;
+* `sync()`: target issues become TARGET jobs; an issue carrying several `state:` labels keeps one
+  (the board's invariant: exactly one); live leases are mirrored as `state:claimed`;
   roadmap pull requests get their awaiting-author / awaiting-review labels, and a GATE job is
   created for the branch owner when humans are waiting for a reply; held pull requests stay drafts.
 * `stale(release)`: claims whose lease lapsed and whose issue shows nothing for `stale_hours`, and
@@ -207,6 +208,22 @@ def sync_targets(ctx) -> list[str]:
         job.number, job.labels = issue["number"], [label["name"] for label in issue.get("labels", [])]
         ctx.board.set_state(job, "available")
         out.append(f"#{issue['number']}: {job.id} available")
+    return out
+
+
+def sync_states(ctx, shared: claims.Claims | None) -> list[str]:
+    """The board's invariant: every open job issue carries exactly one `state:` label. An issue that
+    carries several keeps the one `board.repaired_state` picks, the lease deciding between claimed
+    and available (with no readable claims namespace a `claimed` label stands)."""
+    out, now = [], int(dt.datetime.now(dt.UTC).timestamp())
+    for job in ctx.board.state_conflicts():
+        states = board.state_labels(job.labels)
+        live = claims.lease_live(shared.read(claims.job_key(ctx.cfg.project.name, job.id)), now) if shared else None
+        keep = board.repaired_state(states, live)
+        why = "no lease information" if live is None else ("a live lease" if live else "no live lease")
+        ctx.board.set_state(job, keep, "Board: this job carried " + ", ".join(f"`state:{s}`" for s in states)
+                            + f"; it keeps `state:{keep}` ({why}).")
+        out.append(f"{job.id}: {' + '.join(states)} -> {keep} ({why})")
     return out
 
 

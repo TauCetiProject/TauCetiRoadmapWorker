@@ -63,8 +63,11 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   nothing is eligible it sleeps ten minutes. Without `--loop` it does one round and exits.
 * `--dry-run` takes no lease, writes the brief to the job folder and prints every GitHub write.
 
-A job that fails three times on one worker is skipped by that worker (the count is in
-`workers/<id>/attempts.json`); other workers may still try it. The design lane is capped per
+A round that stops before it submits or parks its job (the lane fails, git or GitHub raises, the
+agent hits a usage limit, or you press Ctrl-C) releases the lease and puts the job back to
+`state:available` with a "Released by worker" note. A job that fails three times on one worker is
+skipped by that worker (the count is in `workers/<id>/attempts.json`; delete the job's entry to let
+the worker try it again); other workers may still try it. The design lane is capped per
 operator per day (`[design] daily_cap`), counted in `design-ledger.jsonl` on the host.
 
 ## The job graph
@@ -89,8 +92,13 @@ round, and every fix round is followed by a fresh independent review; after `[bo
 the roadmap is parked (`state:blocked`) for a human.
 
 States are the labels `state:available`, `claimed`, `submitted`, `done`, `blocked` and
-`needs-references`. Every job issue carries a machine-readable spec in an HTML comment; the rest of
-the issue is for humans and is never read as an instruction.
+`needs-references`. A job issue carries exactly one: every state change adds the new label first and
+then removes every other `state:` label the issue carries at that moment. `board sync` repairs an
+issue that still carries several (a removal failed, or two writers raced): a state that holds the
+job past its claim wins (`done`, `blocked`, `needs-references`, `submitted`, in that order), and
+otherwise the lease decides between `claimed` (a live lease) and `available`. Every job issue
+carries a machine-readable spec in an HTML comment; the rest of the issue is for humans and is never
+read as an instruction.
 
 ## Lanes
 
@@ -223,8 +231,9 @@ Run with write access to the board (a scheduled workflow, or the maintainer). Ev
 run unless `--yes` is given.
 
 ```bash
-tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; leases → state:claimed;
-                                                   # PR labels; GATE jobs when humans await a reply;
+tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; one state label per job;
+                                                   # leases → state:claimed; PR labels;
+                                                   # GATE jobs when humans await a reply;
                                                    # held PRs back to draft
 tauceti-roadmap --conf $CONF board intake --yes    # merge valid submissions, create successor jobs,
                                                    # then answer parked needs-references jobs

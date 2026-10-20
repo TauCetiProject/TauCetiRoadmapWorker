@@ -3,7 +3,8 @@
 Order: KIND_PRIORITY (humans waiting on a pull request first, then work in flight, then new work),
 then the roadmap's rank in the merge order (bottom-up), then the oldest issue. A lease is renewed
 by a heartbeat while the agent runs, so a long run is not mistaken for a dead one; it is released
-when the round ends, whatever the outcome (a submitted job is then held by its pull request).
+when the round ends, whatever the outcome (a submitted job is then held by its pull request, a
+parked one by its request). A round that stops before either puts the job back to `state:available`.
 """
 
 from __future__ import annotations
@@ -20,9 +21,7 @@ from pathlib import Path
 from . import claims
 from .board import KIND_PRIORITY, Job
 from .gh import GHError
-from .gitops import GitError
-from .prompts import PromptError
-from .lanes import Context, LaneError, LaneResult, lane_for
+from .lanes import Context, LaneResult, lane_for
 
 HEARTBEAT = 300
 MAX_ATTEMPTS = 3
@@ -115,7 +114,15 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
     return LaneResult("", "idle", "no eligible job")
 
 
+# Outcomes after which the job goes back to `state:available`: the lane stopped before it submitted
+# or parked the job (a submission holds it as `submitted`, a request as `needs-references`).
+RELEASED = ("failed", "limited", "skipped", "interrupted")
+
+
 def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
+    """Claim, run the lane, and end the round in one place: the lease is always released, and every
+    way a lane can stop before it submits (a failure it reports, an exception from git, GitHub or
+    anything else, a usage limit, an interrupt) goes through `release`."""
     if not ctx.dry_run:
         try:
             ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by worker `{ctx.worker_id}` "
@@ -123,23 +130,35 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
         except GHError:
             pass  # no write access to the board: the lease is the claim; `board sync` mirrors it
     log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
+    interrupt = None
     try:
         with Heartbeat(ctx, key):
             result = lane.run(job, ctx)
-    except (LaneError, OSError, GitError, GHError, PromptError) as exc:
+    except Exception as exc:  # noqa: BLE001 - git, GitHub, the lane's own errors or a bug: all release the job
         result = LaneResult(job.id, "failed", f"{type(exc).__name__}: {exc}")
+    except BaseException as exc:  # noqa: BLE001 - Ctrl-C or SystemExit: release the job, then stop
+        interrupt, result = exc, LaneResult(job.id, "interrupted", type(exc).__name__)
     finally:
         if ctx.claims and not ctx.dry_run:
             ctx.claims.release(key)
-    if result.status == "failed" and not ctx.dry_run:
-        record_failure(ctx, job.id)
-    if result.status in ("failed", "limited", "skipped") and not ctx.dry_run:
-        try:
-            ctx.board.set_state(job, "available", f"Released by worker `{ctx.worker_id}`: {result.status}"
-                                                  f" ({result.detail[:300]}).")
-        except GHError:
-            pass
+    release(ctx, job, result)
+    if interrupt is not None:
+        raise interrupt
     return result
+
+
+def release(ctx: Context, job: Job, result: LaneResult) -> None:
+    """End a round that did not submit or park the job: count a failure, and put the job back to
+    `state:available` (the only state label it keeps)."""
+    if ctx.dry_run or result.status not in RELEASED:
+        return
+    if result.status == "failed":
+        record_failure(ctx, job.id)
+    try:
+        ctx.board.set_state(job, "available", f"Released by worker `{ctx.worker_id}`: {result.status}"
+                                              f" ({result.detail[:300]}).")
+    except GHError:
+        pass  # no write access to the board: `board stale --release` frees the claim later
 
 
 def work_loop(ctx: Context, only, order_fn, idle_sleep: int = 600, log=print) -> None:
