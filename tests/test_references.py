@@ -278,18 +278,145 @@ def test_a_release_that_failed_is_retried(tmp_path):
     assert calls == ["available"] and board.states == [("DESIGN-Foo", "available")]
 
 
-def test_network_trouble_in_an_answer_is_retried(tmp_path):
+# --- a `source:` answer that could not be fetched: retries, then the request raised again ---------
+
+MATHNET = "https://www.mathnet.ru/php/getFT.phtml?jrnid=tm&paperid=2280&what=fullt&option_lang=eng"
+
+
+def clock(monkeypatch, start="2026-10-21T14:20:00Z"):
+    """A settable clock for the intake; returns `advance(minutes)`."""
+    import datetime as dt
+    state = {"now": dt.datetime.strptime(start, references.STAMP).replace(tzinfo=dt.timezone.utc)}
+    monkeypatch.setattr(references, "_now", lambda: state["now"])
+
+    def advance(minutes: int) -> None:
+        state["now"] += dt.timedelta(minutes=minutes)
+    return advance
+
+
+def flaky_board():
     from .fakes import transient
-    feed = "https://export.arxiv.org/api/query?id_list=2101.00001&max_results=1"
-    board = FakeBoard({7: [comment(1, request_comment("DESIGN-Foo", "Foo", items()[:1]), "CONTRIBUTOR"),
-                           comment(2, "source: Ket67 arXiv:2101.00001")]})
-    ctx = bot_context(board=board)
-    flaky = make_fetcher(tmp_path, FakeTransport({feed: transient(feed)}))
-    assert resume_job(ctx, parked_job(), flaky, yes=True) == "DESIGN-Foo: recorded nothing; still missing Ket67"
-    assert "tried again on the next run" in board.posted[-1][1]
-    back = make_fetcher(tmp_path, FakeTransport().add(feed, arxiv_feed([{"id": "2101.00001v1", "title": "T"}]))
-                        .add("https://arxiv.org/pdf/2101.00001v1", PDF))
-    assert resume_job(ctx, parked_job(), back, yes=True) == "DESIGN-Foo: references resolved; available again"
+    board = FakeBoard({7: [comment(1, request_comment("DESIGN-Foo", "Foo", items()), "CONTRIBUTOR"),
+                           comment(2, f"waive: BLR90\nsource: Ket67 {MATHNET}")]})
+    return board, FakeTransport({MATHNET: transient(MATHNET)})
+
+
+def test_network_trouble_in_an_answer_is_retried_later_with_one_note(tmp_path, monkeypatch):
+    advance = clock(monkeypatch)
+    board, down = flaky_board()
+    job, ctx, fet = parked_job(), bot_context(board=board), make_fetcher(tmp_path, down)
+    assert resume_job(ctx, job, fet, yes=True) == "DESIGN-Foo: recorded BLR90; still missing Ket67"
+    [(_, note)] = board.posted
+    assert "- `BLR90`: waived" in note and "could not be fetched" in note and "tried again up to 3 times" in note
+    assert "at least 10 minutes apart" in note and "`source: Ket67 <DOI, arXiv id or URL>`, `local: Ket67 <file name>` or `waive: Ket67`" in note
+    assert job.inputs[references.RETRIES] == {"Ket67": {"comment": 2, "failed": 1, "at": "2026-10-21T14:20:00Z"}}
+    assert board.specs[-1][1]["inputs"][references.RETRIES]["Ket67"]["failed"] == 1
+    # The next runs, before the retry is due, post nothing and fetch nothing.
+    for _ in range(3):
+        line = resume_job(ctx, job, fet, yes=True)
+        assert line == ("DESIGN-Foo: waiting for an answer on Ket67; the source named for `Ket67` at 2026-10-21T14:30:00Z "
+                        "(attempt 2 of 4) is tried again")
+    assert len(board.posted) == 1 and len(down.requests) == 1
+    # Due: tried again, no note on the issue; the spacing doubles.
+    advance(10)
+    line = resume_job(ctx, job, fet, yes=True)
+    assert line == ("DESIGN-Foo: the source named for `Ket67` (attempt 2 of 4, next at 2026-10-21T14:50:00Z) could not "
+                    "be fetched again; still missing Ket67")
+    assert len(board.posted) == 1 and len(down.requests) == 2
+    assert job.inputs[references.RETRIES]["Ket67"] == {"comment": 2, "failed": 2, "at": "2026-10-21T14:30:00Z"}
+    advance(10)
+    assert "waiting for an answer" in resume_job(ctx, job, fet, yes=True) and len(down.requests) == 2
+    # The host comes back: the retry succeeds and releases the job.
+    advance(10)
+    back = make_fetcher(tmp_path / "b", FakeTransport().add(MATHNET, PDF))
+    assert resume_job(ctx, job, back, yes=True) == "DESIGN-Foo: references resolved; available again"
+    assert len(board.posted) == 2 and "fetched from" in board.posted[-1][1]
+    assert references.RETRIES not in job.inputs and board.states == [("DESIGN-Foo", "available")]
+
+
+def test_exhausted_retries_raise_the_request_again(tmp_path, monkeypatch):
+    advance = clock(monkeypatch)
+    board, down = flaky_board()
+    job, ctx, fet = parked_job(), bot_context(board=board), make_fetcher(tmp_path, down)
+    resume_job(ctx, job, fet, yes=True)
+    for wait in (10, 20):                                  # attempts 2 and 3: silent
+        advance(wait)
+        assert "could not be fetched again" in resume_job(ctx, job, fet, yes=True)
+    assert len(board.posted) == 1 and len(down.requests) == 3
+    advance(40)                                            # attempt 4, the last: the request is raised again
+    line = resume_job(ctx, job, fet, yes=True)
+    assert line == ("DESIGN-Foo: recorded nothing; the request is raised again for Ket67 (the source named for Ket67 "
+                    "could not be fetched)")
+    assert len(board.posted) == 2 and len(down.requests) == 4
+    again = board.posted[-1][1]
+    assert "given up after 4 attempts" in again and "the answer for `Ket67` is forgotten" in again
+    assert "| `Ket67` | R. Kettle | Theorem A und Theorem B | 1967 |" in again and "BLR90" not in again.split("forgotten")[1]
+    request = decode_request(again)
+    assert request["again"] and [m.key for m in request["items"]] == ["Ket67"]
+    assert references.RETRIES not in job.inputs and board.states == []
+    # The old answer is behind the new request: nothing more happens until a human answers again.
+    advance(60)
+    for _ in range(2):
+        assert resume_job(ctx, job, fet, yes=True) == "DESIGN-Foo: waiting for an answer on Ket67"
+    assert len(board.posted) == 2 and len(down.requests) == 4
+    board.threads[7].append(comment(9, "waive: Ket67"))
+    assert resume_job(ctx, job, fet, yes=True) == "DESIGN-Foo: references resolved; available again"
+    # The request raised again is the same request to the worker's cap, not a further one.
+    trusted, bots = ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"], ["board-bot"]
+    assert references.request_count(board.threads[7], "DESIGN-Foo", trusted, bots) == 1
+
+
+def test_a_failure_that_is_not_network_trouble_raises_the_request_at_once(tmp_path, monkeypatch):
+    clock(monkeypatch)
+    board = FakeBoard({7: [comment(1, request_comment("DESIGN-Foo", "Foo", items()), "CONTRIBUTOR"),
+                           comment(2, f"source: Ket67 {MATHNET}")]})
+    gone = FakeTransport().add(MATHNET, b"not found", 404)
+    job, ctx, fet = parked_job(), bot_context(board=board), make_fetcher(tmp_path, gone)
+    line = resume_job(ctx, job, fet, yes=True)
+    assert line == ("DESIGN-Foo: recorded nothing; the request is raised again for Ket67, BLR90 (the source named for "
+                    "Ket67 could not be fetched)")
+    [(_, again)] = board.posted
+    assert "not found (HTTP 404) (not tried again)" in again and decode_request(again)["again"]
+    assert [m.key for m in decode_request(again)["items"]] == ["Ket67", "BLR90"]
+    assert references.RETRIES not in job.inputs and board.specs == []
+    assert resume_job(ctx, job, fet, yes=True) == "DESIGN-Foo: waiting for an answer on Ket67, BLR90"
+    assert len(board.posted) == 1 and len(gone.requests) == 1
+
+
+def test_a_new_answer_replaces_a_pending_retry(tmp_path, monkeypatch):
+    advance = clock(monkeypatch)
+    board, down = flaky_board()
+    job, ctx, fet = parked_job(), bot_context(board=board), make_fetcher(tmp_path, down)
+    resume_job(ctx, job, fet, yes=True)
+    advance(10)
+    resume_job(ctx, job, fet, yes=True)
+    assert job.inputs[references.RETRIES]["Ket67"]["failed"] == 2
+    board.threads[7].append(comment(3, "local: Ket67 Kettle1967.pdf"))
+    assert resume_job(ctx, job, fet, yes=True) == "DESIGN-Foo: references resolved; available again"
+    assert len(down.requests) == 2 and references.RETRIES not in job.inputs
+    assert job.inputs["local_sources"] == [{"key": "Ket67", "name": "Kettle1967.pdf", "sha256": ""}]
+    # A new `source:` starts the count again, from a fresh first failure.
+    board2, down2 = flaky_board()
+    job2, ctx2, fet2 = parked_job(), bot_context(board=board2), make_fetcher(tmp_path / "b", down2)
+    resume_job(ctx2, job2, fet2, yes=True)
+    advance(10)
+    resume_job(ctx2, job2, fet2, yes=True)
+    board2.threads[7].append(comment(3, f"source: Ket67 {MATHNET}"))
+    assert resume_job(ctx2, job2, fet2, yes=True) == "DESIGN-Foo: recorded nothing; still missing Ket67"
+    assert job2.inputs[references.RETRIES]["Ket67"] == {"comment": 3, "failed": 1, "at": "2026-10-21T14:40:00Z"}
+    assert len(board2.posted) == 2 and "tried again up to 3 times" in board2.posted[-1][1]
+
+
+def test_a_dry_run_of_a_retry_writes_nothing(tmp_path, monkeypatch):
+    clock(monkeypatch)
+    board, down = flaky_board()
+    job, ctx, fet = parked_job(), bot_context(board=board), make_fetcher(tmp_path, down)
+    assert resume_job(ctx, job, fet, yes=False) == "DESIGN-Foo: would record BLR90; still missing Ket67 (dry run; pass --yes)"
+    assert board.posted == [] and board.specs == [] and references.RETRIES not in job.inputs
+    gone = make_fetcher(tmp_path / "b", FakeTransport().add(MATHNET, b"", 404))
+    assert resume_job(ctx, job, gone, yes=False) == ("DESIGN-Foo: would record BLR90; would raise the request again for "
+                                                     "Ket67 (dry run; pass --yes)")
+    assert board.posted == []
 
 
 def test_an_answer_replaces_the_old_provenance(tmp_path):

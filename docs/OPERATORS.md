@@ -623,7 +623,9 @@ alternative for operators who already use it.
   `[sources] local_dirs`; only a worker whose operator holds it resumes the job), or `waive: KEY`
   (the citation is then cited by its locator alone, as `waived`). Never attach a file: sources never
   enter a repository or an issue, and attachments are not downloaded. The board's intake records the
-  answers and makes the job available again once every key is answered.
+  answers and makes the job available again once every key is answered. A `source:` whose host
+  does not answer is tried again a few times over the next hour (one note says so); if it still
+  fails, or the failure is not network trouble, the request is posted again and you answer anew.
 * **An intention** on the roadmap repository becomes a TARGET job when the maintainer runs
   `targets import-intentions`; there is nothing else to do.
 * **A draft pull request**: review it on GitHub. Your comments feed the gate lane; the reply answers

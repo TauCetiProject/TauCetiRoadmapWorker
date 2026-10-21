@@ -215,6 +215,10 @@ answer_associations = ["OWNER", "MEMBER", "COLLABORATOR"]
 # Whose request comments (posted by the lanes under the operator's account) the intake reads; the
 # board's bot_logins always count. A request from anyone else is ignored.
 request_associations = ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]
+# A `source:` answer whose fetch failed for network trouble (timeout, refused connection, 5xx) is
+# tried again on later intake runs, this many times at most (10, 20, 40, ... minutes apart), before
+# the request is raised again for the operator to answer anew.
+answer_retries = 3
 # Licence classes and the hosts that belong to them (a leading dot allows every subdomain).
 # Texts the operator already holds locally are the class "operator-local" and need no host.
 [sources.allow]

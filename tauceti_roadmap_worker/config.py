@@ -185,6 +185,9 @@ class Sources:
     # them, and an operator whose submissions were merged is at least a CONTRIBUTOR.
     request_associations: list[str] = field(default_factory=lambda: ["OWNER", "MEMBER", "COLLABORATOR",
                                                                       "CONTRIBUTOR"])
+    # How many times a `source:` answer whose fetch failed for network trouble (a timeout, a refused
+    # connection, a 5xx) is tried again on later intake runs before the request is raised again.
+    answer_retries: int = 3
 
 
 @dataclass
@@ -364,6 +367,8 @@ def validate(cfg: Config) -> None:
                 problems.append(f"sources.{key}: unknown association {assoc!r} (known: {', '.join(ASSOCIATIONS)})")
     if cfg.sources.max_megabytes < 1 or cfg.sources.ocr_dpi < 72:
         problems.append("sources.max_megabytes must be at least 1 and sources.ocr_dpi at least 72")
+    if cfg.sources.answer_retries < 0:
+        problems.append("sources.answer_retries must be >= 0")
     if not cfg.board.intention_labels:
         problems.append("board.intention_labels must name at least one label")
     for pattern in cfg.gates.forbidden_patterns + cfg.gates.outside_folder_allow:

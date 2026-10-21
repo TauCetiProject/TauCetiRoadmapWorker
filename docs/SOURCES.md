@@ -271,8 +271,14 @@ same keys, so every answer reaches it.
 The intake updates `packages/<Name>/sources.toml` on the packages repository (an answer replaces the
 entry's old provenance as a whole), posts a note listing what it recorded and what is still missing
 (with a progress marker, so a rerun never repeats work), and when every key is answered moves the job
-back to `state:available`. An answer that failed for network trouble is tried again on the next run,
-and a release that did not go through is retried as well.
+back to `state:available`. A `source:` answer whose fetch failed for network trouble (a timeout, a
+refused connection, a 5xx) is tried again on later runs, at most `[sources] answer_retries` times
+(default 3) at 10, 20, 40, ... minutes, with one note on the first failure (and none in between);
+the attempts are recorded in the job's spec. When the last attempt fails too, or the fetch failed
+for another reason (a 404, a refused licence class, an unrecognised file), one note raises the
+request again for the keys still missing and the answer is forgotten; a new answer for the key
+(`source:`, `local:` or `waive:`) takes over at once. A release that did not go through is retried
+as well.
 
 ## PostScript and compressed files
 

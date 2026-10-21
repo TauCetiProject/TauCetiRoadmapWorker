@@ -34,11 +34,18 @@ policy as `sources fetch`; a local text is recorded as `operator-local` with its
 an operator who holds the file resumes it; a waiver is recorded as `status = "waived"`. The
 roadmap's `sources.toml` on the packages repository is updated, and when every requested key is
 answered the job returns to `state:available`.
+
+A `source:` answer whose fetch failed for network trouble is tried again on later runs, at most
+`[sources] answer_retries` times with growing spacing (the attempts are recorded in the job's spec
+under `reference_retries`), with one note on the first failure and none in between; when the last
+attempt fails, or the failure is not network trouble, the request is raised again for the keys
+still missing and the answer is forgotten. A new answer for the key replaces a pending retry.
 """
 
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import json
 import re
 import tomllib
@@ -61,6 +68,9 @@ REQUEST_MARK = "tauceti-roadmap-needs-references"
 PROGRESS_MARK = "tauceti-roadmap-references-progress"
 REQUEST_RE = re.compile(r"<!--\s*" + REQUEST_MARK + r"\s*(\{.*?\})\s*-->", re.S)
 PROGRESS_RE = re.compile(r"<!--\s*" + PROGRESS_MARK + r"\s*(\{.*?\})\s*-->", re.S)
+RETRY_MINUTES = 10            # a failed `source:` answer waits this long before its first retry, twice as long each time
+RETRIES = "reference_retries"  # the job spec's record of the retries pending: key -> {comment, failed, at}
+STAMP = "%Y-%m-%dT%H:%M:%SZ"
 # Recognised only to say that attachments are not used: a source never enters an issue.
 ATTACHMENT = re.compile(r"https://github\.com/(?:user-attachments/(?:files|assets)/[^\s)\]>\"'<]+"
                         r"|[\w.-]+/[\w.-]+/files/\d+/[^\s)\]>\"'<]+)")
@@ -166,13 +176,14 @@ def drop_settled(items: list[MissingReference], manifests: list[dict], uncertifi
 
 def request_count(comments: list[dict], job_id: str, trusted: list[str], bot_logins: list[str]) -> int:
     """How many needs-references requests this job has posted on its issue (by the board's bots, an
-    operator or an allowed author association)."""
+    operator or an allowed author association). A request the intake raised again after a failed
+    answer is the same request, not a further one."""
     n = 0
     for c in comments:
         if (c.get("user") or {}).get("login") not in bot_logins and c.get("author_association") not in trusted:
             continue
         request = decode_request(c.get("body") or "")
-        n += bool(request and request["job"] == job_id)
+        n += bool(request and request["job"] == job_id and not request["again"])
     return n
 
 
@@ -218,17 +229,17 @@ def _marker(mark: str, data: dict) -> str:
     return f"<!-- {mark} {board.comment_json(data)} -->"
 
 
-def request_comment(job_id: str, roadmap: str, items: list[MissingReference]) -> str:
+def request_comment(job_id: str, roadmap: str, items: list[MissingReference], again: bool = False) -> str:
     """The comment the lane posts when it parks a job: the template's table for humans, the items in a
-    marker for the intake."""
+    marker for the intake. `again`: the intake raising the request again for the keys still missing."""
     def cell(s: str) -> str:
         return s.replace("|", "\\|").replace("\n", " ").replace("<!--", "&lt;!--").strip()[:300]
     rows = "\n".join(f"| `{cell(m.key)}` | {cell(m.authors)} | {cell(m.title)} | {cell(m.year)} | {cell(m.needed_for)} | "
                      f"{cell('; '.join(tried_list(m.tried))) or 'none'} |" for m in items)
     body = (_template_body().replace("__JOB__", job_id).replace("__ROADMAP__", roadmap)
             .replace("__ROWS__", rows or "| | | | | | |"))
-    return body + "\n" + _marker(REQUEST_MARK, {"job": job_id, "roadmap": roadmap,
-                                                "items": [asdict(m) for m in items]}) + "\n"
+    return body + "\n" + _marker(REQUEST_MARK, {"job": job_id, "roadmap": roadmap, "items": [asdict(m) for m in items],
+                                                **({"again": True} if again else {})}) + "\n"
 
 
 def _item(raw) -> MissingReference | None:
@@ -255,8 +266,8 @@ def _item(raw) -> MissingReference | None:
 
 
 def decode_request(body: str) -> dict | None:
-    """{job, roadmap, items: [MissingReference]} from the last request marker in a comment, or None
-    when there is none or it is malformed (no items, an item that is not well formed)."""
+    """{job, roadmap, items: [MissingReference], again} from the last request marker in a comment, or
+    None when there is none or it is malformed (no items, an item that is not well formed)."""
     found = REQUEST_RE.findall(body or "")
     if not found:
         return None
@@ -269,7 +280,8 @@ def decode_request(body: str) -> dict | None:
     items = [_item(raw) for raw in data["items"]]
     if any(item is None for item in items) or not isinstance(data.get("job"), str):
         return None
-    return {"job": data["job"], "roadmap": str(data.get("roadmap", "")), "items": items}
+    return {"job": data["job"], "roadmap": str(data.get("roadmap", "")), "items": items,
+            "again": data.get("again") is True}
 
 
 def latest_request(comments: list[dict], job_id: str, trusted: list[str], bot_logins: list[str]) -> tuple[int, dict | None]:
@@ -421,7 +433,7 @@ class Resolution:
     ok: bool
     detail: str
     entry: dict | None = None
-    transient: bool = False      # network trouble: the answer is tried again on the next run
+    transient: bool = False      # network trouble: the answer is tried again on a later run
 
 
 def _base_entry(item: MissingReference, existing: dict | None) -> dict:
@@ -501,8 +513,42 @@ def write_board_manifest(ctx, name: str, data: dict, sha: str | None, message: s
     ctx.gh.write("PUT", f"repos/{ctx.cfg.repositories.packages_repo()}/contents/{path}", payload)
 
 
+def _now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+
+
+def retry_due(record: dict, now: dt.datetime) -> dt.datetime:
+    """When a `source:` answer that failed for network trouble is tried again: RETRY_MINUTES after
+    its first failure, twice as long after each later one (a record without a readable time or
+    count is due now)."""
+    try:
+        last = dt.datetime.strptime(str(record.get("at", "")), STAMP).replace(tzinfo=dt.timezone.utc)
+        failed = max(int(record.get("failed", 1)), 1)
+    except (ValueError, TypeError):
+        return now
+    return last + dt.timedelta(minutes=RETRY_MINUTES * 2 ** (failed - 1))
+
+
+def pending_retries(job: board.Job, items: dict, answers: dict, done: dict) -> dict[str, dict]:
+    """The `source:` answers whose fetch failed for network trouble and are still to be tried again,
+    key -> {comment, failed, at}, from the job's spec. A record whose key is answered again (by a
+    later comment), resolved, or no longer requested is dropped: the new answer takes over."""
+    out = {}
+    stored = job.inputs.get(RETRIES)
+    for key, rec in (stored.items() if isinstance(stored, dict) else ()):
+        if not isinstance(rec, dict) or key not in items or key in done or key not in answers:
+            continue
+        if answers[key].action != "source" or answers[key].comment != rec.get("comment"):
+            continue
+        out[key] = dict(rec)
+    return out
+
+
 def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> str:
-    """Answer a parked job from its comments; release it when every requested key is resolved."""
+    """Answer a parked job from its comments; release it when every requested key is resolved.
+    A `source:` answer that failed for network trouble is tried again on later runs (see
+    `pending_retries`); when its last attempt fails, or an answer fails for any other reason, the
+    request is raised again for the keys still missing."""
     comments = ctx.board.comments(job.number)
     s = ctx.cfg.sources
     at, request = latest_request(comments, job.id, s.request_associations, ctx.cfg.board.bot_logins)
@@ -524,18 +570,25 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
                 pass
     answers, notes, read = collect_answers(after, list(items), s.answer_associations, ctx.cfg.board.bot_logins,
                                            answerer_check(ctx))
-    fresh = {k: a for k, a in answers.items() if a.comment not in handled}
+    now = _now()
+    attempts = s.answer_retries + 1                      # the first try and the retries
+    retries = pending_retries(job, items, answers, done)
+    due = {k for k, r in retries.items() if retry_due(r, now) <= now}
+    fresh = {k: a for k, a in answers.items() if a.comment not in handled or k in due}
     if not fresh and not (read - handled):
         waiting = [k for k in items if k not in done]
         if waiting:
-            return f"{job.id}: waiting for an answer on {', '.join(waiting)}"
+            later = [f"`{k}` at {retry_due(r, now).strftime(STAMP)} (attempt {r['failed'] + 1} of {attempts})"
+                     for k, r in retries.items()]
+            return (f"{job.id}: waiting for an answer on {', '.join(waiting)}"
+                    + (f"; the source named for {', '.join(later)} is tried again" if later else ""))
         # Everything was answered on an earlier run whose release did not go through: release now.
         if not yes:
             return f"{job.id}: every key answered; would release the job (dry run; pass --yes)"
         ctx.board.set_state(job, board.transition("needs-references", "references-resolved"))
         return f"{job.id}: references resolved earlier; available again"
     manifest, blob = board_manifest(ctx, job.name)
-    results, retry = [], set()
+    results = []
     for key, answer in fresh.items():
         res = resolve(answer, items[key], sources.find_source(manifest, id=key), fet, s.uncertified_ok)
         results.append(res)
@@ -543,31 +596,67 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
             sources.upsert_source(manifest, res.entry, replace=True)   # the entry already starts from the old one
         if res.ok:
             done[key] = res.detail
-        if res.transient:
-            retry.add(answer.comment)
+            retries.pop(key, None)
+        elif res.transient:
+            retries[key] = {"comment": answer.comment, "failed": retries.get(key, {}).get("failed", 0) + 1,
+                            "at": now.strftime(STAMP)}
     changed = [r.key for r in results if r.entry]
     missing = [k for k in items if k not in done]
+    exhausted = {k for k, r in retries.items() if r["failed"] >= attempts}
+    permanent = {r.key for r in results if not r.ok and not r.transient}
+    again = exhausted | permanent                        # these answers are forgotten: the request is raised again
+    first = {r.key for r in results if r.transient and r.key in retries and retries[r.key]["failed"] == 1}
+    # A run that only tried a pending retry again, and failed again, says nothing on the issue.
+    quiet = not again and not notes and not (read - handled) and all(r.transient and r.key not in first for r in results)
+
+    def line(r: Resolution) -> str:
+        if r.ok:
+            return f"- `{r.key}`: {r.detail}"
+        if r.key in exhausted:
+            n = retries[r.key]["failed"]
+            return f"- `{r.key}`: {r.detail} (given up after {n} attempt{'s' if n != 1 else ''})"
+        if r.transient:
+            return (f"- `{r.key}`: {r.detail}; it is tried again up to {s.answer_retries} times, at least "
+                    f"{RETRY_MINUTES} minutes apart; to replace it, answer again with `source: {r.key} <DOI, arXiv id "
+                    f"or URL>`, `local: {r.key} <file name>` or `waive: {r.key}`")
+        return f"- `{r.key}`: {r.detail} (not tried again)"
     lines = [f"Intake: answers to the references request of `{job.id}`:", ""]
-    lines += [f"- `{r.key}`: {r.detail}" + ("" if r.ok else " (tried again on the next run)" if r.transient
-                                            else " (still missing)") for r in results]
+    lines += [line(r) for r in results]
     lines += [f"- note: {n}" for n in notes]
-    if missing:
+    if again:
+        keys = ", ".join(f"`{k}`" for k in sorted(again))
+        lines += ["", f"The request is raised again below for every key still missing; the answer{'s' if len(again) > 1 else ''} "
+                  f"for {keys} {'are' if len(again) > 1 else 'is'} forgotten: answer again (another `source:`, `local:` or "
+                  "`waive:`).", "",
+                  request_comment(job.id, request["roadmap"], [items[k] for k in missing], again=True).rstrip()]
+        retries = {}
+    elif missing:
         lines += ["", "Still needed: " + ", ".join(f"`{k}`" for k in missing) + ". Answer with "
                   "`source: KEY <DOI, arXiv id or URL> [licence: <class>]`, `local: KEY <file name>` or `waive: KEY`."]
+        lines += ["", _marker(PROGRESS_MARK, {"handled": sorted(handled | read), "resolved": done})]
     else:
         lines += ["", "Every requested source is answered; the job is available again."]
-    lines += ["", _marker(PROGRESS_MARK, {"handled": sorted((handled | read) - retry), "resolved": done})]
+        lines += ["", _marker(PROGRESS_MARK, {"handled": sorted(handled | read), "resolved": done})]
     if not yes:
         return f"{job.id}: would record {', '.join(changed) or 'nothing'}" + (
+            f"; would raise the request again for {', '.join(missing)}" if again else
             f"; still missing {', '.join(missing)}" if missing else "; would release the job") + " (dry run; pass --yes)"
     if changed:
         write_board_manifest(ctx, job.name, manifest, blob,
                              f"Sources: answers to the references request of {job.id} ({', '.join(changed)})")
-    record_local_needs(ctx, job, results)
-    ctx.board.comment(job.number, "\n".join(lines))
+    record_local_needs(ctx, job, results, retries)
+    if not quiet:
+        ctx.board.comment(job.number, "\n".join(lines))
     if not missing:
         ctx.board.set_state(job, board.transition("needs-references", "references-resolved"))
         return f"{job.id}: references resolved; available again"
+    if again:
+        return (f"{job.id}: recorded {', '.join(changed) or 'nothing'}; the request is raised again for "
+                f"{', '.join(missing)} (the source named for {', '.join(sorted(again))} could not be fetched)")
+    if quiet:
+        tried = ", ".join(f"`{k}` (attempt {retries[k]['failed']} of {attempts}, next at "
+                          f"{retry_due(retries[k], now).strftime(STAMP)})" for k in fresh)
+        return f"{job.id}: the source named for {tried} could not be fetched again; still missing {', '.join(missing)}"
     return f"{job.id}: recorded {', '.join(changed) or 'nothing'}; still missing {', '.join(missing)}"
 
 
@@ -577,9 +666,10 @@ def local_needs(job: board.Job) -> list[dict]:
     return [n for n in job.inputs.get("local_sources", []) if isinstance(n, dict) and n.get("name")]
 
 
-def record_local_needs(ctx, job: board.Job, results: list[Resolution]) -> None:
+def record_local_needs(ctx, job: board.Job, results: list[Resolution], retries: dict | None = None) -> None:
     """Keep the job's spec in step with its answers: a `local:` answer adds its file to the job's
-    requirements, any other answer for the key drops it. Written before the job is released."""
+    requirements, any other answer for the key drops it; `retries` (when given) replaces the record
+    of the `source:` answers still to be tried again. Written before the job is released."""
     needs = {n["key"]: n for n in local_needs(job)}
     before = dict(needs)
     for r in results:
@@ -587,12 +677,18 @@ def record_local_needs(ctx, job: board.Job, results: list[Resolution]) -> None:
             needs[r.key] = {"key": r.key, "name": r.entry["local_name"], "sha256": r.entry.get("sha256", "")}
         elif r.ok:
             needs.pop(r.key, None)
-    if needs == before:
+    stored = job.inputs.get(RETRIES) if isinstance(job.inputs.get(RETRIES), dict) else {}
+    if needs == before and (retries is None or retries == stored):
         return
     if needs:
         job.inputs["local_sources"] = list(needs.values())
     else:
         job.inputs.pop("local_sources", None)
+    if retries is not None:
+        if retries:
+            job.inputs[RETRIES] = retries
+        else:
+            job.inputs.pop(RETRIES, None)
     ctx.board.update_spec(job)
 
 
