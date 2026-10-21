@@ -397,16 +397,31 @@ def conclude_review(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Jo
     pkg = board.package_dir(cfg.board.packages_dir, job.name)
     j = board.parse_job_id(job.id)
     if job.kind == "review" and verdict == "accepted" and j.subject == "DESIGN":
-        # Merge first: a merge that fails leaves the review open, and the next scan tries again.
+        # Merge first: a merge that fails leaves the review open in `merge_pending` (the reviewed head
+        # and the accepting comments), and every scan retries it.
         why = merge(ctx, number, pr, jobs, {"path": f"{pkg}/design/review.json",
                                             "review": verdict_record(job, reviews, "accepted")}, blocker=job)
         if why:
-            return f"#{number}: {job.id} accepted, but not merged yet ({why})"
+            if job.state != "blocked":
+                job.inputs["merge_pending"] = {"head": pr["head"]["sha"],
+                                               "comments": [int(c.get("id") or 0) for c, _p in reviews]}
+                ctx.board.update_spec(job)
+            return f"#{number}: {job.id} accepted, but not merged yet ({why}); the intake retries the merge"
+    return after_verdict(ctx, job, verdict, reviews, number, pr, jobs)
+
+
+def after_verdict(ctx, job: Job, verdict: str, reviews, number: int, pr: dict, jobs: list[Job],
+                  open_pr: bool = True) -> str:
+    """A concluded review's report and verdict on the board, its job closed, and what follows created
+    (`open_pr` false: its pull request is merged already, so nothing more runs on it)."""
+    pkg = board.package_dir(ctx.cfg.board.packages_dir, job.name)
+    j = board.parse_job_id(job.id)
     put_file(ctx, f"{pkg}/reports/{job.id}.md", report_text(reviews), f"Board: {job.id} ({verdict})")
     who = ", ".join(f"@{(c.get('user') or {}).get('login', '?')} ({p.agent})" for c, p in reviews)
+    job.inputs.pop("merge_pending", None)
     finish_job(ctx, job, f"Intake: {verdict} on #{number} by {who}.")
-    outcome = Outcome(verdict=verdict, pr=number, operator=pr["user"]["login"], report=report_text(reviews),
-                      head=pr["head"]["sha"])
+    outcome = Outcome(verdict=verdict, pr=number if open_pr else 0, operator=pr["user"]["login"],
+                      report=report_text(reviews), head=pr["head"]["sha"])
     if job.kind == "review" and verdict == "accepted" and j.subject == "DESIGN":
         from .intake import announce_gaps
         design = next((x for x in jobs if x.id == board.make_id("design", job.name)), None)
@@ -520,21 +535,134 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
     return open_for_review(ctx, number, pr, nxt, jobs, yes).replace("open for review", f"{fix.id} done; next round")
 
 
+def accepted_reviews(ctx, job: Job, comments: list[dict], shared, ids: list[int] | None = None):
+    """The accepting review comments of a job: those recorded in `merge_pending` (by id), else the
+    last review of the job from a trusted login when it accepts; [] when there is none."""
+    found = []
+    for c in comments:
+        parsed = prreviews.parse(c.get("body") or "")
+        if not parsed or parsed.kind != "review":
+            continue
+        if ids is not None:
+            if int(c.get("id") or 0) in ids:
+                found.append((c, parsed))
+            continue
+        if trusted(ctx, (c.get("user") or {}).get("login", ""), parsed, job, shared):
+            found = [(c, parsed)]
+    return [(c, p) for c, p in found if p.verdict == "accepted"]
+
+
+def owned_changes(ctx, number: int, old: str, new: str, jobs: list[Job], sub_job: str) -> list[str] | None:
+    """What a pull request's own deliverables changed between two heads, sources.toml aside (a human
+    rebase that merged main, whose answers rewrote the manifest); None when it cannot be read."""
+    try:
+        compared = ctx.gh.api(f"repos/{repo(ctx)}/compare/{old}...{new}") or {}
+    except GHError:
+        return None
+    od = board.order_file(ctx.cfg)
+    owned = set().union(*(board.allowed_paths(j, ctx.cfg.board.packages_dir, od)
+                          for j in authors_of(number, sub_job, jobs)), set())
+    return sorted(f["filename"] for f in compared.get("files", [])
+                  if f.get("filename") in owned and not f["filename"].endswith("/sources.toml"))
+
+
+def retry_merges(ctx, number: int, pr: dict, jobs: list[Job], comments: list[dict], shared, yes: bool) -> list[str]:
+    """Accepted designs whose merge failed (`merge_pending`): merged now while the head is the
+    reviewed one, or a new head whose own deliverables did not change beyond sources.toml (a human
+    rebase); a new head with other changes needs a fresh review."""
+    out = []
+    sub = (board.decode_submission(pr.get("body") or "") or {}).get("job", "")
+    for job in [j for j in jobs_of(number, jobs) if j.kind == "review" and j.inputs.get("merge_pending")
+                and j.state not in ("done", "blocked")]:
+        pending, head = job.inputs["merge_pending"], pr["head"]["sha"]
+        if head != pending.get("head"):
+            changed = owned_changes(ctx, number, pending.get("head", ""), head, jobs, sub)
+            if changed is None:
+                continue
+            if changed:
+                job.inputs.pop("merge_pending")
+                ctx.board.update_spec(job)
+                note(ctx, number, f"Intake: the head moved from `{pending.get('head', '')[:7]}` to `{head[:7]}` and "
+                                  f"changed {', '.join(changed)} since the accepted review: review the new head.")
+                out.append(f"#{number}: {job.id} needs a fresh review (the head changed {', '.join(changed)})")
+                continue
+        reviews = accepted_reviews(ctx, job, comments, shared, pending.get("comments"))
+        if not reviews or not yes:
+            out.append(f"#{number}: {job.id} accepted, merge to retry" + ("" if reviews else " (no accepting review found)"))
+            continue
+        pkg = board.package_dir(ctx.cfg.board.packages_dir, job.name)
+        why = merge(ctx, number, pr, jobs, {"path": f"{pkg}/design/review.json",
+                                            "review": verdict_record(job, reviews, "accepted")}, blocker=job)
+        if why:
+            if head != pending.get("head"):
+                job.inputs["merge_pending"] = {**pending, "head": head}   # the rebased head is the one to merge
+                ctx.board.update_spec(job)
+            out.append(f"#{number}: {job.id} accepted, but still not merged ({why})")
+            continue
+        out.append(after_verdict(ctx, job, "accepted", reviews, number, pr, jobs))
+    return out
+
+
+def merged_by_hand(ctx, open_numbers: set[int], jobs: list[Job], shared, yes: bool) -> list[str]:
+    """Review jobs whose board pull request was merged on GitHub (not by the intake): finished from
+    their recorded or last accepting review, and what follows created, never reopened. A package
+    merged that way skips the board red team (there is no open pull request for it): its port
+    follows, and the red team runs on the roadmap pull request."""
+    out = []
+    pending = [j for j in jobs if j.kind == "review" and j.state != "done" and j.inputs.get("board_pr")
+               and int(j.inputs["board_pr"]) not in open_numbers]
+    for number in sorted({int(j.inputs["board_pr"]) for j in pending}):
+        try:
+            pr = ctx.gh.api(f"repos/{repo(ctx)}/pulls/{number}") or {}
+            if not pr.get("merged"):
+                continue
+            comments = ctx.gh.api(f"repos/{repo(ctx)}/issues/{number}/comments?per_page=100", paginate=True) or []
+        except GHError:
+            continue
+        sub = board.decode_submission(pr.get("body") or "") or {}
+        for job in [j for j in pending if int(j.inputs["board_pr"]) == number]:
+            reviews = accepted_reviews(ctx, job, comments, shared, (job.inputs.get("merge_pending") or {}).get("comments"))
+            if not reviews:
+                continue
+            if not yes:
+                out.append(f"#{number}: merged on GitHub; would finish {job.id} from its accepted review (dry run)")
+                continue
+            for author in authors_of(number, sub.get("job", ""), jobs):
+                if author.state != "done":
+                    finish_job(ctx, author, f"Intake: #{number} was merged on GitHub.")
+            pkg = board.package_dir(ctx.cfg.board.packages_dir, job.name)
+            verdict = f"{pkg}/design/review.json" if board.parse_job_id(job.id).subject == "DESIGN" else f"{pkg}/review.json"
+            put_file(ctx, verdict, json.dumps({"review": verdict_record(job, reviews, "accepted")}, indent=1) + "\n",
+                     f"Board: verdict of #{number}")
+            if board.parse_job_id(job.id).subject != "DESIGN":
+                job.inputs.pop("board_pr", None)     # no open pull request to red-team: the port and its red team follow
+            out.append(f"#{number}: merged on GitHub; " + after_verdict(ctx, job, "accepted", reviews, number, pr, jobs,
+                                                                     open_pr=False))
+    return out
+
+
 def scan(ctx, shared=None, yes: bool = False) -> list[str]:
-    """Every open `needs-review` pull request on the board, advanced as its comments allow."""
+    """Every open `needs-review` pull request on the board, advanced as its comments allow; accepted
+    designs whose merge failed are merged when they can be; reviews of pull requests merged on
+    GitHub are finished from their accepting review."""
     out, jobs = [], ctx.board.all_jobs()
     pulls = ctx.gh.api(f"repos/{repo(ctx)}/pulls?state=open&per_page=100", paginate=True) or []
+    out += merged_by_hand(ctx, {int(p["number"]) for p in pulls}, jobs, shared, yes)
     for pr in pulls:
         if NEEDS_REVIEW not in {label["name"] for label in pr.get("labels", [])}:
             continue
         number, head = pr["number"], pr["head"]["sha"]
         mine = [j for j in jobs_of(number, jobs) if j.state != "done"]
         pushed = [j for j in mine if j.kind == "fix" and j.state == "submitted"]
-        open_jobs = [j for j in mine if j.kind in ("review", "redteam")]
-        if not pushed and not open_jobs:
+        open_jobs = [j for j in mine if j.kind in ("review", "redteam") and not j.inputs.get("merge_pending")]
+        retrying = [j for j in mine if j.inputs.get("merge_pending")]
+        if not pushed and not open_jobs and not retrying:
             continue
         try:
             comments = ctx.gh.api(f"repos/{repo(ctx)}/issues/{number}/comments?per_page=100", paginate=True) or []
+            if retrying:
+                out += retry_merges(ctx, number, pr, jobs, comments, shared, yes)
+                jobs = ctx.board.all_jobs()
             if pushed:
                 out += [fix_pushed(ctx, f, number, pr, jobs, yes, comments) for f in pushed]
                 continue

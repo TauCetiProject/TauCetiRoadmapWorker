@@ -458,6 +458,15 @@ with a note. A conflict in any other file sets the job that concluded it (the ac
 the last red-team fix) to `state:blocked`: "the pull request #N conflicts with main in <files>; a
 human rebases it".
 
+An accepted design whose merge failed stays in a retry state on its review job (`merge_pending`: the
+reviewed head and the accepting comments), and every intake retries the merge. When the head has
+moved (a human rebase), the intake compares the two heads: if the pull request's own deliverables
+did not change beyond sources.toml (main merged in), it merges the new head; otherwise it asks for a
+fresh review of the new head. A board pull request merged on GitHub by hand finishes its review
+from the recorded (or last) accepting review, closes the jobs that wrote it and creates what follows
+(the package for a design; for a package, its port, since no pull request is left for the board red
+team, which then runs on the roadmap pull request); the review is never reopened.
+
 A GitHub blip never costs a run: every read is tried again after a 5xx answer or a timeout (2, 5
 and 15 seconds later); a pull request whose reads still fail is skipped with a line in the log and
 the run goes on with the next one (a sync step likewise), and the command exits 1 at the end listing
