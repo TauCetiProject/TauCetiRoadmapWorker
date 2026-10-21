@@ -193,6 +193,8 @@ class RedTeamLane(Lane):
     kind = "redteam"
     prompt = "redteam"
 
+    transcribes_if_ready = True     # a pass reads the signature transcript when the pin's packages are ready
+
     def prepare(self, job: Job, ctx: Context) -> Workspace:
         ws = super().prepare(job, ctx)
         if self.board_pr(job):

@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import (agents, board, claims, depgraph, fetcher, gates, gitops, openroadmaps, prompts, prreviews, references,
-               sources, usage)
+               signatures, sources, usage)
 from ..board import Board, Job
 from ..config import Config
 from ..depgraph import read_order
@@ -473,6 +473,8 @@ class Lane:
             "TOOLS": self.tools_text(ctx, ws),
         }
 
+    transcribes_if_ready = False    # a lane that does not elaborate still gets the signature transcript
+
     def citation_target(self, job: Job, ctx: Context, ws: Workspace) -> Path | None:
         """The README whose citations the worker resolves before the agent runs: the one the lane
         works on (`readme`), else the package's, else the design's; None when there is none yet."""
@@ -513,27 +515,64 @@ class Lane:
         path.write_text(openroadmaps.report(citations, names, why, index, str(rel)), encoding="utf-8")
         ws.extra["citations"] = (path, len(citations) + len(names))
 
+    def prepare_signatures(self, job: Job, ctx: Context, ws: Workspace) -> None:
+        """The elaborated type of every declaration of the roadmap's Suggested.lean, with the section
+        binders it looks to have lost, written to `scratch/signatures.md` (lanes that elaborate, with
+        the shared Lake packages ready). Best effort, like the other tools."""
+        setup, readme = ws.extra.get("lake"), self.citation_target(job, ctx, ws)
+        lean = readme.parent / "Suggested.lean" if readme is not None else None
+        if ctx.dry_run or not ctx.cfg.gates.elaborate or not (lean and lean.is_file()):
+            return
+        if setup is None and self.transcribes_if_ready:
+            # A lane that does not elaborate (a red-team pass) uses the pin's packages only when they are
+            # already fetched on this host: it never starts a fetch for a transcript.
+            setup = prepare_lake(ws.content, ctx.state, fetch=False, free=free_gb)
+        if setup is None or not setup.ready:
+            return
+        try:
+            found = signatures.elaborate(ctx.cfg.gates.elaborate, lean, ws.scratch / "signatures", ws.content)
+        except Exception as exc:  # noqa: BLE001 - a tool for the agent: its failure must never fail the round
+            print(f"{ws.job_dir.name}: the signatures were not elaborated ({type(exc).__name__}: {str(exc)[:160]})")
+            return
+        path = ws.scratch / "signatures.md"
+        path.write_text(signatures.report(found, "Suggested.lean"), encoding="utf-8")
+        ws.extra["signatures"] = (path, len(found.entries), found.flagged, found.reason)
+
     def tools_text(self, ctx: Context, ws: Workspace) -> str:
-        """The brief's tools section: the open roadmap pull requests and the citation resolver."""
+        """The brief's tools section: the open roadmap pull requests, the citation resolver and the
+        elaborated signatures, each listed when the worker could prepare it."""
         index = ws.extra.get("open_index") or {}
+        lines = []
         if not index:
-            return ("- The index of open roadmap pull requests is not available this round: use the sibling list "
-                    "above, and say in your report that ownership against other open pull requests was not checked.")
-        prs = index.get("prs", [])
-        new = sum(len(p.get("adds", [])) for p in prs)
-        lines = [f"- **Open roadmap pull requests** ({len(prs)}, {new} of them new roadmaps; index of {index.get('at')}): "
-                 f"`{ctx.cli('roadmaps', 'list')}` lists them; `{ctx.cli('roadmaps', 'grep', '<regex>')}` searches the "
-                 "README and Suggested.lean of the roadmap folders they carry, at their heads, then every roadmap on "
-                 "main (`--fixed`, `-i`, `--readme-only`, `--lean-only`); "
-                 f"`{ctx.cli('roadmaps', 'show', '<Name>')}` prints one (`--file Suggested.lean`, `--pr N`). Use them "
-                 "for every ownership and duplication check, and to read a roadmap that is still a pull request.",
-                 f"- **Citations**: `{ctx.cli('roadmaps', 'resolve', '<README.md>')}` lists the cross-roadmap "
-                 "citations and backticked Lean names of a README that are found nowhere (on main, at the open heads, "
-                 "in the pinned sources). They are leads, not verdicts: check each before you rely on it or report it."]
-        found = ws.extra.get("citations")
-        if found:
-            lines[-1] += (f" For this roadmap's README the worker found {found[1]} (`{found[0]}`)." if found[1]
-                          else " For this roadmap's README the worker found none.")
+            lines.append("- The index of open roadmap pull requests is not available this round: use the sibling list "
+                         "above, and say in your report that ownership against other open pull requests was not checked.")
+        else:
+            prs = index.get("prs", [])
+            new = sum(len(p.get("adds", [])) for p in prs)
+            lines.append(
+                f"- **Open roadmap pull requests** ({len(prs)}, {new} of them new roadmaps; index of {index.get('at')}): "
+                f"`{ctx.cli('roadmaps', 'list')}` lists them; `{ctx.cli('roadmaps', 'grep', '<regex>')}` searches the "
+                "README and Suggested.lean of the roadmap folders they carry, at their heads, then every roadmap on "
+                "main (`--fixed`, `-i`, `--readme-only`, `--lean-only`); "
+                f"`{ctx.cli('roadmaps', 'show', '<Name>')}` prints one (`--file Suggested.lean`, `--pr N`). Use them "
+                "for every ownership and duplication check, and to read a roadmap that is still a pull request.")
+            citation = (f"- **Citations**: `{ctx.cli('roadmaps', 'resolve', '<README.md>')}` lists the cross-roadmap "
+                        "citations and backticked Lean names of a README that are found nowhere (on main, at the open "
+                        "heads, in the pinned sources). They are leads, not verdicts: check each before you rely on it "
+                        "or report it.")
+            found = ws.extra.get("citations")
+            if found:
+                citation += (f" For this roadmap's README the worker found {found[1]} (`{found[0]}`)." if found[1]
+                             else " For this roadmap's README the worker found none.")
+            lines.append(citation)
+        sigs = ws.extra.get("signatures")
+        if sigs:
+            path, total, flagged, reason = sigs
+            lines.append(f"- **Elaborated signatures**: `{path}` " + (f"(not available: {reason})." if reason else
+                         f"has the elaborated type of each of the {total} declarations of Suggested.lean as it stands "
+                         f"now; {flagged} of them look to have lost a section binder (a hypothesis about objects they "
+                         "use). Compare each with its README statement; after you change the file, check again with "
+                         "`#check @name`."))
         return "\n".join(lines)
 
     def depcheck_command(self, job: Job, ctx: Context, ws: Workspace, order_file: Path) -> str:
@@ -892,6 +931,7 @@ class Lane:
         self.restore_wip(job, ctx, ws)
         self.prepare_sources(job, ctx, ws)
         self.prepare_tools(job, ctx, ws)
+        self.prepare_signatures(job, ctx, ws)
         values = {**self.common_values(job, ctx, ws), **self.values(job, ctx, ws)}
         runs = self.briefs(job, ctx, ws, values)
         earlier = self.earlier_attempt(ws)
