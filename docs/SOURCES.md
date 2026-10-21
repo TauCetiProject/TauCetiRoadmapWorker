@@ -204,6 +204,15 @@ row per key, with the items also in a machine-readable comment), and moves the j
 `state:needs-references`. A request left over from an earlier run of the same job is archived as
 `needs-references.previous.toml` before the next run, so an answered request never parks it again.
 
+A run posts one request, which lists everything: the brief asks the agent to go through the whole
+document first, and when the agent's request misses a manifest text the worker found unreadable,
+the worker adds it. A citation the manifest settled (`waived`, or `uncertified` where the project
+accepts uncertified citations) is never requested again, by the same job or any later lane of the
+roadmap, until a human answers it with `source:` or `local:`: the worker drops it from the request
+with a line in the round log (and the job folder's `requests.log`), and a request left with nothing
+does not park the job. A job that has posted three requests is set to `state:blocked`, with a
+comment for a human, instead of posting a fourth.
+
 **Human side.** A human answers in a comment on the job, one line per key:
 
 ```text

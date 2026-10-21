@@ -126,6 +126,53 @@ def parse_missing(data: dict, existing_keys: set[str] | None = None) -> list[Mis
     return out
 
 
+SETTLED = "settled"
+
+
+def settled_status(entry: dict, uncertified_ok: bool) -> str:
+    """'waived' or 'uncertified' when a manifest entry is settled (final until a human answers it
+    again with `source:` or `local:`), else ''."""
+    status = str(entry.get("status", ""))
+    return status if status == "waived" or (status == "uncertified" and uncertified_ok) else ""
+
+
+def _same_work(item: MissingReference, entry: dict) -> bool:
+    def norm(t) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(t or "").lower()).strip()
+    if item.key and item.key.lower() == str(entry.get("id", "")).lower():
+        return True
+    if item.doi and item.doi.lower() == str(entry.get("doi", "")).lower():
+        return True
+    return bool(norm(item.title)) and norm(item.title) == norm(entry.get("title"))
+
+
+def drop_settled(items: list[MissingReference], manifests: list[dict], uncertified_ok: bool
+                 ) -> tuple[list[MissingReference], list[tuple[str, str]]]:
+    """The request items to keep, and (key, status) of those a manifest already settled (waived, or
+    uncertified when the project accepts it): a settled citation is never requested again."""
+    entries = [e for m in manifests for e in m.get("source", []) if isinstance(e, dict)]
+    kept, dropped = [], []
+    for item in items:
+        hit = next((st for e in entries if _same_work(item, e) and (st := settled_status(e, uncertified_ok))), "")
+        if hit:
+            dropped.append((item.key, hit))
+        else:
+            kept.append(item)
+    return kept, dropped
+
+
+def request_count(comments: list[dict], job_id: str, trusted: list[str], bot_logins: list[str]) -> int:
+    """How many needs-references requests this job has posted on its issue (by the board's bots, an
+    operator or an allowed author association)."""
+    n = 0
+    for c in comments:
+        if (c.get("user") or {}).get("login") not in bot_logins and c.get("author_association") not in trusted:
+            continue
+        request = decode_request(c.get("body") or "")
+        n += bool(request and request["job"] == job_id)
+    return n
+
+
 def read_missing(path: Path) -> list[MissingReference]:
     try:
         return parse_missing(tomllib.loads(Path(path).read_text(encoding="utf-8")))

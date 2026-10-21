@@ -32,10 +32,16 @@
   `[[missing]]` table to `__SCRATCH__/needs-references.toml` when it finds nothing; add one yourself
   for a text you need that the manifest lacks (`id`, `authors`, `title`, `year`, `needed_for` = the
   statement or section that needs it, `tried` = where you looked, `locator_scheme`, `locator`,
-  `note`). If that file already exists when you start, the worker could not fetch the texts it
-  lists: keep a table only if your work needs that text. Finish everything that does not depend on a
-  missing text and say so in your report; the worker parks the job until a human names an
-  alternative legal source, names a text operators hold locally, or waives the citation.
+  `note`). If that file already exists when you start, the worker could not read the texts it
+  lists (texts the roadmap cites): keep them, and add yours.
+- One request per run: before you stop for a missing text, go through the whole document, fetch
+  every source it cites, and list every text you cannot read in that one file; then finish
+  everything that does not depend on a missing text and say so in your report. The worker parks the
+  job until a human names an alternative legal source, names a text operators hold locally, or
+  waives the citation. A job that has asked three times is blocked for a human instead.
+- A citation the manifest records as `waived`, or as `uncertified` (paywalled, cited by its locator
+  alone), is settled: cite it by its locator and never list it in `needs-references.toml` (the
+  worker drops it). Only a human's new answer reopens it.
 - Sources stay on the operator's machine: never copy a source file or its extracted text into the
   repository you work in (not into the package folder, not into a report), and never paste a
   passage. Quote locators (`<source id> line N`, a theorem or page number); a fenced block of more

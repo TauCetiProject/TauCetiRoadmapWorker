@@ -179,6 +179,7 @@ def dropped_names(cfg: Config) -> list[str]:
 
 
 UNSUBMITTED = "unsubmitted"
+MAX_REQUESTS = 3        # needs-references requests one job may post before it is blocked for a human
 UNREADABLE_NOTE = ("the text was fetched, but it is a scan this worker could not read: a worker with OCR "
                    "([sources] ocr = true and the `ocr` extra) reads it; or name another source, a local text, or "
                    "waive it")
@@ -478,12 +479,14 @@ class Lane:
             if a.text or not a.permanent:
                 continue
             entry = sources.find_source(manifest, id=a.id) or {}
-            references.add_missing(request, references.MissingReference(
+            item = references.MissingReference(
                 authors=str(entry.get("authors", "")), title=str(entry.get("title", a.id)), year=str(entry.get("year", "")),
                 needed_for=", ".join(entry.get("cited_for", [])) or f"the roadmap's citations of {a.id}",
                 tried=[a.problem], key=a.id, doi=str(entry.get("doi", "")), url=str(entry.get("url", "")),
                 locator_scheme=str(entry.get("locator_scheme", "")), sha256=str(entry.get("sha256", "")),
-                note=UNREADABLE_NOTE if a.problem == sources.UNREADABLE else ""))
+                note=UNREADABLE_NOTE if a.problem == sources.UNREADABLE else "")
+            references.add_missing(request, item)
+            ws.extra.setdefault("auto_missing", []).append(item)
 
     def record_local_hashes(self, job: Job, ctx: Context, path: Path, manifest: dict, available: list) -> None:
         """A `local` text read here gets its hash recorded, as `certified`, in the manifest this job
@@ -516,8 +519,51 @@ class Lane:
                 changed.append(path)
         return changed
 
-    def missing_references(self, ws: Workspace) -> list[references.MissingReference]:
-        return references.read_missing(ws.scratch / "needs-references.toml")
+    def manifests(self, job: Job, ctx: Context, ws: Workspace) -> list[dict]:
+        """The roadmap's sources manifest as the job sees it, and as the board's main records it
+        (where the intake writes the answers to requests)."""
+        rel = board.manifest_path(ctx.cfg.board.packages_dir, job.name)
+        texts = [(ws.board / rel).read_text(encoding="utf-8") if (ws.board / rel).is_file() else ""]
+        try:
+            texts.append(gitops.git(ws.board, "show", f"refs/remotes/origin/main:{rel}", check=False))
+        except (gitops.GitError, OSError):
+            pass
+        out = []
+        for text in texts:
+            try:
+                out.append(tomllib.loads(text) if text.strip() else {})
+            except tomllib.TOMLDecodeError:
+                continue
+        return out
+
+    def missing_references(self, job: Job, ctx: Context, ws: Workspace) -> list[references.MissingReference]:
+        """The request this run ends with: the agent's items minus every citation the manifest has
+        settled (waived, or uncertified where the project accepts it), and, when there is still a
+        request, completed by every manifest text the worker found unreadable here, so one request
+        lists them all."""
+        items = references.read_missing(ws.scratch / "needs-references.toml")
+        kept, dropped = references.drop_settled(items, self.manifests(job, ctx, ws), ctx.cfg.sources.uncertified_ok)
+        if dropped:
+            self.note(ws, "dropped from the request, settled in the manifest: "
+                      + ", ".join(f"{k} ({status})" for k, status in dropped))
+        if kept:
+            have = {m.key.lower() for m in kept}
+            extra = [m for m in ws.extra.get("auto_missing", []) if m.key.lower() not in have]
+            extra, _ = references.drop_settled(extra, self.manifests(job, ctx, ws), ctx.cfg.sources.uncertified_ok)
+            if extra:
+                self.note(ws, "added to the request, unreadable here: " + ", ".join(m.key for m in extra))
+                kept += extra
+        return kept
+
+    def note(self, ws: Workspace, line: str) -> None:
+        """A line for the round's log (printed, kept in the job folder's requests.log and in the result)."""
+        print(f"{ws.job_dir.name}: {line}")
+        ws.extra.setdefault("notes", []).append(line)
+        try:
+            with open(ws.job_dir / "requests.log", "a", encoding="utf-8") as f:
+                f.write(f"{dt.datetime.now(dt.UTC):%Y-%m-%dT%H:%M:%SZ} {line}\n")
+        except OSError:
+            pass
 
     def briefs(self, job: Job, ctx: Context, ws: Workspace, values: dict) -> list[tuple[str, str]]:
         """(label, brief) for each agent run of the job, in order; '' labels the main brief."""
@@ -538,7 +584,21 @@ class Lane:
 
     def park(self, job: Job, ctx: Context, missing: list[references.MissingReference]) -> LaneResult:
         """Post the request (from the template, with its machine-readable marker, machine paths
-        rewritten: the comment is public) and park the job."""
+        rewritten: the comment is public) and park the job. One request per run; a job that has
+        already asked MAX_REQUESTS times is blocked for a human instead."""
+        keys = ", ".join(m.key for m in missing)
+        if self.parked:
+            return LaneResult(job.id, "failed", f"a second needs-references request in one run is refused ({keys})")
+        self.parked = True
+        try:
+            asked = references.request_count(ctx.board.comments(job.number), job.id, ctx.cfg.sources.request_associations,
+                                             ctx.cfg.board.bot_logins + [ctx.operator])
+        except (GHError, AttributeError):     # an issue that cannot be read: count none
+            asked = 0
+        if asked >= MAX_REQUESTS:
+            return LaneResult(job.id, "blocked", f"this job has asked for references {asked} times; instead of a "
+                              f"further request a human decides on {keys} (answer, waive, or narrow the job).")
+
         def clean(value):
             if isinstance(value, list):
                 return [clean(v) for v in value]
@@ -672,6 +732,7 @@ class Lane:
         return (pr or {}).get("html_url", "")
 
     agent_started = False   # set once the first agent run begins: a failure before it is the operator's side
+    parked = False          # set by the run's one needs-references request
 
     def run(self, job: Job, ctx: Context) -> LaneResult:
         reason = self.eligible(job, ctx)
@@ -699,9 +760,9 @@ class Lane:
                                   + (" (timeout)" if result.timed_out else ""))
         self.after_runs(job, ctx, ws)
         self.scrub_outputs(job, ctx, ws)
-        missing = self.missing_references(ws)
+        missing = self.missing_references(job, ctx, ws)
         if missing:
-            return self.park(job, ctx, missing)
+            return with_notes(self.park(job, ctx, missing), ws)
         problems = self.validate(job, ctx, ws)
         if problems:
             # One repair run in the same workspace before the job fails (still one attempt).
@@ -714,14 +775,22 @@ class Lane:
                 problems + [f"the repair run exited {result.exit_code}"]
         if problems:
             (ws.job_dir / "problems.txt").write_text("\n".join(problems) + "\n", encoding="utf-8")
-            return LaneResult(job.id, "failed", "; ".join(problems[:5]))
+            return with_notes(LaneResult(job.id, "failed", "; ".join(problems[:5])), ws)
         (ws.job_dir / "problems.txt").unlink(missing_ok=True)
         note = self.finish(job, ctx, ws) or f"{board.TITLE[job.kind].lower()} of {job.name}"
         try:
             url = self.submit(job, ctx, ws, note)
         except (LaneError, gitops.GitError, GHError) as exc:
-            return LaneResult(job.id, "failed", str(exc))
-        return LaneResult(job.id, "submitted", note, url)
+            return with_notes(LaneResult(job.id, "failed", str(exc)), ws)
+        return with_notes(LaneResult(job.id, "submitted", note, url), ws)
+
+
+def with_notes(result: LaneResult, ws: Workspace) -> LaneResult:
+    """The result, with the run's notes (requests dropped or completed) at the end of its detail, so
+    the round log shows them."""
+    if ws.extra.get("notes"):
+        result.detail = (result.detail + " [" + "; ".join(ws.extra["notes"]) + "]").strip()
+    return result
 
 
 def count(n: int, noun: str) -> str:
