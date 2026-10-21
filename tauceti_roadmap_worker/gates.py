@@ -272,6 +272,35 @@ def scan_dropped_names(text: str, names: list[str]) -> list[Hit]:
     return [h for n in names if n for h in _hits(rf"\b{re.escape(n)}\b", text)]
 
 
+# How TauCetiProgress (`progress/layers.py`) and TauCeti's Progress page (`roadmap_progress.py`) find
+# a roadmap's layers, copied since this package has no dependencies: worded headings, else short-label
+# headings, else bold bullets; a layer's id is its title up to the first `:`, `—`, `–`, `,` or `(`.
+_LAYER_WORD = r"(?:Layer|Lane|Part|Stage|Milestone)\b"
+_LAYER_SHORT = r"[A-Z]\d+[A-Za-z]?(?=\s*[:—–,])"
+_LAYER_FORMS = (re.compile(rf"^#{{2,4}}\s+({_LAYER_WORD}.*?)\s*$", re.M),
+                re.compile(rf"^#{{2,4}}\s+({_LAYER_SHORT}.*?)\s*$", re.M),
+                re.compile(rf"^- \*\*((?:{_LAYER_WORD}|{_LAYER_SHORT})[^*]*?)\*\*", re.M))
+_LAYER_ID = re.compile(rf"^((?:{_LAYER_WORD}|{_LAYER_SHORT})[^:—–,(]*?)\s*(?:[:—–,(]|$)")
+_BARE_LAYER_ID = re.compile(r"\A(?:(?:Layer|Lane|Part|Stage|Milestone) [A-Za-z0-9][A-Za-z0-9.\-]*|[A-Z]\d+[A-Za-z]?)\Z")
+
+
+def scan_layer_ids(readme: str) -> list[Hit]:
+    """Layer headings whose id is more than a label. `## Layer 2 Rings` names its layer `Layer 2 Rings`,
+    and every progress report on the roadmap then fails its check; `## Layer 2: Rings` names it `Layer 2`."""
+    found = next((ms for ms in (list(rx.finditer(readme)) for rx in _LAYER_FORMS) if ms), [])
+    out, seen = [], set()
+    for m in found:
+        title = re.sub(r"\s*\([^()]*\)\s*$", "", m.group(1)).strip().rstrip(".")
+        label = _LAYER_ID.match(title)
+        lid = (label.group(1) if label else title).strip()
+        if not title or lid in seen:
+            continue
+        seen.add(lid)
+        if not _BARE_LAYER_ID.match(lid):
+            out.append(Hit(readme.count("\n", 0, m.start()) + 1, f"layer id {lid[:80]!r}; write `Layer N: title`"))
+    return out
+
+
 # --- mechanical README/Lean agreement (mech_check.py) ----------------------------------------------
 
 TARGET_HEADING = re.compile(r"^\*\*([A-Z][^*\n]{2,150})\*\*", re.MULTILINE)
@@ -530,6 +559,7 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
     r.add("empty-sections", empty_lean_sections(lean))
     r.add("round-labels", round_labels(readme + "\n" + lean))
     r.add("long-fences", scan_long_fences(readme))
+    r.add("layer-ids", scan_layer_ids(readme))
     if opts.order is not None:
         readmes = dict(opts.sibling_readmes)
         readmes[name] = readme
