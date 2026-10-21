@@ -185,7 +185,8 @@ python3 -m compileall -q tauceti_roadmap_worker
 The package uses the standard library only; the optional extras are `pdf` (pypdf, when poppler's
 `pdftotext` is missing) and `ocr` (RapidOCR with pypdfium2). The tests never touch the network.
 Briefs live in `prompts/`, one per lane plus shared `sections/`; every brief carries the principles
-of DESIGN.md section 1, and the tests enforce it.
+of DESIGN.md section 1, and the tests enforce it. The evidence behind the review checklists, and the
+alternatives rejected, is [docs/REVIEW-EVIDENCE.md](docs/REVIEW-EVIDENCE.md).
 
 ## Licence
 
