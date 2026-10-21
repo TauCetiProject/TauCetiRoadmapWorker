@@ -436,7 +436,8 @@ def sources_cmd(args) -> int:
     s = cfg.sources
     deny = sources.deny_list(s.deny)
     if args.action == "classify":
-        print(sources.classify_url(args.target, s.allow, deny))
+        cls, entry = sources.classify_match(args.target, s.allow, deny)
+        print(f"{cls} ({entry})" if entry else cls)
         return 0
     if args.action == "check":
         problems = sources.validate_manifest(sources.load_manifest(Path(args.target)), s.allow, deny, s.uncertified_ok)

@@ -92,17 +92,41 @@ def host_matches(host: str, rule: str) -> bool:
     return host == rule[1:] or host.endswith(rule) if rule.startswith(".") else host == rule
 
 
-def classify_url(url: str, allow: dict[str, list[str]], deny: list[str]) -> str:
-    """'denied', a licence class whose host list matches, or 'unknown'. Deny wins over allow."""
-    host = host_of(url)
-    if not host:
-        return "unknown"
-    if any(host_matches(host, r) for r in deny):
-        return "denied"
+def rule_matches(url: str, rule: str) -> bool:
+    """A list entry against a URL. A host (`arxiv.org`; a leading dot covers its subdomains), or a
+    host with a path prefix (`www.ams.org/journals/`: that host, with or without `www.`, and only the
+    paths under the prefix), for a site that is open in part."""
+    host, rule = host_of(url), rule.strip().lower()
+    if not host or not rule:
+        return False
+    if "/" not in rule:
+        return host_matches(host, rule)
+    rhost, _, rpath = rule.partition("/")
+
+    def bare(h: str) -> str:
+        return h.removeprefix("www.")
+    same = host_matches(host, rhost) if rhost.startswith(".") else bare(host) == bare(rhost)
+    return same and (urlparse(url).path or "/").lower().startswith("/" + rpath)
+
+
+def classify_match(url: str, allow: dict[str, list[str]], deny: list[str]) -> tuple[str, str]:
+    """('denied', the deny entry), (a licence class, its allow entry) or ('unknown', ''). Deny wins
+    over allow."""
+    if not host_of(url):
+        return "unknown", ""
+    for r in deny:
+        if rule_matches(url, r):
+            return "denied", r
     for cls, rules in allow.items():
-        if any(host_matches(host, r) for r in rules):
-            return cls
-    return "unknown"
+        for r in rules:
+            if rule_matches(url, r):
+                return cls, r
+    return "unknown", ""
+
+
+def classify_url(url: str, allow: dict[str, list[str]], deny: list[str]) -> str:
+    """'denied', a licence class whose list matches, or 'unknown'. Deny wins over allow."""
+    return classify_match(url, allow, deny)[0]
 
 
 def read_host_list(text: str) -> list[str]:

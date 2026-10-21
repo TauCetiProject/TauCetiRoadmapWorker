@@ -59,9 +59,14 @@ def test_depcheck_cli(worktree, tmp_path, capsys):
 def test_sources_cli(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
     assert cli.main(["--conf", EXAMPLE, "sources", "classify", "https://libgen.is/x"]) == 0
-    assert capsys.readouterr().out.strip() == "denied"
+    assert capsys.readouterr().out.strip().startswith("denied (")
     assert cli.main(["--conf", EXAMPLE, "sources", "classify", "https://pastebin.com/x"]) == 0   # the sandbox list
-    assert capsys.readouterr().out.strip() == "denied"
+    assert capsys.readouterr().out.strip().startswith("denied (")
+    url = "https://www.ams.org/journals/mcom/1970-24-110/S0025-5718-1970-0277473-2/S0025-5718-1970-0277473-2.pdf"
+    assert cli.main(["--conf", EXAMPLE, "sources", "classify", url]) == 0                    # the matching entry
+    assert capsys.readouterr().out.strip() == "publisher-open (www.ams.org/journals/)"
+    assert cli.main(["--conf", EXAMPLE, "sources", "classify", "https://www.ams.org/books/gsm/052"]) == 0
+    assert capsys.readouterr().out.strip() == "unknown"
 
 
 @pytest.fixture

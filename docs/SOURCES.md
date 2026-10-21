@@ -66,6 +66,11 @@ hand-written file are not.
 | `institutional` | institutional repositories | `[sources.allow] institutional`, or named with `--licence-class` |
 | `operator-local` | texts operators hold in `[sources] local_dirs`, named by a `local:` answer; never uploaded | no host |
 
+An allow-list entry is a host (`arxiv.org`; a leading dot covers its subdomains) or, for a site that
+is open in part, a host with a path prefix: `www.ams.org/journals/` covers `www.ams.org` (and
+`ams.org`) under `/journals/` only, the AMS journal back issues, and not its paywalled books.
+`sources classify <url>` prints the class and the entry that matched.
+
 Pirate mirrors (Library Genesis, Sci-Hub, Z-Library, Anna's Archive and their copies) are refused
 everywhere: by the briefs, by `[sources] deny` (a manifest that names one fails its check), and by
 the deny list the service shares with the sandbox proxy (the bundled `sandbox/deny.txt` and the

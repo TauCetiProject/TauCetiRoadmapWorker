@@ -217,7 +217,10 @@ open-repository = ["arxiv.org", ".arxiv.org", "hal.science", ".hal.science", ".a
                    "numdam.org", ".numdam.org",
                    "gdz.sub.uni-goettingen.de", "eudml.org", ".eudml.org", "projecteuclid.org",
                    "stacks.math.columbia.edu", "zbmath.org", ".zbmath.org"]
-publisher-open = ["doi.org"]   # subscription publishers are not open by default; add a host only when its content is open
+# An entry is a host (a leading dot covers its subdomains) or a host with a path prefix for a site that
+# is open in part: "www.ams.org/journals/" covers www.ams.org (and ams.org) under /journals/ only (the
+# AMS journal back issues), not its paywalled books.
+publisher-open = ["doi.org", "www.ams.org/journals/"]   # subscription publishers are not open by default
 author-page = []
 institutional = []
 

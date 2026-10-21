@@ -298,3 +298,19 @@ def test_an_unrecognised_scan_is_marked_unreadable(tmp_path):
     note = "Note: image-only scan (1 of 1 pages have no text layer): enable [sources] ocr to recognise it"
     legacy.write_text(sources.numbered_text(["x"], ["Text of c (pdftotext -layout; 1 pages).", note]))
     assert sources.unreadable(legacy) and not sources.unreadable(tmp_path / "absent.txt")
+
+
+def test_an_allow_entry_may_carry_a_path_prefix():
+    """AMS journal back issues are open, its books are not: "www.ams.org/journals/" covers the first
+    only (board #137 cited Lehmer-Lehmer-Shanks 1970 from Mathematics of Computation)."""
+    from tauceti_roadmap_worker.sources import classify_match, rule_matches
+    allow = {"publisher-open": ["doi.org", "www.ams.org/journals/"], "open-repository": [".arxiv.org"]}
+    paper = "https://www.ams.org/journals/mcom/1970-24-110/S0025-5718-1970-0277473-2/S0025-5718-1970-0277473-2.pdf"
+    assert classify_match(paper, allow, []) == ("publisher-open", "www.ams.org/journals/")
+    assert classify_url("https://ams.org/journals/proc/1960-011-04/", allow, []) == "publisher-open"   # with or without www.
+    assert classify_url("https://www.ams.org/books/gsm/052", allow, []) == "unknown"
+    assert classify_url("https://www.ams.org/ebooks/x", allow, []) == "unknown"
+    assert classify_url("https://evil.org/journals/x.pdf", allow, []) == "unknown"
+    assert classify_url("https://export.arxiv.org/abs/1", allow, []) == "open-repository"           # host entries as before
+    assert classify_url(paper, allow, ["www.ams.org"]) == "denied"                                    # deny still wins
+    assert not rule_matches("https://www.ams.org/journalsx/y", "www.ams.org/journals/")
