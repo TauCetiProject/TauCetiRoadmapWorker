@@ -126,6 +126,9 @@ class FakeBoard:
         self.states.append((job.id, state))
         job.state = state
 
+    def current_state(self, job) -> str:
+        return job.state
+
     def update_spec(self, job) -> None:
         self.specs.append((job.id, job.spec()))
 
@@ -157,7 +160,8 @@ class FakeIssuesGH:
         self.events = {n: [{"event": "labeled", "label": dict(label)} for label in i["labels"]]
                        for n, i in self.issues.items()}
         self.writes: list[tuple[str, str, dict]] = []
-        self.comments: dict[int, list[str]] = {}
+        self.comments: dict[int, list[str]] = {}     # issue -> comment bodies, read back as the bot's
+        self.pulls: list[dict] = []                  # the open pull requests of the packages repository
         self.fail_removals = False
         self.dry_run = False
 
@@ -170,6 +174,15 @@ class FakeIssuesGH:
     def api(self, path: str, paginate: bool = False):
         url = urlsplit(path)
         parts, query = url.path.split("/"), parse_qs(url.query)
+        if parts[3:] == ["pulls"]:
+            want_state = (query.get("state") or ["open"])[0]
+            return [copy.deepcopy(p) for p in self.pulls if p.get("state", "open") == want_state]
+        if len(parts) == 5 and parts[3] == "pulls":
+            return copy.deepcopy(next(p for p in self.pulls if p["number"] == int(parts[4])))
+        if len(parts) == 6 and parts[3] == "issues" and parts[5] == "comments":
+            return [{"id": 10_000 + k, "body": body, "user": {"login": "board-bot"},
+                     "created_at": "2026-10-21T14:00:00Z"}
+                    for k, body in enumerate(self.comments.get(int(parts[4]), []))]
         if parts[3:] == ["issues"]:
             want = set((query.get("labels") or [""])[0].split(",")) - {""}
             state = (query.get("state") or ["open"])[0]

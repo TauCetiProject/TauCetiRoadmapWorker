@@ -154,6 +154,11 @@ def submission_under_review(ctx, number: int, pr: dict, sub: dict, job: Job, job
                                                      model=sub.get("model") or "?", pr=number))
     job.inputs["review_pr"] = number      # not `board_pr`: a redone design or package opens its own pull request
     ctx.board.update_spec(job)
+    if job.state in ("available", "claimed"):
+        # The worker set `submitted` on another issue (a twin closed under it) or could not write the
+        # board: a job under review on its pull request is never available for another worker.
+        ctx.board.set_state(job, "submitted", f"Submitted: #{number} is this job's open submission (this issue said "
+                                              f"`state:{job.state}`).")
     return open_for_review(ctx, number, pr, new, jobs, yes)
 
 

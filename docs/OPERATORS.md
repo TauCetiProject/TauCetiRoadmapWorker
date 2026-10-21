@@ -439,8 +439,13 @@ can both push it), and releases it at the end, so the hosted run and a maintaine
 interleave. A run that finds it held prints `intake already running (intake:run-<id or host>, since
 <time>); nothing done` and exits 0: wait, or let the schedule pick things up. Every job creation
 re-reads the live board first and skips a job whose issue exists (logged `already on the board as
-#n`), and each intake closes an open job issue that duplicates an older open one (`Duplicate of #n`,
-labelled `duplicate`, its lease released); a `state:done` twin and the older issue are never closed.
+#n`), and each intake closes an open job issue that duplicates another open one (`Duplicate of #n`,
+labelled `duplicate`); a `state:done` twin is never closed. The twin kept is the one that got
+furthest, not the older one: the twin an open submission pull request names (`Refs #n`, or
+`state:submitted`), else the one a worker claimed and still holds the lease of, else any claimed or
+parked one, else the oldest; the kept twin takes over the closed twin's pull request and state
+(`submitted` while its submission is open, `claimed` while its lease is live), and the job's lease is
+left alone (it is keyed by the job id, so it belongs to the worker on the kept twin).
 
 ### The board workflow
 

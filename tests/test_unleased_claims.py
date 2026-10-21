@@ -61,6 +61,17 @@ def test_board_sync_releases_a_claim_with_no_live_lease():
     assert intake.sync_expired(SimpleNamespace(cfg=example_config(), board=board), unreadable) == []
 
 
+def test_a_claim_submitted_since_the_listing_is_not_released():
+    """Board 2026-10-21: PKG-SelmerIwasawaCohomologyPartII (#582) submitted #589 at 14:44:51Z (its
+    28-minute lane outlived the 25-minute lease, released at its end); the sync's listing still
+    read `claimed`, it released the job at 14:45:00Z, and a worker rebuilt the package."""
+    rows = [claimed(582, "PKG-Selmer", "Claimed for `PKG-Selmer` by worker `chris-1` (@CBirkbeck, codex).", 28)]
+    board = board_with(*rows)
+    board.current_state = lambda job: "submitted"          # what the issue carries now
+    out = intake.sync_expired(SimpleNamespace(cfg=example_config(), board=board), FakeClaims())
+    assert out == ["PKG-Selmer: submitted now; left as it is"] and board.states == []
+
+
 def test_a_restarted_worker_releases_what_its_previous_process_claimed():
     rows = [claimed(525, "PORT-Coleman", "Claimed for `PORT-Coleman` by worker `chris-2` (@CBirkbeck, codex).", 3),
             claimed(526, "RT-Other~1a", "Claimed for `RT-Other~1a` by worker `chris-3` (@CBirkbeck, claude).", 3),

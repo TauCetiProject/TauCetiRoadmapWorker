@@ -278,6 +278,16 @@ def title_key(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
 
 
+REFS_RE = re.compile(r"^\s*Refs #(\d+)\b")
+
+
+def submission_issue(body: str) -> int:
+    """The job issue a submission pull request names in its first line (`Refs #n`, written by the
+    worker from the issue it claimed), or 0."""
+    m = REFS_RE.match(body or "")
+    return int(m.group(1)) if m else 0
+
+
 def made_note(board_, job: Job, number: int) -> str:
     """`JOB (#N)` for a job the board created, `JOB (already on the board as #N)` for one whose
     creation was skipped because the live board had it."""
@@ -786,9 +796,10 @@ class Board:
             return self.made[key]
         issues = self.gh.api(f"repos/{self.repo}/issues?labels={self.ns},kind:{job.kind}&state=all&per_page=100",
                              paginate=True) or []
-        twins = sorted(int(i["number"]) for i in issues
-                       if not i.get("pull_request") and title_key(i.get("title") or "") == key)
-        return twins[0] if twins else 0
+        # A twin closed as a duplicate still stops a re-creation, but the issue named is the kept one.
+        twins = sorted((DUPLICATE_LABEL in {label["name"] for label in i.get("labels", [])}, int(i["number"]))
+                       for i in issues if not i.get("pull_request") and title_key(i.get("title") or "") == key)
+        return twins[0][1] if twins else 0
 
     def create(self, job: Job, state: str = "available", preamble: str = "") -> int:
         """Create the job's issue, unless the live board has one already (then its number is
@@ -807,9 +818,19 @@ class Board:
             self.made[title_key(payload["title"])] = job.number = number
         return number
 
+    def current_state(self, job: Job) -> str:
+        """The job's state as its issue carries it now: a listing read earlier in the run may lag a
+        worker's own change (a submission that came in meanwhile). The listed state when the issue
+        cannot be read."""
+        try:
+            labels = label_names(self.gh.api(f"repos/{self.repo}/issues/{job.number}/labels")) or []
+        except GHError:
+            return job.state
+        return state_from_labels(labels)
+
     def open_twins(self) -> list[list[Job]]:
         """Open job issues that share a title (as `title_key` compares it), each group oldest
-        first: the same job created twice."""
+        first: the same job created twice (`intake.repair_duplicates` picks the one to keep)."""
         issues = self.gh.api(f"repos/{self.repo}/issues?labels={self.ns}&state=open&per_page=100", paginate=True) or []
         groups: dict[str, list[Job]] = {}
         for issue in issues:

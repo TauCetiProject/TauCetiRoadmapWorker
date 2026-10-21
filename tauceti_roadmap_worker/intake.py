@@ -15,7 +15,8 @@
   submissions whose pull request was closed unmerged, go back to `state:available`.
 * `board_lock` / `take_lock`: one intake or sync at a time, whoever runs it (the hosted workflow and
   a maintainer's shell share no filesystem): a lease ref in the board repository, which both can
-  push; `repair_duplicates`: a job created twice (both open) keeps its older issue.
+  push; `repair_duplicates`: a job created twice (both open) keeps the twin that got furthest
+  (its submission, a worker's claim, else the older issue) and the other takes nothing with it.
 """
 
 from __future__ import annotations
@@ -97,6 +98,9 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None) -> str:
     job = ctx.board.find(sub["job"], jobs)
     if not job:
         return f"#{number}: names unknown job {sub['job']}"
+    named = board.submission_issue(pr.get("body") or "")
+    if named and job.number != named:     # twins not yet repaired: the issue the worker claimed is the job's
+        job = next((j for j in jobs if j.id == sub["job"] and j.number == named), job)
     problems = []
     if pr.get("draft"):
         return f"#{number}: a draft; the intake waits until it is ready"
@@ -581,37 +585,121 @@ def take_lock(lock, project: str) -> tuple[bool, str]:
 
 # --- duplicate jobs ---------------------------------------------------------------------------------
 
+# How far a twin got, the furthest kept: finished; submitted (an open submission pull request names
+# it, or its label says so); claimed by a worker that still holds the job's lease; claimed at all, or
+# parked; nothing yet. Among equals the older issue is the job.
+PROGRESS = {"done": 6, "submitted": 5, "claimed": 3, "blocked": 2, "needs-references": 2, "available": 1}
+
+
+def twin_progress(job: Job, has_pr: bool, worker_claim: bool, live: bool) -> tuple[int, int]:
+    """Sort key of a twin: the greatest is the one to keep."""
+    rank = PROGRESS.get(job.state, 0)
+    if has_pr:
+        rank = max(rank, PROGRESS["submitted"])
+    elif job.state == "claimed" and worker_claim and live:
+        rank = 4
+    return rank, -job.number
+
+
+def worker_claimed(ctx, job: Job) -> bool:
+    """Whether a worker (or a listed reviewer's `reviewing` comment) claimed this issue itself, as
+    its claim note says; a `state:claimed` the lease mirror set names only the lease."""
+    if job.state != "claimed":
+        return False
+    try:
+        claim = board.last_claim(ctx.board.comments(job.number), job.id)
+    except GHError:
+        return False
+    return bool(claim and (claim["worker"] or claim["comment"]))
+
+
 def repair_duplicates(ctx, shared: claims.Claims | None, yes: bool = False) -> list[str]:
     """`board intake`: a job whose issue exists twice, both open (two runs created it at once),
-    keeps the older issue; each newer twin is closed as `Duplicate of #n` with the `duplicate`
-    label (no longer a job) and its lease, if any, released. The older twin is never closed, nor a
-    twin that is `state:done`."""
-    out = []
-    for group in ctx.board.open_twins():
-        keep, *rest = group
+    keeps the twin that got furthest (`twin_progress`: a submission pull request that names it by
+    `Refs #n`, or the `submitted` label; then a worker's own claim while the job's lease is live;
+    then any claim or park; then the older issue) and closes the others as `Duplicate of #n` with the
+    `duplicate` label (no longer a job: `Board._job_from_issue` ignores them, so every lookup by job
+    id or title finds the kept twin). A twin that is `state:done` is never closed. The kept twin is
+    never left behind a closed one: it takes over the inputs the closed twin gained (its pull
+    request, the comments it handled) and, when the job has an open submission, `state:submitted`;
+    when the job's lease is live, `state:claimed`. The lease is the job's (one per job id, shared by
+    its twins) and stays with the kept twin: releasing it would free a running worker's job (board
+    2026-10-21, #582/#583)."""
+    groups = ctx.board.open_twins()
+    if not groups:
+        return []
+    out, now, cfg = [], int(dt.datetime.now(dt.UTC).timestamp()), ctx.cfg
+    pulls = ctx.gh.api(f"repos/{cfg.repositories.packages_repo()}/pulls?state=open&per_page=100", paginate=True) or []
+    submissions: dict[str, list[dict]] = {}
+    for p in pulls:
+        sub = board.decode_submission(p.get("body") or "")
+        if sub and p.get("state", "open") == "open":
+            submissions.setdefault(sub["job"], []).append(p)
+    for group in groups:
+        job_id = group[0].id
+        prs = submissions.get(job_id, [])
+        numbers = {int(p["number"]) for p in prs}
+        named = {board.submission_issue(p.get("body") or "") for p in prs}
+        # The twin a submission names (`Refs #n`); with an unnamed one, the twin whose label or spec says so.
+        has_pr = {j.number: j.number in named
+                  or bool(prs) and (j.state == "submitted" or j.inputs.get("review_pr") in numbers) for j in group}
+        lease = shared.read(claims.job_key(cfg.project.name, job_id)) if shared else None
+        live = claims.lease_live(lease, now)
+        held = {j.number: worker_claimed(ctx, j) for j in group}
+        ranked = sorted(group, key=lambda j: twin_progress(j, has_pr[j.number], held[j.number], live), reverse=True)
+        keep, *rest = ranked
+        rank = twin_progress(keep, has_pr[keep.number], held[keep.number], live)[0]
+        why = (f"it is {keep.state}" if keep.state == "done"
+               else f"it carries the submission #{min(numbers)}" if has_pr[keep.number]
+               else "a worker holds it" if rank == 4
+               else f"it is {keep.state}" if rank > PROGRESS["available"]
+               else "it is the older issue")
+        closed = False
         for dup in rest:
             if dup.state == "done":
                 out.append(f"{dup.id}: #{dup.number} duplicates #{keep.number} but is done; left as it is")
                 continue
             if not yes:
-                out.append(f"{dup.id}: would close #{dup.number} as a duplicate of #{keep.number} (dry run)")
+                out.append(f"{dup.id}: would close #{dup.number} as a duplicate of #{keep.number} ({why}; dry run)")
                 continue
-            ctx.board.comment(dup.number, f"Duplicate of #{keep.number}: this job was created twice; the older issue "
-                                          "is the job. Closed by the board.")
+            ctx.board.comment(dup.number, f"Duplicate of #{keep.number}: this job was created twice; #{keep.number} is "
+                                          f"the job ({why}). Closed by the board.")
             try:
                 ctx.board.add_label(dup, board.DUPLICATE_LABEL)
             except GHError:
                 pass
-            ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.board_repo()}/issues/{dup.number}", {"state": "closed"})
-            released = ""
-            if shared:
-                key = claims.job_key(ctx.cfg.project.name, dup.id)
-                lease = shared.read(key)
-                if lease:
-                    shared.release(key, force=True)
-                    released = f"; lease of {lease.get('owner', '?')} released"
-            out.append(f"{dup.id}: closed #{dup.number} as a duplicate of #{keep.number}{released}")
+            ctx.gh.write("PATCH", f"repos/{cfg.repositories.board_repo()}/issues/{dup.number}", {"state": "closed"})
+            closed = True
+            if carry_inputs(keep, dup):
+                ctx.board.update_spec(keep)
+            out.append(f"{dup.id}: closed #{dup.number} as a duplicate of #{keep.number} ({why})"
+                       + (f"; the lease of {lease.get('owner', '?')} stays with #{keep.number}" if live else ""))
+        if not closed or keep.state not in ("available", "claimed"):
+            continue
+        if prs:
+            ctx.board.set_state(keep, "submitted", f"Submitted: #{min(numbers)} is this job's open submission (its "
+                                                   f"twin was closed as a duplicate; this issue said "
+                                                   f"`state:{keep.state}`).")
+            out.append(f"{keep.id}: #{keep.number} moved to submitted (#{min(numbers)} is open)")
+        elif live and keep.state == "available":
+            ctx.board.set_state(keep, "claimed", f"Claimed for `{keep.id}` by `{lease.get('owner')}` (lease).")
+            out.append(f"{keep.id}: #{keep.number} moved to claimed (the lease of {lease.get('owner', '?')} is live)")
     return out
+
+
+def carry_inputs(keep: Job, dup: Job) -> bool:
+    """The inputs a closed twin gained that the kept one lacks (its submission's `review_pr`, a
+    pending merge, the head a fix must move) go to the kept twin; the comments handled are merged.
+    True when the kept twin's spec changed."""
+    changed = False
+    for key, value in dup.inputs.items():
+        if key == "handled":
+            merged = sorted(set(keep.inputs.get("handled", [])) | set(value))
+            if merged != keep.inputs.get("handled", []):
+                keep.inputs["handled"], changed = merged, True
+        elif key not in keep.inputs:
+            keep.inputs[key], changed = value, True
+    return changed
 
 
 # --- sync ------------------------------------------------------------------------------------------
@@ -707,6 +795,13 @@ def sync_expired(ctx, shared: claims.Claims | None) -> list[str]:
             continue
         age = claim_age(claim, dt.datetime.fromtimestamp(now, dt.UTC)) if claim else None
         if age is None or age <= (COMMENT_CLAIM_TTL if claim["comment"] else claims.JOB_TTL):
+            continue
+        current = ctx.board.current_state(job)
+        if current != "claimed":
+            # The listing lagged the worker: a lane longer than the lease that submitted while this
+            # run read the board (PKG-SelmerIwasawaCohomologyPartII, #582: submitted 14:44:51Z,
+            # released 14:45:00Z and rebuilt). Its lease is gone because its round ended.
+            out.append(f"{job.id}: {current} now; left as it is")
             continue
         ctx.board.set_state(job, "available", f"Released: claimed by {claim['who']} at {claim['at']} with no live lease.")
         out.append(f"{job.id}: released (claimed by {claim['who']}, no lease)")
