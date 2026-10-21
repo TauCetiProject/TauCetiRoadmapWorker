@@ -20,7 +20,7 @@ from .base import (Context, Lane, LaneError, Workspace, board_reports, checkout_
                    ensure_in_order, load_order, open_roadmap_prs, order_path, scan_problems, sibling_checkouts,
                    sibling_readmes)
 from .package import elaboration_problems, package_scan
-from .pr import fresh_worktree, pr_branch_worktree
+from .pr import fresh_worktree, pr_branch_worktree, remove_worktree
 
 
 GAPS_ONLY = (" (its top-level `gaps` list only: a supplier gap the package needs, with `slug`, `needs`, `supplier` "
@@ -138,13 +138,18 @@ class RedTeamFixLane(Lane):
         problems += elaboration_problems(ctx, ws, pkg / "Suggested.lean")
         cfg = ctx.cfg
         if cfg.gates.build and (ws.content / ".lake").is_dir():
-            wt = fresh_worktree(ctx, ws.content, job.name, "build")
-            folder = wt / cfg.roadmap.active_dir / job.name
-            folder.mkdir(parents=True, exist_ok=True)
-            for f in ("README.md", "Suggested.lean", "metadata.toml"):
-                if (pkg / f).is_file():
-                    shutil.copy2(pkg / f, folder / f)
-            problems += gates.build_problems(wt, cfg.gates.build.format(module=f"{cfg.roadmap.active_dir}.{job.name}.Suggested"))
+            # A throwaway worktree (never under build/, which holds the worker's own briefs).
+            wt = fresh_worktree(ctx, ws.content, job.name, "buildcheck")
+            try:
+                folder = wt / cfg.roadmap.active_dir / job.name
+                folder.mkdir(parents=True, exist_ok=True)
+                for f in ("README.md", "Suggested.lean", "metadata.toml"):
+                    if (pkg / f).is_file():
+                        shutil.copy2(pkg / f, folder / f)
+                problems += gates.build_problems(
+                    wt, cfg.gates.build.format(module=f"{cfg.roadmap.active_dir}.{job.name}.Suggested"))
+            finally:
+                remove_worktree(ws.content, wt)
         return problems
 
     def prepare(self, job: Job, ctx: Context) -> Workspace:

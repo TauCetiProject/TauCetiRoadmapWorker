@@ -19,7 +19,7 @@ from ..board import Job
 from ..gh import GHError
 from .base import (PR_MARKER, Context, Lane, LaneError, Workspace, count, dropped_names, ensure_in_order, load_order,
                    open_roadmap_prs, order_path, scan_problems, sibling_checkouts, sibling_readmes)
-from .pr import fresh_worktree
+from .pr import fresh_worktree, release_branch
 
 
 def extract_synopsis(report: str) -> str:
@@ -101,6 +101,7 @@ class PortLane(Lane):
         ws.extra["order_notes"] = ensure_in_order(ctx, ws, job.name, *texts)
         ws.extra["siblings"] = sibling_checkouts(ctx, prs, skip=job.name)
         wt = fresh_worktree(ctx, ws.content, job.name, "port")
+        release_branch(ws.content, f"roadmap/{gitops.kebab(job.name)}", keep=wt)   # the agent creates it here
         ws.extra["base"] = gitops.git(wt, "rev-parse", "HEAD").strip()
         ws.extra["branch"] = f"roadmap/{gitops.kebab(job.name)}"
         ws.extra["readme"] = wt / ctx.cfg.roadmap.active_dir / job.name / "README.md"

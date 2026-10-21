@@ -117,3 +117,48 @@ def test_doctor_warns_below_forty_gigabytes(monkeypatch, tmp_path):
     assert (level, what) == (cli.WARN, "free space") and text.startswith("31 GB free on the state directory's disk (below 40")
     monkeypatch.setattr(base, "free_gb", lambda path: 128.0)
     assert cli.free_space_row(tmp_path)[0] == cli.OK
+
+
+def git_repo(path):
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q",
+                    "--allow-empty", "-m", "base"], check=True)
+    return path
+
+
+@needs_git
+def test_the_sweep_never_touches_the_workers_briefs(tmp_path):
+    """Regression (e9c34fc, chris-1 at 09:18Z): the start sweep removed build/<version>, the worker's
+    snapshot of the briefs, and every lane after it failed "no brief for lane 'redteam'"."""
+    from tauceti_roadmap_worker import build, prompts, references
+    wdir = tmp_path / "workers" / "w1"
+    content = git_repo(wdir / "content")
+    try:
+        snap = build.snapshot(wdir, "0.1.0+cdd51166a2")
+        done = wdir / "pr" / "Finished"
+        subprocess.run(["git", "-C", str(content), "worktree", "add", "-q", "--detach", str(done), "HEAD"], check=True)
+        stray = wdir / "port" / "NotAWorktree"
+        stray.mkdir(parents=True)
+        (stray / "notes.md").write_text("kept")
+        ctx = SimpleNamespace(wdir=wdir, board=FakeBoard(jobs=[]))
+        assert worker.sweep_worktrees(ctx, log=lambda line: None) == ["pr/Finished"]
+        assert (snap / "prompts" / "redteam.md").is_file() and (stray / "notes.md").is_file()
+        assert "__REPORT__" in prompts.template("redteam")                    # a lane after the sweep renders its brief
+    finally:
+        prompts.use(None)
+        references.use_templates(None)
+
+
+@needs_git
+def test_a_branch_an_earlier_lane_still_holds_is_freed(tmp_path):
+    """Regression (chris-1 at 04:32Z): "fatal: 'roadmap/arithmetic-dynamics' is already used by worktree"."""
+    content = git_repo(tmp_path / "content")
+    old = tmp_path / "w1" / "port" / "ArithmeticDynamics"
+    subprocess.run(["git", "-C", str(content), "worktree", "add", "-q", "-b", "roadmap/arithmetic-dynamics", str(old),
+                    "HEAD"], check=True)
+    new = tmp_path / "w1" / "pr" / "ArithmeticDynamics"
+    subprocess.run(["git", "-C", str(content), "worktree", "add", "-q", "--detach", str(new), "HEAD"], check=True)
+    assert [p.resolve() for p in pr.worktrees_holding(content, "roadmap/arithmetic-dynamics")] == [old.resolve()]
+    removed = pr.release_branch(content, "roadmap/arithmetic-dynamics", keep=new)
+    assert [p.resolve() for p in removed] == [old.resolve()] and not old.exists()
+    subprocess.run(["git", "-C", str(new), "checkout", "-q", "-B", "roadmap/arithmetic-dynamics", "HEAD"], check=True)

@@ -101,22 +101,68 @@ def remove_worktree(content: Path, wt: Path) -> None:
     gitops.git(content, "worktree", "prune", check=False)
 
 
+ROADMAP_WORKTREES = ("pr", "port")     # never build/: it holds the worker's snapshot of the briefs
+
+
+def is_worktree_of(wt: Path, content: Path) -> bool:
+    """Whether `wt` is a git worktree of the content checkout (its `.git` file points into
+    `<content>/.git/worktrees/`)."""
+    marker = wt / ".git"
+    if not marker.is_file():
+        return False
+    try:
+        line = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    gitdir = Path(line.removeprefix("gitdir:").strip())
+    return line.startswith("gitdir:") and gitdir.resolve().is_relative_to((content / ".git" / "worktrees").resolve())
+
+
 def sweep_worktrees(wdir: Path, content: Path, open_names: set[str], keep: str = "") -> list[str]:
-    """Remove the worker's pr/<Name> and port/<Name> worktrees whose roadmap has no open job left
-    (and never `keep`). Returns the ones removed."""
+    """Remove the worker's pr/<Name> and port/<Name> worktrees whose roadmap has no open job left (and
+    never `keep`): only git worktrees of the content checkout, never anything else (the build/
+    snapshot of the briefs above all). Returns the ones removed."""
     out = []
-    for kind in ("pr", "port", "build"):
+    for kind in ROADMAP_WORKTREES:
         for wt in sorted((wdir / kind).iterdir()) if (wdir / kind).is_dir() else []:
-            if wt.is_dir() and wt.name not in open_names and wt.name != keep:
+            if wt.name not in open_names and wt.name != keep and is_worktree_of(wt, content):
                 remove_worktree(content, wt)
                 out.append(f"{kind}/{wt.name}")
     return out
+
+
+def worktrees_holding(content: Path, branch: str) -> list[Path]:
+    """The worktrees of the content checkout that have `branch` checked out."""
+    out, current = [], None
+    for line in gitops.git(content, "worktree", "list", "--porcelain", check=False).splitlines():
+        if line.startswith("worktree "):
+            current = Path(line[len("worktree "):])
+        elif line == f"branch refs/heads/{branch}" and current is not None:
+            out.append(current)
+    return out
+
+
+def release_branch(content: Path, branch: str, keep: Path | None = None) -> list[Path]:
+    """Free a roadmap branch for a new worktree: an earlier lane's worktree of this worker that still
+    has it checked out (a finished pr/ or port/ lane) is removed, and the content checkout itself is
+    detached if it holds it. Returns the worktrees removed."""
+    removed = []
+    for wt in worktrees_holding(content, branch):
+        if keep is not None and wt.resolve() == keep.resolve():
+            continue
+        if wt.resolve() == content.resolve():
+            gitops.git(content, "checkout", "-q", "--detach", check=False)
+            continue
+        remove_worktree(content, wt)
+        removed.append(wt)
+    return removed
 
 
 def pr_branch_worktree(ctx: Context, content: Path, name: str, pr: int, branch: str) -> tuple[Path, str]:
     """A worktree on the pull request's branch at its current head. Returns (worktree, head sha)."""
     wt = fresh_worktree(ctx, content, name, "pr")
     gitops.git(wt, "fetch", "-q", "origin", f"pull/{pr}/head")
+    release_branch(content, branch, keep=wt)      # an earlier lane's worktree may still hold the branch
     gitops.git(wt, "checkout", "-q", "-B", branch, "FETCH_HEAD")
     return wt, gitops.git(wt, "rev-parse", "HEAD").strip()
 

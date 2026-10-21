@@ -503,7 +503,7 @@ machine are here:
 | Path | What |
 | --- | --- |
 | `workers/<id>/board`, `content` | the worker's checkouts of the packages and content repositories |
-| `workers/<id>/port/<Name>`, `pr/<Name>` | worktrees for the port lane and for work on a pull request branch; their `.lake/packages` is a link to `lake/<pin>/packages`; removed after the lane submits, and at worker start when the roadmap has no open job |
+| `workers/<id>/port/<Name>`, `pr/<Name>` | worktrees for the port lane and for work on a pull request branch; their `.lake/packages` is a link to `lake/<pin>/packages`; removed after the lane submits, and at worker start when the roadmap has no open job (only git worktrees of the content checkout under `pr/` and `port/`; `build/` holds the worker's snapshot of the briefs and is never swept) |
 | `lake/<pin>/packages` | the machine's one copy of the Lake packages (Mathlib and Tau Ceti oleans, about 16 GB) per pin of the content repository's manifest, toolchain and lakefile, shared by every worktree of every worker; `lake exe cache get` fills it once (`.ready` marks it) |
 | `workers/<id>/jobs/<JOB>/` | brief, agent logs (`run-N.out` with START/EXIT lines), scratch, problems, gate result |
 | `workers/<id>/attempts.json` | failures per job on this worker |
