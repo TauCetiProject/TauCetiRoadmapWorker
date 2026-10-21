@@ -18,6 +18,7 @@ import os
 import re
 import shlex
 import shutil
+import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -386,6 +387,8 @@ class Lane:
         kept = set_aside(board_dir, ctx.wdir / "jobs", worker)
         gitops.sync_checkout(cfg.repositories.packages_repo(), board_dir, "main", scrub=(pkg,))
         gitops.sync_checkout(cfg.repositories.content, content_dir, cfg.project.branch)
+        for checkout in (board_dir, content_dir):      # worktrees of the content checkout share its identity
+            gitops.set_identity(checkout, ctx.operator)
         shared = os.environ.get("TAUCETI_ROADMAP_LAKE_PACKAGES")
         if shared and Path(shared).is_dir() and not (content_dir / ".lake" / "packages").exists():
             # One built Mathlib/Tau Ceti for every worker of the host (never build it per worker).
@@ -670,7 +673,8 @@ class Lane:
         fork = gitops.ensure_fork(ctx.gh, ctx.cfg.repositories.packages_repo(), ctx.operator)
         if ws.extra.get("pr_repo") and ws.extra["pr_repo"].lower() != fork.lower():
             raise LaneError(f"the pull request's branch is in {ws.extra['pr_repo']}; only its owner pushes to it")
-        gitops.push_branch(ws.board, fork, ws.extra.get("pr_ref") or ws.branch)
+        self.push(lambda: gitops.push_branch(ws.board, fork, ws.extra.get("pr_ref") or ws.branch,
+                                             expected=ws.extra.get("push_base") or ws.extra.get("head")))
         head = gitops.git(ws.board, "rev-parse", "HEAD").strip()
         marker = {**self.marker(job, ctx, ws), "head": head}
         url = self.comment_on_board_pr(job, ctx, ws, f"Fix `{job.id}` pushed `{head[:7]}` by @{ctx.operator} "
@@ -717,7 +721,7 @@ class Lane:
         gitops.commit_paths(ws.board, changed, message, ctx.operator)
         repo = cfg.repositories.packages_repo()
         fork = gitops.ensure_fork(ctx.gh, repo, ctx.operator)
-        gitops.push(ws.board, fork, ws.branch)
+        self.push(lambda: gitops.push(ws.board, fork, ws.branch))
         body = (f"Refs #{job.number}\n\n{summary}\n\nAgent: {ctx.agent} ({ctx.model}); operator @{ctx.operator}; "
                 f"worker `{ctx.worker_id}`. Files: " + ", ".join(f"`{p}`" for p in changed) + "\n\n"
                 + board.encode_submission(job.id, ctx.worker_id, ctx.operator, ctx.agent, ctx.model))
@@ -738,6 +742,9 @@ class Lane:
         reason = self.eligible(job, ctx)
         if reason:
             return LaneResult(job.id, "skipped", reason)
+        pending = read_pending(ctx, job)
+        if pending:
+            return self.resume_push(job, ctx, pending)
         ws = self.prepare(job, ctx)
         self.prepare_sources(job, ctx, ws)
         values = {**self.common_values(job, ctx, ws), **self.values(job, ctx, ws)}
@@ -777,12 +784,136 @@ class Lane:
             (ws.job_dir / "problems.txt").write_text("\n".join(problems) + "\n", encoding="utf-8")
             return with_notes(LaneResult(job.id, "failed", "; ".join(problems[:5])), ws)
         (ws.job_dir / "problems.txt").unlink(missing_ok=True)
-        note = self.finish(job, ctx, ws) or f"{board.TITLE[job.kind].lower()} of {job.name}"
+        return with_notes(self.deliver(job, ctx, ws), ws)
+
+    def deliver(self, job: Job, ctx: Context, ws: Workspace) -> LaneResult:
+        """The lane's last steps and the submission, once the checks passed. A branch that moved
+        while the job ran blocks the job for a human; a push that keeps failing keeps the run
+        (`pending-push/`), and the next attempt on this worker pushes it without running the agent."""
         try:
+            note = self.finish(job, ctx, ws) or f"{board.TITLE[job.kind].lower()} of {job.name}"
             url = self.submit(job, ctx, ws, note)
+        except gitops.BranchMoved as exc:
+            return LaneResult(job.id, "blocked", str(exc))
+        except gitops.PushError as exc:
+            tries = save_pending(ctx, job, ws, str(exc))
+            if tries >= PUSH_ATTEMPTS:
+                clear_pending(ctx, job)
+                return LaneResult(job.id, "failed", f"the push failed {tries} times; the run is given up: {exc}")
+            return LaneResult(job.id, "failed", f"push failed ({exc}); the run is kept in "
+                              f"{ws.job_dir / PENDING_DIR} and the next attempt pushes it without running the agent "
+                              f"(try {tries} of {PUSH_ATTEMPTS})")
         except (LaneError, gitops.GitError, GHError) as exc:
-            return with_notes(LaneResult(job.id, "failed", str(exc)), ws)
-        return with_notes(LaneResult(job.id, "submitted", note, url), ws)
+            return LaneResult(job.id, "failed", str(exc))
+        clear_pending(ctx, job)
+        return LaneResult(job.id, "submitted", note, url)
+
+    def push(self, do) -> None:
+        """A push, tried again PUSH_RETRIES times PUSH_BACKOFF seconds apart before PushError
+        stands (a moved branch is never retried)."""
+        for attempt in range(PUSH_RETRIES + 1):
+            try:
+                return do()
+            except gitops.PushError:
+                if attempt == PUSH_RETRIES:
+                    raise
+                self.sleep(PUSH_BACKOFF)
+
+    sleep = staticmethod(time.sleep)
+
+    def resume_push(self, job: Job, ctx: Context, pending: dict) -> LaneResult:
+        """The next attempt after a push failed: fresh checkouts, the run's deliverables and commit
+        put back, the checks again (no agent run), then the push and the submission."""
+        ws = self.prepare(job, ctx)
+        restore_pending(ctx, job, ws, pending)
+        problems = self.validate(job, ctx, ws)
+        if problems:
+            clear_pending(ctx, job)
+            return LaneResult(job.id, "failed", "the kept run no longer passes its checks: " + "; ".join(problems[:5]))
+        ws.extra.setdefault("notes", []).append(f"pushing the run kept after a failed push (try {pending.get('tries', 1) + 1})")
+        return with_notes(self.deliver(job, ctx, ws), ws)
+
+
+PENDING_DIR = "pending-push"
+PUSH_ATTEMPTS = 3       # attempts (each with its in-run retries) before a run whose push fails is given up
+PUSH_RETRIES = 2        # retries of a push inside one attempt
+PUSH_BACKOFF = 60       # seconds between them
+
+
+def pending_path(ctx: Context) -> Path:
+    """The worker's record of runs kept after a failed push (beside attempts.json)."""
+    return ctx.wdir / "pending-push.json"
+
+
+def _pending_all(ctx: Context) -> dict:
+    try:
+        data = json.loads(pending_path(ctx).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def read_pending(ctx: Context, job: Job) -> dict | None:
+    entry = _pending_all(ctx).get(job.id)
+    return entry if isinstance(entry, dict) else None
+
+
+def clear_pending(ctx: Context, job: Job) -> None:
+    data = _pending_all(ctx)
+    if data.pop(job.id, None) is not None:
+        pending_path(ctx).write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def save_pending(ctx: Context, job: Job, ws: Workspace, error: str) -> int:
+    """Keep a run whose push failed: the job's deliverables in the board checkout (copied to
+    `jobs/<JOB>/pending-push/board/`), and the commit in the content worktree (a bundle beside them,
+    and a ref in the content checkout, so it survives the worktree), recorded in pending-push.json.
+    Returns how many attempts have failed to push it."""
+    keep = ws.job_dir / PENDING_DIR
+    shutil.rmtree(keep, ignore_errors=True)
+    (keep / "board").mkdir(parents=True, exist_ok=True)
+    for rel in board.allowed_paths(job, ctx.cfg.board.packages_dir, board.order_file(ctx.cfg)):
+        if (ws.board / rel).is_file():
+            (keep / "board" / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ws.board / rel, keep / "board" / rel)
+    entry = {"tries": (read_pending(ctx, job) or {}).get("tries", 0) + 1, "error": error[:300],
+             "at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds")}
+    if ws.workdir != ws.board and (ws.workdir / ".git").exists():
+        sha = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
+        base = ws.extra.get("push_base") or ws.extra.get("head") or ws.extra.get("base") or ""
+        entry.update(sha=sha, base=base, branch=ws.extra.get("branch", ""))
+        ref = f"refs/tauceti-pending/{claims.ref_safe(job.id)}"
+        gitops.git(ws.workdir, "update-ref", ref, sha)
+        if base and base != sha:
+            gitops.git(ws.workdir, "bundle", "create", str(keep / "commit.bundle"), f"{base}..{ref}", check=False)
+    data = _pending_all(ctx)
+    data[job.id] = entry
+    pending_path(ctx).parent.mkdir(parents=True, exist_ok=True)
+    pending_path(ctx).write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return entry["tries"]
+
+
+def restore_pending(ctx: Context, job: Job, ws: Workspace, pending: dict) -> None:
+    """Put a kept run back into fresh checkouts: the deliverables into the board checkout, the
+    commit onto the branch in the content worktree; the push expects the head the run was built on."""
+    keep = ws.job_dir / PENDING_DIR / "board"
+    for path in keep.rglob("*") if keep.is_dir() else []:
+        if path.is_file():
+            dest = ws.board / path.relative_to(keep)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, dest)
+    if pending.get("sha") and ws.workdir != ws.board:
+        ref = f"refs/tauceti-pending/{claims.ref_safe(job.id)}"
+        if not gitops.git(ws.workdir, "rev-parse", "-q", "--verify", f"{pending['sha']}^{{commit}}", check=False).strip():
+            bundle = ws.job_dir / PENDING_DIR / "commit.bundle"
+            gitops.git(ws.workdir, "fetch", "-q", str(bundle), f"+{ref}:{ref}", check=False)
+        branch = pending.get("branch") or ws.extra.get("branch", "")
+        if branch:
+            gitops.git(ws.workdir, "checkout", "-q", "-B", branch, pending["sha"])
+        else:
+            gitops.git(ws.workdir, "checkout", "-q", "--detach", pending["sha"])
+    if pending.get("base"):
+        ws.extra["push_base"] = pending["base"]
 
 
 def with_notes(result: LaneResult, ws: Workspace) -> LaneResult:

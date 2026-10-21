@@ -222,7 +222,7 @@ def test_a_worker_review_and_a_worker_fix_on_the_board_pull_request(tmp_path, mo
     pushed = []
     monkeypatch.setattr(gitops, "commit_paths", lambda wt, paths, msg, login: pushed.append(("commit", sorted(paths))))
     monkeypatch.setattr(gitops, "ensure_fork", lambda gh, repo, login: f"{login}/TauCetiRoadmapJobs")
-    monkeypatch.setattr(gitops, "push_branch", lambda wt, fork, branch: pushed.append(("push", fork, branch)))
+    monkeypatch.setattr(gitops, "push_branch", lambda wt, fork, branch, expected=None: pushed.append(("push", fork, branch)))
     monkeypatch.setattr(gitops, "changed_files", lambda wt, base="HEAD": ["packages/Foo/README.md"])
     gh = FakeGH()
     gh.api = lambda path, paginate=False: {"state": "open", "user": {"login": "alice"},

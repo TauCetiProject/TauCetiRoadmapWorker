@@ -21,6 +21,19 @@ class GitError(Exception):
     pass
 
 
+class PushError(GitError):
+    """A push that git refused or could not make (the work it would have pushed is intact)."""
+
+
+class BranchMoved(GitError):
+    """The branch a push was to move is no longer at the commit the work was built on."""
+
+    def __init__(self, branch: str, expected: str, found: str):
+        self.branch, self.expected, self.found = branch, expected, found
+        super().__init__(f"the pull request moved from {expected[:7] or '(no branch)'} to {found[:7] or '(no branch)'} "
+                         "while the fix ran; nothing was pushed (a human, or the next round, rebases the work)")
+
+
 def git(cwd: Path | None, *args: str, check: bool = True, timeout: int = 900) -> str:
     cmd = ["git", *CRED] + (["-C", str(cwd)] if cwd else []) + list(args)
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
@@ -80,24 +93,54 @@ def ensure_fork(gh: GH, repo: str, login: str) -> str:
     return f"{login}/{name}"
 
 
-def push(worktree: Path, fork: str, branch: str, dry_run: bool = False) -> None:
+def remote_head(worktree: Path, fork: str, branch: str) -> str:
+    """The commit the fork's branch points at now ('' when it does not exist), read from the
+    remote itself: no remote-tracking ref of the checkout is trusted."""
+    remote = git(worktree, "remote").split()
+    git(worktree, "remote", "add" if "fork" not in remote else "set-url", "fork", url(fork))
+    out = git(worktree, "ls-remote", "fork", f"refs/heads/{branch}", check=False)
+    return out.split()[0] if out.strip() else ""
+
+
+def push(worktree: Path, fork: str, branch: str, dry_run: bool = False, expected: str | None = None) -> None:
+    """Push HEAD to the fork's branch with an explicit lease. With `expected` (the head the work was
+    built on), the branch must still be there (else BranchMoved, and nothing is pushed); without,
+    whatever the branch holds now may be replaced, but nothing that changes in between. A refused or
+    failed push raises PushError."""
     if dry_run:
         print(f"[dry-run] push {branch} to {fork}")
         return
-    remote = git(worktree, "remote").split()
-    if "fork" not in remote:
-        git(worktree, "remote", "add", "fork", url(fork))
-    else:
-        git(worktree, "remote", "set-url", "fork", url(fork))
-    git(worktree, "push", "-q", "--force-with-lease", "fork", f"HEAD:refs/heads/{branch}")
+    found = remote_head(worktree, fork, branch)
+    if expected is not None and found != expected:
+        raise BranchMoved(branch, expected, found)
+    lease = expected if expected is not None else found
+    try:
+        git(worktree, "push", "-q", f"--force-with-lease=refs/heads/{branch}:{lease}", "fork",
+            f"HEAD:refs/heads/{branch}")
+    except GitError as exc:
+        raise PushError(str(exc)) from exc
 
 
-def push_branch(worktree: Path, fork: str, branch: str) -> None:
-    """Push HEAD onto an existing branch of the fork as a fast-forward (a fix on a pull request's
-    branch: never a force push over someone else's work)."""
+def push_branch(worktree: Path, fork: str, branch: str, expected: str | None = None) -> None:
+    """Push HEAD onto an existing branch of the fork (a fix on a pull request's branch): with
+    `expected`, only while the branch is still at the head the fix was built on; without, as a
+    fast-forward. Never a force push over someone else's work."""
+    if expected is not None:
+        return push(worktree, fork, branch, expected=expected)
     remote = git(worktree, "remote").split()
     git(worktree, "remote", "add" if "fork" not in remote else "set-url", "fork", url(fork))
-    git(worktree, "push", "-q", "fork", f"HEAD:refs/heads/{branch}")
+    try:
+        git(worktree, "push", "-q", "fork", f"HEAD:refs/heads/{branch}")
+    except GitError as exc:
+        raise PushError(str(exc)) from exc
+
+
+def set_identity(checkout: Path, login: str) -> None:
+    """The worker's author and committer in the checkout's own configuration (worktrees share it),
+    so that an agent's `git commit` works too; global configuration is left alone."""
+    login = login or "tauceti-roadmap-worker"
+    git(checkout, "config", "user.name", login)
+    git(checkout, "config", "user.email", f"{login}@users.noreply.github.com")
 
 
 def current_branch(worktree: Path) -> str:

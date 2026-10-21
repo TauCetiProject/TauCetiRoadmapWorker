@@ -206,7 +206,8 @@ class RedTeamFixLane(Lane):
         if ctx.dry_run:
             return f"[dry-run] would push {new[:7]} to {ws.extra['branch']}"
         fork = gitops.ensure_fork(ctx.gh, ctx.cfg.repositories.content, ctx.operator)
-        gitops.push(ws.workdir, fork, ws.extra["branch"])
+        self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"],
+                                      expected=ws.extra.get("push_base") or ws.extra["head"]))
         rows = replies.parse_findings(ws.report.read_text(encoding="utf-8"))
         applied = sum(1 for _, how, _ in rows if how.startswith("applied"))
         ctx.gh.write("POST", f"repos/{ctx.cfg.repositories.content}/issues/{ws.extra['pr']}/comments",

@@ -87,7 +87,8 @@ class GateLane(Lane):
             return f"[dry-run] would push {new[:7]} and reply on #{pr}"
         if moved:
             fork = gitops.ensure_fork(ctx.gh, cfg.repositories.content, ctx.operator)
-            gitops.push(ws.workdir, fork, ws.extra["branch"])
+            self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"],
+                                          expected=ws.extra.get("push_base") or ws.extra["head"]))
             live = (ctx.gh.api(f"repos/{cfg.repositories.content}/pulls/{pr}") or {}).get("head", {}).get("sha", "")
             if live != new:
                 raise LaneError(f"#{pr}: the pull request head is {live[:7]}, not the pushed {new[:7]}; not replying")

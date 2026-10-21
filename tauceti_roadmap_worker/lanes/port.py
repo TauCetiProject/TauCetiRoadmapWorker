@@ -118,7 +118,7 @@ class PortLane(Lane):
         if ctx.dry_run:
             return f"[dry-run] would open a draft pull request {title!r}"
         fork = gitops.ensure_fork(ctx.gh, cfg.repositories.content, ctx.operator)
-        gitops.push(ws.workdir, fork, ws.extra["branch"])
+        self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"]))
         pr = gitops.open_pull_request(ctx.gh, cfg.repositories.content, f"{ctx.operator}:{ws.extra['branch']}",
                                       cfg.project.branch, title, body,
                                       draft=cfg.roadmap.open_as_draft and not cfg.redteam.ready_after)

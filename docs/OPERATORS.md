@@ -115,6 +115,15 @@ skipped by that worker (the count is in `workers/<id>/attempts.json`; delete the
 the worker try it again); other workers may still try it. The design lane is capped per
 operator per day (`[design] daily_cap`), counted in `design-ledger.jsonl` on the host.
 
+Pushes name the head the work was built on (`--force-with-lease=<branch>:<head>`, checked against
+the remote itself). When the branch moved while the job ran, nothing is pushed and the job is set
+to `state:blocked` ("the pull request moved from X to Y while the fix ran"): a human, or the next
+round, rebases the work. A push that fails otherwise is tried three times, a minute apart; then the
+run is kept (`pending-push/`) and the job released, and the next attempt on this worker restores the
+deliverables and the commit, runs the checks again and pushes, without running the agent (after
+three such attempts the run is given up). Every checkout the worker creates carries the operator's
+git identity in its own configuration, so an agent's own `git commit` works.
+
 ## The job graph
 
 ```text
@@ -483,6 +492,7 @@ machine are here:
 | `workers/<id>/port/<Name>`, `pr/<Name>` | worktrees for the port lane and for work on a pull request branch |
 | `workers/<id>/jobs/<JOB>/` | brief, agent logs (`run-N.out` with START/EXIT lines), scratch, problems, gate result |
 | `workers/<id>/attempts.json` | failures per job on this worker |
+| `workers/<id>/pending-push.json`, `workers/<id>/jobs/<JOB>/pending-push/` | runs kept after their push failed (the job's deliverables, and the commit as a bundle and a `refs/tauceti-pending/` ref): the next attempt on this worker pushes them without running the agent |
 | `workers/<id>/rounds.log` | every line the worker printed, timestamped (what `tail` follows) |
 | `workers/<id>/jobs/<JOB>/unsubmitted/` | what the job's last round that left anything left in the board checkout beyond the board's main, set aside before the next round reset it |
 | `rev/<pr>/` | read-only checkouts of open roadmap pull requests at their heads (was `/tmp/rev/<pr>`) |

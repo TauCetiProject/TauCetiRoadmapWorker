@@ -87,6 +87,7 @@ override it; it must not lie inside a git checkout):
 | `workers/<id>/jobs/<JOB>/scratch/` | the agent's scratch space, and a pending `needs-references.toml` |
 | `workers/<id>/jobs/<JOB>/unsubmitted/` | what a round left behind without submitting it |
 | `workers/<id>/rounds.log`, `attempts.json` | the round log `tail` follows; failures per job |
+| `workers/<id>/pending-push.json`, `jobs/<JOB>/pending-push/` | a run kept after its push failed, pushed by the next attempt without the agent |
 | `sources/<sha256>.pdf`, `sources/<sha256>.txt` | the sources cache: each text under its hash, with a line-numbered extraction beside it |
 | `logs/` | where the service example above writes the worker's output |
 
