@@ -564,6 +564,10 @@ class Fetcher:
                 return
             yield Candidate(local=path, via=f"local text {path.name}", licence_class="operator-local")
             return
+        if cit.kind == "text" and (named := local_by_name(self.cfg.local_dirs, cit.value)):
+            # A bare file name the operator holds in [sources] local_dirs: that file (a .txt is the text itself).
+            yield Candidate(local=named, via=f"local text {named.name}", licence_class="operator-local")
+            return
         if cit.kind == "url":
             m = ARXIV_URL.match(cit.value)
             if m:
@@ -786,13 +790,19 @@ class Fetcher:
                     out.append(Available(sid, label, None, "not in the cache (dry run: not fetched)"))
                     continue
                 elif s.get("licence_class") == "operator-local" and not s.get("fetched_from"):
-                    local = local_by_hash(self.cfg.local_dirs, sha, self.cache / "local-index.json")
+                    # The operator's file: by its name, then by its hash (whatever it is called here).
+                    named = local_by_name(self.cfg.local_dirs, str(s.get("local_name", "")))
+                    local = named or local_by_hash(self.cfg.local_dirs, sha, self.cache / "local-index.json")
                     if not local:
                         # Not gone: another operator holds it, and it never travels; no request.
                         out.append(Available(sid, label, None, needs_local(s.get("local_name") or sid)))
                         continue
                     data = sources.unwrap(local.read_bytes())
-                    _, txt, _ = self.keep(data, sources.sniff(data), f"local text {local.name}", sha)
+                    if sources.sha256_bytes(data) != sha:
+                        label += f" (the local file {local.name} differs from the recorded text: check its locators)"
+                    path, txt, _ = self.keep(data, sources.sniff(data), f"local text {local.name}")
+                    out.append(self.readable(sid, label, txt, path.name.split(".", 1)[0]))
+                    continue
                 elif s.get("fetched_from"):
                     r = self.client.get(s["fetched_from"])
                     r.body = sources.unwrap(r.body)

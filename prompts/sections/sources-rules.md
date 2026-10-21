@@ -12,6 +12,9 @@
 - The texts the roadmap's `sources.toml` already records are in the worker's sources cache, each
   as a line-numbered extraction (page markers `=== page N ===`): __SOURCE_TEXTS__
   Quote locators against these files and cite a passage as `<source id> line N`.
+- OCR of image-only scans on this worker: __OCR__. A `local:` answer names a file the operator holds
+  in `[sources] local_dirs`: `sources fetch <that file name>` reads it (a `.txt` file is the text
+  itself), and the worker lists it above when the manifest records it.
 - Fetch every other source through the sources service, not by hand:
 
       __FETCH__ --id KEY --locator-scheme theorem --locator "Theorem 2.3" --cited-for "1.2" "<citation>"

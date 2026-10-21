@@ -252,7 +252,15 @@ marker anyone else types is ignored), and read the answers after it:
   with no claim and no failure counted. The first lane that reads a `local` text on its operator's
   machine records its hash in the manifest it submits (a review leaves the author's entries as they
   are). A worker that lacks an operator-local text a job does not require lists it in the brief as
-  unavailable ("needs local source"); it never becomes a new request.
+  unavailable ("needs local source"); it never becomes a new request. A worker that holds it reads
+  it by its file name, then by its hash (a different hash is noted next to the text), and a `.txt`
+  file is the text itself; `sources fetch <file name>` resolves a bare file name in
+  `[sources] local_dirs` the same way. A `local:` answer is settled: no later request asks for it.
+
+Answers are recorded in the manifest on the board's main. A job whose package lives on a board pull
+request (its reviews, red-team passes and fixes) reads its own manifest at the pull request's head
+with the answered entries (those carrying a `resolution`) from main in place of its entries for the
+same keys, so every answer reaches it.
 * `waive`: the entry becomes `waived`.
 
 The intake updates `packages/<Name>/sources.toml` on the packages repository (an answer replaces the

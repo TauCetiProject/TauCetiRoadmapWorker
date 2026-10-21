@@ -130,10 +130,13 @@ SETTLED = "settled"
 
 
 def settled_status(entry: dict, uncertified_ok: bool) -> str:
-    """'waived' or 'uncertified' when a manifest entry is settled (final until a human answers it
-    again with `source:` or `local:`), else ''."""
+    """'waived', 'uncertified' or 'local' when a manifest entry is settled (final until a human
+    answers it again with `source:` or `local:`), else ''. A `local:` answer is settled: a worker whose
+    operator holds the file reads it, and one whose operator does not never takes the job."""
     status = str(entry.get("status", ""))
-    return status if status == "waived" or (status == "uncertified" and uncertified_ok) else ""
+    if status == "waived" or (status == "uncertified" and uncertified_ok):
+        return status
+    return "local" if status == "local" or entry.get("licence_class") == "operator-local" else ""
 
 
 def _same_work(item: MissingReference, entry: dict) -> bool:

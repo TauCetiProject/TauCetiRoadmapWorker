@@ -652,7 +652,7 @@ def extract(path: Path, kind: str, *, ocr: bool = False, ocr_dpi: int = 300, min
                                                  "(with Ghostscript) to recognise the pages", unreadable=True)
             try:
                 return Extraction(gs_ocr_pages(path, ocr_dpi), f"OCR (Ghostscript pnggray, RapidOCR, {ocr_dpi} dpi)",
-                                  "the text layer was glyph names, not words")
+                                  "the text layer was glyph names, not words; the text below was recognised by OCR")
             except (OcrUnavailable, OSError, subprocess.SubprocessError) as exc:
                 return Extraction(pages, method, f"the text layer is glyph names, not words; {exc}", unreadable=True)
         result = Extraction(pages, method)
@@ -665,7 +665,8 @@ def extract(path: Path, kind: str, *, ocr: bool = False, ocr_dpi: int = 300, min
                 return result
             try:
                 return Extraction(ocr_pdf_pages(path, dpi=ocr_dpi), f"OCR (RapidOCR, {ocr_dpi} dpi)",
-                                  f"image-only scan ({scanned} of {len(pages)} pages had no text layer)")
+                                  f"image-only scan ({scanned} of {len(pages)} pages had no text layer); the text "
+                                  "below was recognised by OCR")
             except OcrUnavailable as exc:
                 result.note = f"image-only scan; {exc}"
                 result.unreadable = True

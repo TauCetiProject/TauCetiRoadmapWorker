@@ -11,6 +11,7 @@ round starts from the board's main again.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import datetime as dt
 import json
@@ -428,6 +429,7 @@ class Lane:
             "DROPPED": ", ".join(dropped) or "none",
             "DEPCHECK": self.depcheck_command(job, ctx, ws, order_file),
             "GAPS": declared_gaps(ws.package(cfg, job.name)),
+            "OCR": ocr_line(cfg),
             "LIBRARY": library_description(ws.content),
             "SIBLINGS": "; ".join(f"{name} at `{path}`" for _pr, name, path in sibs) or
                         ("; ".join(p["name"] for p in prs) or "none"),
@@ -462,15 +464,17 @@ class Lane:
         if request.is_file():
             request.replace(ws.scratch / "needs-references.previous.toml")
         manifest_path = ws.package(ctx.cfg, job.name) / "sources.toml"
-        if not manifest_path.is_file():
-            return
         try:
-            manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+            own = tomllib.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else None
         except tomllib.TOMLDecodeError as exc:
             ws.extra["source_texts"] = f"none: the manifest does not parse ({exc})"
             return
+        manifest = self.with_answers(job, ctx, ws, own)
+        if manifest is None:
+            return
         available = ctx.sources_fetcher().materialize(manifest, offline=ctx.dry_run)
-        self.record_local_hashes(job, ctx, manifest_path, manifest, available)
+        if own is not None:
+            self.record_local_hashes(job, ctx, manifest_path, own, available)
         lines = []
         for a in available:
             if a.text:
@@ -490,6 +494,32 @@ class Lane:
                 note=UNREADABLE_NOTE if a.problem == sources.UNREADABLE else "")
             references.add_missing(request, item)
             ws.extra.setdefault("auto_missing", []).append(item)
+
+    def with_answers(self, job: Job, ctx: Context, ws: Workspace, own: dict | None) -> dict | None:
+        """The manifest the run reads: the job's own (on a board pull request, at its head) with the
+        answers the intake recorded on the board's main (entries with a `resolution`) in place of its
+        entries for the same keys, so a `local:`, `source:` or `waive:` answer reaches a job whose
+        package lives on a pull request. None when there is neither."""
+        rel = board.manifest_path(ctx.cfg.board.packages_dir, job.name)
+        answered = []
+        try:
+            text = gitops.git(ws.board, "show", f"refs/remotes/origin/main:{rel}", check=False)
+            answered = [e for e in (tomllib.loads(text).get("source", []) if text.strip() else [])
+                        if isinstance(e, dict) and e.get("resolution")]
+        except (gitops.GitError, OSError, tomllib.TOMLDecodeError):
+            pass
+        if own is None and not answered:
+            return None
+        merged = copy.deepcopy(own) if own is not None else sources.new_manifest(job.name)
+        merged.setdefault("source", [])
+        for entry in answered:
+            mine = sources.find_source(merged, id=str(entry.get("id", "")))
+            if mine is None:
+                merged["source"].append(dict(entry))
+            elif mine != entry:
+                mine.clear()
+                mine.update(entry)
+        return merged
 
     def record_local_hashes(self, job: Job, ctx: Context, path: Path, manifest: dict, available: list) -> None:
         """A `local` text read here gets its hash recorded, as `certified`, in the manifest this job
@@ -934,6 +964,17 @@ def with_notes(result: LaneResult, ws: Workspace) -> LaneResult:
 def count(n: int, noun: str) -> str:
     """`3 targets`, `1 gap`."""
     return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
+def ocr_line(cfg: Config) -> str:
+    """What the briefs say about OCR on this worker (so an agent never guesses it is missing)."""
+    if not cfg.sources.ocr:
+        return "off (`[sources] ocr = false`): an image-only scan keeps only its text layer"
+    why = sources.ocr_status()
+    if why:
+        return f"not available here ({why.split('. ', 1)[0]})"
+    return ("available: the sources service recognises an image-only scan when it reads it (the text's header then "
+            "says \"recognised by OCR\"), including a scan cached before OCR was installed")
 
 
 def declared_gaps(pkg: Path) -> str:
