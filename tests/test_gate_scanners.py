@@ -165,6 +165,21 @@ def test_build_output():
     assert gates.build_output_problems("error: Suggested.lean:1:0: unknown identifier\n", 1)[0] == "build exited 1"
 
 
+def test_layer_ids():
+    bad = ("## Layer 0 Discrete convexity\n\n### 0.1 Heights\n\n## Layer 1: valuations\n\n"
+           "## Layer 2 Coefficients, Gauss values\n")
+    hits = gates.scan_layer_ids(bad)
+    assert [h.line for h in hits] == [1, 7], hits
+    assert "'Layer 0 Discrete convexity'" in hits[0].text and "'Layer 2 Coefficients'" in hits[1].text
+    good = ("### Part A — algebra\n\n### Part B: analysis\n\n### Stage 3 (optional)\n\n"
+            "### Part A\n\n### Layer 4.5a: interlude\n")
+    assert gates.scan_layer_ids(good) == []
+    assert gates.scan_layer_ids("### L0A — sheaves\n\n### S1: the site\n") == []
+    assert gates.scan_layer_ids("# Roadmap\n\nNo layers here.\n") == []
+    r = scan_folder("Toy", CLEAN_README.replace("## Layer 1: orders", "## Layer 1 orders"), CLEAN_LEAN, opts())
+    assert r.counts["layer-ids"] == 1 and not r.ok, r.details
+
+
 def test_gate_runs_depcheck_when_order_given():
     readme = CLEAN_README + "\n*Needs:* Later §2.\n"
     sib = {"Later": "# Roadmap: later\n"}
