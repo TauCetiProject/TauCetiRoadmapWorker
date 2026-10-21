@@ -24,7 +24,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import agents, board, claims, depgraph, fetcher, gates, gitops, prompts, prreviews, references, sources, usage
+from .. import (agents, board, claims, depgraph, fetcher, gates, gitops, openroadmaps, prompts, prreviews, references,
+               sources, usage)
 from ..board import Board, Job
 from ..config import Config
 from ..depgraph import read_order
@@ -469,7 +470,71 @@ class Lane:
             "EXTRA_RULES": extra_rules,
             "SOURCE_TEXTS": ws.extra.get("source_texts", "none recorded yet"),
             "FETCH": self.fetch_command(job, ctx, ws),
+            "TOOLS": self.tools_text(ctx, ws),
         }
+
+    def citation_target(self, job: Job, ctx: Context, ws: Workspace) -> Path | None:
+        """The README whose citations the worker resolves before the agent runs: the one the lane
+        works on (`readme`), else the package's, else the design's; None when there is none yet."""
+        pkg = ws.package(ctx.cfg, job.name)
+        for path in (ws.extra.get("readme"), pkg / "README.md", pkg / "design" / "README.md"):
+            if path and Path(path).is_file():
+                return Path(path)
+        return None
+
+    def prepare_tools(self, job: Job, ctx: Context, ws: Workspace) -> None:
+        """The index of open roadmap pull requests (refreshed at most every half hour, shared by the
+        host's workers), and the citations of the roadmap's README that are found nowhere, written to
+        `scratch/citations.md` for the agent. Best effort: a failure is a line in the round log and in
+        the brief, never a failed round."""
+        index: dict = {}
+        try:
+            index = (openroadmaps.refresh(ctx.gh, ctx.cfg) if ctx.gh is not None and not ctx.dry_run
+                     else openroadmaps.load(ctx.state))
+        except Exception as exc:  # noqa: BLE001 - a tool for the agent: its failure must never fail the round
+            index = openroadmaps.load(ctx.state)
+            print(f"{ws.job_dir.name}: the index of open roadmap pull requests was not refreshed "
+                  f"({type(exc).__name__}: {str(exc)[:160]})" + ("; using the last one" if index else ""))
+        ws.extra["open_index"] = index
+        readme = self.citation_target(job, ctx, ws)
+        if not index or readme is None:
+            return
+        lean = readme.parent / "Suggested.lean"
+        try:
+            citations, names, why = openroadmaps.resolve(
+                ctx.state, index, readme.read_text(encoding="utf-8"), own=job.name,
+                lean=lean.read_text(encoding="utf-8") if lean.is_file() else "",
+                packages=openroadmaps.packages_dir(ws.content))
+        except Exception as exc:  # noqa: BLE001 - as above
+            print(f"{ws.job_dir.name}: the citations were not resolved ({type(exc).__name__}: {str(exc)[:160]})")
+            return
+        path = ws.scratch / "citations.md"
+        rel = readme.relative_to(ws.board) if readme.is_relative_to(ws.board) else readme.name
+        path.write_text(openroadmaps.report(citations, names, why, index, str(rel)), encoding="utf-8")
+        ws.extra["citations"] = (path, len(citations) + len(names))
+
+    def tools_text(self, ctx: Context, ws: Workspace) -> str:
+        """The brief's tools section: the open roadmap pull requests and the citation resolver."""
+        index = ws.extra.get("open_index") or {}
+        if not index:
+            return ("- The index of open roadmap pull requests is not available this round: use the sibling list "
+                    "above, and say in your report that ownership against other open pull requests was not checked.")
+        prs = index.get("prs", [])
+        new = sum(len(p.get("adds", [])) for p in prs)
+        lines = [f"- **Open roadmap pull requests** ({len(prs)}, {new} of them new roadmaps; index of {index.get('at')}): "
+                 f"`{ctx.cli('roadmaps', 'list')}` lists them; `{ctx.cli('roadmaps', 'grep', '<regex>')}` searches the "
+                 "README and Suggested.lean of the roadmap folders they carry, at their heads, then every roadmap on "
+                 "main (`--fixed`, `-i`, `--readme-only`, `--lean-only`); "
+                 f"`{ctx.cli('roadmaps', 'show', '<Name>')}` prints one (`--file Suggested.lean`, `--pr N`). Use them "
+                 "for every ownership and duplication check, and to read a roadmap that is still a pull request.",
+                 f"- **Citations**: `{ctx.cli('roadmaps', 'resolve', '<README.md>')}` lists the cross-roadmap "
+                 "citations and backticked Lean names of a README that are found nowhere (on main, at the open heads, "
+                 "in the pinned sources). They are leads, not verdicts: check each before you rely on it or report it."]
+        found = ws.extra.get("citations")
+        if found:
+            lines[-1] += (f" For this roadmap's README the worker found {found[1]} (`{found[0]}`)." if found[1]
+                          else " For this roadmap's README the worker found none.")
+        return "\n".join(lines)
 
     def depcheck_command(self, job: Job, ctx: Context, ws: Workspace, order_file: Path) -> str:
         """The dependency check an agent runs. A roadmap at the design stage (its target, design,
@@ -826,6 +891,7 @@ class Lane:
         ws = self.prepare(job, ctx)
         self.restore_wip(job, ctx, ws)
         self.prepare_sources(job, ctx, ws)
+        self.prepare_tools(job, ctx, ws)
         values = {**self.common_values(job, ctx, ws), **self.values(job, ctx, ws)}
         runs = self.briefs(job, ctx, ws, values)
         earlier = self.earlier_attempt(ws)

@@ -99,6 +99,17 @@ class GH:
             return items
         return json.loads(out) if out.strip() else None
 
+    def graphql(self, query: str, **variables) -> dict:
+        """A GraphQL read: the `data` object of the answer (retried like every read)."""
+        args = ["api", "graphql", "-f", f"query={query}"]
+        for key, value in variables.items():
+            if value is not None:
+                args += ["-F" if isinstance(value, int) else "-f", f"{key}={value}"]
+        out = json.loads(self._read(args) or "{}")
+        if out.get("errors"):
+            raise GHError(f"graphql: {str(out['errors'])[:300]}")
+        return out.get("data") or {}
+
     def write(self, method: str, path: str, payload: dict | None = None) -> dict | None:
         """POST/PATCH/PUT/DELETE a REST path with a JSON payload; prints instead in dry-run mode."""
         if self.dry_run:
