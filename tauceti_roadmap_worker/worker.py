@@ -45,9 +45,32 @@ def failures(ctx: Context) -> dict[str, int]:
 def record_failure(ctx: Context, job_id: str) -> int:
     data = failures(ctx)
     data[job_id] = data.get(job_id, 0) + 1
-    attempts_path(ctx).parent.mkdir(parents=True, exist_ok=True)
-    attempts_path(ctx).write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+    try:
+        attempts_path(ctx).parent.mkdir(parents=True, exist_ok=True)
+        attempts_path(ctx).write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
+    except OSError:      # a full disk must not crash the worker: the count is lost, the job is released
+        pass
     return data[job_id]
+
+
+def sweep_worktrees(ctx: Context, log=print) -> list[str]:
+    """At worker start: remove this worker's pr/<Name> and port/<Name> roadmap worktrees whose
+    roadmap has no open job left."""
+    from .lanes.pr import sweep_worktrees as sweep
+    content = ctx.wdir / "content"
+    if not (content / ".git").exists():
+        return []
+    try:
+        open_names = {j.name for j in ctx.board.list_jobs(OPEN_STATES)}
+    except (GHError, AttributeError):
+        return []
+    removed = sweep(ctx.wdir, content, open_names)
+    for name in removed:
+        log(f"removed the worktree {name}: its roadmap has no open job")
+    return removed
+
+
+OPEN_STATES = ("available", "claimed", "submitted", "needs-references", "blocked")
 
 
 def rank(jobs: list[Job], order: list[str] | None = None, priority: list[str] | tuple[str, ...] = STAGE_ORDER,
@@ -316,6 +339,8 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
             result = work_once(ctx, only, order=order_fn(), log=log, avoid=avoid, paused=paused, noted=noted)
         except GHError as exc:
             result = LaneResult("", "idle", f"the board could not be read: {exc}")
+        except OSError as exc:     # a full disk (ENOSPC) and the like: wait, never crash-loop
+            result = LaneResult("", "idle", f"the host failed the round ({exc}); waiting before the next one")
         log(f"{now():%Y-%m-%dT%H:%MZ} {result.job or '-'} {result.status}: {result.detail}")
         if result.status == "needs-references":
             parked[result.job] = PARKED_WATCH

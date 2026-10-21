@@ -334,6 +334,11 @@ class Lane:
                                                 ctx.cfg.review.separation, ctx.agent, ctx.model)
             if problem:
                 return problem
+        if builds(job):
+            free = free_gb(ctx.state)
+            if free is not None and free < MIN_FREE_GB_BUILD:
+                return (f"only {free:.0f} GB free on the state directory's disk; a lane that builds the roadmap "
+                        f"needs {MIN_FREE_GB_BUILD} GB")
         # A `local:` answer: the text never travels, so only an operator who holds it resumes the job.
         index = sources.cache_root(ctx.state) / "local-index.json"
         for need in references.local_needs(job):
@@ -842,7 +847,15 @@ class Lane:
         except (LaneError, gitops.GitError) as exc:
             return LaneResult(job.id, "failed", str(exc))
         clear_pending(ctx, job)
+        self.drop_worktree(ctx, ws)
         return LaneResult(job.id, "submitted", note, url)
+
+    def drop_worktree(self, ctx: Context, ws: Workspace) -> None:
+        """After a submission, the lane's roadmap worktree (pr/<Name>, port/<Name>) goes: the next
+        round that needs it checks it out again, its Lake packages a link to the shared copy."""
+        if ws.workdir != ws.board and ws.workdir.parent.name in ("pr", "port") and ws.workdir.is_dir():
+            from .pr import remove_worktree
+            remove_worktree(ws.content, ws.workdir)
 
     def push(self, do):
         """A push or a GitHub write of the submission step, tried again PUSH_RETRIES times
@@ -869,6 +882,27 @@ class Lane:
             return LaneResult(job.id, "failed", "the kept run no longer passes its checks: " + "; ".join(problems[:5]))
         ws.extra.setdefault("notes", []).append(f"pushing the run kept after a failed push (try {pending.get('tries', 1) + 1})")
         return with_notes(self.deliver(job, ctx, ws), ws)
+
+
+MIN_FREE_GB_BUILD = 20       # a lane that checks out and builds the roadmap is not started below this
+MIN_FREE_GB_WARN = 40        # `doctor` warns below this
+
+
+def free_gb(path: Path) -> float | None:
+    """Free space on the filesystem of `path` (its nearest existing ancestor), in GB."""
+    p = Path(path)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    try:
+        return shutil.disk_usage(p).free / 1e9
+    except OSError:
+        return None
+
+
+def builds(job: Job) -> bool:
+    """Whether the job's lane checks out the roadmap repository and builds it: the port, the red team,
+    their fixes and the gate rounds."""
+    return job.kind in ("port", "redteam", "gate") or (job.kind == "fix" and board.parse_job_id(job.id).subject == "RT")
 
 
 PENDING_DIR = "pending-push"

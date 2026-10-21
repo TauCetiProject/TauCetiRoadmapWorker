@@ -120,6 +120,11 @@ skipped by that worker (the count is in `workers/<id>/attempts.json`; delete the
 the worker try it again); other workers may still try it. The design lane is capped per
 operator per day (`[design] daily_cap`), counted in `design-ledger.jsonl` on the host.
 
+Disk space: the port, red-team, red-team fix and gate lanes check out and build the roadmap repository,
+so a worker does not start one when the state directory's disk has less than 20 GB free (it logs
+`skip <JOB>: only N GB free …` and takes other work), and `doctor` warns below 40 GB. A full disk never
+crashes the worker loop: the round is logged and the worker waits for its next poll.
+
 Pushes name the head the work was built on (`--force-with-lease=<branch>:<head>`, checked against
 the remote itself). When the branch moved while the job ran, nothing is pushed and the job is set
 to `state:blocked` ("the pull request moved from X to Y while the fix ran"): a human, or the next
@@ -498,7 +503,8 @@ machine are here:
 | Path | What |
 | --- | --- |
 | `workers/<id>/board`, `content` | the worker's checkouts of the packages and content repositories |
-| `workers/<id>/port/<Name>`, `pr/<Name>` | worktrees for the port lane and for work on a pull request branch |
+| `workers/<id>/port/<Name>`, `pr/<Name>` | worktrees for the port lane and for work on a pull request branch; their `.lake/packages` is a link to `lake/<pin>/packages`; removed after the lane submits, and at worker start when the roadmap has no open job |
+| `lake/<pin>/packages` | the machine's one copy of the Lake packages (Mathlib and Tau Ceti oleans, about 16 GB) per pin of the content repository's manifest, toolchain and lakefile, shared by every worktree of every worker; `lake exe cache get` fills it once (`.ready` marks it) |
 | `workers/<id>/jobs/<JOB>/` | brief, agent logs (`run-N.out` with START/EXIT lines), scratch, problems, gate result |
 | `workers/<id>/attempts.json` | failures per job on this worker |
 | `workers/<id>/pending-push.json`, `workers/<id>/jobs/<JOB>/pending-push/` | runs kept after their push failed (the job's deliverables, and the commit as a bundle and a `refs/tauceti-pending/` ref): the next attempt on this worker pushes them without running the agent |

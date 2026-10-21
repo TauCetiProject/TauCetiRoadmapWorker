@@ -82,6 +82,18 @@ def _tool_version(cmd: str) -> str:
         return ""
 
 
+def free_space_row(state: Path) -> tuple[str, str, str] | None:
+    """The doctor's line on free space where the state directory lives (a warning below 40 GB)."""
+    from .lanes.base import MIN_FREE_GB_BUILD, MIN_FREE_GB_WARN, free_gb
+    free = free_gb(state)
+    if free is None:
+        return None
+    if free >= MIN_FREE_GB_WARN:
+        return OK, "free space", f"{free:.0f} GB free on the state directory's disk"
+    return WARN, "free space", (f"{free:.0f} GB free on the state directory's disk (below {MIN_FREE_GB_WARN} GB; port, "
+                                f"red-team and gate lanes stop below {MIN_FREE_GB_BUILD} GB)")
+
+
 def doctor(args) -> int:
     rows: list[tuple[str, str, str]] = []
     add = rows.append
@@ -153,6 +165,9 @@ def doctor(args) -> int:
             add((OK, "state directory", str(state)))
         except OSError as exc:
             add((FAIL, "state directory", f"{state}: {exc}"))
+        row = free_space_row(state)
+        if row:
+            add(row)
         cache = sources.cache_root(state)
         inside = sources.enclosing_checkout(cache)
         add((FAIL, "sources cache", (f"{cache} is inside the git checkout {inside}: sources never enter a repository "
@@ -281,7 +296,7 @@ def _stop(signum, frame):
 def work(args) -> int:
     from .lanes import Context
     from .mergeorder import _order
-    from .worker import release_leftovers, work_loop, work_once
+    from .worker import release_leftovers, sweep_worktrees, work_loop, work_once
     cfg = _load(args)
     gh = GH(dry_run=args.dry_run)
     operator, last = "", None
@@ -313,6 +328,7 @@ def work(args) -> int:
     log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}, "
         f"build {started}")
     release_leftovers(ctx, log)
+    sweep_worktrees(ctx, log)
     # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
     signal.signal(signal.SIGTERM, _stop)
     if args.loop:

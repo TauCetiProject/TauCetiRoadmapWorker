@@ -479,11 +479,12 @@ def local_by_name(dirs: list[str], name: str) -> Path | None:
 
 
 def local_source(dirs: list[str], name: str, sha256: str, index: Path) -> Path | None:
-    """The operator's copy of a local text: by its hash when one is recorded (whatever the file is
-    called here), else by its file name."""
-    if sha256 and sources.SHA_RE.match(sha256):
-        return local_by_hash(dirs, sha256, index)
-    return local_by_name(dirs, name)
+    """The operator's copy of a local text: by its file name, then by its hash when one is recorded
+    (whatever the file is called here); the lanes read it the same way."""
+    named = local_by_name(dirs, name)
+    if named or not (sha256 and sources.SHA_RE.match(sha256)):
+        return named
+    return local_by_hash(dirs, sha256, index)
 
 
 # --- fetching -------------------------------------------------------------------------------------
