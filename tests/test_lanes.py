@@ -72,6 +72,15 @@ def test_seeded_sample_is_reproducible_and_in_order():
     assert sample_items("### 1.1 First\n### 1.2 Second\n") == ["1.1 First", "1.2 Second"]
 
 
+def test_sample_items_prefers_the_subsections_to_stray_bold_lines():
+    # A README in the brief's shape: targets in `### k.n` subsections, bold on the Summary, the Checks
+    # and a consumer's name. The consumer must not become the whole sample.
+    readme = ("# Roadmap: foo\n\n**Summary.** Builds foo.\n\n## Layer 1: bar\n\n### 1.1 First\n\nDefine `x`.\n\n"
+              "**Checks.**\n- x\n\n### 1.2 Second\n\nProve `y`.\n\n## Downstream consumers\n\n"
+              "**PadicHodgeRegulators** consumes §1.2.\n")
+    assert sample_items(readme) == ["1.1 First", "1.2 Second"]
+
+
 def test_verdict_problems():
     ok = {"review": {"status": "accepted", "reviewer": "independent-review-REV-PKG-Foo", "blocking": 0}}
     assert verdict_problems(ok, "REV-PKG-Foo") == []

@@ -28,10 +28,14 @@ SAMPLE_SIZE = 15
 
 
 def sample_items(readme: str) -> list[str]:
-    """The README's targets (bold target paragraphs, else `### k.n` subsections), in order."""
-    bold = [m.group(1).strip().rstrip(".") for m in TARGET_HEADING.finditer(readme)
+    """The README's targets, in order: its `### k.n` subsections (the shape the briefs ask for), else
+    its bold target paragraphs. A README in the brief's shape has bold text only on its Summary, its
+    Checks and the names of its consumers, so a stray bold line must not displace the subsections."""
+    subsections = [m.group(1).strip() for m in SUBSECTION.finditer(readme)]
+    if subsections:
+        return subsections
+    return [m.group(1).strip().rstrip(".") for m in TARGET_HEADING.finditer(readme)
             if not m.group(1).startswith(NOT_TARGETS)]
-    return bold or [m.group(1).strip() for m in SUBSECTION.finditer(readme)]
 
 
 def seeded_sample(items: list[str], k: int, seed: str) -> list[str]:
