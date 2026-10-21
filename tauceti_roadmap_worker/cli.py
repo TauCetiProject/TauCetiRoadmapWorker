@@ -614,7 +614,8 @@ def roadmaps_cmd(args) -> int:
         print("\n".join(openroadmaps.rows(index)))
         return 0
     if not args.target:
-        raise SystemExit(f"roadmaps {args.action}: give a {'pattern' if args.action == 'grep' else 'name' if args.action == 'show' else 'README path'}")
+        wanted = {"grep": "pattern", "show": "roadmap name"}.get(args.action, "README path")
+        raise SystemExit(f"roadmaps {args.action}: give a {wanted}")
     if args.action == "grep":
         try:
             lines = openroadmaps.grep(state, index, args.target, fixed=args.fixed, ignore_case=args.ignore_case,

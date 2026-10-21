@@ -106,7 +106,8 @@ class ArtefactFixLane(Lane):
     def review_texts(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         """The texts of the review this round answers: its comments on the board pull request (fetched
         into the scratch folder), else its report on the board."""
-        paths = ws.extra.get("reviews") or [ws.package(ctx.cfg, job.name) / "reports" / (job.inputs.get("review", "") + ".md")]
+        reports = ws.package(ctx.cfg, job.name) / "reports"
+        paths = ws.extra.get("reviews") or [reports / (job.inputs.get("review", "") + ".md")]
         return [Path(p).read_text(encoding="utf-8") for p in paths if Path(p).is_file()]
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
@@ -114,7 +115,8 @@ class ArtefactFixLane(Lane):
         if ws.report.is_file() and not replies.parse_findings(ws.report.read_text(encoding="utf-8")):
             problems.append("report: no finding sections in the required heading style")
         elif ws.report.is_file():
-            problems += replies.coverage_problems(self.review_texts(job, ctx, ws), ws.report.read_text(encoding="utf-8"))
+            problems += replies.coverage_problems(self.review_texts(job, ctx, ws),
+                                                  ws.report.read_text(encoding="utf-8"))
         if self.art(job) == "PKG":
             pkg = ws.package(ctx.cfg, job.name)
             problems += package_scan(ctx, ws, job.name, pkg)
@@ -163,7 +165,8 @@ class RedTeamFixLane(Lane):
         if ws.report.is_file() and not replies.parse_findings(ws.report.read_text(encoding="utf-8")):
             problems.append("report: no finding sections in the required heading style")
         elif ws.report.is_file():
-            problems += replies.coverage_problems(self.review_texts(job, ctx, ws), ws.report.read_text(encoding="utf-8"))
+            problems += replies.coverage_problems(self.review_texts(job, ctx, ws),
+                                                  ws.report.read_text(encoding="utf-8"))
         pkg = ws.package(ctx.cfg, job.name)
         problems += package_scan(ctx, ws, job.name, pkg)
         if problems:
@@ -232,7 +235,8 @@ class RedTeamFixLane(Lane):
         if ws.report.is_file() and not replies.parse_findings(ws.report.read_text(encoding="utf-8")):
             problems.append("report: no finding sections in the required heading style")
         elif ws.report.is_file():
-            problems += replies.coverage_problems(self.review_texts(job, ctx, ws), ws.report.read_text(encoding="utf-8"))
+            problems += replies.coverage_problems(self.review_texts(job, ctx, ws),
+                                                  ws.report.read_text(encoding="utf-8"))
         if gitops.git(ws.workdir, "rev-parse", "HEAD").strip() == ws.extra["head"]:
             problems.append("no repair commit on the pull request branch")
         if gitops.git(ws.workdir, "status", "--short").strip():

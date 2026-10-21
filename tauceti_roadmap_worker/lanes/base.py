@@ -545,12 +545,14 @@ class Lane:
         lines = []
         if not index:
             lines.append("- The index of open roadmap pull requests is not available this round: use the sibling list "
-                         "above, and say in your report that ownership against other open pull requests was not checked.")
+                         "above, and say in your report that ownership against other open pull requests was not "
+                         "checked.")
         else:
             prs = index.get("prs", [])
             new = sum(len(p.get("adds", [])) for p in prs)
             lines.append(
-                f"- **Open roadmap pull requests** ({len(prs)}, {new} of them new roadmaps; index of {index.get('at')}): "
+                f"- **Open roadmap pull requests** ({len(prs)}, {new} of them new roadmaps; "
+                f"index of {index.get('at')}): "
                 f"`{ctx.cli('roadmaps', 'list')}` lists them; `{ctx.cli('roadmaps', 'grep', '<regex>')}` searches the "
                 "README and Suggested.lean of the roadmap folders they carry, at their heads, then every roadmap on "
                 "main (`--fixed`, `-i`, `--readme-only`, `--lean-only`); "

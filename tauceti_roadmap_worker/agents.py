@@ -304,7 +304,8 @@ def render_event(agent: str, event: dict) -> list[str]:
                     data = block.get("input") or {}
                     what = next((data[k] for k in ("command", "file_path", "path", "pattern", "url", "query",
                                                    "description") if data.get(k)), "")
-                    lines.append(f"→ {block.get('name', 'tool')}: {_short(what)}" if what else f"→ {block.get('name', 'tool')}")
+                    tool = block.get("name", "tool")
+                    lines.append(f"→ {tool}: {_short(what)}" if what else f"→ {tool}")
             return lines
         if kind == "result" and (event.get("is_error") or event.get("subtype") not in (None, "success")):
             return [str(event.get("result") or event.get("subtype") or "error")]

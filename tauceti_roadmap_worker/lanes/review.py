@@ -159,7 +159,8 @@ class ReviewLane(Lane):
 
     def accepts(self, job: Job, ctx: Context, ws: Workspace) -> bool:
         try:
-            return json.loads(self.verdict_file(job, ctx, ws).read_text(encoding="utf-8"))["review"]["status"] == "accepted"
+            verdict = json.loads(self.verdict_file(job, ctx, ws).read_text(encoding="utf-8"))
+            return verdict["review"]["status"] == "accepted"
         except (OSError, ValueError, KeyError, TypeError):
             return False
 
