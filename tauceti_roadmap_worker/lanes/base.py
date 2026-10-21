@@ -24,7 +24,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import agents, board, claims, depgraph, fetcher, gates, gitops, prompts, prreviews, references, sources
+from .. import agents, board, claims, depgraph, fetcher, gates, gitops, prompts, prreviews, references, sources, usage
 from ..board import Board, Job
 from ..config import Config
 from ..depgraph import read_order
@@ -79,6 +79,7 @@ class Workspace:
     report: Path
     branch: str
     extra: dict = field(default_factory=dict)
+    job_id: str = ""
 
     def package(self, cfg: Config, name: str) -> Path:
         return self.board / board.package_dir(cfg.board.packages_dir, name)
@@ -431,7 +432,7 @@ class Lane:
         report = board_dir / pkg / "reports" / f"{job.id}.md"
         report.parent.mkdir(parents=True, exist_ok=True)
         ws = Workspace(job_dir=job_dir, scratch=scratch, board=board_dir, content=content_dir,
-                       workdir=board_dir, report=report, branch=branch)
+                       workdir=board_dir, report=report, branch=branch, job_id=job.id)
         if (cfg.gates.elaborate or cfg.gates.build) and self.elaborates(job):
             # The content checkout elaborates with the machine's shared Lake packages for its pin (fetched
             # once per pin, under the lock and the disk guard), exactly as a port worktree builds with them.
@@ -640,12 +641,16 @@ class Lane:
     def run_agent(self, ctx: Context, ws: Workspace, brief: str, label: str = "") -> agents.AgentResult:
         attempt = len(list(ws.job_dir.glob("run-*.out"))) + 1
         stem = f"run-{attempt}" + (f"-{label}" if label else "")
-        return agents.run_agent(agents.AgentRun(
+        result = agents.run_agent(agents.AgentRun(
             agent=ctx.agent, model=ctx.model, workdir=ws.workdir, brief=brief,
             log_out=ws.job_dir / f"{stem}.out", log_err=ws.job_dir / f"{stem}.err",
             timeout=ctx.cfg.agents.timeout_minutes * 60, sandbox_profile=ctx.cfg.sandbox.profile,
             proxy_url=ctx.cfg.sandbox.proxy_url, netjail=ctx.cfg.sandbox.netjail,
             claude_hook=ctx.cfg.sandbox.claude_hook, settings_dir=ctx.wdir / "settings"))
+        usage.record(ctx.wdir, ws.job_dir, usage.entry(
+            job=ws.job_id or ws.job_dir.name, kind=self.kind, lane=type(self).__name__, run=stem, label=label,
+            agent=ctx.agent, model=ctx.model, worker=ctx.worker_id, result=result, brief_chars=len(brief)))
+        return result
 
     def park(self, job: Job, ctx: Context, missing: list[references.MissingReference]) -> LaneResult:
         """Post the request (from the template, with its machine-readable marker, machine paths

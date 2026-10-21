@@ -5,6 +5,7 @@
     tauceti-roadmap work --worker-id ID [--only kind,...] [--agent codex|claude] [--loop]
     tauceti-roadmap tail --worker-id ID [--job JOB]      follow a worker's rounds and its agent's output
     tauceti-roadmap status [--all]                       the board's jobs by state, ages and claimants
+    tauceti-roadmap usage [--worker-id ID] [--by lane|kind|job|agent|model|worker|day|label] [--since DATE]
     tauceti-roadmap gate <worktree> <Name> [--base origin/main] [--json] [--out FILE]
     tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE]
     tauceti-roadmap gate --candidate <folder | README.md> --only <Name> [--order FILE]
@@ -52,6 +53,7 @@ from . import (
     watch,
 )
 from . import targets as target_files
+from . import usage as usage_mod
 from .board import KINDS, Board
 from .gh import GH, GHError
 
@@ -593,6 +595,21 @@ def status_cmd(args) -> int:
     return 0
 
 
+def usage_cmd(args) -> int:
+    """The agent runs' token usage on this host, summed by lane (or job, agent, model, worker, day)."""
+    cfg = _load(args)
+    worker = paths.sanitize_worker_id(args.worker_id) if args.worker_id else ""
+    records = usage_mod.load(cfg.state_dir(), worker)
+    rows = usage_mod.summarize(records, by=args.by, since=args.since)
+    if args.json:
+        print(json.dumps(rows, indent=1, ensure_ascii=False))
+    elif not rows:
+        print("no agent run recorded yet" + (f" by {args.worker_id}" if args.worker_id else "") + " on this host")
+    else:
+        print(usage_mod.table(rows, args.by))
+    return 0
+
+
 RATE_WARN = 200      # a board run warns when fewer REST requests than this are left this hour
 
 
@@ -786,6 +803,12 @@ def parser() -> argparse.ArgumentParser:
     st = sub.add_parser("status", help="the board's jobs by state, with their ages and claimants")
     st.add_argument("--all", action="store_true", help="include done jobs and closed issues")
 
+    u = sub.add_parser("usage", help="the agent runs' token usage on this host, summed by lane, job, agent, ...")
+    u.add_argument("--worker-id", default="", help="only this worker's runs")
+    u.add_argument("--by", choices=usage_mod.GROUPS, default="lane")
+    u.add_argument("--since", default="", help="only runs at or after this UTC date or time (2026-10-21)")
+    u.add_argument("--json", action="store_true")
+
     b = sub.add_parser("board", help="board maintenance for the bot or a maintainer (dry run unless --yes)")
     b.add_argument("action", choices=["intake", "references", "sync", "stale", "import-explorer"])
     b.add_argument("--pr", type=int, default=0)
@@ -800,7 +823,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     handlers = {"doctor": doctor, "targets": targets, "work": work, "gate": gate, "merge-order": merge_order,
-                "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd}
+                "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd,
+                "usage": usage_cmd}
     try:
         return handlers[args.command](args)
     except GHError as exc:

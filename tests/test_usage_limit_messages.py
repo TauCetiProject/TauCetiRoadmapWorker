@@ -7,6 +7,7 @@ job again at once)."""
 
 import dataclasses
 import datetime as dt
+import json
 
 import pytest
 
@@ -118,19 +119,32 @@ def test_the_reset_time_is_read_from_the_limit_message_not_from_the_sources_quot
     assert result.reset_at.replace(tzinfo=None) == dt.datetime(2026, 10, 27, 6, 34)
 
 
-def test_run_agent_reads_the_whole_log_files(tmp_path, monkeypatch):
+def test_run_agent_reads_the_whole_log_files(tmp_path):
     out, err = tmp_path / "run-1.out", tmp_path / "run-1.err"
-
-    def fake_run(argv, input, stdout, stderr, text, env, cwd, timeout):
-        stdout.write("partial work\n" * 3000 + CLAUDE_CREDITS + "\n" + "more\n" * 3000)
-        return dataclasses.make_dataclass("P", ["returncode"])(1)
-    monkeypatch.setattr(agents.subprocess, "run", fake_run)
-    monkeypatch.setattr(agents.shutil, "which", lambda a: "/usr/bin/claude")
+    # The CLI's stream: text events of work, then the limit as the error result of the run.
+    work = [{"type": "assistant", "message": {"content": [{"type": "text", "text": "partial work"}]}}] * 3000
+    lines = [json.dumps(e) + "\n" for e in work] + [json.dumps({"type": "result", "subtype": "error_during_execution",
+                                                                 "is_error": True, "result": CLAUDE_CREDITS}) + "\n"]
     task = agents.AgentRun(agent="claude", model="fable", workdir=tmp_path, brief="b", log_out=out, log_err=err,
                            claude_hook=False)
-    result = agents.run_agent(task)
+    result = agents.run_agent(task, launch=lambda *a, **k: FakeProc(lines, 1))
     assert result.limited and result.exit_code == 1 and result.message == CLAUDE_CREDITS
     assert out.read_text().startswith("START ") and "EXIT 1 " in out.read_text()
+    assert out.read_text().count("partial work") == 3000 and (tmp_path / "run-1.jsonl").read_text().count("\n") == 3001
+
+
+class FakeProc:
+    """A process whose stdout is the given lines and that exits with `code`."""
+
+    def __init__(self, lines, code):
+        import io
+        self.stdin, self.stdout, self.code = io.StringIO(), iter(lines), code
+
+    def wait(self, timeout=None):
+        return self.code
+
+    def kill(self):
+        pass
 
 
 @needs_git
