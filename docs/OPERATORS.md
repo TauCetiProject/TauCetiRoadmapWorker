@@ -46,12 +46,22 @@ cannot run (no `lake`, the fetch failed, the guard tripped) the lane never skips
 brief's `Elaborate` line says why, the worker's check adds the problem
 `Suggested.lean: not elaborated — <reason>`, the package lane's repair pass receives it and the
 round fails with it. Before any elaboration the text gates refuse a `Suggested.lean` whose imports
-are not exactly the one line `import Mathlib` (count `imports`; a `TauCeti.*` or roadmap module
-has no object file in the shared packages) or that carries a `set_option` (count `set_option`),
-and an elaboration that fails on a missing object file with such an import is explained in its
-problem line. Elaboration problems are reported whole: every error message up to 1000 characters
-with its continuation lines, warnings only when there is no error, at most 40 diagnostics with
-the first error of every file always among them. An operator who already holds a built `.lake/packages` may still export it:
+are not `import Mathlib` followed only by the individual `TauCeti.*` modules actually used (count
+`imports`: never `Mathlib.<submodule>` lines, no roadmap module, no duplicate, nothing below the
+header, and no `TauCeti.*` module missing from the pinned Tau Ceti's sources when the checkout
+holds them) or that carries a `set_option` (count `set_option`); an elaboration that fails on a
+missing object file with an import that is neither Mathlib nor an existing `TauCeti.*` module is
+explained in its problem line. The shared packages hold Tau Ceti's sources without object files,
+so a `Suggested.lean` that imports `TauCeti.*` modules is elaborated through the targeted build of
+its module (`[gates] build`, the command the port lane runs): the package's file is synced to
+`<active_dir>/<Name>/Suggested.lean` in the content checkout for the build's duration, the build
+runs under the pin's lock, the disk guard and a timeout, and the Tau Ceti object files it makes
+land in the shared packages for every worker; a Mathlib-only file keeps `[gates] elaborate`
+(`lake env lean`). The round log's note says which way was taken (`Elaborate Suggested.lean:
+lake env lean …` or `… targeted build … (built N Tau Ceti modules, M s)`). Elaboration problems
+are reported whole: every error message up to 1000 characters with its continuation lines,
+warnings only when there is no error, at most 40 diagnostics with the first error of every file
+always among them. An operator who already holds a built `.lake/packages` may still export it:
 
 ```bash
 export TAUCETI_ROADMAP_LAKE_PACKAGES=/path/to/TauCetiRoadmap/.lake/packages

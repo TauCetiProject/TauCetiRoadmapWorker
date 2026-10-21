@@ -4,6 +4,8 @@ import textwrap
 from tauceti_roadmap_worker import gates
 from tauceti_roadmap_worker.gates import GateOptions, scan_folder
 
+from .fakes import example_config
+
 CLEAN_README = textwrap.dedent("""\
     # Roadmap: toy groups
 
@@ -199,40 +201,75 @@ def test_elaboration_errors_are_kept_whole_and_warnings_drop_out_when_an_error_i
     assert problems[-1] == "… and 20 more errors not shown"
 
 
-def test_a_second_import_is_refused_by_the_text_gate():
-    """Regression (2026-10-21): a package with `import TauCeti.Combinatorics.Enumerative.Partition.Conjugate`
-    under `import Mathlib` passed the package lane, three reviews and two red-team rounds, then failed
-    its elaboration at line 1 (the shared packages hold no Tau Ceti object files)."""
+def test_the_imports_are_mathlib_then_the_tauceti_modules_used():
+    """The maintainer's rule (2026-10-19): `import Mathlib`, then only the individual `TauCeti.*`
+    modules actually used; never `Mathlib.<submodule>`. (Commit 4c7f9ba had wrongly forbidden the
+    `TauCeti.*` lines.)"""
     assert gates.scan_lean_imports(CLEAN_LEAN) == []
     assert gates.scan_lean_imports("") == []           # no import at all is `no-import-mathlib`'s finding
     assert gates.scan_lean_imports("-- import TauCeti.Foo\n/-! import Mathlib.Data.Nat.Basic -/\nimport Mathlib\n") == []
-    extra = CLEAN_LEAN.replace("import Mathlib\n", "import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\n")
-    hits = gates.scan_lean_imports(extra)
-    assert [h.line for h in hits] == [1]
-    assert hits[0].text == ("Suggested.lean imports: only `import Mathlib` is allowed; found: `import Mathlib` (line 1), "
-                            "`import TauCeti.Combinatorics.Enumerative.Partition.Conjugate` (line 2)")
-    inside = CLEAN_LEAN.replace("-- a comment that mentions sorry and set_option\n", "import Mathlib.Tactic\n")
-    hits = gates.scan_lean_imports(inside)
-    assert len(hits) == 1 and hits[0].text.endswith("`import Mathlib.Tactic` (line 14, after the header)")
-    assert len(gates.scan_lean_imports("import Mathlib\nimport Mathlib\n")) == 1       # exactly one, not two
     assert gates.scan_lean_imports("public import Mathlib\n") == []
-    for lean, count in ((CLEAN_LEAN, 0), (extra, 1), (inside, 1)):
+    with_tauceti = CLEAN_LEAN.replace("import Mathlib\n", "import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\n"
+                                                           "import TauCeti.NumberTheory.ModularForms.Eta\n")
+    assert gates.scan_lean_imports(with_tauceti) == []
+    assert gates.tauceti_imports(with_tauceti) == ["TauCeti.Combinatorics.Enumerative.Partition.Conjugate",
+                                                   "TauCeti.NumberTheory.ModularForms.Eta"]
+    assert gates.tauceti_imports(CLEAN_LEAN) == []
+    assert scan_folder("Toy", CLEAN_README, with_tauceti, opts()).counts["imports"] == 0
+    # A Mathlib submodule, a roadmap module, a duplicate, Tau Ceti before Mathlib, an import below the header.
+    sub = CLEAN_LEAN.replace("import Mathlib\n", "import Mathlib\nimport Mathlib.Tactic\n")
+    hits = gates.scan_lean_imports(sub)
+    assert [h.line for h in hits] == [1]
+    assert hits[0].text == ("Suggested.lean imports: `import Mathlib` first, then only the individual `TauCeti.*` modules "
+                            "used (never `Mathlib.<submodule>`); found: `import Mathlib` (line 1), `import Mathlib.Tactic` (line 2)")
+    roadmap = CLEAN_LEAN.replace("import Mathlib\n", "import Mathlib\nimport TauCetiRoadmap.Other.Suggested\n")
+    assert len(gates.scan_lean_imports(roadmap)) == 1
+    assert len(gates.scan_lean_imports("import Mathlib\nimport TauCeti.A\nimport TauCeti.A\n")) == 1
+    assert len(gates.scan_lean_imports("import TauCeti.A\nimport Mathlib\n")) == 1
+    inside = CLEAN_LEAN.replace("-- a comment that mentions sorry and set_option\n", "import TauCeti.A\n")
+    hits = gates.scan_lean_imports(inside)
+    assert len(hits) == 1 and hits[0].text.endswith("`import TauCeti.A` (line 14, after the header)")
+    for lean, count in ((CLEAN_LEAN, 0), (with_tauceti, 0), (sub, 1), (roadmap, 1), (inside, 1)):
         assert scan_folder("Toy", CLEAN_README, lean, opts()).counts["imports"] == count
-    assert not scan_folder("Toy", CLEAN_README, extra, opts()).ok
-    assert gates.lean_imports(extra) == [(1, "Mathlib", "import Mathlib"),
-                                         (2, "TauCeti.Combinatorics.Enumerative.Partition.Conjugate",
-                                          "import TauCeti.Combinatorics.Enumerative.Partition.Conjugate")]
+    assert not scan_folder("Toy", CLEAN_README, sub, opts()).ok
+    assert gates.lean_imports(sub) == [(1, "Mathlib", "import Mathlib"), (2, "Mathlib.Tactic", "import Mathlib.Tactic")]
 
 
-def test_a_missing_object_file_is_explained_when_the_imports_are_not_mathlib_alone():
+def test_a_tauceti_module_must_exist_at_the_pinned_tau_ceti_when_its_sources_are_at_hand(tmp_path):
+    checkout = tmp_path / "content"
+    sources = checkout / ".lake" / "packages" / "TauCeti" / "TauCeti"
+    (sources / "Combinatorics" / "Enumerative" / "Partition").mkdir(parents=True)
+    (sources / "Combinatorics" / "Enumerative" / "Partition" / "Conjugate.lean").write_text("-- x\n")
+    assert gates.tauceti_sources(checkout) == sources
+    assert gates.tauceti_sources(tmp_path / "nowhere") is None and gates.tauceti_sources(None) is None
+    lean = "import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\nimport TauCeti.Nope.Missing\n"
+    hits = gates.scan_lean_imports(lean, sources)
+    assert [(h.line, h.text) for h in hits] == [
+        (3, "Suggested.lean imports: TauCeti module TauCeti.Nope.Missing does not exist at the pinned Tau Ceti")]
+    assert gates.scan_lean_imports(lean, None) == []                     # without the sources: accepted
+    assert gates.scan_lean_imports("import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\n", sources) == []
+    assert not gates.tauceti_module_exists("TauCeti.", sources) and gates.tauceti_module_exists("TauCeti.Anything", None)
+    assert scan_folder("Toy", CLEAN_README, lean, opts(tauceti_sources=sources)).counts["imports"] == 1
+    assert scan_folder("Toy", CLEAN_README, lean, opts()).counts["imports"] == 0
+    assert GateOptions.from_config(example_config(), tauceti=sources).tauceti_sources == sources
+
+
+def test_a_missing_object_file_is_explained_only_for_an_import_that_is_neither_mathlib_nor_tau_ceti(tmp_path):
     problems = ["build exited 1", OBJECT_FILE_ERROR]
-    extra = "import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\n"
-    assert gates.explain_build_problems(extra, problems) == problems + [
-        "an import other than Mathlib cannot be elaborated here; Suggested.lean may import only Mathlib"]
+    tauceti = "import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\n"
+    foreign = "import Mathlib\nimport TauCetiRoadmap.Other.Suggested\n"
+    assert gates.explain_build_problems(foreign, problems) == problems + [gates.IMPORT_EXPLANATION]
+    assert gates.explain_build_problems(tauceti, problems) == problems       # a Tau Ceti module: the build makes it
     assert gates.explain_build_problems("import Mathlib\n", problems) == problems        # a real missing olean
     other = ["build exited 1", "Suggested.lean:4:0: error: unknown identifier `foo`"]
-    assert gates.explain_build_problems(extra, other) == other                          # not an import's error
-    assert gates.explain_build_problems(extra, []) == []
+    assert gates.explain_build_problems(foreign, other) == other                        # not an import's error
+    assert gates.explain_build_problems(foreign, []) == []
+    # With the pinned sources at hand a Tau Ceti module that does not exist there is foreign too.
+    sources = tmp_path / "TauCeti"
+    sources.mkdir()
+    assert gates.explain_build_problems(tauceti, problems, sources) == problems + [gates.IMPORT_EXPLANATION]
+    assert gates.foreign_imports(tauceti, sources) == ["TauCeti.Combinatorics.Enumerative.Partition.Conjugate"]
+    assert gates.foreign_imports(tauceti) == [] and gates.foreign_imports(foreign) == ["TauCetiRoadmap.Other.Suggested"]
 
 
 def test_gate_runs_depcheck_when_order_given():

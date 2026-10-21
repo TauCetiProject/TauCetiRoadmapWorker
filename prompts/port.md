@@ -49,10 +49,12 @@ open roadmap pull requests at their heads, read-only: __SIBLINGS__.
   it apart from import and supplier repairs. If it develops theory or holds sorry'd data, keep every
   statement the rule allows and move everything else into the README as targets, so that no
   mathematics is lost.
-- **Imports and suppliers**: `Suggested.lean` imports Mathlib and nothing else (the one line
-  `import Mathlib`; the gate refuses any other import). Every declaration the README calls a
-  supplier must exist at the pin or in a roadmap on main (grep before citing). Where the package restates something a supplier already provides, cite the
-  supplier and delete the restatement in both files.
+- **Imports and suppliers**: `Suggested.lean` imports `import Mathlib` followed only by the
+  individual `TauCeti.*` modules actually used, never `Mathlib.<submodule>` lines (the gate refuses
+  any other import); every `TauCeti.*` module named must exist at the pin of this worktree's
+  manifest. Every declaration the README calls a supplier must exist at the pin or in a roadmap on
+  main (grep before citing). Where the package restates something a supplier already provides,
+  cite the supplier and delete the restatement in both files.
 - **Duplication sweep** against every roadmap on main and every open roadmap pull request, by
   mathematical object, after the edits above. Removals are recorded only in "Scope and ownership".
 - **metadata.toml** follows the folders on main (compare one).

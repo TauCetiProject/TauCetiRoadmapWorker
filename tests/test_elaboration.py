@@ -15,7 +15,7 @@ from tauceti_roadmap_worker.board import new_job
 from tauceti_roadmap_worker.lanes import base, fix, gate, lake, lane_for, package, pr
 
 from .fakes import FakeGH, FakeTransport, example_config
-from .test_checkout import NAME, PKG, live, needs_git  # noqa: F401 - the shared fixture
+from .test_checkout import NAME, PKG, commit, live, needs_git  # noqa: F401 - the shared fixture
 
 JOB = f"PKG-{NAME}"
 
@@ -104,22 +104,148 @@ def test_the_package_lane_elaborates_in_the_wired_checkout(live, monkeypatch):  
     assert ws.extra["lake"].ready and (ws.content / ".lake" / "packages").is_symlink()
     assert os.path.realpath(ws.content / ".lake" / "packages") == str(shared.resolve())
     values = lane.common_values(job, ctx, ws)
-    assert values["ELABORATE"] == f"`lake env lean <absolute path of Suggested.lean>` run from `{ws.content}`"
+    assert values["ELABORATE"].startswith(f"`lake env lean <absolute path of Suggested.lean>` run from `{ws.content}`; "
+                                          "a `TauCeti.*` import whose object file is missing is built first with "
+                                          "`lake build <that module>` from the same directory")
     monkeypatch.setattr(package, "package_scan", lambda ctx, ws, name, pkg: [])
     ws.report.write_text("# Report\n")
     assert lane.check(job, ctx, ws) == []
     lean = ws.package(ctx.cfg, job.name) / "Suggested.lean"
     assert calls == [(ws.content, f"lake env lean {lean.resolve()}")]
-    assert ws.extra["notes"] == ["Suggested.lean elaborated: sorry the only warning"]
+    assert ws.extra["notes"] == [f"Elaborate Suggested.lean: lake env lean {lean.resolve()} in {ws.content}",
+                                 "Suggested.lean elaborated: sorry the only warning"]
     # What the elaboration finds is a problem of the package, named for what it is.
     calls = fake_elaboration(monkeypatch, ["build exited 1", "error: Suggested.lean:4:0: unknown identifier"])
     assert lane.check(job, ctx, ws) == ["Suggested.lean: elaboration exited 1",
                                         "error: Suggested.lean:4:0: unknown identifier"]
-    # A missing object file with a second import is explained: the file, not the machine, is at fault.
-    lean.write_text("import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\n")
-    fake_elaboration(monkeypatch, ["build exited 1", f"{lean}:1:0: error: object file '/x/Conjugate.olean' of module "
-                                   "TauCeti.Combinatorics.Enumerative.Partition.Conjugate does not exist"])
+    # A missing object file with an import that is neither Mathlib nor Tau Ceti is explained: the file,
+    # not the machine, is at fault.
+    lean.parent.mkdir(parents=True, exist_ok=True)
+    lean.write_text("import Mathlib\nimport TauCetiRoadmap.Other.Suggested\n")
+    fake_elaboration(monkeypatch, ["build exited 1", f"{lean}:1:0: error: object file '/x/Suggested.olean' of module "
+                                   "TauCetiRoadmap.Other.Suggested does not exist"])
     assert lane.check(job, ctx, ws)[-1] == gates.IMPORT_EXPLANATION
+
+
+TAUCETI_LEAN = "import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\n\ntheorem x : 1 = 1 := sorry\n"
+BUILT = ("✔ [1/3] Built TauCeti.Combinatorics.Enumerative.Partition.Basic (12s)\n"
+         "✔ [2/3] Built TauCeti.Combinatorics.Enumerative.Partition.Conjugate (3s)\n"
+         "⚠ [3/3] Built TauCetiRoadmap.QSeries.Suggested\n"
+         "warning: TauCetiRoadmap/QSeries/Suggested.lean:4:8: declaration uses 'sorry'\n"
+         "Build completed successfully.\n")
+
+
+def fake_builds(monkeypatch, text=BUILT, code=0, seen=None):
+    """`gates.build_output` recorded instead of run: (cwd, command) pairs; `seen` collects what the
+    module's path in the checkout holds at build time."""
+    calls = []
+
+    def build_output(worktree, command, timeout=gates.BUILD_TIMEOUT):
+        calls.append((Path(worktree), command, timeout))
+        if seen is not None:
+            module = Path(worktree) / "TauCetiRoadmap" / NAME / "Suggested.lean"
+            seen.append(module.read_text() if module.is_file() else None)
+        return text, code, ""
+    monkeypatch.setattr(gates, "build_output", build_output)
+    return calls
+
+
+@needs_git
+def test_a_tauceti_import_takes_the_targeted_build_and_mathlib_alone_lake_env_lean(live, monkeypatch):  # noqa: F811
+    """Regression (2026-10-21, chris-4, FIX-RT-QSeriesPartitionsAndMockModularForms~2): the shared
+    packages hold Tau Ceti's sources without object files, so `lake env lean` failed at line 1 on
+    `import TauCeti.Combinatorics.Enumerative.Partition.Conjugate`; the targeted build makes them."""
+    ctx, _board = live
+    job = new_job(JOB)
+    lane = lane_for(job)
+    monkeypatch.setattr(lake, "lake_on_path", lambda: "/usr/bin/lake")
+    shared = mark_ready(ctx.state, ctx.wdir / "content")
+    monkeypatch.setattr(package, "package_scan", lambda ctx, ws, name, pkg: [])
+    ws = lane.prepare(job, ctx)
+    ws.report.write_text("# Report\n")
+    lean = ws.package(ctx.cfg, job.name) / "Suggested.lean"
+    lean.parent.mkdir(parents=True, exist_ok=True)
+    lean.write_text(TAUCETI_LEAN)
+    seen = []
+    calls = fake_builds(monkeypatch, seen=seen)
+    assert lane.check(job, ctx, ws) == []
+    module = ws.content / "TauCetiRoadmap" / NAME / "Suggested.lean"
+    assert calls == [(ws.content, f"lake build TauCetiRoadmap.{NAME}.Suggested", 3600)]
+    assert seen == [TAUCETI_LEAN] and not module.parent.exists()          # synced for the build, gone after it
+    assert (shared.parent / ".lock").is_file()                             # taken for the build
+    note = ws.extra["notes"][0]
+    assert note.startswith(f"Elaborate Suggested.lean: targeted build `lake build TauCetiRoadmap.{NAME}.Suggested` in "
+                           f"{ws.content} (built 2 Tau Ceti modules, ")
+    assert ws.extra["notes"][1] == "Suggested.lean elaborated: sorry the only warning"
+    # A failing build is the package's problem, reported whole; the sync is undone all the same.
+    calls = fake_builds(monkeypatch, "error: TauCetiRoadmap/QSeries/Suggested.lean:4:8: unknown identifier `y`\n"
+                                     "error: build failed\n", 1, seen)
+    assert lane.check(job, ctx, ws) == ["Suggested.lean: elaboration exited 1",
+                                        "error: TauCetiRoadmap/QSeries/Suggested.lean:4:8: unknown identifier `y`"]
+    assert not module.parent.exists() and len([n for n in ws.extra["notes"] if n.startswith("Elaborate")]) == 1
+    # A Mathlib-only file keeps `lake env lean`, never a build.
+    lean.write_text("import Mathlib\n\ntheorem x : 1 = 1 := sorry\n")
+    env = fake_elaboration(monkeypatch)
+    calls = fake_builds(monkeypatch)
+    assert lane.check(job, ctx, ws) == []
+    assert calls == [] and env == [(ws.content, f"lake env lean {lean.resolve()}")]
+    # Without a build command a Tau Ceti import cannot be elaborated, and the problem says what is missing.
+    lean.write_text(TAUCETI_LEAN)
+    ctx.cfg.gates.build = ""
+    env = fake_elaboration(monkeypatch, ["build exited 1", f"{lean}:1:0: error: object file '/x/Conjugate.olean' of "
+                                        "module TauCeti.Combinatorics.Enumerative.Partition.Conjugate does not exist"])
+    problems = lane.check(job, ctx, ws)
+    assert problems[-1] == package.NO_BUILD_FOR_TAUCETI and gates.IMPORT_EXPLANATION not in problems
+    assert env == [(ws.content, f"lake env lean {lean.resolve()}")]
+    # The disk guard stops the build, with the reason as the problem.
+    ctx.cfg.gates.build = "lake build {module}"
+    monkeypatch.setattr(package, "free_gb", lambda p: 7.0)
+    calls = fake_builds(monkeypatch)
+    assert lane.check(job, ctx, ws) == ["Suggested.lean: not elaborated — only 7 GB free on the state directory's disk; "
+                                        "the targeted build that a `TauCeti.*` import needs wants 20 GB"]
+    assert calls == []
+
+
+def test_the_module_is_synced_for_the_build_and_what_was_there_comes_back(tmp_path):
+    lean = tmp_path / "pkg" / "Suggested.lean"
+    lean.parent.mkdir()
+    lean.write_text("new\n")
+    target = tmp_path / "content" / "TauCetiRoadmap" / "Alpha" / "Suggested.lean"
+    undo = package.place_module(lean, target)
+    assert target.read_text() == "new\n"
+    undo()
+    assert not target.parent.exists()
+    # A folder of the same name on main: its file comes back untouched.
+    target.parent.mkdir(parents=True)
+    target.write_text("main's\n")
+    (target.parent / "README.md").write_text("# kept\n")
+    undo = package.place_module(lean, target)
+    assert target.read_text() == "new\n"
+    undo()
+    assert target.read_text() == "main's\n" and (target.parent / "README.md").is_file()
+    # The file already at the module's path (a worktree on the pull request branch): nothing to do.
+    package.place_module(target, target)()
+    assert target.read_text() == "main's\n"
+
+
+@needs_git
+def test_the_review_lane_builds_the_tauceti_modules_before_the_reviewer_elaborates(live, monkeypatch):  # noqa: F811
+    ctx, board_ = live
+    commit(board_, {f"{PKG}/Suggested.lean": TAUCETI_LEAN, f"{PKG}/README.md": "# R\n"}, "package")
+    job = new_job(f"REV-PKG-{NAME}")
+    lane = lane_for(job)
+    monkeypatch.setattr(lake, "lake_on_path", lambda: "/usr/bin/lake")
+    mark_ready(ctx.state, ctx.wdir / "content")
+    seen = []
+    calls = fake_builds(monkeypatch, seen=seen)
+    ws = lane.prepare(job, ctx)
+    assert calls == [(ws.content, f"lake build TauCetiRoadmap.{NAME}.Suggested", 3600)] and seen == [TAUCETI_LEAN]
+    assert ws.extra["notes"][0].startswith("Elaborate Suggested.lean: targeted build")
+    # A Mathlib-only package: nothing to build ahead of the review.
+    commit(board_, {f"{PKG}/Suggested.lean": "import Mathlib\n"}, "mathlib only")
+    calls = fake_builds(monkeypatch)
+    ws = lane.prepare(job, ctx)
+    assert calls == [] and not ws.extra.get("notes")
 
 
 @needs_git

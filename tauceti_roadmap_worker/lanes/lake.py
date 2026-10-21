@@ -17,6 +17,8 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,6 +99,19 @@ def link_checkout_packages(checkout: Path, state: Path) -> Path:
     own.parent.mkdir(parents=True, exist_ok=True)
     os.symlink(src.resolve(), own)
     return src
+
+
+@contextmanager
+def pin_lock(packages: Path | None) -> Iterator[None]:
+    """The pin's lock (`<state>/lake/<pin>/.lock`, the one the first fetch takes): two workers of the
+    machine never build into the shared packages at once. Without packages there is nothing to lock."""
+    if packages is None:
+        yield
+        return
+    packages.parent.mkdir(parents=True, exist_ok=True)
+    with open(packages.parent / ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def ensure_lake_cache(worktree: Path, shared: Path | None, run=subprocess.run) -> str:

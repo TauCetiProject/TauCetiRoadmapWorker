@@ -20,6 +20,7 @@ from ..board import Job
 from ..gates import readme_targets
 from .base import Context, Lane, Workspace, checkout_board_pr, count
 from .design import manifest_problems
+from .package import build_tauceti_imports
 
 SAMPLE_SIZE = 15
 
@@ -99,6 +100,8 @@ class ReviewLane(Lane):
         ws = super().prepare(job, ctx)
         if self.board_pr(job):
             checkout_board_pr(ctx, ws, self.board_pr(job))   # the design or package under review is its head
+        if self.elaborates(job):
+            build_tauceti_imports(ctx, ws, job.name)         # the reviewer's `lake env lean` finds their object files
         return ws
 
     def comment_body(self, job: Job, ctx: Context, ws: Workspace) -> str:

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _replace
 from pathlib import Path
 
 from . import depgraph
@@ -158,8 +158,11 @@ def scan_missing_mathlib_import(lean: str) -> list[Hit]:
 
 
 IMPORT_LINE = re.compile(r"^[ \t]*(?P<text>(?:public\s+)?import\s+(?P<module>[\w.«»]+))", re.M)
-IMPORTS_RULE = "Suggested.lean imports: only `import Mathlib` is allowed; found: "
+IMPORTS_RULE = ("Suggested.lean imports: `import Mathlib` first, then only the individual `TauCeti.*` modules used "
+                "(never `Mathlib.<submodule>`); found: ")
+IMPORTS_MISSING = "Suggested.lean imports: TauCeti module {name} does not exist at the pinned Tau Ceti"
 IMPORTS_LISTED = 12
+TAUCETI_SOURCES = Path(".lake") / "packages" / "TauCeti" / "TauCeti"
 
 
 def lean_imports(lean: str) -> list[tuple[int, str, str]]:
@@ -169,26 +172,58 @@ def lean_imports(lean: str) -> list[tuple[int, str, str]]:
             for m in IMPORT_LINE.finditer(code)]
 
 
-def scan_lean_imports(lean: str) -> list[Hit]:
-    """Exactly one import, `import Mathlib`, in the header. The shared packages that elaborate
-    Suggested.lean hold Mathlib's object files only; a `TauCeti.*` or roadmap module is not there, so
-    a second import fails at line 1, and a duplicate or an import below the header is noise the file
-    does not need. A file with no import at all is `no-import-mathlib`'s finding."""
+def tauceti_imports(lean: str) -> list[str]:
+    """The `TauCeti.*` modules the file imports, in order, each once."""
+    return list(dict.fromkeys(m for _l, m, _t in lean_imports(lean) if m.startswith("TauCeti.")))
+
+
+def tauceti_sources(checkout: Path | None) -> Path | None:
+    """Where a checkout wired to its Lake packages holds the pinned Tau Ceti's sources
+    (`.lake/packages/TauCeti/TauCeti`), or None when they are not there (nothing to verify against)."""
+    if checkout is None:
+        return None
+    path = Path(checkout) / TAUCETI_SOURCES
+    return path if path.is_dir() else None
+
+
+def tauceti_module_exists(module: str, sources: Path | None) -> bool:
+    """Whether `TauCeti.<Path>` is a module of the pinned Tau Ceti: `<sources>/<Path>.lean`. Without
+    the sources the question cannot be answered and the module passes."""
+    if sources is None:
+        return True
+    parts = module.split(".")[1:]
+    if not parts or not all(parts):
+        return False
+    return (Path(sources) / Path(*parts)).with_suffix(".lean").is_file()
+
+
+def scan_lean_imports(lean: str, tauceti: Path | None = None) -> list[Hit]:
+    """The header's imports: `import Mathlib` first, then zero or more `import TauCeti.<Path>` lines,
+    each once, nothing else, nothing below the header (the maintainer's rule of 2026-10-19). With the
+    pinned Tau Ceti's sources at hand (`tauceti`), every `TauCeti.*` module must exist there. A file
+    with no import at all is `no-import-mathlib`'s finding."""
     code = strip_lean_comments(lean)
     imports = lean_imports(lean)
     if not imports:
         return []
     header_end = next((line for kw, line, _ in lean_blocks(code) if kw not in ("import", "public import")), None)
-    found, ok = [], len(imports) == 1
-    for line, module, text in imports:
+    found, ok, seen = [], imports[0][1] == "Mathlib", set()
+    for k, (line, module, text) in enumerate(imports):
         late = header_end is not None and line > header_end
-        if module != "Mathlib" or late:
+        allowed = module == "Mathlib" if k == 0 else module.startswith("TauCeti.")
+        if not allowed or late or module in seen:
             ok = False
+        seen.add(module)
         found.append(f"`{text}` (line {line}" + (", after the header" if late else "") + ")")
-    if ok:
-        return []
-    listed = ", ".join(found[:IMPORTS_LISTED]) + (f", … and {len(found) - IMPORTS_LISTED} more" if len(found) > IMPORTS_LISTED else "")
-    return [Hit(imports[0][0], IMPORTS_RULE + listed)]
+    hits = []
+    if not ok:
+        listed = ", ".join(found[:IMPORTS_LISTED]) + (f", … and {len(found) - IMPORTS_LISTED} more" if len(found) > IMPORTS_LISTED else "")
+        hits.append(Hit(imports[0][0], IMPORTS_RULE + listed))
+    if tauceti is not None:
+        for line, module, _text in imports:
+            if module.startswith("TauCeti.") and not tauceti_module_exists(module, tauceti):
+                hits.append(Hit(line, IMPORTS_MISSING.format(name=module)))
+    return hits
 
 
 def scan_lean_length(lean: str, max_lines: int) -> list[Hit]:
@@ -459,15 +494,17 @@ class GateOptions:
     order: list[str] | None = None
     sibling_readmes: dict[str, str] = field(default_factory=dict)
     main_extended: list[str] = field(default_factory=list)
+    tauceti_sources: Path | None = None      # the pinned Tau Ceti's sources, when a wired checkout holds them
 
     @classmethod
-    def from_config(cls, cfg, order=None, siblings=None, dropped=None) -> "GateOptions":
+    def from_config(cls, cfg, order=None, siblings=None, dropped=None, tauceti=None) -> "GateOptions":
         g = cfg.gates
         return cls(content_repo=cfg.repositories.content, active_dir=cfg.roadmap.active_dir,
                    max_lean_lines=g.max_lean_lines, forbid_mathlib_subimports=g.forbid_mathlib_subimports,
                    forbidden_patterns=list(g.forbidden_patterns), dropped_names=list(dropped or []),
                    outside_folder_allow=list(g.outside_folder_allow), order=order if g.require_depcheck else None,
-                   sibling_readmes=dict(siblings or {}), main_extended=list(cfg.roadmap.main_extended))
+                   sibling_readmes=dict(siblings or {}), main_extended=list(cfg.roadmap.main_extended),
+                   tauceti_sources=tauceti)
 
 
 def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateResult:
@@ -482,7 +519,7 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
     r.add("sorry-examples", scan_sorry_examples(lean))
     r.add("residue", scan_process_residue(readme) + scan_lean_residue(lean))
     r.add("private-paths", scan_private_paths(readme) + scan_private_paths(lean))
-    r.add("imports", scan_lean_imports(lean))
+    r.add("imports", scan_lean_imports(lean, opts.tauceti_sources))
     r.add("mathlib-subimports", scan_mathlib_subimports(lean) if opts.forbid_mathlib_subimports else [])
     r.add("no-import-mathlib", scan_missing_mathlib_import(lean))
     r.add("lean-lines", scan_lean_length(lean, opts.max_lean_lines))
@@ -527,6 +564,8 @@ def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build
         r.add("missing-files", missing)
         return r
     lean = lean_path.read_text(encoding="utf-8", errors="replace")
+    if opts.tauceti_sources is None:
+        opts = _replace(opts, tauceti_sources=tauceti_sources(root))
     r = scan_folder(name, readme_path.read_text(encoding="utf-8", errors="replace"), lean, opts)
     r.add("metadata", [] if (root / folder / "metadata.toml").is_file() else [f"{folder}/metadata.toml missing"])
     material = tree_source_problems(root, folder)
@@ -544,18 +583,26 @@ def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build
     r.add("source-material", material)
     if build_cmd:
         built = build_problems(root, build_cmd.format(module=f"{opts.active_dir}.{name}.Suggested"))
-        r.add("build", explain_build_problems(lean, built))
+        r.add("build", explain_build_problems(lean, built, opts.tauceti_sources))
     return r
 
 
-def build_problems(worktree: Path, command: str, timeout: int = 3600) -> list[str]:
-    """Run the targeted build; problems are a failure or any warning other than `sorry`."""
+BUILD_TIMEOUT = 3600
+
+
+def build_output(worktree: Path, command: str, timeout: int = BUILD_TIMEOUT) -> tuple[str, int | None, str]:
+    """Run a build or an elaboration: (its output, its exit code, '' or why it did not run)."""
     try:
         out = subprocess.run(command.split(), cwd=worktree, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return [f"build did not run: {exc}"]
-    text = out.stdout + out.stderr
-    return build_output_problems(text, out.returncode)
+        return "", None, f"build did not run: {exc}"
+    return out.stdout + out.stderr, out.returncode, ""
+
+
+def build_problems(worktree: Path, command: str, timeout: int = BUILD_TIMEOUT) -> list[str]:
+    """Run the targeted build; problems are a failure or any warning other than `sorry`."""
+    text, code, failure = build_output(worktree, command, timeout)
+    return [failure] if failure else build_output_problems(text, code)
 
 
 DIAGNOSTIC = re.compile(r"^\s*(?:\S.*?\.lean:\d+:\d+:\s*)?(?P<severity>error|warning)\b")
@@ -615,13 +662,22 @@ def build_output_problems(text: str, returncode: int) -> list[str]:
     return problems + [msg for _sev, _file, msg in shown]
 
 
-IMPORT_EXPLANATION = "an import other than Mathlib cannot be elaborated here; Suggested.lean may import only Mathlib"
+IMPORT_EXPLANATION = ("an import that is neither Mathlib nor a module of the pinned Tau Ceti cannot be elaborated "
+                      "here; Suggested.lean imports Mathlib and the individual `TauCeti.*` modules it uses")
 
 
-def explain_build_problems(lean: str, problems: list[str]) -> list[str]:
-    """When the first error is a missing object file and the imports are not the single
-    `import Mathlib`, say what the error means (the agent otherwise reads it as a broken machine)."""
+def foreign_imports(lean: str, tauceti: Path | None = None) -> list[str]:
+    """The imported modules that are neither `Mathlib` nor an existing `TauCeti.*` module (with the
+    pinned sources at hand; without them every `TauCeti.*` module counts as existing)."""
+    return [m for _l, m, _t in lean_imports(lean)
+            if m != "Mathlib" and not (m.startswith("TauCeti.") and tauceti_module_exists(m, tauceti))]
+
+
+def explain_build_problems(lean: str, problems: list[str], tauceti: Path | None = None) -> list[str]:
+    """When the first error is a missing object file and the file imports something that is neither
+    Mathlib nor an existing `TauCeti.*` module, say what the error means (the agent otherwise reads
+    it as a broken machine)."""
     first = next((p for p in problems if re.search(r"\berror\b", p)), "")
-    if "object file" in first and [m for _l, m, _t in lean_imports(lean)] != ["Mathlib"]:
+    if "object file" in first and foreign_imports(lean, tauceti):
         return problems + [IMPORT_EXPLANATION]
     return problems

@@ -1013,7 +1013,11 @@ def elaborate_line(cfg: Config, ws: Workspace) -> str:
         return "not available (this lane does not elaborate; say so in the report)"
     if setup.reason:
         return f"not available — {setup.reason} (say so in the report)"
-    return f"`{cfg.gates.elaborate.format(file='<absolute path of Suggested.lean>')}` run from `{ws.content}`"
+    line = f"`{cfg.gates.elaborate.format(file='<absolute path of Suggested.lean>')}` run from `{ws.content}`"
+    if cfg.gates.build:
+        line += ("; a `TauCeti.*` import whose object file is missing is built first with `lake build <that module>` "
+                 "from the same directory (the worker's own check builds them through the targeted build of the module)")
+    return line
 
 
 def builds(job: Job) -> bool:
