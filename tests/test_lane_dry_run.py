@@ -118,6 +118,17 @@ def test_lane_base_values_cover_common_placeholders(ctx):
     assert values["SUPPLIERS"] == "none yet" and values["DROPPED"] == "none"
 
 
+def test_review_on_a_board_pull_request_fetches_the_previous_review_from_the_board(ctx):
+    job = new_job("REV-PKG-Foo~3", inputs={"board_pr": 12, "operator": "alice"})
+    job.number = 11
+    assert lane_for(job).run(job, ctx).status == "dry-run"
+    scratch = ctx.wdir / "jobs" / "REV-PKG-Foo_r3" / "scratch" / "previous"
+    brief = (ctx.wdir / "jobs" / "REV-PKG-Foo_r3" / "brief.md").read_text()
+    assert f"`{scratch / 'REV-PKG-Foo_r2.md'}` (its repair report: `{scratch / 'FIX-PKG-Foo_r3.md'}`)" in brief
+    assert str(ctx.wdir / "board" / "packages" / "Foo" / "reports" / "REV-PKG-Foo~2.md") not in brief
+    assert (scratch / "REV-PKG-Foo_r2.md").is_file()
+
+
 def test_board_pull_request_jobs_check_out_its_head_and_read_the_board_reports(ctx, monkeypatch):
     calls = []
     monkeypatch.setattr(gitops, "git", lambda cwd, *args, **kw: calls.append(args) or fake_git(cwd, *args, **kw))

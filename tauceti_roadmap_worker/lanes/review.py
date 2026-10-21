@@ -18,7 +18,7 @@ import tomllib
 
 from .. import board, gitops, prreviews, sources
 from ..board import Job
-from .base import Context, Lane, Workspace, checkout_board_pr, count
+from .base import Context, Lane, Workspace, board_reports, checkout_board_pr, count
 from .design import manifest_problems
 
 TARGET_HEADING = re.compile(r"^\*\*([A-Z][^*\n]{2,150})\*\*", re.M)
@@ -149,8 +149,13 @@ class ReviewLane(Lane):
         if j.round > 1:
             prev_id = board.format_job_id(board.JobId("REV", j.name, j.round - 1, j.subject))
             fix_id = board.format_job_id(board.JobId("FIX", j.name, j.round, j.subject))
-            previous = (f"`{pkg / 'reports' / (prev_id + '.md')}` (its repair report: "
-                        f"`{pkg / 'reports' / (fix_id + '.md')}`)")
+            if self.board_pr(job):
+                # The checkout is the pull request's head: the repair report is on its branch, but the
+                # previous review is a comment the intake copied to the board's main, so it is fetched.
+                prev_path, fix_path = board_reports(ctx, ws, job.name, [prev_id, fix_id], "previous")
+            else:
+                prev_path, fix_path = pkg / "reports" / (prev_id + ".md"), pkg / "reports" / (fix_id + ".md")
+            previous = f"`{prev_path}` (its repair report: `{fix_path}`)"
         return {"SUBJECT": self.subject(job), "FILES": "\n".join(f"- `{f}`" for f in self.files(job, ctx, ws)),
                 "SAMPLE": "; ".join(f"“{s}”" for s in sample) or f"a random sample of {SAMPLE_SIZE} targets (none found by heading)",
                 "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)), "PREVIOUS": previous or "none"}
