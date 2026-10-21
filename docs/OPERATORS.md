@@ -152,8 +152,12 @@ human.
 Job ids follow `KIND-NAME~roundN`. Round 1 of a design, package, review or design/package fix has
 no suffix; red-team passes (`RT-Name~1a`), red-team fixes (`FIX-RT-Name~1`) and gate rounds
 (`GATE-Name~1`) always name their round. A review that does not accept sends its artefact to a fix
-round, and every fix round is followed by a fresh independent review; after `[board] max_rounds`
-the roadmap is parked (`state:blocked`) for a human. A fix may mark a finding `not actionable in this
+round, and every fix round is followed by a fresh independent review. After `[board] max_rounds`
+rounds (5 in the example) the next fix round is created as `state:blocked`, listing the last
+review's findings, and the review's issue says so: a human moves the fix to `state:available` to
+run the next round (the round counter keeps counting, and every later round parks the same way), or
+closes it to stop. `board sync` creates that blocked fix for a review parked before this rule (the
+last review of its roadmap, asking for changes, with the parking comment, and no later fix). A fix may mark a finding `not actionable in this
 package` with its reason (it asks another roadmap for something, or for a decision outside the
 package); when the next review's blocking findings only re-raise such findings (`Re-raised: <id>`
 in the finding, or the same title), the intake creates the next fix round as `state:blocked` with

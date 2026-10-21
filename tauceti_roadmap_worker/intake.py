@@ -185,6 +185,8 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
                            redteam_agents=tuple(p.agent for p in cfg.redteam.passes),
                            redteam_models=tuple(p.model for p in cfg.redteam.passes))
     stuck = stuck_on(ctx, job, outcome) if any(s.kind == "fix" for s in new) else []
+    reason = board.blocked_reason(job, outcome, max_rounds=cfg.board.max_rounds)
+    capped = bool(reason) and job.kind == "review" and outcome.verdict == "needs_changes"
     existing = {j.id for j in jobs}
     created = []
     for s in new:
@@ -200,17 +202,98 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
     if stuck:
         ctx.board.comment(job.number, "Parked for a human: " + STUCK_NOTE + "\n\n" + "\n".join(f"- {f}" for f in stuck))
         notes.append("blocked: the review re-raises only findings the repair marked not actionable")
+    if capped:
+        fix = park_after_rounds(ctx, job, outcome, existing, outcome.head)
+        if fix:
+            created.append(f"{fix} (blocked)")
+        notes.append(f"parked after {board.parse_job_id(job.id).round} rounds")
     if job.kind == "target" and outcome.verdict == "merge-into":
         notes.append(absorb(ctx, job, outcome.into, jobs))
     if board.artefact_of(job.id) == "DESIGN" and job.kind != "review":
         notes.append(announce_gaps(ctx, job, jobs))
-    reason = board.blocked_reason(job, outcome, max_rounds=cfg.board.max_rounds)
-    if reason:
+    if reason and not capped:
         ctx.board.comment(job.number, f"Parked for a human: {reason}")
         notes.append("parked")
     if job.kind == "review" and outcome.verdict == "accepted" and board.parse_job_id(job.id).subject == "DESIGN":
         notes.append(add_to_order(ctx, job.name))
     return "created " + (", ".join(created) if created else "nothing") + (f" ({'; '.join(notes)})" if notes else "")
+
+
+PARKED_ROUNDS = ("Parked for a human after {n} rounds: move this fix to state:available to run round {next}, or "
+                 "close it to stop.")
+CAPPED = re.compile(r"Parked for a human(?: after \d+ rounds|: \S+: the (?:design|package) still needs changes after "
+                    r"\d+ rounds)")
+
+
+def review_text(ctx, job: Job, outcome: Outcome | None = None) -> str:
+    """A review's text: its comments on a board pull request, else its report on the board's main."""
+    if outcome is not None and outcome.report:
+        return outcome.report
+    pkg = board.package_dir(ctx.cfg.board.packages_dir, job.name)
+    try:
+        return ctx.gh.raw_file(ctx.cfg.repositories.packages_repo(), f"{pkg}/reports/{job.id}.md")
+    except GHError:
+        return ""
+
+
+def park_after_rounds(ctx, review: Job, outcome: Outcome | None, existing: set[str], head: str = "") -> str:
+    """At `[board] max_rounds` (and after every round beyond it), the next repair round is created
+    as state:blocked, listing the review's findings, and the review's issue says how a human goes on:
+    moving the fix to state:available runs the next round (the counter keeps counting), closing it
+    stops. Returns the fix's id, or '' when it exists already."""
+    fix = board.fix_for_review(review)
+    n = board.parse_job_id(review.id).round
+    note = PARKED_ROUNDS.format(n=n, next=n + 1)
+    if fix.id in existing:
+        return ""
+    if head:
+        fix.inputs["base_head"] = head        # the head its push must move (board pull request)
+    found = [f for f in prreviews.findings_with_bodies(review_text(ctx, review, outcome))]
+    listed = "\n".join(f"- `{fid}` ({sev or 'P?'}) {title}" for fid, sev, title, _b in found) or \
+        f"- see the review `{review.id}`"
+    number = ctx.board.create(fix, state="blocked", preamble=note + "\n\nThe findings of `" + review.id + "`:\n\n" + listed)
+    ctx.board.comment(review.number, f"Parked for a human after {n} rounds: `{fix.id}` (#{number}) is blocked; move it "
+                                     f"to state:available to run round {n + 1}, or close it to stop.")
+    return fix.id
+
+
+def repark_capped(ctx) -> list[str]:
+    """`board sync`: a review parked at max_rounds before the parked fix existed (it created nothing)
+    gets its blocked next fix now. Only for the last review of its roadmap and artefact, when no later
+    fix or next stage exists and its issue carries the parking comment; idempotent."""
+    jobs = ctx.board.all_jobs()
+    ids = {j.id for j in jobs}
+    last: dict[tuple[str, str], Job] = {}
+    for j in jobs:
+        jid = board.parse_job_id(j.id)
+        if j.kind == "review" and j.state == "done":
+            key = (j.name, jid.subject)
+            if key not in last or jid.round > board.parse_job_id(last[key].id).round:
+                last[key] = j
+    out = []
+    for (name, subject), review in sorted(last.items()):
+        fix = board.fix_for_review(review)
+        later = {"DESIGN": [board.make_id("package", name)],
+                 "PKG": [board.make_id("port", name)] + board.redteam_passes(name, 1, 1)}.get(subject, [])
+        if fix.id in ids or any(x in ids for x in later):
+            continue
+        try:
+            comments = ctx.board.comments(review.number)
+        except GHError:
+            continue
+        if not any(CAPPED.search(c.get("body") or "") for c in comments):
+            continue
+        head = ""
+        if review.inputs.get("board_pr"):
+            try:
+                head = (ctx.gh.api(f"repos/{ctx.cfg.repositories.packages_repo()}/pulls/{review.inputs['board_pr']}")
+                        or {}).get("head", {}).get("sha", "")
+            except GHError:
+                head = ""
+        made = park_after_rounds(ctx, review, None, ids, head)
+        if made:
+            out.append(f"{review.id}: parked at max_rounds; created {made} (blocked)")
+    return out
 
 
 STUCK_NOTE = ("every blocking finding of this review re-raises a finding the last repair round marked not "

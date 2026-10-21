@@ -36,9 +36,11 @@ library = "TauCetiProject/TauCeti"
 namespace_label = "roadmap-job"
 # Folder (in the packages repository) holding one sub-folder per roadmap: packages/<Name>/.
 packages_dir = "packages"
-# Rounds of fix + fresh independent review before a design or package is parked for a human
-# (state:blocked). A fix worker's self-acceptance never counts.
-max_rounds = 3
+# Rounds of fix + fresh independent review before a design or package is parked for a human: the
+# next fix round is created as state:blocked, listing the last review's findings; moving it to
+# state:available runs it (and every later round parks the same way), closing it stops. A fix
+# worker's self-acceptance never counts.
+max_rounds = 5
 # Logins whose comments are the board's own (claim notices, intake notes).
 bot_logins = ["github-actions[bot]"]
 # A claim or submission with no sign of progress for this long is released by `board stale --release`.

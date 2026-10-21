@@ -327,9 +327,7 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
                                   "operator": outcome.operator or job.inputs.get("operator", ""),
                                   "authors": authors_of_round("PKG", name, j.round)})
         if outcome.verdict == "needs_changes" and j.round < max_rounds:
-            return [new_job(fix_after(job.id), after=[job.id], requires_operator=job.inputs.get("operator", ""),
-                            inputs={"review": job.id, **{k: v for k, v in job.inputs.items()
-                                                         if k in ("board_pr", "operator")}})]
+            return [fix_for_review(job)]
         return []
     if job.kind == "port":
         # A package accepted before the board pull requests (its port follows the review, not a
@@ -367,6 +365,13 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
                              {"board_pr": job.inputs.get("board_pr"), "operator": job.inputs.get("operator", ""),
                               "previous": job.inputs.get("reviews", []), "repair": job.id, "authors": authors})
     return []
+
+
+def fix_for_review(job: Job) -> Job:
+    """The repair round that follows a review asking for changes (the branch owner's, on a board
+    pull request)."""
+    return new_job(fix_after(job.id), after=[job.id], requires_operator=job.inputs.get("operator", ""),
+                   inputs={"review": job.id, **{k: v for k, v in job.inputs.items() if k in ("board_pr", "operator")}})
 
 
 def blocked_reason(job: Job, outcome: Outcome, *, max_rounds: int = 3) -> str:
