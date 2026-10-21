@@ -118,6 +118,15 @@ def test_lane_base_values_cover_common_placeholders(ctx):
     assert values["SUPPLIERS"] == "none yet" and values["DROPPED"] == "none"
 
 
+def test_design_review_runs_the_dependency_check_on_the_design_readme(ctx):
+    job = new_job("REV-DESIGN-Foo", inputs={"board_pr": 12, "operator": "alice"})
+    job.number = 10
+    assert lane_for(job).run(job, ctx).status == "dry-run"
+    brief = (ctx.wdir / "jobs" / "REV-DESIGN-Foo" / "brief.md").read_text()
+    assert f"gate --candidate {ctx.wdir / 'board' / 'packages' / 'Foo' / 'design' / 'README.md'} --only Foo" in brief
+    assert "gate --depcheck" not in brief
+
+
 def test_board_pull_request_jobs_check_out_its_head_and_read_the_board_reports(ctx, monkeypatch):
     calls = []
     monkeypatch.setattr(gitops, "git", lambda cwd, *args, **kw: calls.append(args) or fake_git(cwd, *args, **kw))
