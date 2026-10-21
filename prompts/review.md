@@ -37,9 +37,9 @@ Previous review of this __SUBJECT__, if any: __PREVIOUS__. When there is one, fi
 finding that each is repaired (quote the repaired passage; mark it repaired, partly repaired or not
 repaired). Then run the adversarial pass on every passage the repairs changed or added: repairs are
 where new defects come from, and the same defect often survives elsewhere in the file, so look for
-each repaired pattern in the rest of the __SUBJECT__. Then review the whole __SUBJECT__ again: text an
-earlier round passed is not certified, and most defects that reached the roadmap repository were in
-passages an earlier review had read.
+each repaired pattern in the rest of the __SUBJECT__. For the text no repair touched, rely on the
+earlier round's adversarial table only where its rows carry computed values; any section the
+earlier review summarised without them is reviewed in full now, as are the sampled targets below.
 
 Context, read-only: the roadmap repository at its main branch `__CONTENT__`; open roadmap pull
 requests at their heads: __SIBLINGS__; the board's packages `__PACKAGES__`; the merge order
@@ -90,12 +90,12 @@ requests at their heads: __SIBLINGS__; the board's packages `__PACKAGES__`; the 
   most 40 words) and the exact repair. Test your repair on the instance that refuted the original
   before you propose it: reviewers' proposed repairs have themselves been false, and a fix worker
   applies them. Severity: P1 false, vacuous or unowned; P2 overclaim or missing hypothesis; P3
-  locator, Check, style or policy. Then `## Verified sound` (what you checked
-  and found correct, with counts) and `## Not verifiable` (each item and why). `accepted` is a
-  claim backed by evidence: the adversarial table with the values you computed, the library
-  declarations you opened (file and line at the pin) and the cross-roadmap citations you resolved.
-  A section summarised as sound without them has not been reviewed: list it under `## Not
-  verifiable`, and do not accept a __SUBJECT__ with unreviewed sections.
+  locator, Check, style or policy. Then `## Verified sound` (what you checked and found correct,
+  with counts) and `## Not verifiable` (each item and why). `accepted` is a claim backed by
+  evidence: the adversarial table with the values you computed, the library declarations you
+  opened (file and line at the pin) and the cross-roadmap citations you resolved. A section
+  summarised as sound without them has not been reviewed: review it before you accept. `## Not
+  verifiable` is for what you cannot check (a text you cannot open), with the reason.
 
 <!-- include: sections/gaps-and-order.md -->
 

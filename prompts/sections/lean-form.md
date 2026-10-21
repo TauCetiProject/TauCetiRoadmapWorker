@@ -27,8 +27,9 @@ contributors will be held to, so every statement in it must be one we are sure o
   silently disappear (a `theorem` proved later does not bring them back to the `def` it is about).
   Carry every needed binder explicitly in the declaration's own signature (or an `include` line).
   This is the Lean defect reviews most often find again after it was "fixed", so check it
-  mechanically: run `#check @name` for every declaration in a scratch file, compare each
-  elaborated type with its README statement, and say in your report that you did and what changed.
+  mechanically: put `#check @name` for every declaration in one scratch file, elaborate it once,
+  compare each elaborated type with its README statement, and say in your report that you did and
+  what changed.
 - A headline names the roadmap's objects. A theorem about free variables only (functions `ℂ → ℂ`,
   bare scalars, an arbitrary type) whose conclusion is algebra on its hypotheses is not a headline:
   state it on the actual carriers or leave it as a README target.

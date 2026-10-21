@@ -18,9 +18,9 @@ For EVERY theorem, identity, definition and convention:
    compactness is assumed, an object outside the intended universe or cardinality bound, the
    identity map. Include the junk values of total functions: natural-number subtraction, division
    by zero, an out-of-range index, the degree of the zero polynomial. Test an "iff" or an equality
-   of sets in both directions, on a non-abelian example (S₃, Q₈) and a cyclic one. If an instance
-   makes the statement false, add the hypothesis or fix the claim, and add the instance as a
-   negative-control Check (and `example` where statable).
+   of sets in both directions; where a group is involved, on a non-abelian one (S₃, Q₈) and a
+   cyclic one. If an instance makes the statement false, add the hypothesis or fix the claim, and
+   add the instance as a negative-control Check (and `example` where statable).
 2. **Context.** A Lean statement is only as true as its `variable`/`include` block: for each
    statement that needs a standing hypothesis (invertibility, compactness, Hausdorffness, a domain,
    finite residue field, finite generation, a scalar tower), confirm it is actually in scope.
@@ -39,23 +39,23 @@ For EVERY theorem, identity, definition and convention:
    satisfies it and one that fails it. Then name the most plausible wrong model — the inverse or
    geometric convention, a rescaling by a unit, the zero map, the trivial structure, a larger value
    of the parameter, an unmarked isomorphism — and show which stated law excludes it; if none does,
-   add the law or the Check that does. This applies to every opaque or `sorry`'d map, every
-   structure whose fields are candidates for an operation, and every existential hypothesis meant
-   to fix a parameter. Every constructed map names its source and its target. Every denominator has
-   a non-vanishing argument; every "canonical" map a domain.
+   add the law or the Check that does. Do this for every opaque or `sorry`'d map, every structure
+   whose fields are candidates for an operation, and every existential hypothesis meant to fix a
+   parameter; for an ordinary definition with a real body, the two examples suffice. Every
+   constructed map names its source and its target. Every denominator has a non-vanishing
+   argument; every "canonical" map a domain.
 6. **Vacuity.** A statement quantified over arbitrary data (a complex, a subgroup, a functor) with
    no hypothesis relating it to the construction is vacuous or false: fix it or delete it. A
    hypothesis that contains the conclusion is a defect, and so is a headline whose statement
    mentions none of the objects the roadmap defines.
-7. **Hypotheses earn their place.** For each hypothesis, give the instance that fails without it. A
-   hypothesis that no instance and no consumer needs is cut: an over-strong hypothesis is found
-   later by the library, when it proves the weaker statement.
-8. **Imported lemmas and proof routes.** A step taken from a source's proof (not from its
-   statement) is re-checked at the generality restated here; a source proves its lemma in its own
-   setting. For each cited proof route, list the inputs it uses with their hypotheses: each
-   hypothesis appears in the statement, and each input is a target here, a named supplier section,
-   or a pinned declaration that is not itself derived from this target (no circularity through the
-   source's own proof). A citation is not a supplier.
+7. **Hypotheses are used.** Flag a hypothesis that neither the proof sketch nor any consumer uses.
+   Do not search for a separating counterexample for every hypothesis: an over-strong hypothesis is
+   cheap for the library to relax when it proves the weaker statement.
+8. **Imported lemmas and proof routes.** Every input a proof route uses is a target here, a named
+   supplier section, or a pinned declaration, and none of them is derived from the target itself; a
+   citation is not a supplier. Where a step is taken from inside a source's proof rather than from
+   a stated theorem, open the source there and check the step at the generality restated here: a
+   source proves its lemmas in its own setting.
 9. **Duplication by object.** Grep the pinned Mathlib and Tau Ceti for the objects (structure
    fields, operators, hypotheses), not only for our declaration names. What exists at the pins is
    deleted and cited in the supplier contracts with its exact name and file. When you rely on what a
