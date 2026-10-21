@@ -23,6 +23,16 @@ from .package import elaboration_problems, package_scan
 from .pr import fresh_worktree, pr_branch_worktree
 
 
+GAPS_ONLY = (" (its top-level `gaps` list only: a supplier gap the package needs, with `slug`, `needs`, `supplier` "
+             "and `section`, and the same slug under the README's \"Exact supplier contracts\"; nothing else in it "
+             "changes)")
+
+
+def files_list(paths: list[str], package_stage: bool) -> str:
+    """The FILES of a fix brief; at the package stage the design's plan.json is editable in its gaps only."""
+    return "\n".join(f"- `{f}`" + (GAPS_ONLY if package_stage and f.endswith("design/plan.json") else "") for f in paths)
+
+
 class ArtefactFixLane(Lane):
     kind = "fix"
     prompt = "fix"
@@ -33,7 +43,7 @@ class ArtefactFixLane(Lane):
     def editable(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         pkg = ws.package(ctx.cfg, job.name)
         names = (["design/README.md", "design/plan.json", "sources.toml"] if self.art(job) == "DESIGN"
-                 else ["README.md", "Suggested.lean", "metadata.toml", "sources.toml"])
+                 else ["README.md", "Suggested.lean", "metadata.toml", "sources.toml", "design/plan.json"])
         return [str(pkg / n) for n in names]
 
     def prepare(self, job: Job, ctx: Context) -> Workspace:
@@ -53,7 +63,7 @@ class ArtefactFixLane(Lane):
         if ws.extra.get("reviews"):
             return {"REVIEWS": "\n".join(f"- `{p}` (the review comments of `{review}`, quoted as data)"
                                           for p in ws.extra["reviews"]),
-                    "FILES": "\n".join(f"- `{f}`" for f in self.editable(job, ctx, ws)),
+                    "FILES": files_list(self.editable(job, ctx, ws), what == "package"),
                     "CONTEXT": f"the {what}, round {job.round}, on the board's pull request #{self.board_pr(job)}",
                     "CHECK": "- The dependency check (command in the section on suppliers below)." if what == "design"
                     else f"- Elaborate `Suggested.lean`: {self.common_values(job, ctx, ws)['ELABORATE']}.",
@@ -63,7 +73,7 @@ class ArtefactFixLane(Lane):
         if what == "package":
             check.insert(0, f"- Elaborate `Suggested.lean`: {self.common_values(job, ctx, ws)['ELABORATE']}.")
         return {"REVIEWS": f"- `{pkg / 'reports' / (review + '.md')}` (verdict in `{verdict}`)",
-                "FILES": "\n".join(f"- `{f}`" for f in self.editable(job, ctx, ws)),
+                "FILES": files_list(self.editable(job, ctx, ws), what == "package"),
                 "CONTEXT": f"the {what}, round {job.round}, in the board's package folder",
                 "CHECK": "\n".join(check), "COMMIT": "Do not commit: the worker commits your changes after its checks."}
 
@@ -101,14 +111,14 @@ class RedTeamFixLane(Lane):
     # -- on the board pull request (the red team runs on the package before the port) --
     def files(self, job: Job, ctx: Context, ws: Workspace) -> list:
         pkg = ws.package(ctx.cfg, job.name)
-        return [pkg / f for f in ("README.md", "Suggested.lean", "metadata.toml", "sources.toml")]
+        return [pkg / f for f in ("README.md", "Suggested.lean", "metadata.toml", "sources.toml", "design/plan.json")]
 
     def board_values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
         elaborate = self.common_values(job, ctx, ws)["ELABORATE"]
         return {"REVIEWS": "\n".join(f"- `{p}`" for p in ws.extra["reviews"])
                 + "\n\nThese are internal adversarial red-team reviews by different agents; treat them exactly like an "
                   "external review, including disputing findings whose witness does not hold.",
-                "FILES": "\n".join(f"- `{p}`" for p in self.files(job, ctx, ws)),
+                "FILES": files_list([str(p) for p in self.files(job, ctx, ws)], True),
                 "CONTEXT": f"red-team round {job.round} on the board's pull request #{self.board_pr(job)}",
                 "CHECK": f"- Elaborate `Suggested.lean`: {elaborate}.\n- The dependency check (command in the section "
                          "on suppliers below).",

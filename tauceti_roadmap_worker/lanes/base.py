@@ -632,6 +632,9 @@ class Lane:
         for path in changed:
             data = (ws.board / path).read_bytes() if (ws.board / path).is_file() else b""
             problems += board.file_problems(path, data.decode("utf-8", errors="replace"), allowed, data)
+            if path.endswith("/design/plan.json") and board.gaps_only(job):
+                before = gitops.git(ws.board, "show", f"HEAD:{path}", check=False)
+                problems += board.plan_change_problems(path, before, data.decode("utf-8", errors="replace"))
         return problems
 
     def earlier_attempt(self, ws: Workspace) -> str:

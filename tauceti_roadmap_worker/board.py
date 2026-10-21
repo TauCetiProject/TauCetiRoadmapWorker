@@ -496,18 +496,48 @@ def allowed_paths(job: Job, packages_dir: str, order_file: str = "") -> set[str]
         return report | manifest | {f"{p}/target.md"}
     if job.kind == "design":
         return report | manifest | design
+    plan = {f"{p}/design/plan.json"}     # at the package stage, only its top-level `gaps` (gaps_only)
     if job.kind == "package":
-        return report | manifest | package
+        return report | manifest | package | plan
     if job.kind == "review":
         verdict = f"{p}/design/review.json" if art == "DESIGN" else f"{p}/review.json"
         return report | manifest | {verdict}
     if job.kind == "fix" and art:
-        return report | manifest | (design if art == "DESIGN" else package)
+        return report | manifest | (design if art == "DESIGN" else package | plan)
     if job.kind == "fix" and job.inputs.get("board_pr"):
-        return report | manifest | package       # a red-team fix repairs the package on its board pull request
+        return report | manifest | package | plan     # a red-team fix repairs the package on its board pull request
     # port, redteam, gate (and a red-team fix of a roadmap pull request) change the content
     # repository; on the board only their report.
     return report
+
+
+def gaps_only(job: Job) -> bool:
+    """Whether the job may change the design's plan.json only in its top-level `gaps` list: every job
+    at the package stage (the package, its fixes, a red-team fix on its board pull request)."""
+    return job.kind == "package" or (job.kind == "fix" and (artefact_of(job.id) == "PKG"
+                                                            or bool(job.inputs.get("board_pr")) and not artefact_of(job.id)))
+
+
+def plan_change_problems(path: str, before: str, after: str) -> list[str]:
+    """At the package stage a plan.json may change only in its top-level `gaps` list (a supplier gap
+    declared once the package shows it): everything else stays as the accepted design has it."""
+    def load(text: str) -> dict | None:
+        try:
+            data = json.loads(text) if (text or "").strip() else {}
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+    old, new = load(before), load(after)
+    if new is None:
+        return [f"invalid JSON in {path}"]
+    if old is None:
+        old = {}
+    if {k: v for k, v in old.items() if k != "gaps"} != {k: v for k, v in new.items() if k != "gaps"}:
+        return [f"{path}: at the package stage only its top-level `gaps` list may change"]
+    gaps = new.get("gaps", [])
+    if not isinstance(gaps, list) or not all(isinstance(g, dict) and (g.get("slug") or g.get("id")) for g in gaps):
+        return [f"{path}: `gaps` is a list of entries with a `slug`"]
+    return []
 
 
 def file_problems(path: str, text: str, allowed: set[str], data: bytes | None = None) -> list[str]:

@@ -177,7 +177,11 @@ package); when the next review's blocking findings only re-raise such findings (
 in the finding, or the same title), the intake creates the next fix round as `state:blocked` with
 the findings named on the review's issue: a human decides them, then moves the fix to
 `state:available` to run it, or closes it. A design's declared supplier gaps (`gap:<slug>` with a
-named supplier and a one-sentence `needs`) are contracts, not findings; a review may accept
+named supplier and a one-sentence `needs`) are contracts, not findings. The package stage (the
+package, its fixes, a red-team fix on its board pull request) may add gaps to the top-level `gaps`
+list of `design/plan.json` and nothing else in it (every gate refuses another change), stating each
+under the README's "Exact supplier contracts" as `What <Supplier> must provide (gap:<slug>): ...`;
+the intake announces such gaps on the supplier's job when the package is accepted. A review may accept
 conditional on them (`conditional_gaps` in the verdict, or a `Conditional on the announced gaps:`
 line in a comment review). A design-stage roadmap is checked as a merge-order candidate
 (`gate --candidate <folder> --only <Name>` places it after its last supplier), since it enters the

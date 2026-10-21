@@ -8,6 +8,13 @@ has none) once the design is accepted. A declared gap is a stated contract, exac
 citation of a roadmap section that is still in a pull request: it is not a finding, and its absence
 from the supplier today is not one either. The gaps this roadmap declares: __GAPS__
 
+At the package stage the README states each gap under `## Exact supplier contracts`, in the
+supplier's subsection, as `What <Supplier> must provide (gap:<slug>): <needs>`, and the package may
+add gaps to the plan's top-level `gaps` list (nothing else in plan.json changes after the design). A
+contract stated there with a named supplier counts as declared when the plan's `gaps` has the same
+slug; the intake announces gaps added at the package stage on the supplier's job when the package is
+accepted.
+
 For each declared gap, check that it is precise (the `needs` sentence says exactly what is missing,
 with its hypotheses), minimal (it asks for nothing this roadmap, Mathlib, Tau Ceti or an earlier
 roadmap already provides) and declared where the intake reads it (the same slug in `plan.json` and

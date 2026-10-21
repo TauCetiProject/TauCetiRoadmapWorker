@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -25,7 +27,24 @@ def package_scan(ctx: Context, ws: Workspace, name: str, pkg: Path) -> list[str]
                                (pkg / "Suggested.lean").read_text(encoding="utf-8"), opts)
     # The intake inserts a roadmap into the merge order when its design is accepted, so a package
     # missing from the order is a real problem.
-    return scan_problems(result) + manifest_problems(ctx, pkg / "sources.toml")
+    return (scan_problems(result) + manifest_problems(ctx, pkg / "sources.toml")
+            + gap_reference_problems((pkg / "README.md").read_text(encoding="utf-8"), pkg / "design" / "plan.json"))
+
+
+GAP_REF = re.compile(r"\bgap:([A-Za-z0-9][\w.-]*)")
+
+
+def gap_reference_problems(readme: str, plan_path: Path) -> list[str]:
+    """Every `gap:<slug>` the README names is declared in the plan's `gaps` (when there is a plan)."""
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    declared = {str(g.get("slug") or g.get("id")) for g in plan.get("gaps", []) if isinstance(g, dict)} \
+        if isinstance(plan, dict) else set()
+    named = {m.rstrip(".") for m in GAP_REF.findall(readme)}
+    return [f"README names gap:{slug}, which design/plan.json `gaps` does not declare (add the entry there, with "
+            "`needs`, `supplier` and `section`)" for slug in sorted(named - declared)]
 
 
 def elaboration_problems(ctx: Context, ws: Workspace, lean: Path) -> list[str]:

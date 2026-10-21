@@ -284,10 +284,12 @@ def merge_problems(ctx, number: int, pr: dict, jobs: list[Job]) -> list[str]:
     from .intake import _checks
     sub = board.decode_submission(pr.get("body") or "") or {}
     od = board.order_file(ctx.cfg)
-    allowed = set().union(*(board.allowed_paths(j, ctx.cfg.board.packages_dir, od)
-                            for j in authors_of(number, sub.get("job", ""), jobs)), set())
+    writers = authors_of(number, sub.get("job", ""), jobs)
+    allowed = set().union(*(board.allowed_paths(j, ctx.cfg.board.packages_dir, od) for j in writers), set())
     if not allowed:
         allowed = {f for j in jobs_of(number, jobs) for f in board.allowed_paths(j, ctx.cfg.board.packages_dir, od)}
+    # A pull request that carries a package (no job of the design stage wrote it) changes plan.json in its gaps only.
+    gaps_only = bool(writers) and all(board.gaps_only(j) for j in writers)
     problems = []
     for f in ctx.gh.api(f"repos/{repo(ctx)}/pulls/{number}/files?per_page=100", paginate=True) or []:
         if f.get("status") == "removed":
@@ -296,6 +298,9 @@ def merge_problems(ctx, number: int, pr: dict, jobs: list[Job]) -> list[str]:
         text = ctx.gh.raw_file(pr["head"]["repo"]["full_name"], f["filename"], pr["head"]["sha"]) \
             if f["filename"] in allowed else ""
         problems += board.file_problems(f["filename"], text, allowed)
+        if f["filename"].endswith("/design/plan.json") and gaps_only:
+            from .intake import base_text
+            problems += board.plan_change_problems(f["filename"], base_text(ctx, repo(ctx), f["filename"], pr), text)
     failed, running = _checks(ctx, repo(ctx), pr["head"]["sha"])
     if running:
         problems.append("checks still running")
@@ -355,6 +360,9 @@ def conclude_review(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Jo
     elif job.kind == "review" and verdict == "accepted":
         job.inputs["accepted_review"] = verdict_record(job, reviews, "accepted")   # written when the PR merges
         ctx.board.update_spec(job)
+        from .intake import announce_package_gaps
+        package = next((x for x in jobs if x.id == board.make_id("package", job.name)), job)
+        announce_package_gaps(ctx, package, jobs, pr["head"]["sha"])
     return f"#{number}: {job.id} {verdict}; " + advance_on(ctx, job, outcome, jobs, number, pr)
 
 

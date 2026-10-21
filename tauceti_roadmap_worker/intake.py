@@ -106,6 +106,8 @@ def intake(ctx, number: int, yes: bool = False) -> str:
         text = ctx.gh.raw_file(pr["head"]["repo"]["full_name"], f["filename"], pr["head"]["sha"]) \
             if f["filename"] in allowed else ""
         problems += board.file_problems(f["filename"], text, allowed)
+        if f["filename"].endswith("/design/plan.json") and board.gaps_only(job):
+            problems += board.plan_change_problems(f["filename"], base_text(ctx, repo, f["filename"], pr), text)
     author = pr["user"]["login"]
     if job.independent_of:
         problems += board.separation_problems(job, author, ctx.board.authors(job.independent_of, jobs),
@@ -177,6 +179,14 @@ def stuck_on(ctx, job: Job, outcome: Outcome) -> list[str]:
     repair = f"{pkg}/reports/{board.make_id('fix', job.name, j.round, j.subject)}.md"
     return stuck_findings((read(repair, outcome.head) if outcome.head else "") or read(repair),
                           outcome.report or read(f"{pkg}/reports/{job.id}.md"))
+
+
+def base_text(ctx, repo: str, path: str, pr: dict) -> str:
+    """A file as the pull request's base has it ('' when it has none)."""
+    try:
+        return ctx.gh.raw_file(repo, path, (pr.get("base") or {}).get("sha", ""))
+    except GHError:
+        return ""
 
 
 def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
@@ -258,6 +268,35 @@ def park_after_rounds(ctx, review: Job, outcome: Outcome | None, existing: set[s
     return fix.id
 
 
+GAP_REGISTRY_NOTE = "<!-- tauceti-roadmap-gap-registry-note -->"
+REGISTRY_REASON = re.compile(r"gap registry.*outside.*permitted files|outside.*permitted files.*gap", re.IGNORECASE)
+
+
+def note_gap_registry_blocks(ctx) -> list[str]:
+    """`board sync`, once per job: a repair round parked because its only re-raised findings were
+    marked "not actionable" for "gap registry is outside permitted files" can go on now that the
+    package stage may add to the plan's `gaps`; its issue says so (a human moves it to available)."""
+    out = []
+    for job in ctx.board.list_jobs(("blocked",), ("fix",)):
+        try:
+            body = (ctx.gh.api(f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}") or {}).get("body") or ""
+            comments = ctx.board.comments(job.number)
+        except GHError:
+            continue
+        reasons = re.findall(r"^- `[^`]+` \(P[123?]\).*marked not actionable \((.*)\)\s*$", body, re.MULTILINE)
+        if not reasons or not all(REGISTRY_REASON.search(r) for r in reasons):
+            continue
+        if any(GAP_REGISTRY_NOTE in (c.get("body") or "") for c in comments):
+            continue
+        ctx.board.comment(job.number, "Board: the findings this repair round was parked on were marked not actionable "
+                                      "because the gap registry was outside the package's files. The package stage may now "
+                                      "add supplier gaps to the top-level `gaps` list of design/plan.json (and state them "
+                                      "under the README's \"Exact supplier contracts\"), so they are resolvable: move this "
+                                      "job to state:available to run it.\n\n" + GAP_REGISTRY_NOTE)
+        out.append(f"{job.id}: noted as resolvable by package-stage gaps")
+    return out
+
+
 def sync_origins(ctx) -> list[str]:
     """`board sync`: an open job that does not say where its roadmap came from gets the origin of its
     roadmap (a target a human filed, `target:<issue>`, or an import, `explorer:<job>`) recorded."""
@@ -318,17 +357,38 @@ STUCK_NOTE = ("every blocking finding of this review re-raises a finding the las
               "it. The findings:")
 
 
-def announce_gaps(ctx, job: Job, jobs: list[Job]) -> str:
+def read_plan(ctx, name: str, ref: str = "") -> dict | None:
+    """A roadmap's design/plan.json on the board (at `ref`, else its main), or None."""
+    pkg = board.package_dir(ctx.cfg.board.packages_dir, name)
+    try:
+        plan = json.loads(ctx.gh.raw_file(ctx.cfg.repositories.packages_repo(), f"{pkg}/design/plan.json", ref))
+    except (GHError, ValueError):
+        return None
+    return plan if isinstance(plan, dict) else None
+
+
+def announce_package_gaps(ctx, job: Job, jobs: list[Job], head: str) -> str:
+    """The supplier gaps a package added to the plan (at its board pull request's `head`, not yet on
+    the board's main), announced as at design acceptance."""
+    from .lanes.design import supplier_gaps
+    before, after = read_plan(ctx, job.name) or {}, read_plan(ctx, job.name, head)
+    if after is None:
+        return "no plan.json at the head"
+    known = {str(g.get("slug") or g.get("id")) for g in supplier_gaps(before)}
+    added = [g for g in supplier_gaps(after) if str(g.get("slug") or g.get("id")) not in known]
+    return announce_gaps(ctx, job, jobs, {"gaps": added}) if added else "no supplier gaps added by the package"
+
+
+def announce_gaps(ctx, job: Job, jobs: list[Job], plan: dict | None = None) -> str:
     """Each gap of a design's plan that a named supplier must close becomes a comment on that
     supplier's open job on the board (its latest design, package, review or fix), or a note on the
-    design's own issue when the supplier has none."""
+    job's own issue when the supplier has none. `plan`: these gaps instead of the plan on main."""
     from .lanes.design import supplier_gaps
-    pkg = board.package_dir(ctx.cfg.board.packages_dir, job.name)
-    try:
-        plan = json.loads(ctx.gh.raw_file(ctx.cfg.repositories.packages_repo(), f"{pkg}/design/plan.json"))
-    except (GHError, ValueError):
-        return "no plan.json to read gaps from"
-    gaps = supplier_gaps(plan if isinstance(plan, dict) else {})
+    if plan is None:
+        plan = read_plan(ctx, job.name)
+        if plan is None:
+            return "no plan.json to read gaps from"
+    gaps = supplier_gaps(plan)
     for gap in gaps:
         supplier, slug = str(gap["supplier"]), str(gap.get("slug") or gap.get("id"))
         what = (f"`{job.name}` needs from `{supplier}` {gap.get('section') or gap.get('target') or ''}: "

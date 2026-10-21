@@ -53,7 +53,9 @@ For each finding:
    something, or for a decision outside this package: a merge-order placement, a scope change), mark
    it `not actionable in this package` and give the reason. A prerequisite another roadmap must
    supply is declared as a supplier gap (`gap:<slug>` with its `gaps` entry naming the supplier,
-   its section and a one-sentence `needs`); when it already is, say so: that is the reason. Never
+   its section and a one-sentence `needs`; at the package stage in the plan's top-level `gaps` list
+   and as a `What <Supplier> must provide (gap:<slug>): ...` line under the README's "Exact supplier
+   contracts"); when it already is, say so: that is the reason. Never
    invent a supplier target or restate the finding to make it go away. A finding re-raised after you
    marked it not actionable is decided by a human, not by another round.
 4. Keep the README and `Suggested.lean` in agreement: a Lean statement whose README target changes

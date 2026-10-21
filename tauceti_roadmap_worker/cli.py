@@ -617,7 +617,8 @@ def board_cmd(args) -> int:
         for line in (filers.refresh(ctx) + intake.sync_targets(ctx) + intake.sync_states(ctx, shared)
                      + intake.sync_expired(ctx, shared)
                      + intake.sync_leases(ctx, shared) + intake.sync_pull_requests(ctx)
-                     + intake.repark_capped(ctx) + intake.sync_origins(ctx) + boardpr.review_queue(ctx, yes=write)):
+                     + intake.repark_capped(ctx) + intake.sync_origins(ctx) + intake.note_gap_registry_blocks(ctx)
+                     + boardpr.review_queue(ctx, yes=write)):
             print(line)
         return 0
     for line in intake.stale(ctx, shared, release=args.release):
