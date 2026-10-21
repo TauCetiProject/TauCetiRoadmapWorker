@@ -205,6 +205,38 @@ def scan_dropped_names(text: str, names: list[str]) -> list[Hit]:
 
 # --- mechanical README/Lean agreement (mech_check.py) ----------------------------------------------
 
+TARGET_HEADING = re.compile(r"^\*\*([A-Z][^*\n]{2,150})\*\*", re.MULTILINE)
+NOT_TARGETS = ("Checks", "Summary", "Dependencies", "Examples", "Verdict", "Needs", "Merge order")
+LAYER_SUBSECTION = re.compile(r"^###\s+(\d+\.\d+[a-z]?\b.*)$")
+
+
+def readme_targets(readme: str) -> list[str]:
+    """The targets of a README in TauCetiRoadmap form: the `### k.n` subsections of its layers (the
+    README-shape brief), else the bold target names that open paragraphs inside its layers. Bold
+    names outside the layers (a consumer named under `## Downstream consumers`) are not targets. A
+    README with no `## Layer` sections is read whole."""
+    def scan(lines: list[str]) -> list[str]:
+        subs, bold, fenced = [], [], False
+        for line in lines:
+            if re.match(r"^\s*(```|~~~)", line):
+                fenced = not fenced
+            if fenced:
+                continue
+            if m := LAYER_SUBSECTION.match(line):
+                subs.append(m.group(1).strip())
+            elif (m := TARGET_HEADING.match(line)) and not m.group(1).startswith(NOT_TARGETS):
+                bold.append(m.group(1).strip().rstrip("."))
+        return subs or bold
+    lines, layered, inside = (readme or "").splitlines(), [], False
+    for line in lines:
+        if line.startswith("## "):
+            inside = line.startswith("## Layer")
+            continue
+        if inside:
+            layered.append(line)
+    return scan(layered) if any(line.startswith("## Layer") for line in lines) else scan(lines)
+
+
 LEAN_DECL_NAME = re.compile(r"^(?:@\[[^\]]*\]\s*)?(?:noncomputable\s+)?(?:private\s+)?"
                             r"(?:theorem|def|structure|class|abbrev|instance|inductive|opaque|axiom)\s+([A-Za-z_][\w.'!?]*)", re.M)
 

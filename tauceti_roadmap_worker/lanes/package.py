@@ -9,7 +9,6 @@ from .. import gates
 from ..board import Job
 from .base import Context, Lane, Workspace, count, dropped_names, load_order, order_path, scan_problems, sibling_readmes
 from .design import manifest_problems
-from .review import sample_items
 
 PACKAGE_FILES = ("README.md", "Suggested.lean", "metadata.toml", "sources.toml")
 
@@ -47,7 +46,7 @@ def package_summary(name: str, pkg: Path, what: str = "package") -> str:
         manifest = tomllib.loads((pkg / "sources.toml").read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
         manifest = {}
-    return (f"{what} of {name}: {count(len(sample_items(readme)), 'target')}, "
+    return (f"{what} of {name}: {count(len(gates.readme_targets(readme)), 'target')}, "
             f"{count(len(gates.lean_names(lean)), 'Lean declaration')}, {count(len(manifest.get('source', [])), 'source')}")
 
 

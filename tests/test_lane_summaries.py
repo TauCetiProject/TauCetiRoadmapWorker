@@ -95,3 +95,64 @@ def test_a_lane_without_a_summary_still_says_what_it_submitted(live, monkeypatch
     monkeypatch.setattr(lane, "submit", lambda job, ctx, ws, summary: seen.append(summary) or "https://example.invalid/1")
     result = lane.run(job, ctx)
     assert result.status == "submitted" and result.detail == seen[0] == f"target of {NAME}", result.detail
+
+
+SHAPED = """# Roadmap: coleman integration, part ii
+
+**Summary.** Extend Coleman integration.
+
+## Scope and ownership
+
+**ColemanIntegration** supplies the good-reduction theory.
+
+## Layer 1: Graph cochains
+
+### 1.1 Cochains with edge identities
+
+Define `edgeCochain` as ...
+
+**Checks.**
+
+- a computed value
+
+### 1.2 The harmonic representative
+
+### Examples
+
+### Dependencies
+
+## Layer 2: Annular functions
+
+### 2.1 The double index
+
+### 2.1a The analytic coefficient extension
+
+```text
+### 9.9 not a heading inside a fence
+```
+
+## Downstream consumers
+
+**PadicHodgeRegulators** is the intended consumer.
+"""
+
+
+def test_targets_are_the_layer_subsections():
+    """Regression (board PR #96): a 1209-line README with 45 `### k.n` subsections was summarised as
+    "1 target", the one bold consumer name under Downstream consumers."""
+    from tauceti_roadmap_worker.gates import readme_targets
+    assert readme_targets(SHAPED) == ["1.1 Cochains with edge identities", "1.2 The harmonic representative",
+                                      "2.1 The double index", "2.1a The analytic coefficient extension"]
+    # Bold target names inside the layers count when there are no numbered subsections.
+    bold = "## Layer 1: X\n\n**Theorem A.** text\n\n**Checks.** none\n\n## Downstream consumers\n\n**Other** uses it.\n"
+    assert readme_targets(bold) == ["Theorem A"]
+    assert design_summary("Coleman", {"layers": [{"targets": [{}] * 9}]}, SHAPED).startswith(
+        "design of Coleman: 1 layer, 4 targets")
+    assert design_summary("Coleman", {"layers": [{"targets": [{}] * 9}]}).startswith("design of Coleman: 1 layer, 9 targets")
+
+
+def test_the_package_summary_counts_the_same_way(tmp_path):
+    (tmp_path / "README.md").write_text(SHAPED)
+    (tmp_path / "Suggested.lean").write_text("import Mathlib\n")
+    (tmp_path / "sources.toml").write_text('roadmap = "C"\n')
+    assert package_summary("C", tmp_path).startswith("package of C: 4 targets, 0 Lean declarations")

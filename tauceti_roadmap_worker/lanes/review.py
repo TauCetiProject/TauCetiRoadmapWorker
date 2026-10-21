@@ -18,11 +18,10 @@ import tomllib
 
 from .. import board, gitops, prreviews, sources
 from ..board import Job
+from ..gates import NOT_TARGETS, TARGET_HEADING
 from .base import Context, Lane, Workspace, checkout_board_pr, count
 from .design import manifest_problems
 
-TARGET_HEADING = re.compile(r"^\*\*([A-Z][^*\n]{2,150})\*\*", re.M)
-NOT_TARGETS = ("Checks", "Summary", "Dependencies", "Examples", "Verdict", "Needs", "Merge order")
 SUBSECTION = re.compile(r"^###\s+(\d+\.\d+.*)$", re.M)
 SAMPLE_SIZE = 15
 

@@ -89,14 +89,16 @@ def supplier_gaps(plan: dict) -> list[dict]:
             and (g.get("slug") or g.get("id"))]
 
 
-def design_summary(name: str, plan: dict) -> str:
-    """`design of Name: 6 layers, 41 targets, 27 tests, 5 gaps (5 for suppliers)`."""
+def design_summary(name: str, plan: dict, readme: str = "") -> str:
+    """`design of Name: 6 layers, 41 targets, 27 tests, 5 gaps (5 for suppliers)`: targets counted in
+    the design README as the package lane counts them (`gates.readme_targets`), else in the plan."""
     layers = [layer for layer in plan.get("layers", []) if isinstance(layer, dict)]
     targets = [t for layer in layers for t in layer.get("targets", []) if isinstance(t, dict)]
     tests = sum(len(t.get("tests") or []) for t in targets)
     gaps = [g for g in plan.get("gaps", []) if isinstance(g, dict)]
     owed = len(supplier_gaps(plan))
-    return (f"design of {name}: {count(len(layers), 'layer')}, {count(len(targets), 'target')}, "
+    found = len(gates.readme_targets(readme)) or len(targets)
+    return (f"design of {name}: {count(len(layers), 'layer')}, {count(found, 'target')}, "
             f"{count(tests, 'test')}, {count(len(gaps), 'gap')}" + (f" ({owed} for suppliers)" if owed else ""))
 
 
@@ -175,11 +177,13 @@ class DesignLane(Lane):
                 "ABSORBED": absorbed_text(job, ws.board, ctx.cfg.board.packages_dir)}
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        design = ws.package(ctx.cfg, job.name) / "design"
         try:
-            plan = json.loads((ws.package(ctx.cfg, job.name) / "design" / "plan.json").read_text(encoding="utf-8"))
+            plan = json.loads((design / "plan.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return ""
-        return design_summary(job.name, plan) if isinstance(plan, dict) else ""
+        readme = (design / "README.md").read_text(encoding="utf-8") if (design / "README.md").is_file() else ""
+        return design_summary(job.name, plan, readme) if isinstance(plan, dict) else ""
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)
