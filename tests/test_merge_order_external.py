@@ -9,7 +9,7 @@ import json
 import subprocess
 from types import SimpleNamespace
 
-from tauceti_roadmap_worker import mergeorder
+from tauceti_roadmap_worker import depgraph, mergeorder
 from tauceti_roadmap_worker.claims import Claims, author_key, job_key
 from tauceti_roadmap_worker.depgraph import MARK_OPEN
 from tauceti_roadmap_worker.gh import GHError
@@ -93,7 +93,8 @@ def test_an_unreadable_scan_writes_no_paragraph(tmp_path):
     ctx = ctx_for(tmp_path, Gh(PULLS, FILES, main=[], fail_files=True))
     assert mergeorder.survey(ctx, ours={900}, order=[]) is None
     assert mergeorder.paragraphs(ctx, [{"pr": 900, "name": "Mine"}], {"Mine": ""}, ["Mine"]) is None
-    assert PortLane().write_merge_order(ctx, {"pr": 900, "name": "Mine"}, "", "Body " * 20, [], ["Mine"]).startswith(
+    assert mergeorder.facts_for(ctx, "Mine", "", [], ["Mine"]) is None
+    assert PortLane().write_merge_order(ctx, 900, "Mine", "Body " * 20, None, ["Mine"]).startswith(
         " (the open pull requests could not be read")
     assert ctx.gh.writes == []
 
@@ -155,7 +156,10 @@ def test_the_port_lane_writes_its_paragraph_with_the_shared_renderer(tmp_path):
     (tmp_path / "rev" / "901" / "TauCetiRoadmap" / "Alpha").mkdir(parents=True)
     (tmp_path / "rev" / "901" / "TauCetiRoadmap" / "Alpha" / "README.md").write_text("")
     prs = [{"pr": 901, "name": "Alpha"}]
-    note = PortLane().write_merge_order(ctx, {"pr": 905, "name": "Mine"}, readme, body, prs, ["Alpha", "Mine"])
+    found = mergeorder.facts_for(ctx, "Mine", readme, prs, ["Alpha", "Mine"])    # before the number exists
+    assert found.chain == [(901, "Alpha")]
+    assert "In open pull requests of ours: #901 (Alpha)." in depgraph.dependency_paragraph(found.chain)
+    note = PortLane().write_merge_order(ctx, 905, "Mine", body, found, ["Alpha", "Mine"])
     assert note == ""
     [(method, path, payload)] = gh.writes
     assert (method, path) == ("PATCH", f"repos/{REPO}/pulls/905") and payload["body"].startswith(body.rstrip())
@@ -164,8 +168,7 @@ def test_the_port_lane_writes_its_paragraph_with_the_shared_renderer(tmp_path):
     assert payload["body"].endswith(expected + "\n") and MARK_OPEN in expected
     assert "#901 (Alpha) → **this pull request** (#905). It also depends on other authors' pull requests that add " \
            "roadmaps it cites, which must merge first: #248 (LFunctions, roed-math)." in expected
-    assert "not in the merge order" in PortLane().write_merge_order(ctx, {"pr": 906, "name": "Nope"}, readme, body,
-                                                                    prs, ["Alpha"])
+    assert "not in the merge order" in PortLane().write_merge_order(ctx, 906, "Nope", body, found, ["Alpha"])
 
 
 @dataclasses.dataclass

@@ -75,9 +75,10 @@ def test_apply_paragraph_is_idempotent_and_safe():
     assert apply_paragraph("", para1) is None
 
 
-def test_dependency_paragraph_for_new_port():
-    readme = "*Needs:* Charlie §2 and Alpha §1, Mathlib `Nat`. Consumed by Foxtrot.\n"
-    text = dependency_paragraph("Delta", readme, {"Alpha": 901, "Charlie": 903, "Foxtrot": 906}, ORDER)
-    assert "#901 (Alpha), #903 (Charlie)" in text and "Foxtrot" not in text.split("In open")[1].split(".")[0]
+def test_dependency_paragraph_is_the_chain():
+    """Regression (TauCetiRoadmap #1351): the Dependencies sentence said "none" above a Merge order
+    chain of eleven pull requests of ours; both now come from the same chain."""
+    text = dependency_paragraph([(901, "Alpha"), (903, "Charlie")])
     assert "In open pull requests of ours: #901 (Alpha), #903 (Charlie)." in text      # what sync_prose.py rewrites
-    assert "none" in dependency_paragraph("Alpha", "", {"Bravo": 902}, ORDER)
+    assert "In open pull requests of ours: none." in dependency_paragraph([])
+    assert "not determined" in dependency_paragraph(None)

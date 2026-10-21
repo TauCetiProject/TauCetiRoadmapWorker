@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from .. import depgraph, gates, gitops
 from ..board import Job
 from ..gh import GHError
-from .base import (PR_MARKER, Context, Lane, LaneError, Workspace, dropped_names, ensure_in_order, load_order,
+from .base import (PR_MARKER, Context, Lane, LaneError, Workspace, count, dropped_names, ensure_in_order, load_order,
                    open_roadmap_prs, order_path, scan_problems, sibling_checkouts, sibling_readmes)
 from .pr import fresh_worktree
 
@@ -44,8 +45,37 @@ def validation_paragraph(gate: gates.GateResult) -> str:
             f"{c.get('depcheck', 'no')} problem(s) for this roadmap; the outside-folder diff has {c.get('outside-folder', 0)} path(s).")
 
 
+def model_names(cfg) -> str:
+    """`Fable and Astra`: the review and red-team models, by their last name part."""
+    models = [cfg.lane_models("review").get(a, "") for a in sorted(cfg.lane_models("review"))]
+    models += [p.model for p in sorted(cfg.redteam.passes, key=lambda p: p.agent)]
+    names = list(dict.fromkeys(m.rsplit("-", 1)[-1].capitalize() for m in models if m))
+    return " and ".join(names) if len(names) < 3 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def rounds_on_board(reports: Path, name: str) -> tuple[int, int]:
+    """(package review rounds, red-team rounds) whose reports the board holds for the roadmap."""
+    def rounds(pattern: str) -> int:
+        found = [re.match(pattern, p.name) for p in reports.glob("*.md")] if reports.is_dir() else []
+        return max((int(m.group(1) or 1) for m in found if m), default=0)
+    return (rounds(rf"^REV-PKG-{re.escape(name)}(?:~(\d+))?\.md$"), rounds(rf"^RT-{re.escape(name)}~(\d+)[a-z]\.md$"))
+
+
+def assistance_paragraph(agent: str, model: str, red_teamed: tuple[int, int] | None, models: str = "") -> str:
+    """Who ported the package and what it went through. `red_teamed` is (review rounds, red-team rounds)
+    when the red team ran on the job board before the port, None for a port whose red team runs on
+    this pull request (from before the board pull requests)."""
+    if red_teamed is None:
+        return (f"AI assistance: {agent} ({model}) ported the independently reviewed package; author-side red-team "
+                "passes by different agents follow on this draft before it is marked ready for human review.")
+    reviews, redteam = red_teamed
+    return (f"AI assistance: {agent} ({model}) ported the package after {count(reviews, 'independent review round')} "
+            f"and {count(redteam, 'red-team round')} on the job board" + (f" ({models})" if models else "")
+            + "; this draft awaits human review.")
+
+
 def compose_body(name: str, synopsis: str, active_dir: str, deps: str, gate: gates.GateResult, agent: str,
-                 model: str, job_id: str) -> str:
+                 model: str, job_id: str, assistance: str = "") -> str:
     marker = f"<!-- {PR_MARKER} " + json.dumps({"roadmap": name, "job": job_id}) + " -->"
     return "\n\n".join([
         synopsis,
@@ -53,8 +83,7 @@ def compose_body(name: str, synopsis: str, active_dir: str, deps: str, gate: gat
         "real-bodied definitions and theorems statable against the pinned Mathlib and Tau Ceti; every target is in the README.",
         deps,
         validation_paragraph(gate),
-        f"AI assistance: {agent} ({model}) ported the independently reviewed package; author-side red-team passes "
-        "by different agents follow on this draft before it is marked ready for human review.",
+        assistance or assistance_paragraph(agent, model, None),
         marker,
     ]) + "\n"
 
@@ -111,17 +140,22 @@ class PortLane(Lane):
         cfg, prs = ctx.cfg, ws.extra["prs"]
         readme = (ws.workdir / cfg.roadmap.active_dir / job.name / "README.md").read_text(encoding="utf-8")
         order = load_order(order_path(cfg, ws.board, ws.content))
-        deps = depgraph.dependency_paragraph(job.name, readme, {p["name"]: p["pr"] for p in prs}, order)
+        from ..mergeorder import facts_for
+        found = None if ctx.dry_run else facts_for(ctx, job.name, readme, prs, order)   # the chain, once
+        deps = depgraph.dependency_paragraph(None if found is None else found.chain)
+        red_teamed = (rounds_on_board(ws.package(cfg, job.name) / "reports", job.name)
+                      if any(a.startswith("FIX-RT-") for a in job.after) else None)
         body = compose_body(job.name, ws.extra["synopsis"], cfg.roadmap.active_dir, deps, ws.extra["gate"],
-                            ctx.agent, ctx.model, job.id)
+                            ctx.agent, ctx.model, job.id,
+                            assistance_paragraph(ctx.agent, ctx.model, red_teamed, model_names(cfg)))
         title = f"{job.name}: roadmap"
         if ctx.dry_run:
             return f"[dry-run] would open a draft pull request {title!r}"
-        fork = gitops.ensure_fork(ctx.gh, cfg.repositories.content, ctx.operator)
+        fork = self.push(lambda: gitops.ensure_fork(ctx.gh, cfg.repositories.content, ctx.operator))
         self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"]))
-        pr = gitops.open_pull_request(ctx.gh, cfg.repositories.content, f"{ctx.operator}:{ws.extra['branch']}",
-                                      cfg.project.branch, title, body,
-                                      draft=cfg.roadmap.open_as_draft and not cfg.redteam.ready_after)
+        pr = self.push(lambda: gitops.open_pull_request(
+            ctx.gh, cfg.repositories.content, f"{ctx.operator}:{ws.extra['branch']}", cfg.project.branch, title, body,
+            draft=cfg.roadmap.open_as_draft and not cfg.redteam.ready_after))
         number = int(pr["number"])
         try:
             ctx.gh.write("POST", f"repos/{cfg.repositories.content}/issues/{number}/labels",
@@ -132,23 +166,22 @@ class PortLane(Lane):
         with open(ws.report, "a", encoding="utf-8") as f:
             f.write(f"\n\nPull request: #{number} ({ws.extra['branch']} at {head7})\n")
         return f"ported {job.name}: draft pull request #{number}" + self.write_merge_order(
-            ctx, {"pr": number, "name": job.name}, readme, body, prs, order)
+            ctx, number, job.name, body, found, order)
 
-    def write_merge_order(self, ctx: Context, new: dict, readme: str, body: str, prs: list[dict],
-                          order: list[str]) -> str:
-        """The new pull request's "Merge order" paragraph, by the renderer `merge-order` uses (its
-        number is known only once it is open); '' when written, else why not."""
-        from ..mergeorder import paragraph_for
-        para = paragraph_for(ctx, new, readme, prs, order)
-        if para is None:
-            return f" (the open pull requests could not be read: no merge-order paragraph; run merge-order --pr {new['pr']})"
-        if not para:
+    def write_merge_order(self, ctx: Context, number: int, name: str, body: str, found, order: list[str]) -> str:
+        """The new pull request's "Merge order" paragraph, rendered from the facts its Dependencies
+        sentence came from (the renderer `merge-order` uses; the number is known only once the pull
+        request is open); '' when written, else why not."""
+        if found is None:
+            return f" (the open pull requests could not be read: no merge-order paragraph; run merge-order --pr {number})"
+        if name not in order:
             return " (not in the merge order: no merge-order paragraph)"
+        para = found.paragraph(number)
         text = depgraph.apply_paragraph(body, para) or body.rstrip() + "\n\n" + para + "\n"
         try:
-            ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.content}/pulls/{new['pr']}", {"body": text})
+            ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.content}/pulls/{number}", {"body": text})
         except GHError as exc:
-            return f" (merge-order paragraph not written: {exc}; run merge-order --pr {new['pr']})"
+            return f" (merge-order paragraph not written: {exc}; run merge-order --pr {number})"
         return ""
 
 

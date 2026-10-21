@@ -160,3 +160,24 @@ def test_a_house_shaped_readme_samples_its_subsections():
     sample = seeded_sample(items, 15, "REV-PKG-ColemanIntegrationPartII")
     assert len(sample) == 15 and all(s[0].isdigit() for s in sample)
     assert sample == seeded_sample(items, 15, "REV-PKG-ColemanIntegrationPartII")      # same seeding rule
+
+
+def test_the_port_says_what_the_package_went_through(tmp_path):
+    """Regression (TauCetiRoadmap #1351): a port after two red-team rounds on the job board still said
+    that red-team passes would follow on the draft."""
+    from tauceti_roadmap_worker.lanes.port import assistance_paragraph, model_names, rounds_on_board
+
+    from .fakes import example_config
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    for name in ("REV-PKG-QWittVectors.md", "REV-PKG-QWittVectors~2.md", "RT-QWittVectors~1a.md", "RT-QWittVectors~1b.md",
+                 "RT-QWittVectors~2a.md", "FIX-RT-QWittVectors~2.md", "REV-DESIGN-QWittVectors~3.md", "RT-Other~4a.md"):
+        (reports / name).write_text("x")
+    assert rounds_on_board(reports, "QWittVectors") == (2, 2)
+    assert model_names(example_config()) == "Fable and Astra"
+    board_text = assistance_paragraph("codex", "gpt-6.1-sol", (2, 2), "Fable and Astra")
+    assert board_text == ("AI assistance: codex (gpt-6.1-sol) ported the package after 2 independent review rounds and "
+                          "2 red-team rounds on the job board (Fable and Astra); this draft awaits human review.")
+    assert "1 independent review round and 1 red-team round" in assistance_paragraph("codex", "m", (1, 1))
+    legacy = assistance_paragraph("codex", "gpt-6.1-sol", None)
+    assert "author-side red-team passes by different agents follow on this draft" in legacy

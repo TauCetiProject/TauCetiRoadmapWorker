@@ -213,11 +213,23 @@ def _mutual(state: Path) -> set[tuple[int, int]]:
             if a.isdigit() and b.isdigit()}
 
 
-def plan(prs: list[dict], readmes: dict[str, str], order: list[str], main_extended: set[str],
-         stacks: dict[int, int], external: dict, mutual: set[tuple[int, int]],
-         members: list[dict] | tuple = ()) -> dict[int, str]:
-    """The paragraph for each of `prs` (pure, given the inputs). `members` are ours too (links of
-    the chain, one per pull request even when it adds several roadmaps) but get no paragraph. A pull
+@dataclass
+class OrderFacts:
+    """What a pull request's "Merge order" paragraph states: the chain of ours that must merge
+    first, and other authors' pull requests (None: not read) and those that cite it back."""
+    chain: list[tuple[int, str]]
+    external: list[tuple] | None
+    mutual: list[tuple]
+
+    def paragraph(self, pr: int) -> str:
+        return depgraph.merge_order_paragraph(pr, self.chain, self.external, self.mutual)
+
+
+def facts(prs: list[dict], readmes: dict[str, str], order: list[str], main_extended: set[str],
+          stacks: dict[int, int], external: dict, mutual: set[tuple[int, int]],
+          members: list[dict] | tuple = ()) -> dict[int, OrderFacts]:
+    """The merge-order facts of each of `prs` (pure, given the inputs). `members` are ours too (links
+    of the chain, one per pull request even when it adds several roadmaps) but get no facts. A pull
     request whose roadmap is not in the merge order, or whose README was not read, gets none."""
     edges = depgraph.supplier_edges(readmes, set(order), main_extended)
     name2pr = {p["name"]: p["pr"] for p in prs}
@@ -244,30 +256,60 @@ def plan(prs: list[dict], readmes: dict[str, str], order: list[str], main_extend
             rows = sorted((int(v[0]), k, str(v[1]) if len(v) > 1 else "") for k, v in ext.items() if v)
             ext_first = [r for r in rows if r[0] not in mut]
             ext_mut = [r for r in rows if r[0] in mut]
-        out[p["pr"]] = depgraph.merge_order_paragraph(p["pr"], chain, ext_first, ext_mut)
+        out[p["pr"]] = OrderFacts(chain, ext_first, ext_mut)
     return out
 
 
-def paragraphs(ctx, prs: list[dict], readmes: dict[str, str], order: list[str]) -> dict[int, str] | None:
-    """The paragraph of each of the port lane's `prs` (whose READMEs are `readmes`), or None when the
-    other open pull requests cannot be read."""
+def plan(prs: list[dict], readmes: dict[str, str], order: list[str], main_extended: set[str],
+         stacks: dict[int, int], external: dict, mutual: set[tuple[int, int]],
+         members: list[dict] | tuple = ()) -> dict[int, str]:
+    """The paragraph for each of `prs` (pure, given the inputs): `facts`, rendered."""
+    return {pr: f.paragraph(pr) for pr, f in facts(prs, readmes, order, main_extended, stacks, external, mutual,
+                                                   members).items()}
+
+
+def all_facts(ctx, prs: list[dict], readmes: dict[str, str], order: list[str]) -> dict[int, OrderFacts] | None:
+    """The merge-order facts of each of the port lane's `prs` (whose READMEs are `readmes`), or None
+    when the other open pull requests cannot be read."""
     found = survey(ctx, {int(p["pr"]) for p in prs}, order)
     if found is None:
         return None
     every = {**found.readmes, **readmes}
-    return plan(prs, every, order, set(ctx.cfg.roadmap.main_extended), _stacks(ctx.state),
-                externals(ctx.state, prs, readmes, found.others), _mutual(ctx.state), found.members)
+    return facts(prs, every, order, set(ctx.cfg.roadmap.main_extended), _stacks(ctx.state),
+                 externals(ctx.state, prs, readmes, found.others), _mutual(ctx.state), found.members)
+
+
+def paragraphs(ctx, prs: list[dict], readmes: dict[str, str], order: list[str]) -> dict[int, str] | None:
+    """The paragraph of each of the port lane's `prs`, or None when the open pull requests cannot be read."""
+    found = all_facts(ctx, prs, readmes, order)
+    return None if found is None else {pr: f.paragraph(pr) for pr, f in found.items()}
+
+
+NEW = -1      # the pull request the port lane is about to open, before it has a number
+
+
+def facts_for(ctx, name: str, readme: str, prs: list[dict], order: list[str], number: int = NEW) -> OrderFacts | None:
+    """The merge-order facts of a port lane pull request (`number`, or one about to be opened): the
+    Dependencies sentence and the Merge order paragraph both come from them. None when the open pull
+    requests cannot be read; empty facts when the roadmap is not in the merge order."""
+    from .lanes.base import sibling_readmes
+    new = {"pr": number, "name": name}
+    everyone = [p for p in prs if p["pr"] != number and p["name"] != name] + [new]
+    readmes = {**sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, everyone), name: readme}
+    found = all_facts(ctx, everyone, readmes, order)
+    if found is None:
+        return None
+    return found.get(number, OrderFacts([], None, []))
 
 
 def paragraph_for(ctx, new: dict, readme: str, prs: list[dict], order: list[str]) -> str | None:
     """The paragraph of a pull request the port lane just opened (`new` = {pr, name}), by the same
     renderer as `refresh`: '' when its roadmap is not in the merge order, None when the open pull
     requests cannot be read."""
-    from .lanes.base import sibling_readmes
-    everyone = [p for p in prs if p["pr"] != new["pr"] and p["name"] != new["name"]] + [new]
-    readmes = {**sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, everyone), new["name"]: readme}
-    found = paragraphs(ctx, everyone, readmes, order)
-    return None if found is None else found.get(new["pr"], "")
+    found = facts_for(ctx, new["name"], readme, prs, order, new["pr"])
+    if found is None:
+        return None
+    return found.paragraph(new["pr"]) if new["name"] in order else ""
 
 
 def refresh(ctx, only: set[int] | None = None, listing: bool = False) -> list[str]:
