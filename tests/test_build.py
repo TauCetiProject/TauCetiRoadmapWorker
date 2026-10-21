@@ -98,7 +98,9 @@ def test_the_board_workflow_runs_the_three_commands_with_its_own_token():
     text = (paths.HERE / "board" / "board.yml").read_text()
     for line in ("board intake --yes", "board sync --yes", "board stale --release --yes", "group: board",
                  "cancel-in-progress: false", "contents: write", "pull-requests: write", "issues: write",
-                 "GH_TOKEN: ${{ github.token }}", "pull_request_target:", "issue_comment:", '- cron: "*/10 * * * *"',
+                 "GH_TOKEN: ${{ github.token }}", "pull_request_target:", "workflow_dispatch:", '- cron: "*/10 * * * *"',
                  "uv tool install git+https://github.com/TauCetiProject/TauCetiRoadmapWorker@main"):
         assert line in text, line
     assert "ref: ${{ github.event.pull_request.head" not in text      # never checks out a pull request's code
+    # Comments and issue edits are no trigger: on a busy board they spent the token's 1,000 requests an hour.
+    assert "issue_comment:" not in text and "\n  issues:\n" not in text

@@ -593,10 +593,38 @@ def status_cmd(args) -> int:
     return 0
 
 
+RATE_WARN = 200      # a board run warns when fewer REST requests than this are left this hour
+
+
+def api_budget(gh, repo: str) -> list[str]:
+    """The lines a board run ends with: the REST requests it made and what the token has left."""
+    calls = getattr(gh, "calls", 0)
+    budget = gh.rate_limit(repo) if hasattr(gh, "rate_limit") else {}
+    if not budget.get("limit"):
+        return [f"GitHub API calls this run: {calls} (rate limit not readable)"]
+    resets = time.strftime("%H:%MZ", time.gmtime(budget.get("reset", 0)))
+    first = (f"GitHub API calls this run: {calls} (rate limit remaining {budget.get('remaining', '?')}/{budget['limit']}, "
+             f"resets {resets})")
+    lines = [first]
+    if budget.get("remaining", RATE_WARN) < RATE_WARN:
+        lines.append(f"WARN: only {budget['remaining']} GitHub API requests left until {resets}; runs of the board "
+                     "share this budget")
+    return lines
+
+
 def board_cmd(args) -> int:
-    from . import intake
+    """A board maintenance run, ending with the REST requests it made and the token's budget."""
     cfg = _load(args)
     ctx = _bot_context(args, cfg, dry=args.dry_run or not args.yes)
+    try:
+        return board_run(args, cfg, ctx)
+    finally:
+        for line in api_budget(ctx.gh, cfg.repositories.board_repo()):
+            print(line)
+
+
+def board_run(args, cfg, ctx) -> int:
+    from . import intake
     shared = None
     if cfg.repositories.claims:
         shared = claims.Claims(repo=cfg.repositories.claims,

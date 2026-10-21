@@ -429,10 +429,16 @@ comment, and nothing is submitted.
 ### The board workflow
 
 The board's maintenance need not depend on anyone running it: copy `board/board.yml` from this
-repository to `.github/workflows/board.yml` in the jobs repository. Every ten minutes, and on every
-pull request, issue and comment event of the board, it installs the tool from this repository's
-main and runs `board intake --yes`, `board sync --yes` and `board stale --release --yes` with the
-workflow's own token (permissions: contents, pull requests and issues write; one run at a time).
+repository to `.github/workflows/board.yml` in the jobs repository. Every ten minutes, when a
+submission pull request opens or changes (`pull_request_target`), and on demand
+(`workflow_dispatch`), it installs the tool from this repository's main and runs `board intake --yes`,
+`board sync --yes` and `board stale --release --yes` with the workflow's own token (permissions:
+contents, pull requests and issues write; one run at a time). Comments and issue edits are not
+triggers: the schedule picks them up within ten minutes, and on a busy board event-driven runs spent
+the token's budget. That budget is 1,000 REST requests per hour for the repository, whatever the
+users' own tokens allow, and every run shares it; each `board intake|sync|stale` run ends with
+`GitHub API calls this run: N (rate limit remaining R/L, resets HH:MMZ)` and a `WARN:` line when
+fewer than 200 requests are left.
 Everything the board writes works with that token: its notes are signed by `github-actions[bot]`
 (keep it in `[board] bot_logins`), and authorship always comes from the submission pull request's
 author.

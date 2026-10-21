@@ -2,9 +2,11 @@
 # Install: copy this file to .github/workflows/board.yml in the jobs repository, next to its
 # tauceti-roadmap.toml. It needs no secret: the workflow's own token writes to the board.
 #
-# Every ten minutes, and whenever a pull request, an issue or a comment changes on the board, it
-# takes in submissions, reads the reviews on open pull requests, answers needs-references requests,
-# syncs targets, labels and the review queue, and releases stale claims. Runs never overlap.
+# Every ten minutes, when a submission pull request opens or changes, and on demand, it takes in
+# submissions, reads the reviews on open pull requests, answers needs-references requests, syncs
+# targets, labels and the review queue, and releases stale claims. Runs never overlap. Comments and
+# issue edits are no trigger (the schedule picks them up): the workflow's token has 1,000 REST
+# requests per hour for the repository, and each run ends by logging what it used and what is left.
 #
 # The claims namespace is another repository, which this token cannot write to (and can read only
 # when it is public): the lease checks then see no lease, and claiming a review by a `reviewing`

@@ -96,3 +96,21 @@ def test_the_review_scan_goes_on_past_an_error():
         jobs.append(job)
     out = boardpr.scan(bot_context(gh=ScanGH(), board=FakeBoard(jobs=jobs)))
     assert out[0].startswith("#12: skipped: GitHub did not answer")
+
+
+def test_a_board_run_ends_with_its_api_budget(monkeypatch):
+    """The hosted workflow ran 61 times in an hour on comment events; each run now says what it used."""
+    from tauceti_roadmap_worker import cli
+    gh = GH(sleep=lambda s: None)
+    headers = "HTTP/2.0 200 OK\nX-Ratelimit-Limit: 1000\nX-Ratelimit-Remaining: 150\nX-Ratelimit-Reset: 1792576800\n\n123\n"
+    outputs = iter(['[{"n": 1}]\n[{"n": 2}]\n[{"n": 3}]', headers])
+    monkeypatch.setattr(GH, "_run", lambda self, args, stdin=None: (setattr(self, "calls", self.calls + 1),
+                                                                   next(outputs))[1])
+    assert len(gh.api("repos/o/jobs/pulls?state=open", paginate=True)) == 3 and gh.calls == 3     # one per page
+    lines = cli.api_budget(gh, "o/jobs")
+    assert lines[0] == "GitHub API calls this run: 3 (rate limit remaining 150/1000, resets 10:00Z)"
+    assert lines[1].startswith("WARN: only 150 GitHub API requests left until 10:00Z")
+    roomy = type("G", (), {"calls": 12, "rate_limit": lambda self, repo: {"remaining": 900, "limit": 1000, "reset": 0}})()
+    assert cli.api_budget(roomy, "o/jobs") == ["GitHub API calls this run: 12 (rate limit remaining 900/1000, resets 00:00Z)"]
+    blind = type("G", (), {"calls": 4, "rate_limit": lambda self, repo: {}})()
+    assert cli.api_budget(blind, "o/jobs") == ["GitHub API calls this run: 4 (rate limit not readable)"]

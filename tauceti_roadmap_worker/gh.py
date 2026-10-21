@@ -62,7 +62,10 @@ class GH:
     def available(self) -> bool:
         return shutil.which("gh") is not None
 
+    calls: int = 0               # REST requests made through this object (pages of a paginated listing each count)
+
     def _run(self, args: list[str], stdin: str | None = None) -> str:
+        self.calls += 1
         try:
             result = subprocess.run(["gh", *args], input=stdin, capture_output=True, text=True, timeout=self.timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -85,13 +88,14 @@ class GH:
             raise GHError(f"GET {path}: API error: {out[:200]}")
         if paginate:
             # --paginate concatenates JSON arrays; parse each top-level array and join them.
-            items, decoder, pos, text = [], json.JSONDecoder(), 0, out.strip()
+            items, decoder, pos, text, pages = [], json.JSONDecoder(), 0, out.strip(), 0
             while pos < len(text):
                 value, end = decoder.raw_decode(text, pos)
                 items.extend(value if isinstance(value, list) else [value])
-                pos = end
+                pos, pages = end, pages + 1
                 while pos < len(text) and text[pos].isspace():
                     pos += 1
+            self.calls += max(pages - 1, 0)      # every further page was a request of its own
             return items
         return json.loads(out) if out.strip() else None
 
@@ -110,6 +114,21 @@ class GH:
             print("[dry-run] gh " + " ".join(args))
             return ""
         return self._run(list(args))
+
+    def rate_limit(self, repo: str) -> dict:
+        """{remaining, limit, reset} of the token's core REST budget, from the headers of a request
+        (for the Actions token: 1,000 per hour per repository), or {} when they cannot be read."""
+        try:
+            out = self._run(["api", "--include", f"repos/{repo}", "--jq", ".id"])
+        except GHError:
+            return {}
+        found = {}
+        for line in out.splitlines():
+            name, _, value = line.partition(":")
+            key = name.strip().lower()
+            if key in ("x-ratelimit-remaining", "x-ratelimit-limit", "x-ratelimit-reset") and value.strip().isdigit():
+                found[key.rsplit("-", 1)[1]] = int(value.strip())
+        return found
 
     def login(self) -> str:
         return self._run(["api", "user", "--jq", ".login"]).strip()
