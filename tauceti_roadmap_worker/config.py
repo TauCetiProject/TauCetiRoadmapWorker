@@ -352,8 +352,8 @@ def validate(cfg: Config) -> None:
         problems.append(f"board.priority: unknown stage(s) {', '.join(unknown)} (stages: {', '.join(STAGE_ORDER)})")
     if cfg.design.daily_cap < 0:
         problems.append("design.daily_cap must be >= 0")
-    if cfg.review.separation not in ("operator", "agent"):
-        problems.append("review.separation must be operator or agent")
+    if cfg.review.separation not in ("operator", "agent", "family"):
+        problems.append("review.separation must be operator, agent or family")
     if cfg.worker.idle_seconds < 30:
         problems.append("worker.idle_seconds must be at least 30")
     if cfg.roadmap.merge_order_repo not in ("packages", "content", "local"):
