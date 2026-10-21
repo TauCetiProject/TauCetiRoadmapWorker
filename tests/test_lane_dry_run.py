@@ -118,7 +118,6 @@ def test_lane_base_values_cover_common_placeholders(ctx):
     assert values["SUPPLIERS"] == "none yet" and values["DROPPED"] == "none"
 
 
-<<<<<<< HEAD
 def test_design_review_runs_the_dependency_check_on_the_design_readme(ctx):
     job = new_job("REV-DESIGN-Foo", inputs={"board_pr": 12, "operator": "alice"})
     job.number = 10
@@ -126,7 +125,8 @@ def test_design_review_runs_the_dependency_check_on_the_design_readme(ctx):
     brief = (ctx.wdir / "jobs" / "REV-DESIGN-Foo" / "brief.md").read_text()
     assert f"gate --candidate {ctx.wdir / 'board' / 'packages' / 'Foo' / 'design' / 'README.md'} --only Foo" in brief
     assert "gate --depcheck" not in brief
-=======
+
+
 def test_review_on_a_board_pull_request_fetches_the_previous_review_from_the_board(ctx):
     job = new_job("REV-PKG-Foo~3", inputs={"board_pr": 12, "operator": "alice"})
     job.number = 11
@@ -136,7 +136,6 @@ def test_review_on_a_board_pull_request_fetches_the_previous_review_from_the_boa
     assert f"`{scratch / 'REV-PKG-Foo_r2.md'}` (its repair report: `{scratch / 'FIX-PKG-Foo_r3.md'}`)" in brief
     assert str(ctx.wdir / "board" / "packages" / "Foo" / "reports" / "REV-PKG-Foo~2.md") not in brief
     assert (scratch / "REV-PKG-Foo_r2.md").is_file()
->>>>>>> pr-2
 
 
 def test_board_pull_request_jobs_check_out_its_head_and_read_the_board_reports(ctx, monkeypatch):
