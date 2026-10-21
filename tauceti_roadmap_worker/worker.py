@@ -254,21 +254,26 @@ LIMIT_UNKNOWN = 1800      # seconds a usage limit with no reset time pauses its 
 
 
 def release_leftovers(ctx: Context, log=print) -> list[str]:
-    """Leases this worker id still holds from a process that ended without releasing them (killed
-    before it could, or crashed). A worker id runs one process at a time, so at startup they are
-    released and their jobs put back to `state:available`. Returns the jobs released."""
-    if not ctx.claims or ctx.dry_run:
+    """Jobs this worker id still holds from a process that ended without releasing them (killed
+    before it could, or crashed): its leases, and the claimed jobs whose last "Claimed for" comment
+    names this worker id and operator, lease or not (a process that died before it wrote one). A
+    worker id runs one process at a time, so at startup they go back to `state:available`. Returns
+    the jobs released."""
+    if ctx.dry_run:
         return []
     prefix = f"roadmap/{ctx.cfg.project.name}/job/"
+    mine = []
+    if ctx.claims:
+        try:
+            keys = ctx.claims.live_keys(prefix)
+            mine = [k for k in keys if (ctx.claims.read(k) or {}).get("owner") == ctx.claims.owner]
+        except Exception:  # noqa: BLE001 - fail-open, like every lease operation
+            mine = []
     try:
-        keys = ctx.claims.live_keys(prefix)
-    except Exception:  # noqa: BLE001 - fail-open, like every lease operation
-        return []
-    mine = [k for k in keys if (ctx.claims.read(k) or {}).get("owner") == ctx.claims.owner]
-    if not mine:
-        return []
-    claimed = {claims.job_key(ctx.cfg.project.name, j.id): j for j in ctx.board.list_jobs(("claimed",))}
-    out = []
+        claimed = {claims.job_key(ctx.cfg.project.name, j.id): j for j in ctx.board.list_jobs(("claimed",))}
+    except GHError:
+        claimed = {}
+    out = released_by_comment(ctx, claimed, set(mine), log)
     for key in mine:
         ctx.claims.release(key)
         job = claimed.get(key)
@@ -280,6 +285,33 @@ def release_leftovers(ctx: Context, log=print) -> list[str]:
                 pass
         out.append(job.id if job else key[len(prefix):])
         log(f"released {out[-1]}: left claimed by this worker's previous process")
+    return out
+
+
+def released_by_comment(ctx: Context, claimed: dict, leased: set[str], log=print) -> list[str]:
+    """The claimed jobs whose claim comment names this worker id and operator but that hold no lease
+    of this worker (those `release_leftovers` releases by their lease), unless another owner holds a
+    live lease on them."""
+    out, now = [], int(time.time())
+    for key, job in claimed.items():
+        if key in leased:
+            continue
+        try:
+            claim = board.last_claim(ctx.board.comments(job.number), job.id)
+        except (GHError, AttributeError):
+            continue
+        if not claim or claim["worker"] != ctx.worker_id or claim["operator"].lower() != (ctx.operator or "").lower():
+            continue
+        lease = ctx.claims.read(key) if ctx.claims else None
+        if claims.lease_live(lease, now) and lease.get("owner") != getattr(ctx.claims, "owner", ""):
+            continue
+        try:
+            ctx.board.set_state(job, "available", f"Released by worker `{ctx.worker_id}` at its start: its previous "
+                                                  "process claimed the job and ended without a release (no lease).")
+        except GHError:
+            continue
+        out.append(job.id)
+        log(f"released {job.id}: claimed by this worker's previous process, with no lease")
     return out
 
 

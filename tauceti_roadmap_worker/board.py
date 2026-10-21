@@ -412,6 +412,25 @@ def inherit_origin(parent: Job, children: list[Job]) -> list[Job]:
     return children
 
 
+CLAIM_NOTE = re.compile(r"^Claimed for `(?P<job>[^`]+)` by (?P<who>.+?)(?:\.|, by a comment on .*)?$", re.DOTALL)
+
+
+def last_claim(comments: list[dict], job_id: str) -> dict | None:
+    """The newest "Claimed for `<job>` by ..." comment on a job's issue, as {who, at, comment, worker,
+    operator}: `comment` is true for a claim made by a `reviewing` comment; `worker` and `operator`
+    are set for a worker's claim."""
+    for c in reversed(comments):
+        body = (c.get("body") or "").strip()
+        m = CLAIM_NOTE.match(body)
+        if not m or m.group("job") != job_id:
+            continue
+        who = m.group("who").strip()
+        w = re.match(r"worker `([^`]+)` \(@([A-Za-z0-9-]+)", who)
+        return {"who": who, "at": c.get("created_at", ""), "comment": "by a comment on" in body,
+                "worker": w.group(1) if w else "", "operator": w.group(2) if w else ""}
+    return None
+
+
 def fix_for_review(job: Job) -> Job:
     """The repair round that follows a review asking for changes (the branch owner's, on a board
     pull request)."""

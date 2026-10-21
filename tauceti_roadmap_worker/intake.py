@@ -529,14 +529,25 @@ def sync_states(ctx, shared: claims.Claims | None) -> list[str]:
     return out
 
 
+def claim_age(claim: dict, now: dt.datetime) -> float | None:
+    try:
+        return (now - dt.datetime.fromisoformat(str(claim["at"]))).total_seconds()
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
 def sync_expired(ctx, shared: claims.Claims | None) -> list[str]:
-    """Claimed jobs whose lease has expired: the worker stopped renewing it (it was killed, or lost
-    its network) and never released the job, so it goes back to `state:available` now rather than
-    after `stale_hours`. A claim with no lease at all (a worker that could not register one) is
-    left to `board stale`."""
+    """Claimed jobs nobody holds any more, back to `state:available` now rather than after
+    `stale_hours`: a lease that expired (the worker stopped renewing it: killed, or off the network),
+    and a claim with no lease at all whose "Claimed for" comment is older than the job lease's
+    lifetime (a worker that died before, or without, registering one: a full disk). A claim made by
+    a `reviewing` comment holds for its own four hours. Only with a namespace that can be read now:
+    an unreadable one never looks like one without leases."""
     if not shared:
         return []
+    from .boardpr import COMMENT_CLAIM_TTL
     out, now = [], int(dt.datetime.now(dt.UTC).timestamp())
+    reachable = None
     for job in ctx.board.list_jobs(("claimed",)):
         lease = shared.read(claims.job_key(ctx.cfg.project.name, job.id))
         if lease and not claims.lease_live(lease, now):
@@ -544,6 +555,21 @@ def sync_expired(ctx, shared: claims.Claims | None) -> list[str]:
             ctx.board.set_state(job, "available", f"Released: the lease of `{lease.get('owner', '?')}` expired at "
                                                   f"{ended:%Y-%m-%d %H:%MZ} without a release.")
             out.append(f"{job.id}: released (lease of {lease.get('owner', '?')} expired)")
+            continue
+        if lease:
+            continue
+        reachable = shared.reachable() if reachable is None else reachable
+        if not reachable:
+            continue
+        try:
+            claim = board.last_claim(ctx.board.comments(job.number), job.id)
+        except GHError:
+            continue
+        age = claim_age(claim, dt.datetime.fromtimestamp(now, dt.UTC)) if claim else None
+        if age is None or age <= (COMMENT_CLAIM_TTL if claim["comment"] else claims.JOB_TTL):
+            continue
+        ctx.board.set_state(job, "available", f"Released: claimed by {claim['who']} at {claim['at']} with no live lease.")
+        out.append(f"{job.id}: released (claimed by {claim['who']}, no lease)")
     return out
 
 

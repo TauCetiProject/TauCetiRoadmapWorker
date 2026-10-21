@@ -377,9 +377,13 @@ namespace is `$CLAIM_REPO` if set, else `[repositories] claims` when your accoun
 else your own fork (then your workers de-duplicate only among themselves). Leases are cooperative
 and fail-open: a lease that cannot be registered is logged and the round proceeds. A worker id
 runs one process at a time: at its start a worker releases any lease its previous process left
-behind (killed before it could release, or crashed) and puts those jobs back to `state:available`;
-and `board sync` puts back every claimed job whose lease has expired (the worker stopped renewing
-it), without waiting for `board stale`.
+behind (killed before it could release, or crashed), and any claimed job whose last "Claimed for"
+comment names this worker id and operator even with no lease (a process that died before it wrote
+one), and puts those jobs back to `state:available`. `board sync` puts back every claimed job whose
+lease has expired (the worker stopped renewing it), and every claimed job with no lease at all whose
+"Claimed for" comment is older than the job lease's 25 minutes ("Released: claimed by <worker> at
+<time> with no live lease"; a claim made by a `reviewing` comment holds for its four hours), without
+waiting for `board stale`; a claims namespace that cannot be read at that moment releases nothing.
 
 When a design, package or fix is submitted, the worker also records an author lease
 (`roadmap/<project>/author/<JOB>`, with the operator login, agent and model inside). A review job

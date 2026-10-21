@@ -234,6 +234,9 @@ class FakeClaims:
     def live_keys(self, prefix: str) -> list[str]:
         return sorted(k for k in {*self.live, *self.leases} if k.startswith(prefix))
 
+    def reachable(self) -> bool:
+        return getattr(self, "readable", True)
+
     def acquire(self, key: str, ttl: int = claims.JOB_TTL, extra: dict | None = None) -> int:
         self.acquired.append(key)
         return claims.ACQUIRED

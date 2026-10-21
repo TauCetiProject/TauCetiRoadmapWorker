@@ -210,6 +210,15 @@ class Claims:
         except (OSError, subprocess.SubprocessError):
             return None
 
+    def reachable(self) -> bool:
+        """Whether the namespace can be read now (an unreadable namespace must never look like one
+        without leases)."""
+        try:
+            self.ensure_repo()
+            return self._git("ls-remote", "origin").returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
     def live_keys(self, prefix: str) -> list[str]:
         """Keys under a prefix that have a ref (expiry not checked: read each lease for that)."""
         self.ensure_repo()
