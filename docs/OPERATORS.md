@@ -153,7 +153,17 @@ Job ids follow `KIND-NAME~roundN`. Round 1 of a design, package, review or desig
 no suffix; red-team passes (`RT-Name~1a`), red-team fixes (`FIX-RT-Name~1`) and gate rounds
 (`GATE-Name~1`) always name their round. A review that does not accept sends its artefact to a fix
 round, and every fix round is followed by a fresh independent review; after `[board] max_rounds`
-the roadmap is parked (`state:blocked`) for a human.
+the roadmap is parked (`state:blocked`) for a human. A fix may mark a finding `not actionable in this
+package` with its reason (it asks another roadmap for something, or for a decision outside the
+package); when the next review's blocking findings only re-raise such findings (`Re-raised: <id>`
+in the finding, or the same title), the intake creates the next fix round as `state:blocked` with
+the findings named on the review's issue: a human decides them, then moves the fix to
+`state:available` to run it, or closes it. A design's declared supplier gaps (`gap:<slug>` with a
+named supplier and a one-sentence `needs`) are contracts, not findings; a review may accept
+conditional on them (`conditional_gaps` in the verdict, or a `Conditional on the announced gaps:`
+line in a comment review). A design-stage roadmap is checked as a merge-order candidate
+(`gate --candidate <folder> --only <Name>` places it after its last supplier), since it enters the
+merge order only when its design is accepted.
 
 States are the labels `state:available`, `claimed`, `submitted`, `done`, `blocked` and
 `needs-references`. A job issue carries exactly one: every state change adds the new label first and

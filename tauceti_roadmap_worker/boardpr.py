@@ -93,8 +93,18 @@ def brief(ctx, job: Job, pr: dict) -> str:
               else f"`{cfg.roadmap.merge_order_file}` in {cfg.repositories.content}",
               "CONTENT_REPO": cfg.repositories.content, "ACTIVE_DIR": cfg.roadmap.active_dir,
               "COMPLETED_DIR": cfg.roadmap.completed_dir, "MAX_LEAN_LINES": str(cfg.gates.max_lean_lines),
-              "KIND": "red-team pass" if job.kind == "redteam" else "review"}
+              "KIND": "red-team pass" if job.kind == "redteam" else "review", "GAPS": web_gaps(ctx, pkg, head)}
     return prompts.render("review-web", values) + f"\n<!-- {BRIEF_MARK} {json.dumps({'job': job.id})} -->\n"
+
+
+def web_gaps(ctx, pkg: str, head: str) -> str:
+    """The supplier gaps the plan at the head declares, for the brief."""
+    from .lanes.design import gaps_listing
+    try:
+        plan = json.loads(ctx.gh.raw_file(repo(ctx), f"{pkg}/design/plan.json", head))
+    except (GHError, ValueError):
+        return "none declared (no readable design/plan.json at this head)"
+    return gaps_listing(plan if isinstance(plan, dict) else {})
 
 
 def pin_brief(ctx, number: int, job: Job, pr: dict, comments: list[dict] | None = None) -> None:
@@ -335,7 +345,8 @@ def conclude_review(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Jo
     put_file(ctx, f"{pkg}/reports/{job.id}.md", report_text(reviews), f"Board: {job.id} ({verdict})")
     who = ", ".join(f"@{(c.get('user') or {}).get('login', '?')} ({p.agent})" for c, p in reviews)
     finish_job(ctx, job, f"Intake: {verdict} on #{number} by {who}.")
-    outcome = Outcome(verdict=verdict, pr=number, operator=pr["user"]["login"])
+    outcome = Outcome(verdict=verdict, pr=number, operator=pr["user"]["login"], report=report_text(reviews),
+                      head=pr["head"]["sha"])
     if job.kind == "review" and verdict == "accepted" and j.subject == "DESIGN":
         from .intake import announce_gaps
         design = next((x for x in jobs if x.id == board.make_id("design", job.name)), None)
@@ -348,10 +359,14 @@ def conclude_review(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Jo
 
 
 def verdict_record(job: Job, reviews, status: str) -> dict:
-    return {"status": status, "reviewer": f"independent-review-{job.id}", "date": now().date().isoformat(),
-            "findings": sum(len(p.findings) for _c, p in reviews), "blocking": sum(p.blocking for _c, p in reviews),
-            "notes": "comment review on the board pull request by " + ", ".join(
-                f"@{(c.get('user') or {}).get('login', '?')} ({p.agent}) of {p.sha[:7]}" for c, p in reviews)}
+    record = {"status": status, "reviewer": f"independent-review-{job.id}", "date": now().date().isoformat(),
+              "findings": sum(len(p.findings) for _c, p in reviews), "blocking": sum(p.blocking for _c, p in reviews),
+              "notes": "comment review on the board pull request by " + ", ".join(
+                  f"@{(c.get('user') or {}).get('login', '?')} ({p.agent}) of {p.sha[:7]}" for c, p in reviews)}
+    conditional = sorted({g for _c, p in reviews for g in p.conditional})
+    if conditional and status == "accepted":
+        record["conditional_gaps"] = conditional
+    return record
 
 
 def conclude_pass(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Job], yes: bool) -> str:

@@ -100,6 +100,19 @@ def design_summary(name: str, plan: dict) -> str:
             f"{count(tests, 'test')}, {count(len(gaps), 'gap')}" + (f" ({owed} for suppliers)" if owed else ""))
 
 
+def gaps_listing(plan: dict) -> str:
+    """The gaps a plan declares, as the review briefs list them: slug, supplier and section, needs."""
+    rows = []
+    for g in plan.get("gaps", []):
+        if not isinstance(g, dict):
+            continue
+        slug, supplier = str(g.get("slug") or g.get("id") or "?"), str(g.get("supplier") or "none")
+        where = str(g.get("section") or g.get("target") or "")
+        rows.append(f"`gap:{slug}`: supplier `{supplier}`" + (f" {where}" if where and supplier != "none" else "")
+                    + f"; needs: {' '.join(str(g.get('needs') or g.get('detail') or '(not stated)').split())}")
+    return "\n" + "\n".join(f"- {r}" for r in rows) if rows else "none declared"
+
+
 def ledger_path(state: Path) -> Path:
     return state / "design-ledger.jsonl"
 

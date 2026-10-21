@@ -74,8 +74,10 @@ class ArtefactFixLane(Lane):
         except OSError:
             rows = []
         applied = sum(1 for _f, how, _b in rows if how.lower().startswith("applied"))
+        settled = sum(1 for _f, how, _b in rows if replies.NOT_ACTIONABLE.match(how.strip()))
         what = "design" if self.art(job) == "DESIGN" else "package"
-        return f"round {job.round} of the {job.name} {what} repaired: {applied} of {count(len(rows), 'finding')} applied"
+        return (f"round {job.round} of the {job.name} {what} repaired: {applied} of {count(len(rows), 'finding')} applied"
+                + (f", {settled} not actionable in this package" if settled else ""))
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)

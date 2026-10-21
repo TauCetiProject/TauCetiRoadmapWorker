@@ -43,7 +43,7 @@ def seeded_sample(items: list[str], k: int, seed: str) -> list[str]:
     return [item for i, item in enumerate(items) if i in picked]
 
 
-def verdict_problems(data: dict, job_id: str) -> list[str]:
+def verdict_problems(data: dict, job_id: str, declared: set[str] | None = None) -> list[str]:
     review = data.get("review") if isinstance(data, dict) else None
     if not isinstance(review, dict):
         return ["verdict file: no review object"]
@@ -54,7 +54,26 @@ def verdict_problems(data: dict, job_id: str) -> list[str]:
         problems.append(f"verdict file: reviewer must be independent-review-{job_id}")
     if review.get("status") == "accepted" and int(review.get("blocking") or 0) > 0:
         problems.append("verdict file: accepted with blocking findings")
+    conditional = review.get("conditional_gaps")
+    if conditional is not None:
+        if not isinstance(conditional, list) or not all(isinstance(g, str) for g in conditional):
+            problems.append("verdict file: conditional_gaps must be a list of gap slugs")
+        elif conditional and review.get("status") != "accepted":
+            problems.append("verdict file: conditional_gaps belong to an acceptance only")
+        elif declared is not None and set(conditional) - declared:
+            problems.append("verdict file: conditional_gaps names gaps the plan does not declare: "
+                            + ", ".join(sorted(set(conditional) - declared)))
     return problems
+
+
+def declared_slugs(pkg) -> set[str] | None:
+    """The gap slugs a roadmap's design/plan.json declares, or None when it cannot be read."""
+    try:
+        plan = json.loads((pkg / "design" / "plan.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return {str(g.get("slug") or g.get("id")) for g in plan.get("gaps", []) if isinstance(g, dict)} \
+        if isinstance(plan, dict) else None
 
 
 def review_summary(what: str, verdict: dict, report: str) -> str:
@@ -85,11 +104,13 @@ class ReviewLane(Lane):
 
     def comment_body(self, job: Job, ctx: Context, ws: Workspace) -> str:
         try:
-            status = json.loads(self.verdict_file(job, ctx, ws).read_text(encoding="utf-8"))["review"]["status"]
+            review = json.loads(self.verdict_file(job, ctx, ws).read_text(encoding="utf-8"))["review"]
+            status, conditional = review["status"], review.get("conditional_gaps") or []
         except (OSError, ValueError, KeyError, TypeError):
-            status = "needs_changes"
+            status, conditional = "needs_changes", []
         return prreviews.render(prreviews.review_head(ctx.agent, ws.extra["head"]), status,
-                                ws.report.read_text(encoding="utf-8"), self.marker(job, ctx, ws))
+                                ws.report.read_text(encoding="utf-8"), self.marker(job, ctx, ws),
+                                conditional if status == "accepted" and isinstance(conditional, list) else None)
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         try:
@@ -138,7 +159,8 @@ class ReviewLane(Lane):
         problems = super().check(job, ctx, ws)
         vf = self.verdict_file(job, ctx, ws)
         try:
-            problems += verdict_problems(json.loads(vf.read_text(encoding="utf-8")), job.id)
+            problems += verdict_problems(json.loads(vf.read_text(encoding="utf-8")), job.id,
+                                         declared_slugs(ws.package(ctx.cfg, job.name)))
         except (OSError, ValueError) as exc:
             problems.append(f"verdict file: {exc}")
         if ws.report.is_file() and not ws.report.read_text(encoding="utf-8").startswith(f"# Review of {job.name}"):

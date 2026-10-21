@@ -56,8 +56,9 @@ context, and of every bold README target. For each:
    hypothesis-contains-conclusion statements, sorry'd data or overclaiming docstrings.
 3. **Proof plans and dependencies**: every input of a proof plan is a target of this roadmap, a
    target of a named roadmap at its current version (check that the section and the declaration
-   name exist there with the same hypotheses), or a pinned declaration (grep it). Flag unowned
-   prerequisites, forward references and cycles; run the dependency check below.
+   name exist there with the same hypotheses), a declared supplier gap (below), or a pinned
+   declaration (grep it). Flag unowned prerequisites, forward references and cycles; run the
+   dependency check below.
 4. **Ownership and duplication**: anything a sibling or a roadmap on main already states (grep for the
    object) must cite the owner instead.
 5. **Sources**: verify every locator you can against the text (legal sources only); flag misprints
@@ -83,6 +84,8 @@ tested, sibling citations checked) and `## Not verifiable` (each item and why). 
 remarks, no restating of the roadmap.
 
 <!-- include: sections/defect-classes.md -->
+
+<!-- include: sections/gaps-and-order.md -->
 
 <!-- include: sections/adversarial.md -->
 

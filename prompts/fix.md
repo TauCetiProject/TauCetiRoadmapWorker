@@ -49,6 +49,13 @@ For each finding:
    a target here with hypotheses, locator and three Checks, add the boundary example as a Check.
 3. **If it is wrong**, do not apply it: give the exact evidence (a source line, a pinned declaration,
    a short proof) so the reviewer can be answered.
+3a. **If it cannot be settled by editing this roadmap's files** (it asks another roadmap to state
+   something, or for a decision outside this package: a merge-order placement, a scope change), mark
+   it `not actionable in this package` and give the reason. A prerequisite another roadmap must
+   supply is declared as a supplier gap (`gap:<slug>` with its `gaps` entry naming the supplier,
+   its section and a one-sentence `needs`); when it already is, say so: that is the reason. Never
+   invent a supplier target or restate the finding to make it go away. A finding re-raised after you
+   marked it not actionable is decided by a human, not by another round.
 4. Keep the README and `Suggested.lean` in agreement: a Lean statement whose README target changes
    changes with it (binders, hypotheses, docstring), every new Lean name appears in the README and
    every deleted one leaves it, and every consumer of a changed name inside this roadmap is updated.
@@ -63,8 +70,9 @@ __COMMIT__
 ## Report
 
 Write `__REPORT__`, one section per finding, each headed exactly
-`## <finding id> (<severity>) — <applied | applied differently | disputed>`, followed by what
-changed (old → new, at most 60 words) or the evidence for the dispute. Then the exact outcome of
+`## <finding id> (<severity>) — <applied | applied differently | disputed | not actionable in this package: <reason>>`,
+followed by what changed (old → new, at most 60 words), the evidence for the dispute, or why no edit
+of this package can settle it. Then the exact outcome of
 each check above and anything the maintainer should know (consequences for other roadmaps, names
 other roadmaps cite that changed).
 

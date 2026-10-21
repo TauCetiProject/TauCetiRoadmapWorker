@@ -422,8 +422,8 @@ class Lane:
             "PACKAGES": str(ws.board / cfg.board.packages_dir), "PACKAGE": str(ws.package(cfg, job.name)),
             "ORDER": str(order_file), "SUPPLIERS": ", ".join(earlier) or "none yet",
             "DROPPED": ", ".join(dropped) or "none",
-            "DEPCHECK": ctx.cli("gate", "--depcheck", str(ws.extra.get("readme") or ws.package(cfg, job.name) / "README.md"),
-                                "--name", job.name, "--order", str(order_file)),
+            "DEPCHECK": self.depcheck_command(job, ctx, ws, order_file),
+            "GAPS": declared_gaps(ws.package(cfg, job.name)),
             "LIBRARY": library_description(ws.content),
             "SIBLINGS": "; ".join(f"{name} at `{path}`" for _pr, name, path in sibs) or
                         ("; ".join(p["name"] for p in prs) or "none"),
@@ -431,6 +431,15 @@ class Lane:
             "SOURCE_TEXTS": ws.extra.get("source_texts", "none recorded yet"),
             "FETCH": self.fetch_command(job, ctx, ws),
         }
+
+    def depcheck_command(self, job: Job, ctx: Context, ws: Workspace, order_file: Path) -> str:
+        """The dependency check an agent runs. A roadmap at the design stage (its target, design,
+        design review or design fix) is a candidate: it enters the merge order when its design is
+        accepted, so until then the check places it after its last supplier."""
+        readme = str(ws.extra.get("readme") or ws.package(ctx.cfg, job.name) / "README.md")
+        if job.kind in ("target", "design") or board.artefact_of(job.id) == "DESIGN":
+            return ctx.cli("gate", "--candidate", readme, "--only", job.name, "--order", str(order_file))
+        return ctx.cli("gate", "--depcheck", readme, "--name", job.name, "--order", str(order_file))
 
     def fetch_command(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """The command line an agent runs to fetch a source through the service."""
@@ -718,6 +727,16 @@ class Lane:
 def count(n: int, noun: str) -> str:
     """`3 targets`, `1 gap`."""
     return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
+def declared_gaps(pkg: Path) -> str:
+    """The supplier gaps a roadmap's plan declares, one line each, for the briefs."""
+    from .design import gaps_listing
+    try:
+        plan = json.loads((pkg / "design" / "plan.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "none declared (no readable design/plan.json)"
+    return gaps_listing(plan if isinstance(plan, dict) else {})
 
 
 def repair_brief(brief: str, problems: list[str]) -> str:

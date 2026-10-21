@@ -56,7 +56,8 @@ requests at their heads: __SIBLINGS__; the board's packages `__PACKAGES__`; the 
    restated.
 5. **Supplier-order audit**: run the dependency check below and read every `*Needs:*` line and
    supplier citation; flag upward citations, cycles, unowned prerequisites and supplier drift
-   (a cited section or declaration that does not exist where it is cited).
+   (a cited section or declaration that does not exist where it is cited). Declared supplier gaps
+   are contracts, not unowned prerequisites (below).
 6. **Shape and completeness**: every definition has its API and at least three discriminating
    Checks; every theorem its exact hypotheses and a locator; every layer its dependencies; the
    README shape and house style below; for a package, the Lean form below, elaborated with
@@ -69,10 +70,12 @@ requests at their heads: __SIBLINGS__; the board's packages `__PACKAGES__`; the 
       {"review": {"status": "accepted" | "needs_changes" | "rejected",
                   "reviewer": "independent-review-__JOB__", "date": "<YYYY-MM-DD>",
                   "findings": <number of findings>, "blocking": <number of P1 and P2 findings>,
-                  "notes": "<what was checked, the sample verified, the elaboration outcome>"}}
+                  "notes": "<what was checked, the sample verified, the elaboration outcome>",
+                  "conditional_gaps": ["<slug>", ...]}}
 
   `accepted` means ready for the next stage with only non-blocking notes (P3), which the next stage
-  applies. `needs_changes` means at least one P1 or P2 finding. `rejected` is for a __SUBJECT__ that
+  applies; `conditional_gaps` (optional, with `accepted` only) lists the declared supplier gaps the
+  acceptance is conditional on. `needs_changes` means at least one P1 or P2 finding. `rejected` is for a __SUBJECT__ that
   cannot be repaired by fixes (it re-plans an existing roadmap, or its scope is wrong): a human decides.
 - `__REPORT__`: first line `# Review of __ROADMAP__ (__SUBJECT__, round __ROUND__)`, then
   `**Verdict:** <accepted | needs changes | rejected>`, then findings numbered R01, R02, … as
@@ -81,6 +84,8 @@ requests at their heads: __SIBLINGS__; the board's packages `__PACKAGES__`; the 
   most 40 words) and the exact repair. Severity: P1 false, vacuous or unowned; P2 overclaim or
   missing hypothesis; P3 locator, Check, style or policy. Then `## Verified sound` (what you checked
   and found correct, with counts) and `## Not verifiable` (each item and why).
+
+<!-- include: sections/gaps-and-order.md -->
 
 <!-- include: sections/adversarial.md -->
 

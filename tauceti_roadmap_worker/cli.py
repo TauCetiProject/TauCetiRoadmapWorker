@@ -7,6 +7,7 @@
     tauceti-roadmap status [--all]                       the board's jobs by state, ages and claimants
     tauceti-roadmap gate <worktree> <Name> [--base origin/main] [--json] [--out FILE]
     tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE]
+    tauceti-roadmap gate --candidate <folder | README.md> --only <Name> [--order FILE]
     tauceti-roadmap merge-order [--list] [--pr N]
     tauceti-roadmap targets import-intentions [--limit N] [--number N] [--yes]
     tauceti-roadmap sources check <sources.toml> | classify <url> | request <needs-references.toml> --job ID
@@ -340,23 +341,56 @@ def _order_for_gate(cfg: config.Config, explicit: str) -> list[str] | None:
         return None
 
 
+def candidate_readme(path: Path) -> Path:
+    """The README a `--candidate` path names: the file itself, or README.md (else design/README.md)
+    in the folder."""
+    if path.is_dir():
+        return next((p for p in (path / "README.md", path / "design" / "README.md") if p.is_file()), path / "README.md")
+    return path
+
+
+def depcheck_lines(name: str, readme: str, siblings: dict[str, str], order: list[str], main_extended: set[str],
+                   candidate: bool = False) -> tuple[list[str], list[str]]:
+    """(the lines to print, the problems) of the dependency check of one roadmap. A candidate that the
+    merge order does not list yet (a design) is placed right after its last supplier for the check:
+    the intake inserts it there when its design is accepted, so its absence is not a problem."""
+    readmes = {**siblings, name: readme}
+    edges = depgraph.supplier_edges(readmes, set(order) | {name}, main_extended)
+    lines = []
+    if candidate and name not in order:
+        consumers = {c for c, sup in edges.items() if name in sup}
+        try:
+            text, notes = depgraph.place_in_order("\n".join(order) + "\n", name, set(edges.get(name, {})), consumers)
+        except depgraph.OrderCycle as exc:
+            problem = f"CYCLE: {exc}"
+            return [problem, f"depcheck: {len(readmes)} roadmaps, 1 problem(s)"], [problem]
+        order = depgraph.read_order(text)
+        after = order[order.index(name) - 1] if order.index(name) else "the start"
+        lines.append(f"candidate: {name} is not in the merge order yet; checked as if placed after {after} (the intake "
+                     "inserts it when its design is accepted)")
+        lines += [f"note: {n}" for n in notes]
+    problems = depgraph.check_order(edges, order, only={name})
+    lines += problems
+    lines.append(f"depcheck: {len(readmes)} roadmaps, {sum(len(v) for v in edges.values())} edges, {len(problems)} problem(s)")
+    return lines, problems
+
+
 def gate(args) -> int:
     from .lanes.base import dropped_names, sibling_readmes
     cfg = _load(args)
     siblings = sibling_readmes(cfg.state_dir(), cfg.roadmap.active_dir)
     order = _order_for_gate(cfg, args.order)
-    if args.depcheck:
+    if args.depcheck or args.candidate:
         if not args.name:
-            raise SystemExit("gate --depcheck needs --name")
+            raise SystemExit("gate --depcheck / --candidate needs --name (or --only)")
         if order is None:
             print("depcheck: no merge-order file; nothing to check")
             return 0
-        readmes = {**siblings, args.name: Path(args.depcheck).read_text(encoding="utf-8")}
-        edges = depgraph.supplier_edges(readmes, set(order), set(cfg.roadmap.main_extended))
-        problems = depgraph.check_order(edges, order, only={args.name})
-        for p in problems:
-            print(p)
-        print(f"depcheck: {len(readmes)} roadmaps, {sum(len(v) for v in edges.values())} edges, {len(problems)} problem(s)")
+        readme = candidate_readme(Path(args.candidate)) if args.candidate else Path(args.depcheck)
+        lines, problems = depcheck_lines(args.name, readme.read_text(encoding="utf-8"), siblings, order,
+                                         set(cfg.roadmap.main_extended), candidate=bool(args.candidate))
+        for line in lines:
+            print(line)
         return 1 if problems else 0
     if not args.worktree or not args.name_pos:
         raise SystemExit("usage: gate <worktree> <Name> [--base REF] | gate --depcheck README --name Name")
@@ -631,7 +665,11 @@ def parser() -> argparse.ArgumentParser:
     g.add_argument("--json", action="store_true")
     g.add_argument("--out", default="")
     g.add_argument("--depcheck", default="", metavar="README", help="only the dependency check of this README")
-    g.add_argument("--name", default="")
+    g.add_argument("--candidate", default="", metavar="PATH",
+                   help="the dependency check of a roadmap that may not be in the merge order yet (a design): its "
+                        "README (or a folder holding README.md or design/README.md); when the order does not list it, "
+                        "it is placed right after its last supplier for the check")
+    g.add_argument("--name", "--only", dest="name", default="")
     g.add_argument("--order", default="", help="merge-order file (default: the configured one)")
 
     m = sub.add_parser("merge-order", help="refresh the merge-order chain in every open roadmap pull request")

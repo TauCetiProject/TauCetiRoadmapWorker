@@ -20,8 +20,9 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import re
 
-from . import board, boardpr, claims, depgraph, explorer, filers, replies
+from . import board, boardpr, claims, depgraph, explorer, filers, prreviews, replies
 from .board import Job, Outcome
 from .gh import GHError
 from .lanes.base import open_roadmap_prs
@@ -135,18 +136,70 @@ def intake(ctx, number: int, yes: bool = False) -> str:
     return f"#{number}: merged {job.id}; " + advance(ctx, job, outcome, jobs)
 
 
+def _norm(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+
+
+def stuck_findings(repair_report: str, review: str) -> list[str]:
+    """A review's blocking findings, when every one of them re-raises a finding the round's repair
+    marked `not actionable in this package` (by `Re-raised: <id>` in the finding, or the same title);
+    else []. Another repair round could not change them: a human decides."""
+    settled = replies.not_actionable(repair_report)
+    if not settled:
+        return []
+    by_title = {_norm(t): fid for fid, (t, _r) in settled.items() if _norm(t)}
+    blocking = [f for f in prreviews.findings_with_bodies(review) if f[1] in ("P1", "P2")]
+    out = []
+    for fid, severity, title, body in blocking:
+        hit = sorted(prreviews.reraised(title, body) & set(settled)) or (
+            [by_title[_norm(title)]] if _norm(title) in by_title else [])
+        if not hit:
+            return []
+        out.append(f"`{fid}` ({severity}) {title}: re-raises `{hit[0]}`, which the repair marked not actionable "
+                   f"({settled[hit[0]][1] or 'no reason given'})")
+    return out
+
+
+def stuck_on(ctx, job: Job, outcome: Outcome) -> list[str]:
+    """`stuck_findings` for a review that asks for changes after a repair round (round 2 on): the
+    review's text and that round's repair report, from the board pull request's head when the
+    repair is there, else from the board's main."""
+    j = board.parse_job_id(job.id)
+    if job.kind != "review" or outcome.verdict != "needs_changes" or j.round < 2:
+        return []
+    repo, pkg = ctx.cfg.repositories.packages_repo(), board.package_dir(ctx.cfg.board.packages_dir, job.name)
+
+    def read(path: str, ref: str = "") -> str:
+        try:
+            return ctx.gh.raw_file(repo, path, ref)
+        except GHError:
+            return ""
+    repair = f"{pkg}/reports/{board.make_id('fix', job.name, j.round, j.subject)}.md"
+    return stuck_findings((read(repair, outcome.head) if outcome.head else "") or read(repair),
+                          outcome.report or read(f"{pkg}/reports/{job.id}.md"))
+
+
 def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
     cfg = ctx.cfg
     new = board.successors(job, outcome, max_rounds=cfg.board.max_rounds, redteam_rounds=cfg.redteam.rounds,
                            redteam_agents=tuple(p.agent for p in cfg.redteam.passes),
                            redteam_models=tuple(p.model for p in cfg.redteam.passes))
+    stuck = stuck_on(ctx, job, outcome) if any(s.kind == "fix" for s in new) else []
     existing = {j.id for j in jobs}
     created = []
     for s in new:
         if s.id not in existing:
+            if stuck and s.kind == "fix":
+                # Parked: the human who unblocks it lets one more repair round run.
+                ctx.board.create(s, state="blocked", preamble=STUCK_NOTE + "\n\n" + "\n".join(f"- {f}" for f in stuck))
+                created.append(f"{s.id} (blocked)")
+                continue
             ctx.board.create(s)
             created.append(s.id)
     notes = []
+    if stuck:
+        ctx.board.comment(job.number, "Parked for a human: " + STUCK_NOTE + "\n\n" + "\n".join(f"- {f}" for f in stuck))
+        notes.append("blocked: the review re-raises only findings the repair marked not actionable")
     if job.kind == "target" and outcome.verdict == "merge-into":
         notes.append(absorb(ctx, job, outcome.into, jobs))
     if board.artefact_of(job.id) == "DESIGN" and job.kind != "review":
@@ -158,6 +211,12 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
     if job.kind == "review" and outcome.verdict == "accepted" and board.parse_job_id(job.id).subject == "DESIGN":
         notes.append(add_to_order(ctx, job.name))
     return "created " + (", ".join(created) if created else "nothing") + (f" ({'; '.join(notes)})" if notes else "")
+
+
+STUCK_NOTE = ("every blocking finding of this review re-raises a finding the last repair round marked not "
+              "actionable in this package, so another repair round cannot settle them. Decide each one (a supplier "
+              "contract, a scope change, a waiver), then move the repair job to `state:available` to run it, or close "
+              "it. The findings:")
 
 
 def announce_gaps(ctx, job: Job, jobs: list[Job]) -> str:

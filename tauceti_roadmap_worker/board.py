@@ -281,6 +281,8 @@ class Outcome:
     name: str = ""           # target: the roadmap name the triage chose (default: the target's)
     into: str = ""           # target, merge-into: the open target or design job it joins
     round_complete: bool = False  # redteam: every pass of this round is done
+    report: str = ""         # review on a board pull request: its comments (else read from the board's main)
+    head: str = ""           # review on a board pull request: the head reviewed (where the round's repair report is)
 
 
 def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_rounds: int = 2,

@@ -54,7 +54,8 @@ the merge order __ORDER__ (suppliers before consumers, one roadmap per line).
    requests, by object: what they already state must be cited, not restated.
 5. **Supplier order**: every roadmap the __SUBJECT__ cites as a supplier must come before it in the
    merge order; flag upward citations, cycles, unowned prerequisites and supplier drift (a cited
-   section or declaration that does not exist where it is cited).
+   section or declaration that does not exist where it is cited). Declared supplier gaps are
+   contracts, not unowned prerequisites (below).
 6. **Shape and completeness**: every definition has its API and at least three discriminating
    Checks; every theorem its exact hypotheses and a locator; every layer its dependencies; the
    README shape and the Lean form below.
@@ -70,6 +71,11 @@ then a blank line, then exactly one of
     Verdict: accepted
     Verdict: needs_changes
     Verdict: rejected
+
+optionally followed, with `Verdict: accepted` only, by the declared supplier gaps the acceptance is
+conditional on:
+
+    Conditional on the announced gaps: `<slug>`, `<slug>`
 
 then your findings, numbered, each starting with its id and severity:
 
@@ -88,6 +94,8 @@ line: a review of an older head is not counted. Quote locators, never passages.
 
 To claim this review before you start, so that no worker starts it too, comment `reviewing` (one
 word) first.
+
+<!-- include: sections/gaps-and-order.md -->
 
 <!-- include: sections/adversarial.md -->
 

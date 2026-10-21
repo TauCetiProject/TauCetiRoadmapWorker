@@ -139,6 +139,23 @@ def parse_findings(report: str) -> list[tuple[str, str, str]]:
     return []
 
 
+NOT_ACTIONABLE = re.compile(r"^not[ -]actionable\b", re.IGNORECASE)
+
+
+def not_actionable(report: str) -> dict[str, tuple[str, str]]:
+    """Finding id -> (title, reason) for the findings a repair report marked `not actionable in this
+    package`, with the reason after the disposition (else the first line of the section)."""
+    out = {}
+    for fid, how, body in parse_findings(report):
+        if not NOT_ACTIONABLE.match(how.strip()):
+            continue
+        reason = re.sub(r"^not[ -]actionable(?: in this package)?\s*[:.—-]*\s*", "", how.strip(), flags=re.IGNORECASE)
+        m = re.search(rf"^(?:##\s+|\d+\.\s+\*\*|-\s+\*\*|\*\*){re.escape(fid)}\b\**\s*(?:[(\[]P[123][)\]])?\s*(.*?)\s*—",
+                      report, re.MULTILINE)
+        out[fid] = ((m.group(1).strip(" *") if m else ""), (reason or body.split("\n", 1)[0]).strip())
+    return out
+
+
 def build_reply(head7: str, report: str, validation: str, intro: str = "reply to the review",
                 markers: list[str] | None = None) -> str:
     lines = [f"Fixed in `{head7}` ({intro}):", ""]

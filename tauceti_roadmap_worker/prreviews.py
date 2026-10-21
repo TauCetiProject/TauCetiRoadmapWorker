@@ -38,6 +38,10 @@ VERDICT = re.compile(r"^\W*verdict\W*(accepted|needs[_ ]changes|changes needed|r
                      re.IGNORECASE | re.MULTILINE)
 FINDING = re.compile(r"^\s*\d+\.\s+\*\*(F\d+)\*\*\s*(?:\((P[123])\))?", re.MULTILINE)
 REPORT_FINDING = re.compile(r"^## ([RS])(\d+)\s*[(\[](P[123])[)\]]\s*[:—–-]*\s*(.*)$")
+CONDITIONAL = re.compile(r"^\W*conditional on the (?:announced|declared) gaps\W*(.+)$", re.IGNORECASE | re.MULTILINE)
+ANY_FINDING = re.compile(r"^(?:##\s+([RSF]\d+)\s*[(\[](P[123])[)\]]\s*[:—–-]*\s*(.*)"
+                         r"|\s*\d+\.\s+\*\*([RSF]\d+)\*\*\s*(?:\((P[123])\))?\s*(.*))$")
+RERAISED = re.compile(r"\bre-?rais(?:ed|es)\b[^:\n]*:\s*([^\n]+)", re.IGNORECASE)
 
 
 @dataclass
@@ -50,6 +54,7 @@ class Parsed:
     round: int = 0
     pass_: str = ""
     worker: dict = field(default_factory=dict)                      # the posting worker's marker, if any
+    conditional: list[str] = field(default_factory=list)            # gaps an acceptance is conditional on
 
     @property
     def blocking(self) -> int:
@@ -89,10 +94,42 @@ def parse(body: str) -> Parsed | None:
         return None
     parsed.verdict = normal_verdict(verdict.group(1))
     parsed.findings = FINDING.findall(body)
+    if m := CONDITIONAL.search(body):
+        parsed.conditional = gap_slugs(m.group(1))
     parsed.worker = worker if isinstance(worker, dict) else {}
     if parsed.verdict == "needs_changes" and not parsed.findings:
         return None
     return parsed
+
+
+def gap_slugs(text: str) -> list[str]:
+    """`gap:a, b` or "`a`, `b`" -> ["a", "b"]."""
+    return [t for t in (x.strip(" `.;").removeprefix("gap:") for x in re.split(r"[,;]|\band\b", text)) if t
+            and re.fullmatch(r"[A-Za-z0-9][\w.-]*", t)]
+
+
+def findings_with_bodies(text: str) -> list[tuple[str, str, str, str]]:
+    """(id, severity, title, body) for every finding of a review, red-team pass or repair report, in
+    either shape (`## R01 (P1) — title` or `1. **F01** (P1) title`), outside code fences."""
+    out, current, fenced = [], None, False
+    for line in (text or "").split("\n"):
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced = not fenced
+        m = None if fenced else ANY_FINDING.match(line)
+        if m:
+            fid, sev, title = (m.group(1), m.group(2), m.group(3)) if m.group(1) else (m.group(4), m.group(5), m.group(6))
+            current = [fid, sev or "", title.strip(), []]
+            out.append(current)
+        elif not fenced and line.startswith("## "):
+            current = None
+        elif current is not None:
+            current[3].append(line)
+    return [(f, s, t, "\n".join(b).strip()) for f, s, t, b in out]
+
+
+def reraised(title: str, body: str) -> set[str]:
+    """The earlier finding ids a finding says it re-raises (`Re-raised: F01`)."""
+    return {fid for m in RERAISED.findall(title + "\n" + body) for fid in re.findall(r"\b[RSF]\d+\b", m)}
 
 
 def report_findings(report: str) -> tuple[list[tuple[str, str, list[str]]], list[str]]:
@@ -116,12 +153,14 @@ def report_findings(report: str) -> tuple[list[tuple[str, str, list[str]]], list
     return findings, rest
 
 
-def render(head: str, verdict: str, report: str, marker: dict) -> str:
-    """A worker's report in the comment shape: `head` (the first line), the verdict, the findings
-    numbered F01, F02, ... with their severity, the report's other sections, and the worker's
-    marker."""
+def render(head: str, verdict: str, report: str, marker: dict, conditional: list[str] | None = None) -> str:
+    """A worker's report in the comment shape: `head` (the first line), the verdict (and the gaps an
+    acceptance is conditional on), the findings numbered F01, F02, ... with their severity, the
+    report's other sections, and the worker's marker."""
     findings, rest = report_findings(report)
     lines = [head, "", f"Verdict: {verdict}", ""]
+    if conditional:
+        lines[-1:] = ["Conditional on the announced gaps: " + ", ".join(f"`{g}`" for g in conditional), ""]
     for k, (severity, title, body) in enumerate(findings, 1):
         lines.append(f"{k}. **F{k:02d}** ({severity}) {title}")
         lines += [("   " + line) if line.strip() else "" for line in body]
