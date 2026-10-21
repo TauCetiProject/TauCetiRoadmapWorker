@@ -127,6 +127,38 @@ def findings_with_bodies(text: str) -> list[tuple[str, str, str, str]]:
     return [(f, s, t, "\n".join(b).strip()) for f, s, t, b in out]
 
 
+TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+EVIDENCE_HEADER = re.compile(r"instance|tried|computed", re.I)
+TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{2,}")
+
+
+def adversarial_rows(report: str) -> int:
+    """Rows of the report's adversarial tables: Markdown tables whose header names the instances tried or
+    what was computed (`| Statement | Instances tried | Values | Result | Change |`), outside code fences. A row counts
+    when it carries a computed value (a digit, `=`, `≠`, `<`, `>`) beyond its first cell."""
+    rows, lines, fenced, i = 0, (report or "").split("\n"), False, 0
+    while i < len(lines):
+        line = lines[i]
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced = not fenced
+        elif (not fenced and TABLE_ROW.match(line) and EVIDENCE_HEADER.search(line) and i + 1 < len(lines)
+              and TABLE_RULE.match(lines[i + 1])):
+            i += 2
+            while i < len(lines) and TABLE_ROW.match(lines[i]):
+                cells = lines[i].strip().strip("|").split("|")
+                if re.search(r"[0-9=≠<>≤≥]", "|".join(cells[1:])):
+                    rows += 1
+                i += 1
+            continue
+        i += 1
+    return rows
+
+
+EVIDENCE = ("the report has no adversarial table with computed values: an acceptance carries its evidence, a "
+            "Markdown table whose header names the instances tried (statement, instances tried, the values computed "
+            "on each side, result, change), one row per statement, with the values")
+
+
 def reraised(title: str, body: str) -> set[str]:
     """The earlier finding ids a finding says it re-raises (`Re-raised: F01`)."""
     return {fid for m in RERAISED.findall(title + "\n" + body) for fid in re.findall(r"\b[RSF]\d+\b", m)}

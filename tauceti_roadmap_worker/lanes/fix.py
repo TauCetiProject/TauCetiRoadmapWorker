@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 
 from .. import board, gates, gitops, replies
 from ..board import Job
@@ -102,10 +103,18 @@ class ArtefactFixLane(Lane):
         return (f"round {job.round} of the {job.name} {what} repaired: {applied} of {count(len(rows), 'finding')} applied"
                 + (f", {settled} not actionable in this package" if settled else ""))
 
+    def review_texts(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        """The texts of the review this round answers: its comments on the board pull request (fetched
+        into the scratch folder), else its report on the board."""
+        paths = ws.extra.get("reviews") or [ws.package(ctx.cfg, job.name) / "reports" / (job.inputs.get("review", "") + ".md")]
+        return [Path(p).read_text(encoding="utf-8") for p in paths if Path(p).is_file()]
+
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)
         if ws.report.is_file() and not replies.parse_findings(ws.report.read_text(encoding="utf-8")):
             problems.append("report: no finding sections in the required heading style")
+        elif ws.report.is_file():
+            problems += replies.coverage_problems(self.review_texts(job, ctx, ws), ws.report.read_text(encoding="utf-8"))
         if self.art(job) == "PKG":
             pkg = ws.package(ctx.cfg, job.name)
             problems += package_scan(ctx, ws, job.name, pkg)
@@ -117,6 +126,12 @@ class ArtefactFixLane(Lane):
 class RedTeamFixLane(Lane):
     kind = "fix"
     prompt = "fix"
+
+    def review_texts(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        """The round's pass reports: fetched into the scratch folder, else on the board."""
+        reports = ws.package(ctx.cfg, job.name) / "reports"
+        paths = ws.extra.get("reviews") or [reports / (r + ".md") for r in job.inputs.get("reviews", [])]
+        return [Path(p).read_text(encoding="utf-8") for p in paths if Path(p).is_file()]
 
     def records_author(self, job: Job) -> bool:
         return False
@@ -147,6 +162,8 @@ class RedTeamFixLane(Lane):
         problems = Lane.check(self, job, ctx, ws)
         if ws.report.is_file() and not replies.parse_findings(ws.report.read_text(encoding="utf-8")):
             problems.append("report: no finding sections in the required heading style")
+        elif ws.report.is_file():
+            problems += replies.coverage_problems(self.review_texts(job, ctx, ws), ws.report.read_text(encoding="utf-8"))
         pkg = ws.package(ctx.cfg, job.name)
         problems += package_scan(ctx, ws, job.name, pkg)
         if problems:
@@ -214,6 +231,8 @@ class RedTeamFixLane(Lane):
         problems = super().check(job, ctx, ws)
         if ws.report.is_file() and not replies.parse_findings(ws.report.read_text(encoding="utf-8")):
             problems.append("report: no finding sections in the required heading style")
+        elif ws.report.is_file():
+            problems += replies.coverage_problems(self.review_texts(job, ctx, ws), ws.report.read_text(encoding="utf-8"))
         if gitops.git(ws.workdir, "rev-parse", "HEAD").strip() == ws.extra["head"]:
             problems.append("no repair commit on the pull request branch")
         if gitops.git(ws.workdir, "status", "--short").strip():

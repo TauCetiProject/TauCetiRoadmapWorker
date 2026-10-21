@@ -295,8 +295,10 @@ class RedTeamLane(Lane):
                                 "as `## R01 (P1) — <title>`")
         if ws.report.is_file():
             j = board.parse_job_id(job.id)
-            problems += report_problems(ws.report.read_text(encoding="utf-8"), ws.extra["pr"], job.name,
-                                        ws.extra["head"][:7], f"{j.pass_} ({ctx.agent})")
+            report = ws.report.read_text(encoding="utf-8")
+            problems += report_problems(report, ws.extra["pr"], job.name, ws.extra["head"][:7], f"{j.pass_} ({ctx.agent})")
+            if not prreviews.report_findings(report)[0] and not prreviews.adversarial_rows(report):
+                problems.append("report: " + prreviews.EVIDENCE.replace("an acceptance", "a pass with no finding"))
         mine = {str(ws.report.relative_to(ws.board))} if ws.report.is_relative_to(ws.board) else set()
         if any(p not in mine for p in gitops.changed_files(ws.workdir)):
             problems.append("the red-team pass changed the read-only checkout")
