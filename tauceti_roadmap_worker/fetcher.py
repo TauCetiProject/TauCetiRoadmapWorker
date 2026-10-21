@@ -771,7 +771,11 @@ class Fetcher:
                 continue
             file, txt = sources.cached_file(self.cache, sha), sources.cache_paths(self.cache, sha)[1]
             if file and txt.is_file():
-                out.append(Available(sid, label, txt))
+                if sources.unreadable(txt) and self.ocr_ready():
+                    # Extracted before OCR could run here: read the scan again.
+                    data = file.read_bytes()
+                    _, txt, _ = self.keep(data, sources.sniff(data), s.get("fetched_from", ""), sha)
+                out.append(self.readable(sid, label, txt))
                 continue
             try:
                 if file:
@@ -801,8 +805,19 @@ class Fetcher:
             except FetchError as exc:
                 out.append(Available(sid, label, None, str(exc), exc.permanent))
                 continue
-            out.append(Available(sid, label, txt))
+            out.append(self.readable(sid, label, txt))
         return out
+
+    def ocr_ready(self) -> bool:
+        return bool(self.cfg.ocr) and not sources.ocr_status()
+
+    @staticmethod
+    def readable(sid: str, label: str, txt: Path, sha256: str = "") -> Available:
+        """The text, or, for a scan this host could not read (image-only, OCR off or missing), a
+        permanent problem: the job asks for it again under that name rather than as missing."""
+        if sources.unreadable(txt):
+            return Available(sid, label, None, sources.UNREADABLE, True, sha256)
+        return Available(sid, label, txt, sha256=sha256)
 
     def local_text(self, sid: str, label: str, name: str) -> Available:
         """A `local` entry: the operator's file of that name, hashed and kept in the cache."""
@@ -811,7 +826,7 @@ class Fetcher:
             return Available(sid, label, None, needs_local(name or sid))
         data = sources.unwrap(local.read_bytes())
         path, txt, _ = self.keep(data, sources.sniff(data), f"local text {local.name}")
-        return Available(sid, label, txt, sha256=path.name.split(".", 1)[0])
+        return self.readable(sid, label, txt, path.name.split(".", 1)[0])
 
 
 def needs_local(name: str) -> str:

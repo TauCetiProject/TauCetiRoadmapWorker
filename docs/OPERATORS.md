@@ -26,8 +26,10 @@ workers will use, the merge-order file, the state directory, whether every brief
 text extractor, OCR (when enabled) and the sandbox.
 
 **Sources.** The sources service extracts PDF text with `pdftotext` (install poppler-utils) or, more
-slowly, with the optional `pdf` extra; OCR of image-only scans needs the optional `ocr` extra
-(`uv tool install --force 'tauceti-roadmap-worker[pdf,ocr] @ git+https://github.com/TauCetiProject/TauCetiRoadmapWorker'`).
+slowly, with the optional `pdf` extra; OCR of image-only scans (GDZ, most author-page scans) needs
+the optional `ocr` extra, installed with headless OpenCV
+(`uv tool install --force --excludes https://raw.githubusercontent.com/TauCetiProject/TauCetiRoadmapWorker/main/ocr-excludes.txt 'tauceti-roadmap-worker[pdf,ocr] @ git+https://github.com/TauCetiProject/TauCetiRoadmapWorker'`;
+see [SOURCES.md](SOURCES.md#ocr-of-image-only-scans)).
 Texts you already hold go in the directories of `[sources] local_dirs` (write them as `~/...` in a
 shared configuration); see [SOURCES.md](SOURCES.md).
 

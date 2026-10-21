@@ -1,6 +1,7 @@
 """The sources service on canned responses: no test touches the network."""
 
 import json
+import shutil
 
 import pytest
 
@@ -397,6 +398,27 @@ def test_materialize_downloads_and_verifies(tmp_path):
     assert gone.materialize(data)[0].permanent
     flaky = make_fetcher(tmp_path / "flaky", FakeTransport({"https://arxiv.org/pdf/2101.00001v2": transient("x")}))
     assert not flaky.materialize(data)[0].permanent
+
+
+@pytest.mark.skipif(not shutil.which("pdftotext"), reason="poppler's pdftotext is not installed")
+def test_a_scan_this_host_cannot_read_is_unreadable_not_available(tmp_path, monkeypatch):
+    """Regression (board #17): an answered `source:` fetched a GDZ scan, OCR was off, and the job asked
+    for it again as plainly missing."""
+    scan = make_pdf(["Digitised by the Goettinger Digitalisierungszentrum", "", "", ""])
+    sha = sources.sha256_bytes(scan)
+    url = "https://gdz.sub.uni-goettingen.de/download/pdf/PPN1/PPN1.pdf"
+    data = {"source": [{"id": "Ket67", "status": "certified", "sha256": sha, "fetched_from": url,
+                        "licence_class": "open-repository"}]}
+    fet = make_fetcher(tmp_path, FakeTransport().add(url, scan), ocr=False)
+    [got] = fet.materialize(data)
+    assert got.text is None and got.permanent and got.problem == sources.UNREADABLE
+    assert got.problem == "fetched but unreadable (image-only; OCR off or missing)"
+    # Once OCR runs here, the cached text extracted without it is read again.
+    fet.cfg.ocr = True
+    monkeypatch.setattr(sources, "ocr_status", lambda: "")
+    monkeypatch.setattr(sources, "ocr_pdf_pages", lambda path, dpi=300: ["Satz 2.3. Jede Beispielalgebra. " * 20] * 4)
+    [again] = fet.materialize(data)
+    assert again.text and "Satz 2.3" in again.text.read_text() and not sources.unreadable(again.text)
 
 
 def test_materialize_finds_operator_texts_by_hash(tmp_path):

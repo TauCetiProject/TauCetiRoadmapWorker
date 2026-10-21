@@ -179,6 +179,9 @@ def dropped_names(cfg: Config) -> list[str]:
 
 
 UNSUBMITTED = "unsubmitted"
+UNREADABLE_NOTE = ("the text was fetched, but it is a scan this worker could not read: a worker with OCR "
+                   "([sources] ocr = true and the `ocr` extra) reads it; or name another source, a local text, or "
+                   "waive it")
 # Machine paths in the files that hand work on (reports, the triage, verdicts, the manifest) are
 # rewritten before the gate; README and Lean content is never rewritten (a path there is a defect).
 SCRUBBED = ("target.md", "review.json", "sources.toml")
@@ -470,7 +473,8 @@ class Lane:
                 authors=str(entry.get("authors", "")), title=str(entry.get("title", a.id)), year=str(entry.get("year", "")),
                 needed_for=", ".join(entry.get("cited_for", [])) or f"the roadmap's citations of {a.id}",
                 tried=[a.problem], key=a.id, doi=str(entry.get("doi", "")), url=str(entry.get("url", "")),
-                locator_scheme=str(entry.get("locator_scheme", "")), sha256=str(entry.get("sha256", ""))))
+                locator_scheme=str(entry.get("locator_scheme", "")), sha256=str(entry.get("sha256", "")),
+                note=UNREADABLE_NOTE if a.problem == sources.UNREADABLE else ""))
 
     def record_local_hashes(self, job: Job, ctx: Context, path: Path, manifest: dict, available: list) -> None:
         """A `local` text read here gets its hash recorded, as `certified`, in the manifest this job

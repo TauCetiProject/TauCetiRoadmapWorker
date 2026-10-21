@@ -5,6 +5,7 @@ import pytest
 
 from tauceti_roadmap_worker import config, sources
 from tauceti_roadmap_worker.config import Sources
+from tauceti_roadmap_worker.paths import HERE
 from tauceti_roadmap_worker.sources import (cache_paths, cached_file, citation_key, classify_url, deny_list,
                                             dump_manifest, extract, find_source, group_ocr_lines, html_to_text,
                                             image_only, numbered_text, sniff, store_bytes, upsert_source,
@@ -245,3 +246,55 @@ def test_config_rejects_unknown_answer_association():
     text = '[project]\nname = "x"\n[sources]\nanswer_associations = ["ANYONE"]\n'
     with pytest.raises(config.ConfigError, match="answer_associations"):
         config.parse(text)
+
+
+def fake_imports(monkeypatch, failures: dict):
+    """importlib.import_module with some modules missing or failing to load."""
+    import importlib as real_importlib
+
+    def import_module(name):
+        if name in failures:
+            raise failures[name]
+        return real_importlib.import_module(name) if name not in ("numpy", "pypdfium2") else object()
+    monkeypatch.setattr(sources.importlib, "import_module", import_module)
+
+
+def test_an_ocr_that_does_not_load_says_why(monkeypatch):
+    """Regression: rapidocr's opencv-python failed on a headless server ("libGL.so.1: cannot open
+    shared object file") and the K3 design parked twice on GDZ scans."""
+    libgl = ImportError("libGL.so.1: cannot open shared object file: No such file or directory")
+    fake_imports(monkeypatch, {"rapidocr_onnxruntime": libgl,
+                               "rapidocr": ModuleNotFoundError("No module named 'rapidocr'", name="rapidocr")})
+    message = sources.ocr_status()
+    assert message.startswith("OCR is installed but does not load (ImportError: libGL.so.1: cannot open shared object")
+    assert "--excludes" in message and "ocr-excludes.txt" in message and "opencv-python-headless" in message
+    fake_imports(monkeypatch, {"rapidocr_onnxruntime": ModuleNotFoundError("x", name="rapidocr_onnxruntime"),
+                               "rapidocr": ModuleNotFoundError("y", name="rapidocr")})
+    assert sources.ocr_status().startswith("OCR is not installed (rapidocr_onnxruntime is missing)")
+    fake_imports(monkeypatch, {"rapidocr_onnxruntime": ModuleNotFoundError("No module named 'cv2'", name="cv2"),
+                               "rapidocr": ModuleNotFoundError("y", name="rapidocr")})
+    assert "does not load (ModuleNotFoundError: No module named 'cv2')" in sources.ocr_status()
+
+
+def test_the_ocr_extra_uses_headless_opencv():
+    data = tomllib.loads((HERE / "pyproject.toml").read_text())
+    extra = data["project"]["optional-dependencies"]["ocr"]
+    assert any(r.startswith("opencv-python-headless") for r in extra) and any(r.startswith("rapidocr") for r in extra)
+    assert data["tool"]["uv"]["exclude-dependencies"] == ["opencv-python"]
+    excluded = [line for line in (HERE / "ocr-excludes.txt").read_text().splitlines() if line and not line.startswith("#")]
+    assert excluded == ["opencv-python"] and "ocr-excludes.txt" in sources.OCR_INSTALL
+
+
+def test_an_unrecognised_scan_is_marked_unreadable(tmp_path):
+    sha = "a" * 64
+    tmp_path.mkdir(exist_ok=True)
+    scan = sources.Extraction(["Digitised by GDZ", "", ""], "pdftotext -layout", "image-only scan (3 of 3 pages have "
+                              "no text layer): enable [sources] ocr to recognise it", unreadable=True)
+    assert sources.unreadable(sources.write_text(tmp_path, sha, scan))
+    ocred = sources.Extraction(["Satz 2.3 " * 40], "OCR (RapidOCR, 300 dpi)", "image-only scan (1 of 1 pages had no text layer)")
+    assert not sources.unreadable(sources.write_text(tmp_path, "b" * 64, ocred))
+    # A text extracted before the mark existed is recognised by its note.
+    legacy = tmp_path / "legacy.txt"
+    note = "Note: image-only scan (1 of 1 pages have no text layer): enable [sources] ocr to recognise it"
+    legacy.write_text(sources.numbered_text(["x"], ["Text of c (pdftotext -layout; 1 pages).", note]))
+    assert sources.unreadable(legacy) and not sources.unreadable(tmp_path / "absent.txt")

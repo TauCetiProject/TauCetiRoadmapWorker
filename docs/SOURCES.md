@@ -151,21 +151,33 @@ is gone for good (not found, changed bytes, a local text this host does not hold
 
 ## OCR of image-only scans
 
+Many legal sources are image-only scans: GDZ and most author-page copies of older papers are page
+images, often behind a text cover sheet, and so are many Numdam and EuDML PDFs of older journals.
+Their text can be read only by OCR, so keep `[sources] ocr = true` (the default of the example
+configuration) and install the `ocr` extra on every worker host.
+
 A PDF counts as image-only when more than half its pages have fewer than `[sources] ocr_min_chars`
-characters of text layer (digitisation portals add a text cover sheet to image scans). With
-`[sources] ocr = true` such a PDF is rendered at `ocr_dpi` with pypdfium2 and recognised with
-RapidOCR, the recipe the maintainer used by hand (a uv-managed environment with RapidOCR's ONNX
-runtime), and the recognised lines are grouped top to bottom and left to right. Install it with the
-optional `ocr` extra:
+characters of text layer. With `[sources] ocr = true` such a PDF is rendered at `ocr_dpi` with
+pypdfium2 and recognised with RapidOCR, the recipe the maintainer used by hand (a uv-managed
+environment with RapidOCR's ONNX runtime), and the recognised lines are grouped top to bottom and
+left to right. Install it with the optional `ocr` extra:
 
 ```bash
-uv tool install --force 'tauceti-roadmap-worker[ocr] @ git+https://github.com/TauCetiProject/TauCetiRoadmapWorker'
+uv tool install --force --excludes https://raw.githubusercontent.com/TauCetiProject/TauCetiRoadmapWorker/main/ocr-excludes.txt \
+  'tauceti-roadmap-worker[ocr] @ git+https://github.com/TauCetiProject/TauCetiRoadmapWorker'
 ```
 
-If OpenCV then fails to load libGL, replace `opencv-python` by `opencv-python-headless` in the same
-environment. Without the extra, the text file keeps the text layer it found and its header says the
-scan needs OCR and how to install it; `doctor` reports the same. `tauceti-roadmap sources ocr
-<file.pdf> [--out file.txt]` runs OCR on one file.
+The extra uses headless OpenCV: RapidOCR requires `opencv-python`, which needs libGL and fails to
+load on a server without a display ("libGL.so.1: cannot open shared object file"), so
+`ocr-excludes.txt` keeps it out and `opencv-python-headless` provides the same module. In a
+checkout, `uv pip install -e '.[ocr]'` applies the same exclusion from `pyproject.toml`.
+`doctor` reports whether OCR loads, with the import error when it does not.
+
+Without OCR, the text file keeps the text layer it found and its header says the scan could not be
+read. A worker treats such a text as unavailable: the job asks for the source again on its issue as
+"fetched but unreadable (image-only; OCR off or missing)", rather than as missing, and a worker
+with OCR reads it (a text extracted before OCR was installed is read again). `tauceti-roadmap
+sources ocr <file.pdf> [--out file.txt]` runs OCR on one file.
 
 ## The `needs-references` hand-off
 

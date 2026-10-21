@@ -1,0 +1,4 @@
+# Packages excluded when the `ocr` extra is installed (uv tool install --excludes <this file>):
+# opencv-python needs libGL and fails to load on a headless server; the extra installs
+# opencv-python-headless, which provides the same cv2 module without it.
+opencv-python

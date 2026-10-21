@@ -46,6 +46,7 @@ import datetime as dt
 import gzip
 import hashlib
 import html.parser
+import importlib
 import io
 import os
 import re
@@ -533,6 +534,7 @@ class Extraction:
     pages: list[str] = field(default_factory=list)
     method: str = "none"
     note: str = ""
+    unreadable: bool = False     # a scan whose pages could not be read here (image-only, OCR off or missing)
 
     @property
     def chars(self) -> int:
@@ -644,24 +646,26 @@ def extract(path: Path, kind: str, *, ocr: bool = False, ocr_dpi: int = 300, min
                         return Extraction(better, "Ghostscript pdfwrite, pdftotext -layout")
             if not ocr:
                 return Extraction(pages, method, "the text layer is glyph names, not words: enable [sources] ocr "
-                                                 "(with Ghostscript) to recognise the pages")
+                                                 "(with Ghostscript) to recognise the pages", unreadable=True)
             try:
                 return Extraction(gs_ocr_pages(path, ocr_dpi), f"OCR (Ghostscript pnggray, RapidOCR, {ocr_dpi} dpi)",
                                   "the text layer was glyph names, not words")
             except (OcrUnavailable, OSError, subprocess.SubprocessError) as exc:
-                return Extraction(pages, method, f"the text layer is glyph names, not words; {exc}")
+                return Extraction(pages, method, f"the text layer is glyph names, not words; {exc}", unreadable=True)
         result = Extraction(pages, method)
         if image_only(pages, min_chars):
             scanned = sum(1 for p in pages if len("".join(p.split())) < min_chars)
             if not ocr:
                 result.note = (f"image-only scan ({scanned} of {len(pages)} pages have no text layer): enable "
                                "[sources] ocr to recognise it")
+                result.unreadable = True
                 return result
             try:
                 return Extraction(ocr_pdf_pages(path, dpi=ocr_dpi), f"OCR (RapidOCR, {ocr_dpi} dpi)",
                                   f"image-only scan ({scanned} of {len(pages)} pages had no text layer)")
             except OcrUnavailable as exc:
                 result.note = f"image-only scan; {exc}"
+                result.unreadable = True
         return result
     raw = path.read_bytes()
     if kind == "html":
@@ -676,6 +680,24 @@ def extract(path: Path, kind: str, *, ocr: bool = False, ocr_dpi: int = 300, min
         except (OSError, subprocess.TimeoutExpired):
             pass
     return Extraction([], "none", f"no text extractor for {kind} files")
+
+
+UNREADABLE = "fetched but unreadable (image-only; OCR off or missing)"
+UNREADABLE_MARK = "Unreadable:"
+# Notes a text extracted before the mark existed carries when its scan was not recognised.
+_UNREADABLE_NOTE = re.compile(r"# Note: (?:image-only scan \(\d+ of \d+ pages have no text layer\)|image-only scan; "
+                              r"|the text layer is glyph names, not words)")
+
+
+def unreadable(txt: Path) -> bool:
+    """Whether a cached text is a scan this host could not read (its header says so)."""
+    try:
+        with open(txt, encoding="utf-8", errors="replace") as f:
+            head = [next(f, "") for _ in range(12)]
+    except OSError:
+        return False
+    lines = [re.sub(r"^\s*\d+  ", "", line) for line in head]
+    return any(line.startswith(f"# {UNREADABLE_MARK}") or _UNREADABLE_NOTE.match(line) for line in lines)
 
 
 def numbered_text(pages: list[str], header: list[str]) -> str:
@@ -696,6 +718,8 @@ def write_text(root: Path, sha256: str, extraction: Extraction, origin: str = ""
         header.append(f"From {origin}")
     if extraction.note:
         header.append(f"Note: {extraction.note}")
+    if extraction.unreadable:
+        header.append(f"{UNREADABLE_MARK} {UNREADABLE}")
     header.append("Cite a passage as <source id> line N (the numbers at the left of each line).")
     txt.write_text(numbered_text(extraction.pages, header), encoding="utf-8")
     return txt
@@ -703,30 +727,47 @@ def write_text(root: Path, sha256: str, extraction: Extraction, origin: str = ""
 
 # --- OCR (the uv venv + RapidOCR recipe) ----------------------------------------------------------
 
-OCR_HINT = ("Install the optional `ocr` extra (RapidOCR with pypdfium2) into the tool's environment, "
-            "`uv tool install --force 'tauceti-roadmap-worker[ocr] @ git+https://github.com/TauCetiProject/"
-            "TauCetiRoadmapWorker'`, or `uv pip install -e '.[ocr]'` in a checkout. If OpenCV then fails to load "
-            "libGL, replace opencv-python by opencv-python-headless in the same environment.")
+OCR_INSTALL = ("uv tool install --force --excludes https://raw.githubusercontent.com/TauCetiProject/"
+               "TauCetiRoadmapWorker/main/ocr-excludes.txt 'tauceti-roadmap-worker[ocr] @ "
+               "git+https://github.com/TauCetiProject/TauCetiRoadmapWorker'")
+OCR_HINT = (f"Install the optional `ocr` extra (RapidOCR, pypdfium2, opencv-python-headless) into the tool's environment: "
+            f"`{OCR_INSTALL}`, or `uv pip install -e '.[ocr]'` in a checkout.")
+LIBGL_HINT = ("opencv-python is installed and needs libGL, which a headless server lacks: reinstall with the "
+              f"command that excludes it and installs opencv-python-headless instead, `{OCR_INSTALL}`.")
 
 
 class OcrUnavailable(RuntimeError):
     pass
 
 
+def _load_failure(exc: BaseException) -> OcrUnavailable:
+    text = f"{type(exc).__name__}: {exc}"
+    hint = LIBGL_HINT if "libGL" in text or "libgl" in text.lower() else OCR_HINT
+    return OcrUnavailable(f"OCR is installed but does not load ({text}). {hint}")
+
+
 def _ocr_modules():
+    """numpy, pypdfium2 and RapidOCR (rapidocr_onnxruntime, else rapidocr 2), or OcrUnavailable
+    saying whether they are missing or fail to load, with the import error's text."""
     try:
-        import numpy
-        import pypdfium2
-    except ImportError as exc:
+        numpy = importlib.import_module("numpy")
+        pypdfium2 = importlib.import_module("pypdfium2")
+    except ModuleNotFoundError as exc:
         raise OcrUnavailable(f"OCR is not installed ({exc.name or exc} is missing). {OCR_HINT}") from exc
-    try:
-        from rapidocr_onnxruntime import RapidOCR
-    except ImportError as first:
+    except Exception as exc:  # a broken install: say what failed
+        raise _load_failure(exc) from exc
+    failure = None
+    for module in ("rapidocr_onnxruntime", "rapidocr"):
         try:
-            from rapidocr import RapidOCR
-        except ImportError:
-            raise OcrUnavailable(f"OCR is not installed ({first}). {OCR_HINT}") from first
-    return numpy, pypdfium2, RapidOCR
+            return numpy, pypdfium2, importlib.import_module(module).RapidOCR
+        except ModuleNotFoundError as exc:
+            if exc.name not in (module, None):
+                failure = failure or exc             # installed, but one of its own imports is missing
+        except Exception as exc:  # noqa: BLE001 - libGL, onnxruntime, a missing attribute
+            failure = failure or exc
+    if failure is not None:
+        raise _load_failure(failure) from failure
+    raise OcrUnavailable(f"OCR is not installed (rapidocr_onnxruntime is missing). {OCR_HINT}")
 
 
 def ocr_status() -> str:

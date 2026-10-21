@@ -182,9 +182,11 @@ paywalled_doi_prefixes = ["10.1016", "10.1007"]
 user_agent = ""
 # Largest file the service downloads.
 max_megabytes = 200
-# Run OCR on image-only scans (pages with almost no text layer). Needs the optional `ocr` extra
-# (RapidOCR with pypdfium2); without it the service says so and keeps the text layer it found.
-ocr = false
+# Run OCR on image-only scans (pages with almost no text layer): GDZ and most author-page scans
+# are page images. Needs the optional `ocr` extra (RapidOCR with pypdfium2 and headless OpenCV, see
+# docs/SOURCES.md); without it the service says so, and a job asks for such a text again as
+# "fetched but unreadable".
+ocr = true
 # Rendering resolution for OCR, and the characters per page below which a page counts as image-only.
 ocr_dpi = 300
 ocr_min_chars = 250

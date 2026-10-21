@@ -53,6 +53,31 @@ def test_prepare_sources_fetches_and_requests_what_is_gone(ctx):  # noqa: F811
     assert missing.locator_scheme == "page" and "not found" in missing.tried[0]
 
 
+def test_a_scan_this_worker_cannot_read_is_asked_for_again_by_name(ctx, monkeypatch):  # noqa: F811
+    def no_ocr(path, dpi=300):
+        raise sources.OcrUnavailable("OCR is not installed (numpy is missing).")
+    monkeypatch.setattr(sources, "ocr_pdf_pages", no_ocr)
+    scan = make_pdf(["Digitised by a library", "", "", ""])
+    url = "https://gdz.sub.uni-goettingen.de/download/pdf/PPN2/PPN2.pdf"
+    run_ctx = live(ctx, FakeTransport().add(url, scan))
+    lane, job = lane_for(new_job("DESIGN-Foo")), new_job("DESIGN-Foo")
+    ws = lane.prepare(job, run_ctx)
+    manifest = ws.package(run_ctx.cfg, "Foo") / "sources.toml"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    data = sources.new_manifest("Foo")
+    data["source"] = [{"id": "Ket67", "authors": "R. Kettle", "title": "Theorem A", "year": 1967, "status": "certified",
+                       "sha256": sources.sha256_bytes(scan), "fetched_from": url, "licence_class": "open-repository",
+                       "locator_scheme": "theorem", "cited_for": ["2.3"]}]
+    sources.save_manifest(manifest, data)
+    lane.prepare_sources(job, run_ctx, ws)
+    assert "`Ket67` (R. Kettle, Theorem A, 1967): unavailable: fetched but unreadable" in ws.extra["source_texts"]
+    [missing] = references.read_missing(ws.scratch / "needs-references.toml")
+    assert missing.tried == ["fetched but unreadable (image-only; OCR off or missing)"]
+    assert "a worker with OCR" in missing.note
+    text = references.request_comment(job.id, "Foo", [missing])
+    assert "| fetched but unreadable (image-only; OCR off or missing) |" in text
+
+
 def test_transient_trouble_does_not_park(ctx):  # noqa: F811
     from .fakes import transient
     run_ctx = live(ctx, FakeTransport({"https://arxiv.org/pdf/2101.00001v2": transient("x"),
