@@ -69,6 +69,11 @@ reference_answerers = []
 # filed (`origin = "target:<issue>"`), then imported ones (`origin = "explorer:<job>"`), when
 # human_first is true; within each, by stage in the order below (closest to delivery first), then the
 # oldest first. Stages left out come after the listed ones.
+# After every round that submitted, parked, blocked or released a job, a worker asks GitHub to run
+# the board workflow now (`gh workflow run board.yml -R <board repository>`; failures are ignored and
+# the workflow's schedule stays the fallback). GitHub's cron is unreliable; false turns this off.
+dispatch = true
+dispatch_workflow = "board.yml"
 human_first = true
 priority = ["GATE", "PORT", "FIX-RT", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN", "DESIGN", "TARGET"]
 

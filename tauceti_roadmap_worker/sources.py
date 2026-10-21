@@ -223,6 +223,27 @@ def validate_manifest(data: dict, allow: dict[str, list[str]], deny: list[str], 
     return problems
 
 
+def merge_manifests(ours: dict, theirs: dict) -> dict:
+    """Two versions of a roadmap's sources.toml in one (a pull request's against the board's main):
+    the union of their entries by key; for a key in both, main's entry when it carries a `resolution`
+    (an answer the intake recorded), else the pull request's (the author's work). The pull request's
+    top-level fields stay."""
+    merged = {k: v for k, v in ours.items() if k != "source"}
+    entries = [dict(e) for e in ours.get("source", []) if isinstance(e, dict)]
+    index = {str(e.get("id", "")).lower(): i for i, e in enumerate(entries)}
+    for e in theirs.get("source", []):
+        if not isinstance(e, dict):
+            continue
+        key = str(e.get("id", "")).lower()
+        if key not in index:
+            index[key] = len(entries)
+            entries.append(dict(e))
+        elif e.get("resolution"):
+            entries[index[key]] = dict(e)
+    merged["source"] = entries
+    return merged
+
+
 def find_source(data: dict, *, id: str = "", doi: str = "", arxiv: str = "", sha256: str = "") -> dict | None:
     """The manifest entry with this id, else the one with this DOI, arXiv id (any version) or hash."""
     entries = data.get("source", [])

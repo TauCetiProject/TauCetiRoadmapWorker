@@ -27,8 +27,9 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import tomllib
 
-from . import board, claims, prompts, prreviews
+from . import board, claims, prompts, prreviews, sources
 from .board import Job, Outcome
 from .gh import GHError
 
@@ -309,7 +310,7 @@ def merge_problems(ctx, number: int, pr: dict, jobs: list[Job]) -> list[str]:
     return problems
 
 
-def merge(ctx, number: int, pr: dict, jobs: list[Job], verdict: dict | None) -> str:
+def merge(ctx, number: int, pr: dict, jobs: list[Job], verdict: dict | None, blocker: Job | None = None) -> str:
     """Merge the pull request at the head that was reviewed, after the intake's checks; then write
     its verdict file and close the jobs that wrote it. Returns '' when merged, else why not (then
     nothing was closed and the next scan tries again)."""
@@ -320,7 +321,14 @@ def merge(ctx, number: int, pr: dict, jobs: list[Job], verdict: dict | None) -> 
     try:
         ctx.gh.write("PUT", f"repos/{repo(ctx)}/pulls/{number}/merge", {"merge_method": "squash", "sha": pr["head"]["sha"]})
     except GHError as exc:
-        return f"merge failed ({exc})"
+        if "conflict" not in str(exc).lower():
+            return f"merge failed ({exc})"
+        done, detail = squash_with_main(ctx, number, pr)
+        if not done:
+            if blocker is not None and detail.startswith("conflicts with main in "):
+                ctx.board.set_state(blocker, "blocked", f"Blocked: the pull request #{number} {detail}; a human "
+                                                        "rebases it.")
+            return f"merge failed ({detail})"
     pr["merged"] = True
     sub = board.decode_submission(pr.get("body") or "") or {}
     for j in authors_of(number, sub.get("job", ""), jobs):
@@ -331,6 +339,53 @@ def merge(ctx, number: int, pr: dict, jobs: list[Job], verdict: dict | None) -> 
         put_file(ctx, verdict["path"], json.dumps({"review": verdict["review"]}, indent=1) + "\n",
                  f"Board: verdict of #{number}")
     return ""
+
+
+MANIFEST = "sources.toml"
+
+
+def squash_with_main(ctx, number: int, pr: dict) -> tuple[bool, str]:
+    """The merge of an accepted board pull request that conflicts with main (the intake rewrote the
+    roadmap's sources.toml on main with answers while the branch changed it too): squashed onto main
+    in a checkout of the board, each conflicting sources.toml merged by key (main's answered entries
+    win), committed with the pull request's author, pushed to main, and the pull request closed with
+    a note. Any other conflicting file stops it: (False, "conflicts with main in <files>")."""
+    from . import gitops
+    board_repo = repo(ctx)
+    dest = ctx.state / "mainmerge" / "board"
+    head, title = pr["head"]["sha"], pr.get("title") or f"#{number}"
+    author = (pr.get("user") or {}).get("login", "board")
+    try:
+        gitops.sync_checkout(board_repo, dest, "main")
+        gitops.set_identity(dest, ctx.operator or "github-actions[bot]")
+        gitops.git(dest, "fetch", "-q", "origin", f"pull/{number}/head")
+        if gitops.git(dest, "rev-parse", "FETCH_HEAD").strip() != head:
+            return False, "the pull request moved while it was being merged"
+        gitops.git(dest, "merge", "--squash", "FETCH_HEAD", check=False)
+        conflicts = [f for f in gitops.git(dest, "diff", "--name-only", "--diff-filter=U").splitlines() if f.strip()]
+        others = [f for f in conflicts if not f.endswith("/" + MANIFEST)]
+        if others:
+            gitops.git(dest, "reset", "-q", "--hard", "origin/main")
+            return False, "conflicts with main in " + ", ".join(sorted(others))
+        for path in conflicts:
+            main_text = gitops.git(dest, "show", f":2:{path}", check=False)
+            pr_text = gitops.git(dest, "show", f":3:{path}", check=False)
+            merged = sources.merge_manifests(tomllib.loads(pr_text or ""), tomllib.loads(main_text or ""))
+            (dest / path).write_text(sources.dump_manifest(merged), encoding="utf-8")
+            gitops.git(dest, "add", "--", path)
+        message = (f"{title} (#{number})\n\nMerged by the board's intake onto main"
+                   + (f", with {', '.join(conflicts)} merged by key (main's answered entries kept)" if conflicts else "")
+                   + ".")
+        gitops.git(dest, "commit", "-q", "--author", f"{author} <{author}@users.noreply.github.com>", "-m", message)
+        gitops.git(dest, "push", "-q", "origin", "HEAD:refs/heads/main")
+        sha = gitops.git(dest, "rev-parse", "HEAD").strip()
+    except (gitops.GitError, tomllib.TOMLDecodeError, OSError) as exc:
+        return False, f"could not merge it with main ({str(exc).splitlines()[0][:200]})"
+    note(ctx, number, f"Intake: merged as `{sha[:7]}` on main: the pull request conflicted with main"
+                      + (f" in {', '.join(conflicts)}, merged by key (main's answered entries kept)" if conflicts else "")
+                      + ". Closing it.")
+    ctx.gh.write("PATCH", f"repos/{board_repo}/pulls/{number}", {"state": "closed"})
+    return True, sha
 
 
 def conclude_review(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Job], yes: bool) -> str:
@@ -344,7 +399,7 @@ def conclude_review(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Jo
     if job.kind == "review" and verdict == "accepted" and j.subject == "DESIGN":
         # Merge first: a merge that fails leaves the review open, and the next scan tries again.
         why = merge(ctx, number, pr, jobs, {"path": f"{pkg}/design/review.json",
-                                            "review": verdict_record(job, reviews, "accepted")})
+                                            "review": verdict_record(job, reviews, "accepted")}, blocker=job)
         if why:
             return f"#{number}: {job.id} accepted, but not merged yet ({why})"
     put_file(ctx, f"{pkg}/reports/{job.id}.md", report_text(reviews), f"Board: {job.id} ({verdict})")
@@ -446,7 +501,8 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
         accepted = next((j.inputs.get("accepted_review") for j in jobs if j.kind == "review"
                          and j.inputs.get("board_pr") == number and j.inputs.get("accepted_review")), None)
         pkg = board.package_dir(ctx.cfg.board.packages_dir, fix.name)
-        why = merge(ctx, number, pr, jobs, {"path": f"{pkg}/review.json", "review": accepted} if accepted else None)
+        why = merge(ctx, number, pr, jobs, {"path": f"{pkg}/review.json", "review": accepted} if accepted else None,
+                    blocker=fix)
         if why:
             return f"#{number}: {fix.id} pushed, but not merged yet ({why})"
     who = pusher(comments, fix)

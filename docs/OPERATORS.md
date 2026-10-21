@@ -443,6 +443,21 @@ Everything the board writes works with that token: its notes are signed by `gith
 (keep it in `[board] bot_logins`), and authorship always comes from the submission pull request's
 author.
 
+GitHub's schedule is unreliable (scheduled runs are skipped under load), so a worker asks for a
+board run itself (`gh workflow run board.yml -R <board repository>`, logged `board run requested`)
+after every round that submitted, parked, blocked or released a job, at most once a minute; the
+workflow's concurrency group collapses bursts, a failure is ignored, and the schedule stays the
+fallback. `[board] dispatch = false` turns it off.
+
+An accepted board pull request that conflicts with main (the intake recorded answers in the
+roadmap's sources.toml on main while the branch changed it too) is merged by the intake itself: it
+squashes the pull request onto main in a checkout of the board, merges each conflicting sources.toml
+by key (main's answered entries, those with a `resolution`, are kept; the pull request's other
+entries win), commits with the pull request's author, pushes to main and closes the pull request
+with a note. A conflict in any other file sets the job that concluded it (the accepting review, or
+the last red-team fix) to `state:blocked`: "the pull request #N conflicts with main in <files>; a
+human rebases it".
+
 A GitHub blip never costs a run: every read is tried again after a 5xx answer or a timeout (2, 5
 and 15 seconds later); a pull request whose reads still fail is skipped with a line in the log and
 the run goes on with the next one (a sync step likewise), and the command exits 1 at the end listing

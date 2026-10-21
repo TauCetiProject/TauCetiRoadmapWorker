@@ -220,9 +220,32 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
         if ctx.claims and not ctx.dry_run:
             ctx.claims.release(key)
     release(ctx, job, result)
+    request_board_run(ctx, result, log)
     if interrupt is not None:
         raise interrupt
     return result
+
+
+DISPATCH_GAP = 60          # seconds: a worker asks for a board run at most this often
+_last_dispatch = [0.0]
+
+
+def request_board_run(ctx: Context, result: LaneResult, log=print, clock=time.monotonic) -> bool:
+    """After a round that submitted, parked, blocked or released a job, ask GitHub to run the board
+    workflow now (`workflow_dispatch`), so the intake does not wait for an unreliable schedule. Off
+    with `[board] dispatch = false`; failures are ignored (the schedule stays the fallback)."""
+    cfg = ctx.cfg.board
+    if not cfg.dispatch or ctx.dry_run or result.status in ("dry-run", "idle", "skipped"):
+        return False
+    if clock() - _last_dispatch[0] < DISPATCH_GAP:
+        return False
+    try:
+        ctx.gh.cli_write("workflow", "run", cfg.dispatch_workflow, "-R", ctx.cfg.repositories.board_repo())
+    except (GHError, AttributeError):
+        return False
+    _last_dispatch[0] = clock()
+    log("board run requested")
+    return True
 
 
 def release(ctx: Context, job: Job, result: LaneResult) -> None:
