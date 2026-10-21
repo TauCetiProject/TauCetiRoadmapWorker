@@ -396,7 +396,7 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
             result = LaneResult("", "idle", f"the board could not be read: {exc}")
         except OSError as exc:     # a full disk (ENOSPC) and the like: wait, never crash-loop
             result = LaneResult("", "idle", f"the host failed the round ({exc}); waiting before the next one")
-        log(f"{now():%Y-%m-%dT%H:%MZ} {result.job or '-'} {result.status}: {result.detail}")
+        log(f"{now():%Y-%m-%dT%H:%MZ} {result.job or '-'} {result.describe()}")
         if result.status == "needs-references":
             parked[result.job] = PARKED_WATCH
         else:

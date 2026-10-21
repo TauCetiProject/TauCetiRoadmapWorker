@@ -113,7 +113,14 @@ on the supplier's open job on the board (or on the design's own issue when it ha
 
 A round that stops before it submits or parks its job (the lane fails, git or GitHub raises, the
 agent hits a usage limit, or you press Ctrl-C) releases the lease and puts the job back to
-`state:available` with a "Released by worker" note. A fault before any agent runs (a brief that does
+`state:available` with a "Released by worker" note. A usage limit is any agent run whose stdout or
+stderr carries one of the CLIs' limit messages ("out of usage credits", "usage limit", "manage
+usage credits", "hit/reached your … limit", "model is at capacity"; on a run that exited non-zero
+also "rate limit", "Too many requests"/429), wherever the text appears and whatever the exit code:
+the round is logged `limited: <message>` (`limited (after N min of work): <message>` when the agent
+had worked before the limit stopped it), the job is released, no attempt is consumed, the run's
+output stays in the job folder, and the family is paused until the reset time the message gives
+(half an hour when it gives none). A fault before any agent runs (a brief that does
 not render, a checkout that fails) is on the operator's side: the job is released as
 `setup-failed`, not counted against it, and the worker process leaves it alone until it restarts.
 

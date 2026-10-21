@@ -92,6 +92,23 @@ class LaneResult:
     url: str = ""
     retry_at: dt.datetime | None = None
     agent: str = ""        # the family the round ran (a usage limit pauses that family only)
+    worked: float = 0.0    # seconds the agent had run in this round when a usage limit stopped it
+
+    def describe(self) -> str:
+        """`status: detail` for the log; a usage limit hit after work says how much was lost."""
+        if self.status == "limited" and self.worked >= LIMIT_WORK_NOTED:
+            return f"limited (after {round(self.worked / 60)} min of work): {self.detail}"
+        return f"{self.status}: {self.detail}"
+
+
+LIMIT_WORK_NOTED = 60      # seconds of agent work before a usage limit that the log counts as wasted
+
+
+def limited(job: Job, result: agents.AgentResult, where: str, worked: float) -> LaneResult:
+    """The round's result for an agent run that hit a usage limit: the message's first line, the
+    reset time the message gave, and the agent time spent in the round up to and including the run."""
+    return LaneResult(job.id, "limited", (result.message or "usage limit") + where, retry_at=result.reset_at,
+                      worked=worked)
 
 
 class LaneError(Exception):
@@ -814,11 +831,13 @@ class Lane:
         if ctx.dry_run:
             return LaneResult(job.id, "dry-run", f"{len(runs)} brief(s) written to {ws.job_dir}")
         self.agent_started = True
+        worked = 0.0        # agent seconds in this round: what a usage limit wastes
         for label, brief in runs:
             result = self.run_agent(ctx, ws, brief, label)
+            worked += result.seconds
             where = f" ({label})" if label else ""
-            if result.limited:
-                return LaneResult(job.id, "limited", "usage limit" + where, retry_at=result.reset_at)
+            if result.limited:  # before the failure path: a limit exits non-zero too, and consumes no attempt
+                return limited(job, result, where, worked)
             if result.exit_code != 0:
                 return LaneResult(job.id, "failed", f"agent exited {result.exit_code}{where}"
                                   + (" (timeout)" if result.timed_out else ""))
@@ -836,8 +855,9 @@ class Lane:
             (ws.job_dir / "problems.txt").write_text("\n".join(problems) + "\n", encoding="utf-8")
             result = self.run_agent(ctx, ws, repair_brief(runs[0][1], problems), "repair" if attempt == 1
                                     else f"repair{attempt}")
+            worked += result.seconds
             if result.limited:
-                return LaneResult(job.id, "limited", "usage limit (repair)", retry_at=result.reset_at)
+                return limited(job, result, " (repair)", worked)
             self.scrub_outputs(job, ctx, ws)
             if result.exit_code != 0:
                 problems = problems + [f"the repair run exited {result.exit_code}"]

@@ -338,7 +338,7 @@ def work(args) -> int:
             return 130
         return 0
     result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx), log=log)
-    print(f"{result.job or '-'} {result.status}: {result.detail}" + (f" {result.url}" if result.url else ""))
+    print(f"{result.job or '-'} {result.describe()}" + (f" {result.url}" if result.url else ""))
     return 0 if result.status in ("submitted", "idle", "dry-run", "needs-references") else 1
 
 
