@@ -102,6 +102,9 @@ class ReviewLane(Lane):
             checkout_board_pr(ctx, ws, self.board_pr(job))   # the design or package under review is its head
         if self.elaborates(job):
             build_tauceti_imports(ctx, ws, job.name)         # the reviewer's `lake env lean` finds their object files
+        if self.subject(job) == "design":
+            # The dependency check runs on the design's README: the package README does not exist yet.
+            ws.extra["readme"] = ws.package(ctx.cfg, job.name) / "design" / "README.md"
         return ws
 
     def comment_body(self, job: Job, ctx: Context, ws: Workspace) -> str:
