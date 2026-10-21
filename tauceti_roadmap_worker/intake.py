@@ -75,9 +75,11 @@ def outcome_for(ctx, job: Job, pr: dict, all_jobs: list[Job]) -> Outcome:
     return Outcome()
 
 
-def intake(ctx, number: int, yes: bool = False) -> str:
+def intake(ctx, number: int, yes: bool = False, pr: dict | None = None) -> str:
+    """Take in one submission pull request. `pr`: its object from the open pull requests' listing
+    (the same fields as a GET of it), so the intake reads it once for all of them."""
     cfg, repo = ctx.cfg, ctx.cfg.repositories.packages_repo()
-    pr = ctx.gh.api(f"repos/{repo}/pulls/{number}")
+    pr = pr or ctx.gh.api(f"repos/{repo}/pulls/{number}")
     if boardpr.NEEDS_REVIEW in {label["name"] for label in pr.get("labels", [])}:
         return f"#{number}: under review on the board (read by the review scan)"
     sub = board.decode_submission(pr.get("body") or "")
@@ -179,6 +181,59 @@ def stuck_on(ctx, job: Job, outcome: Outcome) -> list[str]:
     repair = f"{pkg}/reports/{board.make_id('fix', job.name, j.round, j.subject)}.md"
     return stuck_findings((read(repair, outcome.head) if outcome.head else "") or read(repair),
                           outcome.report or read(f"{pkg}/reports/{job.id}.md"))
+
+
+STABLE = ("#{n}: not merged", "#{n}: not a submission", "#{n}: names unknown job", "#{n}: a draft",
+          "#{n}: under review on the board")
+
+
+def pr_key(pr: dict) -> list:
+    """What a submission's intake outcome depends on, as the listing shows it: head, labels, update time."""
+    return [(pr.get("head") or {}).get("sha", ""), sorted(label.get("name", "") for label in pr.get("labels", [])),
+            pr.get("updated_at", "")]
+
+
+def intake_open(ctx, yes: bool, only: int = 0, log=print) -> list[int]:
+    """Every open submission or import pull request, each on its own: one listing for all of them (no
+    GET per pull request), a pull request whose head, labels and update time are as at the last run
+    with a stable outcome (left for the maintainer, under review, not a submission) is not read again
+    (a cache in the state directory; empty on a fresh runner), and a GitHub error on one is logged and
+    the run goes on. Returns the pull requests skipped by an error."""
+    repo = ctx.cfg.repositories.packages_repo()
+    pulls = ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True) or []
+    path = ctx.state / "intake-prs.json"
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cache = {}
+    seen, skipped = {}, []
+    for pr in pulls:
+        n = int(pr["number"])
+        if only and n != only:
+            continue
+        body = pr.get("body") or ""
+        if not (board.decode_submission(body) or explorer.decode_import(body)):
+            continue
+        key, cached = pr_key(pr), (cache.get(str(n)) if isinstance(cache, dict) else None) or {}
+        if cached.get("key") == key and any(cached.get("outcome", "").startswith(p.format(n=n)) for p in STABLE):
+            log(f"#{n}: unchanged since the last run ({cached['outcome'][:120]})")
+            seen[str(n)] = cached
+            continue
+        try:
+            outcome = intake(ctx, n, yes=yes, pr=pr)
+        except GHError as exc:
+            skipped.append(n)
+            log(f"#{n}: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]}); the next run tries again")
+            continue
+        log(outcome)
+        if yes:
+            seen[str(n)] = {"key": key, "outcome": outcome}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(seen, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    return skipped
 
 
 def base_text(ctx, repo: str, path: str, pr: dict) -> str:

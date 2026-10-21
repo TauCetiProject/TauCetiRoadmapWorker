@@ -437,6 +437,14 @@ Everything the board writes works with that token: its notes are signed by `gith
 (keep it in `[board] bot_logins`), and authorship always comes from the submission pull request's
 author.
 
+A GitHub blip never costs a run: every read is tried again after a 5xx answer or a timeout (2, 5
+and 15 seconds later); a pull request whose reads still fail is skipped with a line in the log and
+the run goes on with the next one (a sync step likewise), and the command exits 1 at the end listing
+what it skipped, which the next run takes up. The intake reads the open pull requests' listing once
+and uses its objects (no GET per pull request); a pull request whose head, labels and update time are
+as at the last run, with a stable outcome (under review, left for the maintainer, not a submission),
+is not read again (`intake-prs.json` in the state directory, empty on a fresh runner).
+
 Two things that token cannot reach are skipped, not failed. The claims namespace is another
 repository: `board intake` reads it to wait for a worker that holds a review (and to take a lease
 for a `reviewing` comment), `board sync` to mirror live leases and release expired ones, and

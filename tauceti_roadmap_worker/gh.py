@@ -15,6 +15,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 
 
@@ -36,10 +37,27 @@ def looks_like_api_error(text: str) -> bool:
     return head.startswith("{") and ("documentation_url" in head or '"message"' in head) and '"number"' not in head
 
 
+READ_DELAYS = (2, 5, 15)     # seconds before the second, third and fourth try of a read GitHub answered 5xx or not at all
+
+
 @dataclass
 class GH:
     dry_run: bool = False
     timeout: int = 120
+    read_delays: tuple = READ_DELAYS
+    sleep: object = time.sleep
+
+    def _read(self, args: list[str]) -> str:
+        """A read (GET), tried again after a transient failure (a 5xx answer, a timeout, a dropped
+        connection): a blip never costs a whole run. Writes are not retried here (not idempotent)."""
+        for delay in (*self.read_delays, None):
+            try:
+                return self._run(args)
+            except GHError as exc:
+                if delay is None or not transient(exc):
+                    raise
+                self.sleep(delay)
+        raise AssertionError("unreachable")
 
     def available(self) -> bool:
         return shutil.which("gh") is not None
@@ -60,7 +78,7 @@ class GH:
             args.insert(1, "--paginate")
         if jq:
             args += ["--jq", jq]
-        out = self._run(args)
+        out = self._read(args)
         if jq:
             return out
         if looks_like_api_error(out):
@@ -115,4 +133,4 @@ class GH:
     def raw_file(self, repo: str, path: str, ref: str = "") -> str:
         """The raw contents of a file at a ref (empty ref = default branch)."""
         suffix = f"?ref={ref}" if ref else ""
-        return self._run(["api", f"repos/{repo}/contents/{path}{suffix}", "-H", "Accept: application/vnd.github.raw"])
+        return self._read(["api", f"repos/{repo}/contents/{path}{suffix}", "-H", "Accept: application/vnd.github.raw"])

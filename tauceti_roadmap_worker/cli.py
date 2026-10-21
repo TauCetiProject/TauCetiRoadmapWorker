@@ -52,7 +52,7 @@ from . import (
     watch,
 )
 from . import targets as target_files
-from .board import KINDS, Board, decode_submission
+from .board import KINDS, Board
 from .gh import GH, GHError
 
 OK, WARN, FAIL = "ok", "warn", "FAIL"
@@ -605,19 +605,20 @@ def board_cmd(args) -> int:
                                dry_run=ctx.dry_run)
     write = args.yes and not args.dry_run
     if args.action in ("intake", "references"):
+        skipped: list[str] = []
         if args.action == "intake":
-            repo = cfg.repositories.packages_repo()
-            numbers = [args.pr] if args.pr else [p["number"] for p in ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True)
-                                                 if decode_submission(p.get("body") or "")
-                                                 or explorer.decode_import(p.get("body") or "")]
-            for n in numbers:
-                print(intake.intake(ctx, n, yes=write))
+            skipped += [f"#{n}" for n in intake.intake_open(ctx, write, only=args.pr or 0)]
         if not args.pr:
             for line in references.resume_all(ctx, ctx.sources_fetcher(), yes=write):
                 print(line)
         if args.action == "intake":
             for line in boardpr.scan(ctx, shared, yes=write):
                 print(line)
+                if ": skipped: GitHub did not answer" in line:
+                    skipped.append(line.split(":", 1)[0])
+        if skipped:
+            print("skipped (GitHub errors; the next run tries again): " + ", ".join(dict.fromkeys(skipped)))
+            return 1
         return 0
     if args.action == "import-explorer":
         if not args.source:
@@ -631,12 +632,23 @@ def board_cmd(args) -> int:
         print(explorer.summary(steps))
         return 1 if any(s.failed for s in steps) else 0
     if args.action == "sync":
-        for line in (filers.refresh(ctx) + intake.sync_targets(ctx) + intake.sync_states(ctx, shared)
-                     + intake.sync_expired(ctx, shared)
-                     + intake.sync_leases(ctx, shared) + intake.sync_pull_requests(ctx)
-                     + intake.repark_capped(ctx) + intake.sync_origins(ctx) + intake.note_gap_registry_blocks(ctx)
-                     + boardpr.review_queue(ctx, yes=write)):
-            print(line)
+        steps = [("filers", lambda: filers.refresh(ctx)), ("targets", lambda: intake.sync_targets(ctx)),
+                 ("states", lambda: intake.sync_states(ctx, shared)), ("expired", lambda: intake.sync_expired(ctx, shared)),
+                 ("leases", lambda: intake.sync_leases(ctx, shared)), ("pull requests", lambda: intake.sync_pull_requests(ctx)),
+                 ("max rounds", lambda: intake.repark_capped(ctx)), ("origins", lambda: intake.sync_origins(ctx)),
+                 ("gap registry", lambda: intake.note_gap_registry_blocks(ctx)),
+                 ("review queue", lambda: boardpr.review_queue(ctx, yes=write))]
+        failed = []
+        for name, step in steps:      # one step's GitHub trouble never stops the others
+            try:
+                for line in step():
+                    print(line)
+            except GHError as exc:
+                failed.append(name)
+                print(f"sync {name}: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]})")
+        if failed:
+            print("skipped (GitHub errors; the next run tries again): " + ", ".join(failed))
+            return 1
         return 0
     for line in intake.stale(ctx, shared, release=args.release):
         print(line)

@@ -477,17 +477,21 @@ def scan(ctx, shared=None, yes: bool = False) -> list[str]:
         open_jobs = [j for j in mine if j.kind in ("review", "redteam")]
         if not pushed and not open_jobs:
             continue
-        comments = ctx.gh.api(f"repos/{repo(ctx)}/issues/{number}/comments?per_page=100", paginate=True) or []
-        if pushed:
-            out += [fix_pushed(ctx, f, number, pr, jobs, yes, comments) for f in pushed]
-            continue
-        for job in sorted(open_jobs, key=lambda j: j.id):
-            found = reviews_for(ctx, job, comments, head, jobs, shared, number, out)
-            if not found or worker_pending(ctx, job, found, shared):
+        try:
+            comments = ctx.gh.api(f"repos/{repo(ctx)}/issues/{number}/comments?per_page=100", paginate=True) or []
+            if pushed:
+                out += [fix_pushed(ctx, f, number, pr, jobs, yes, comments) for f in pushed]
                 continue
-            conclude = conclude_review if job.kind == "review" else conclude_pass
-            out.append(conclude(ctx, job, found, number, pr, jobs, yes))
-            jobs = ctx.board.all_jobs()
+            for job in sorted(open_jobs, key=lambda j: j.id):
+                found = reviews_for(ctx, job, comments, head, jobs, shared, number, out)
+                if not found or worker_pending(ctx, job, found, shared):
+                    continue
+                conclude = conclude_review if job.kind == "review" else conclude_pass
+                out.append(conclude(ctx, job, found, number, pr, jobs, yes))
+                jobs = ctx.board.all_jobs()
+        except GHError as exc:     # one pull request's trouble never stops the scan of the others
+            out.append(f"#{number}: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]}); the next run "
+                       "tries again")
     return out
 
 
