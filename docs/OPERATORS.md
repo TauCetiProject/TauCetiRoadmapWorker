@@ -33,18 +33,25 @@ see [SOURCES.md](SOURCES.md#ocr-of-image-only-scans)).
 Texts you already hold go in the directories of `[sources] local_dirs` (write them as `~/...` in a
 shared configuration); see [SOURCES.md](SOURCES.md).
 
-**Lean.** The package lane elaborates `Suggested.lean` and the port, red-team fix and gate lanes run
-the targeted build (`[gates] build`, default `lake build {module}`, never a bare `lake build`). Each
-worker has its own content checkout; do not build Mathlib per worker. Prepare one built
-`.lake/packages` (for example in a checkout of the roadmap repository where you ran
-`lake exe cache get` once) and export its path:
+**Lean.** The package, package-review and package-fix lanes elaborate `Suggested.lean`
+(`[gates] elaborate`, default `lake env lean {file}`) in the worker's content checkout, and the
+port, red-team fix and gate lanes run the targeted build (`[gates] build`, default
+`lake build {module}`, never a bare `lake build`) in a worktree. Elaboration needs `lake` on the
+PATH (elan installs the pinned toolchain on first use) and the machine's shared Lake packages for
+the checkout's pin, `<state>/lake/<pin>/packages`, which every checkout and worktree links as its
+`.lake/packages` and which the first lane to need them fills with `lake exe cache get` once, under
+`<state>/lake/<pin>/.lock`, marking `.ready`; that first fetch does not start below 20 GB free on
+the state directory's disk (the disk guard), while a ready pin costs nothing. When elaboration still
+cannot run (no `lake`, the fetch failed, the guard tripped) the lane never skips it silently: the
+brief's `Elaborate` line says why, the worker's check adds the problem
+`Suggested.lean: not elaborated — <reason>`, the package lane's repair pass receives it and the
+round fails with it. An operator who already holds a built `.lake/packages` may still export it:
 
 ```bash
 export TAUCETI_ROADMAP_LAKE_PACKAGES=/path/to/TauCetiRoadmap/.lake/packages
 ```
 
-Workers symlink it into their checkouts and worktrees. Without it, elaboration is skipped and the
-lanes that need a build report so.
+Workers symlink it into their checkouts and worktrees instead of the shared copy.
 
 ## Running a fleet
 

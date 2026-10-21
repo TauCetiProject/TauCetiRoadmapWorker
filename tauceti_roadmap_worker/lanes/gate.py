@@ -13,6 +13,7 @@ from .. import gates, gitops, prompts, replies
 from ..board import Job
 from .base import (Context, Lane, LaneError, Workspace, dropped_names, load_order, open_roadmap_prs, order_path,
                    scan_problems, sibling_checkouts, sibling_readmes)
+from .fix import worktree_elaboration_problems
 from .pr import flip_labels, inline_comments, pr_branch_worktree, timeline
 
 
@@ -48,7 +49,7 @@ class GateLane(Lane):
         if not since:
             raise LaneError(f"#{pr}: no review since the last reply")
         (ws.scratch / "reviews.md").write_text(reviews_document(since), encoding="utf-8")
-        wt, head = pr_branch_worktree(ctx, ws.content, job.name, pr, mine["branch"])
+        wt, head = pr_branch_worktree(ctx, ws.content, job.name, pr, mine["branch"], ws)
         ws.workdir = wt
         ws.extra.update(prs=prs, siblings=sibling_checkouts(ctx, prs, skip=job.name), pr=pr, branch=mine["branch"],
                         head=head, owner=mine["owner"], readme=wt / ctx.cfg.roadmap.active_dir / job.name / "README.md")
@@ -77,7 +78,7 @@ class GateLane(Lane):
         result = gates.run_gate(ws.workdir, job.name, opts, base=f"origin/{ctx.cfg.project.branch}",
                                 build_cmd=ctx.cfg.gates.build)
         ws.extra["gate"] = result
-        return problems + scan_problems(result)
+        return problems + scan_problems(result) + worktree_elaboration_problems(ctx, ws, job.name)
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         cfg, pr = ctx.cfg, ws.extra["pr"]

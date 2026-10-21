@@ -100,8 +100,10 @@ main_extended = []
 # Targeted build of one roadmap module, run in the port worktree. {module} expands to
 # <active_dir>.<Name>.Suggested. Never a bare `lake build`. Empty disables the build gate.
 build = "lake build {module}"
-# Elaboration of a package's Suggested.lean in an existing build (package and review lanes).
-# {file} is the absolute path. Empty = do not elaborate (say so in the report).
+# Elaboration of a package's Suggested.lean (package, package-review and package-fix lanes), run in
+# the content checkout wired to the machine's shared Lake packages for its pin. {file} is the
+# absolute path. Empty = do not elaborate (say so in the report). When it is set but cannot run,
+# the lane reports `Suggested.lean: not elaborated — <reason>` rather than skipping.
 elaborate = "lake env lean {file}"
 # Suggested.lean states and does not develop: at most this many lines.
 max_lean_lines = 5000

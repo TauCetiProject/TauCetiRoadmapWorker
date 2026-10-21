@@ -100,7 +100,7 @@ class PortLane(Lane):
         texts = [(pkg / f).read_text(encoding="utf-8") if (pkg / f).is_file() else "" for f in ("README.md", "Suggested.lean")]
         ws.extra["order_notes"] = ensure_in_order(ctx, ws, job.name, *texts)
         ws.extra["siblings"] = sibling_checkouts(ctx, prs, skip=job.name)
-        wt = fresh_worktree(ctx, ws.content, job.name, "port")
+        wt = fresh_worktree(ctx, ws.content, job.name, "port", ws)
         release_branch(ws.content, f"roadmap/{gitops.kebab(job.name)}", keep=wt)   # the agent creates it here
         ws.extra["base"] = gitops.git(wt, "rev-parse", "HEAD").strip()
         ws.extra["branch"] = f"roadmap/{gitops.kebab(job.name)}"

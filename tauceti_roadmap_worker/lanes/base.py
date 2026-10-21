@@ -30,6 +30,7 @@ from ..config import Config
 from ..depgraph import read_order
 from ..gh import GH, GHError, transient
 from ..paths import sanitize_worker_id
+from .lake import MIN_FREE_GB_BUILD, MIN_FREE_GB_WARN, LakeSetup, free_gb, prepare_lake  # noqa: F401 (re-exports)
 
 PR_MARKER = "tauceti-roadmap-pr"
 
@@ -378,6 +379,11 @@ class Lane:
         return board.manifest_path(ctx.cfg.board.packages_dir, job.name) in board.allowed_paths(
             job, ctx.cfg.board.packages_dir)
 
+    def elaborates(self, job: Job) -> bool:
+        """Whether the lane (its agent, its checks) elaborates the package's Suggested.lean in the
+        content checkout: the package lane, package reviews and the fixes of a package."""
+        return False
+
     # -- shared steps --
     def prepare(self, job: Job, ctx: Context) -> Workspace:
         """Every round starts from clean checkouts of the board's and the content repository's
@@ -407,8 +413,13 @@ class Lane:
             shutil.copytree(kept / pkg, board_dir / pkg, dirs_exist_ok=True)
         report = board_dir / pkg / "reports" / f"{job.id}.md"
         report.parent.mkdir(parents=True, exist_ok=True)
-        return Workspace(job_dir=job_dir, scratch=scratch, board=board_dir, content=content_dir,
-                         workdir=board_dir, report=report, branch=branch)
+        ws = Workspace(job_dir=job_dir, scratch=scratch, board=board_dir, content=content_dir,
+                       workdir=board_dir, report=report, branch=branch)
+        if (cfg.gates.elaborate or cfg.gates.build) and self.elaborates(job):
+            # The content checkout elaborates with the machine's shared Lake packages for its pin (fetched
+            # once per pin, under the lock and the disk guard), exactly as a port worktree builds with them.
+            ws.extra["lake"] = prepare_lake(content_dir, ctx.state, fetch=not ctx.dry_run, free=free_gb)
+        return ws
 
     def common_values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
         cfg = ctx.cfg
@@ -423,9 +434,6 @@ class Lane:
             path = ws.board / cfg.prompts.extra_rules_file
             if path.is_file():
                 extra_rules = "## Project rules\n\n" + path.read_text(encoding="utf-8").strip()
-        elaborate = "not available (say so in the report)"
-        if cfg.gates.elaborate and (ws.content / ".lake").is_dir():
-            elaborate = f"`{cfg.gates.elaborate.format(file='<absolute path of Suggested.lean>')}` run from `{ws.content}`"
         return {
             "JOB": job.id, "ROADMAP": job.name, "ROUND": str(job.round), "WORKDIR": str(ws.workdir),
             "SCRATCH": str(ws.scratch), "REPORT": str(ws.report), "CONTENT_REPO": cfg.repositories.content,
@@ -439,7 +447,8 @@ class Lane:
             "LIBRARY": library_description(ws.content),
             "SIBLINGS": "; ".join(f"{name} at `{path}`" for _pr, name, path in sibs) or
                         ("; ".join(p["name"] for p in prs) or "none"),
-            "MAX_LEAN_LINES": str(cfg.gates.max_lean_lines), "ELABORATE": elaborate, "EXTRA_RULES": extra_rules,
+            "MAX_LEAN_LINES": str(cfg.gates.max_lean_lines), "ELABORATE": elaborate_line(cfg, ws),
+            "EXTRA_RULES": extra_rules,
             "SOURCE_TEXTS": ws.extra.get("source_texts", "none recorded yet"),
             "FETCH": self.fetch_command(job, ctx, ws),
         }
@@ -974,19 +983,17 @@ class Lane:
         return with_notes(self.deliver(job, ctx, ws), ws)
 
 
-MIN_FREE_GB_BUILD = 20       # a lane that checks out and builds the roadmap is not started below this
-MIN_FREE_GB_WARN = 40        # `doctor` warns below this
-
-
-def free_gb(path: Path) -> float | None:
-    """Free space on the filesystem of `path` (its nearest existing ancestor), in GB."""
-    p = Path(path)
-    while not p.exists() and p != p.parent:
-        p = p.parent
-    try:
-        return shutil.disk_usage(p).free / 1e9
-    except OSError:
-        return None
+def elaborate_line(cfg: Config, ws: Workspace) -> str:
+    """The briefs' ELABORATE: the command to elaborate Suggested.lean in the content checkout, or why
+    it is not available (what the worker's own elaboration check will report too)."""
+    if not cfg.gates.elaborate:
+        return "not available (no elaboration command is configured; say so in the report)"
+    setup = ws.extra.get("lake")
+    if setup is None:
+        return "not available (this lane does not elaborate; say so in the report)"
+    if setup.reason:
+        return f"not available — {setup.reason} (say so in the report)"
+    return f"`{cfg.gates.elaborate.format(file='<absolute path of Suggested.lean>')}` run from `{ws.content}`"
 
 
 def builds(job: Job) -> bool:

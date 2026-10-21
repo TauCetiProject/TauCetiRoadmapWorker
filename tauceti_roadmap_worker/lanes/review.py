@@ -92,6 +92,9 @@ class ReviewLane(Lane):
     def subject(self, job: Job) -> str:
         return "design" if board.parse_job_id(job.id).subject == "DESIGN" else "package"
 
+    def elaborates(self, job: Job) -> bool:
+        return self.subject(job) == "package"       # the reviewer elaborates with the brief's command
+
     def prepare(self, job: Job, ctx: Context) -> Workspace:
         ws = super().prepare(job, ctx)
         if self.board_pr(job):

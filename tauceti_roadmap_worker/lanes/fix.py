@@ -23,6 +23,16 @@ from .package import elaboration_problems, package_scan
 from .pr import fresh_worktree, pr_branch_worktree, remove_worktree
 
 
+def worktree_elaboration_problems(ctx: Context, ws: Workspace, name: str) -> list[str]:
+    """On a pull request branch the targeted build (`[gates] build`) elaborates Suggested.lean; without
+    a build command, `[gates] elaborate` runs in the worktree, wired to the shared packages like the
+    content checkout, and says so when it cannot."""
+    if ctx.cfg.gates.build or not ctx.cfg.gates.elaborate:
+        return []
+    lean = ws.workdir / ctx.cfg.roadmap.active_dir / name / "Suggested.lean"
+    return elaboration_problems(ctx, ws, lean, where=ws.workdir)
+
+
 GAPS_ONLY = (" (its top-level `gaps` list only: a supplier gap the package needs, with `slug`, `needs`, `supplier` "
              "and `section`, and the same slug under the README's \"Exact supplier contracts\"; nothing else in it "
              "changes)")
@@ -39,6 +49,9 @@ class ArtefactFixLane(Lane):
 
     def art(self, job: Job) -> str:
         return board.parse_job_id(job.id).subject
+
+    def elaborates(self, job: Job) -> bool:
+        return self.art(job) == "PKG"
 
     def editable(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         pkg = ws.package(ctx.cfg, job.name)
@@ -108,6 +121,9 @@ class RedTeamFixLane(Lane):
     def records_author(self, job: Job) -> bool:
         return False
 
+    def elaborates(self, job: Job) -> bool:
+        return bool(self.board_pr(job))      # on the pull request branch the worktree builds instead
+
     # -- on the board pull request (the red team runs on the package before the port) --
     def files(self, job: Job, ctx: Context, ws: Workspace) -> list:
         pkg = ws.package(ctx.cfg, job.name)
@@ -137,7 +153,7 @@ class RedTeamFixLane(Lane):
             return problems
         problems += elaboration_problems(ctx, ws, pkg / "Suggested.lean")
         cfg = ctx.cfg
-        if cfg.gates.build and (ws.content / ".lake").is_dir():
+        if cfg.gates.build and ws.extra.get("lake") is not None and ws.extra["lake"].ready:
             # A throwaway worktree (never under build/, which holds the worker's own briefs).
             wt = fresh_worktree(ctx, ws.content, job.name, "buildcheck")
             try:
@@ -171,7 +187,7 @@ class RedTeamFixLane(Lane):
         if not mine:
             raise LaneError(f"pull request #{pr} is not an open roadmap pull request")
         ws.extra.update(prs=prs, siblings=sibling_checkouts(ctx, prs, skip=job.name), pr=pr, branch=mine["branch"])
-        wt, head = pr_branch_worktree(ctx, ws.content, job.name, pr, mine["branch"])
+        wt, head = pr_branch_worktree(ctx, ws.content, job.name, pr, mine["branch"], ws)
         ws.workdir, ws.extra["head"] = wt, head
         ws.extra["readme"] = wt / ctx.cfg.roadmap.active_dir / job.name / "README.md"
         return ws
@@ -210,7 +226,7 @@ class RedTeamFixLane(Lane):
         result = gates.run_gate(ws.workdir, job.name, opts, base=f"origin/{ctx.cfg.project.branch}",
                                 build_cmd=ctx.cfg.gates.build)
         ws.extra["gate"] = result
-        return problems + scan_problems(result)
+        return problems + scan_problems(result) + worktree_elaboration_problems(ctx, ws, job.name)
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         if self.board_pr(job):

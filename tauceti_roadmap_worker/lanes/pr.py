@@ -3,89 +3,27 @@ red-team fix, gate): worktrees with a shared Lake package cache, the head check,
 
 from __future__ import annotations
 
-import fcntl
-import hashlib
-import os
 import shutil
-import subprocess
-import time
 from pathlib import Path
 
 from .. import gitops, replies
-from .base import Context
-
-PIN_FILES = ("lake-manifest.json", "lean-toolchain", "lakefile.lean", "lakefile.toml")
-CACHE_GET = ("lake", "exe", "cache", "get")
-CACHE_GET_TIMEOUT = 3600
+from .base import Context, Workspace, free_gb
+from .lake import (CACHE_GET, CACHE_GET_TIMEOUT, PIN_FILES, LakeSetup, ensure_lake_cache, lake_pin,  # noqa: F401
+                   link_lake_packages, prepare_lake, shared_packages)
 
 
-def lake_pin(worktree: Path) -> str:
-    """What decides a checkout's Lake packages (its manifest, toolchain and lakefile), as a short hash."""
-    h = hashlib.sha256()
-    for name in PIN_FILES:
-        path = worktree / name
-        h.update(name.encode() + b"\0" + (path.read_bytes() if path.is_file() else b"") + b"\0")
-    return h.hexdigest()[:16]
-
-
-def shared_packages(state: Path, worktree: Path) -> Path:
-    """The machine's one Lake package directory for the checkout's pin: `<state>/lake/<pin>/packages`."""
-    return Path(state) / "lake" / lake_pin(worktree) / "packages"
-
-
-def link_lake_packages(content: Path, worktree: Path, state: Path | None = None) -> Path | None:
-    """Give a worktree a `.lake/packages` that is a link to one shared copy (Mathlib and Tau Ceti,
-    16 GB), never a copy of its own: the content checkout's own packages when it has them (the
-    `TAUCETI_ROADMAP_LAKE_PACKAGES` setup), else `<state>/lake/<pin>/packages`, one per pin of the
-    manifest, shared by every worker of the machine. Returns the shared directory."""
-    own = content / ".lake" / "packages"
-    src = own if own.is_dir() else (shared_packages(state, worktree) if state is not None else None)
-    if src is None:
-        return None
-    src.mkdir(parents=True, exist_ok=True)
-    dst = worktree / ".lake" / "packages"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.is_symlink() or dst.is_file():
-        dst.unlink()
-    elif dst.is_dir():
-        shutil.rmtree(dst)            # a copy left by an earlier build: the shared one replaces it
-    os.symlink(src.resolve(), dst)
-    return src
-
-
-def ensure_lake_cache(worktree: Path, shared: Path | None, run=subprocess.run) -> str:
-    """Fetch the prebuilt Mathlib (and other) oleans into the shared packages once per pin: `lake exe
-    cache get` runs only when the pin's directory is not marked ready, under a lock so two workers do
-    not fetch at once. Returns what happened."""
-    if shared is None:
-        return "no shared Lake packages"
-    ready = shared.parent / ".ready"
-    if ready.exists():
-        return "shared Lake packages ready"
-    with open(shared.parent / ".lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        if ready.exists():
-            return "shared Lake packages ready"
-        try:
-            done = run(list(CACHE_GET), cwd=worktree, capture_output=True, text=True, timeout=CACHE_GET_TIMEOUT)
-        except (OSError, subprocess.SubprocessError) as exc:
-            return f"lake exe cache get failed ({exc}); the build fetches what it needs"
-        if done.returncode != 0:
-            return f"lake exe cache get exited {done.returncode}; the build fetches what it needs"
-        ready.write_text(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + "\n")
-        return "shared Lake packages fetched"
-
-
-def fresh_worktree(ctx: Context, content: Path, name: str, kind: str) -> Path:
+def fresh_worktree(ctx: Context, content: Path, name: str, kind: str, ws: Workspace | None = None) -> Path:
     """A detached worktree of the content checkout at its current HEAD (origin/<branch>), with its
-    Lake packages linked to the machine's shared copy for its pin (fetched once)."""
+    Lake packages linked to the machine's shared copy for its pin (fetched once). With a workspace,
+    what the wiring delivered is kept in `ws.extra["lake"]` for the lane's checks and briefs."""
     wt = ctx.wdir / kind / name
     remove_worktree(content, wt)
     wt.parent.mkdir(parents=True, exist_ok=True)
     gitops.git(content, "worktree", "add", "-q", "--detach", str(wt), "HEAD")
-    shared = link_lake_packages(content, wt, ctx.state)
-    if shared is not None and (ctx.cfg.gates.build or ctx.cfg.gates.elaborate) and not ctx.dry_run:
-        ensure_lake_cache(wt, shared)
+    fetch = bool(ctx.cfg.gates.build or ctx.cfg.gates.elaborate) and not ctx.dry_run
+    setup = prepare_lake(wt, ctx.state, content=content, fetch=fetch, free=free_gb)
+    if ws is not None:
+        ws.extra["lake"] = setup
     return wt
 
 
@@ -158,9 +96,10 @@ def release_branch(content: Path, branch: str, keep: Path | None = None) -> list
     return removed
 
 
-def pr_branch_worktree(ctx: Context, content: Path, name: str, pr: int, branch: str) -> tuple[Path, str]:
+def pr_branch_worktree(ctx: Context, content: Path, name: str, pr: int, branch: str,
+                       ws: Workspace | None = None) -> tuple[Path, str]:
     """A worktree on the pull request's branch at its current head. Returns (worktree, head sha)."""
-    wt = fresh_worktree(ctx, content, name, "pr")
+    wt = fresh_worktree(ctx, content, name, "pr", ws)
     gitops.git(wt, "fetch", "-q", "origin", f"pull/{pr}/head")
     release_branch(content, branch, keep=wt)      # an earlier lane's worktree may still hold the branch
     gitops.git(wt, "checkout", "-q", "-B", branch, "FETCH_HEAD")

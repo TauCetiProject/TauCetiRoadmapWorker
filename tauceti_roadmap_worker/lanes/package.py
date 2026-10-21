@@ -47,11 +47,30 @@ def gap_reference_problems(readme: str, plan_path: Path) -> list[str]:
             "`needs`, `supplier` and `section`)" for slug in sorted(named - declared)]
 
 
-def elaboration_problems(ctx: Context, ws: Workspace, lean: Path) -> list[str]:
-    """Elaborate Suggested.lean in the content checkout's existing build, if there is one."""
-    if not ctx.cfg.gates.elaborate or not (ws.content / ".lake").is_dir():
+NOT_ELABORATED = "Suggested.lean: not elaborated — "
+
+
+def elaboration_problems(ctx: Context, ws: Workspace, lean: Path, where: Path | None = None) -> list[str]:
+    """Elaborate Suggested.lean (`[gates] elaborate`) in the content checkout, wired to the machine's
+    shared Lake packages by the lane's prepare step (or in `where`, a worktree wired the same way).
+    When the elaboration cannot run — no command configured by the operator is the one silent case —
+    the problem says why, so it reaches the report and the repair pass instead of being skipped."""
+    cfg = ctx.cfg
+    if not cfg.gates.elaborate:
         return []
-    return gates.build_problems(ws.content, ctx.cfg.gates.elaborate.format(file=str(lean.resolve())))
+    setup = ws.extra.get("lake")
+    if setup is None or setup.reason:
+        problems = [NOT_ELABORATED + (setup.reason if setup is not None else "the Lake packages were not wired for this lane")]
+    else:
+        raw = gates.build_problems(where or ws.content, cfg.gates.elaborate.format(file=str(lean.resolve())))
+        problems = [NOT_ELABORATED + p.removeprefix("build did not run: ") if p.startswith("build did not run: ")
+                    else "Suggested.lean: elaboration exited" + p.removeprefix("build exited") if p.startswith("build exited")
+                    else p for p in raw]
+    if not problems:
+        notes = ws.extra.setdefault("notes", [])          # the round log shows that it happened; a problem shows itself
+        if "Suggested.lean elaborated: sorry the only warning" not in notes:
+            notes.append("Suggested.lean elaborated: sorry the only warning")
+    return problems
 
 
 def package_summary(name: str, pkg: Path, what: str = "package") -> str:
@@ -73,6 +92,9 @@ class PackageLane(Lane):
     kind = "package"
     prompt = "package"
     keeps_wip = True
+
+    def elaborates(self, job: Job) -> bool:
+        return True
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)

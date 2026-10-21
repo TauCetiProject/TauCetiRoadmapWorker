@@ -22,5 +22,6 @@ def roomy_disk(monkeypatch):
 @pytest.fixture(autouse=True)
 def no_lake_cache_fetch(monkeypatch):
     """No test runs `lake exe cache get` for real (it downloads gigabytes): the command becomes `false`."""
-    from tauceti_roadmap_worker.lanes import pr
+    from tauceti_roadmap_worker.lanes import lake, pr
+    monkeypatch.setattr(lake, "CACHE_GET", ("false",))
     monkeypatch.setattr(pr, "CACHE_GET", ("false",))
