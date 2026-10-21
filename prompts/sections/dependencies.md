@@ -12,6 +12,20 @@ consume only:
 
 Never cite these roadmaps as suppliers: __DROPPED__.
 
+**Ownership is checked against open work, not only against main.** Two open roadmaps independently
+specifying the same reusable construction is the most frequent finding in roadmap reviews, and the
+costliest in rounds. Before this roadmap states a construction another roadmap could own (a generic
+carrier, a comparison, a foundational theorem), search the open roadmap pull requests (__SIBLINGS__)
+and the board's packages for the same object, by object rather than by name; cite an existing owner,
+or say in your report why this roadmap is the owner. Check that no declaration in `Suggested.lean`
+has the fully qualified name of a declaration in another open roadmap.
+
+**Citations are resolved, not remembered.** Every cross-roadmap citation (roadmap, section or
+target, declaration name) is checked against the cited roadmap as it is now: on main, or at the
+head of its open pull request. Sections are renumbered and moved during review; a citation that was
+right last round is checked again. A citation correct on a newer main but absent at the pin is a
+defect.
+
 A notion this roadmap needs from a roadmap later in the order is stated here as a target instead
 (the notion moves down), and the move is recorded in your report. Never add a `*Needs:*` line, a
 supplier-table row or a "Supplied by" citation of a later roadmap. Cite suppliers by roadmap name

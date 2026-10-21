@@ -58,7 +58,8 @@ context, and of every bold README target. For each:
    target of a named roadmap at its current version (check that the section and the declaration
    name exist there with the same hypotheses), a declared supplier gap (below), or a pinned
    declaration (grep it). Flag unowned prerequisites, forward references and cycles; run the
-   dependency check below.
+   dependency check below. Before you report a cited section or declaration as missing, confirm that
+   the copy you searched is the cited roadmap's current head or the pin.
 4. **Ownership and duplication**: anything a sibling or a roadmap on main already states (grep for the
    object) must cite the owner instead.
 5. **Sources**: verify every locator you can against the text (legal sources only); flag misprints
@@ -77,7 +78,8 @@ Write `__REPORT__` incrementally (findings as you go, so that partial work survi
 `**Verdict:** <changes needed | no blocking finding>`; then findings numbered R01, R02, … (S01, … in
 a second pass), each as `## R01 (P1) — <short title>` with: location (file:line, quoting at most 40
 words), the claim, the witness (counterexample, source line, sibling file:line or pinned
-declaration; at most 40 words) and the exact repair text. Severity: P1 false or unowned, P2
+declaration; at most 40 words) and the exact repair text, tested on the instance that refuted the
+original. Severity: P1 false or unowned, P2
 overclaim or missing hypothesis, P3 locator, Check or policy. Then `## Verified sound` (what you
 checked and found correct, with counts: declarations read, targets read, locators verified, Checks
 tested, sibling citations checked) and `## Not verifiable` (each item and why). No praise, no style
