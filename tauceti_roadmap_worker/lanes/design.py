@@ -144,6 +144,7 @@ def record_design(state: Path, operator: str, job_id: str) -> None:
 class DesignLane(Lane):
     kind = "design"
     prompt = "design"
+    keeps_wip = True
 
     def eligible(self, job: Job, ctx: Context) -> str:
         reason = super().eligible(job, ctx)

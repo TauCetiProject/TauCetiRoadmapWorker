@@ -125,6 +125,13 @@ so a worker does not start one when the state directory's disk has less than 20 
 `skip <JOB>: only N GB free …` and takes other work), and `doctor` warns below 40 GB. A full disk never
 crashes the worker loop: the round is logged and the worker waits for its next poll.
 
+A run that fails the worker's checks gets repair runs in the same workspace, each fed only the
+problems that remain, up to three while their number strictly falls (74 → 20 → 3 → 0 submits; a
+repair that does not reduce them ends the attempt). A design or package run that still fails leaves
+its deliverables (those safe to publish: no source material, no local path) on `wip/<JOB>` on the
+operator's fork, recorded on the job; the next attempt, on any worker, starts from them, and the
+branch is deleted when the job submits.
+
 Pushes name the head the work was built on (`--force-with-lease=<branch>:<head>`, checked against
 the remote itself). When the branch moved while the job ran, nothing is pushed and the job is set
 to `state:blocked` ("the pull request moved from X to Y while the fix ran"): a human, or the next

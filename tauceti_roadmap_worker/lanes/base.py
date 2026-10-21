@@ -181,6 +181,7 @@ def dropped_names(cfg: Config) -> list[str]:
 
 
 UNSUBMITTED = "unsubmitted"
+REPAIR_PASSES = 3       # repair runs after the checks, while the number of problems strictly falls
 MAX_REQUESTS = 3        # needs-references requests one job may post before it is blocked for a human
 UNREADABLE_NOTE = ("the text was fetched, but it is a scan this worker could not read: a worker with OCR "
                    "([sources] ocr = true and the `ocr` extra) reads it; or name another source, a local text, or "
@@ -673,9 +674,16 @@ class Lane:
         return problems
 
     def earlier_attempt(self, ws: Workspace) -> str:
-        """For a retry on this worker: where the failed attempt's deliverables and problems are, so
-        the agent repairs them rather than starting over. The problems file moves aside."""
+        """For a retry: where the failed attempt's deliverables and problems are, so the agent repairs
+        them rather than starting over (on this worker its kept folder and problems file; from any
+        worker, the deliverables its wip branch held, now in place)."""
         problems = ws.job_dir / "problems.txt"
+        restored = ws.extra.get("wip_restored")
+        if restored:
+            wip, files = restored
+            return ("## An earlier attempt\n\nAn earlier run of this job (by @" + str(wip.get("by", "?")) + ") failed the "
+                    "worker's checks after its repairs. Its deliverables are back in place: " + ", ".join(f"`{f}`" for f in files)
+                    + ". Start from them: keep what is sound and repair what the checks refuse, rather than starting over.")
         if not problems.is_file():
             return ""
         previous = ws.job_dir / "problems.previous.txt"
@@ -785,6 +793,7 @@ class Lane:
         if pending:
             return self.resume_push(job, ctx, pending)
         ws = self.prepare(job, ctx)
+        self.restore_wip(job, ctx, ws)
         self.prepare_sources(job, ctx, ws)
         values = {**self.common_values(job, ctx, ws), **self.values(job, ctx, ws)}
         runs = self.briefs(job, ctx, ws, values)
@@ -810,20 +819,101 @@ class Lane:
         if missing:
             return with_notes(self.park(job, ctx, missing), ws)
         problems = self.validate(job, ctx, ws)
-        if problems:
-            # One repair run in the same workspace before the job fails (still one attempt).
+        # Repair runs in the same workspace before the job fails (still one attempt): each fed only the
+        # problems that remain, up to REPAIR_PASSES while their number strictly falls.
+        for attempt in range(1, REPAIR_PASSES + 1):
+            if not problems:
+                break
             (ws.job_dir / "problems.txt").write_text("\n".join(problems) + "\n", encoding="utf-8")
-            result = self.run_agent(ctx, ws, repair_brief(runs[0][1], problems), "repair")
+            result = self.run_agent(ctx, ws, repair_brief(runs[0][1], problems), "repair" if attempt == 1
+                                    else f"repair{attempt}")
             if result.limited:
                 return LaneResult(job.id, "limited", "usage limit (repair)", retry_at=result.reset_at)
             self.scrub_outputs(job, ctx, ws)
-            problems = self.validate(job, ctx, ws) if result.exit_code == 0 else \
-                problems + [f"the repair run exited {result.exit_code}"]
+            if result.exit_code != 0:
+                problems = problems + [f"the repair run exited {result.exit_code}"]
+                break
+            before, problems = len(problems), self.validate(job, ctx, ws)
+            if problems and len(problems) >= before:
+                break            # the repair did not reduce the problems: another pass would not either
         if problems:
             (ws.job_dir / "problems.txt").write_text("\n".join(problems) + "\n", encoding="utf-8")
-            return with_notes(LaneResult(job.id, "failed", "; ".join(problems[:5])), ws)
+            wip = self.push_wip(job, ctx, ws)
+            return with_notes(LaneResult(job.id, "failed", "; ".join(problems[:5]) + wip), ws)
         (ws.job_dir / "problems.txt").unlink(missing_ok=True)
-        return with_notes(self.deliver(job, ctx, ws), ws)
+        result = self.deliver(job, ctx, ws)
+        if result.status == "submitted":
+            self.drop_wip(job, ctx, ws)
+        return with_notes(result, ws)
+
+    keeps_wip = False       # a failed run leaves its deliverables on a wip/<JOB> branch for the next attempt
+
+    def wip_branch(self, job: Job) -> str:
+        return f"wip/{claims.ref_safe(job.id)}"
+
+    def push_wip(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        """After a run that failed its checks: its deliverables (only those that are safe to publish: no
+        source material, no local path) committed and pushed to `wip/<JOB>` on the operator's fork, and
+        recorded on the job, so the next attempt, on any worker, starts from them. Returns a note."""
+        if not self.keeps_wip or ctx.dry_run:
+            return ""
+        allowed = board.allowed_paths(job, ctx.cfg.board.packages_dir, board.order_file(ctx.cfg))
+        try:
+            changed = [p for p in gitops.changed_files(ws.board) if p in allowed and (ws.board / p).is_file()]
+            safe = [p for p in changed if not gates.source_material_problems(p, (ws.board / p).read_bytes())
+                    and not board.PRIVATE_PATH.search((ws.board / p).read_text(encoding="utf-8", errors="replace"))]
+            if not safe:
+                return ""
+            gitops.commit_paths(ws.board, safe, f"{job.id}: unsubmitted deliverables of a run that failed its checks "
+                                                "(work in progress)", ctx.operator)
+            fork = gitops.ensure_fork(ctx.gh, ctx.cfg.repositories.packages_repo(), ctx.operator)
+            gitops.push(ws.board, fork, self.wip_branch(job))
+            head = gitops.git(ws.board, "rev-parse", "HEAD").strip()
+        except (gitops.GitError, GHError, OSError) as exc:
+            return f" (its deliverables could not be kept on {self.wip_branch(job)}: {str(exc).splitlines()[0][:120]})"
+        job.inputs["wip"] = {"repo": fork, "branch": self.wip_branch(job), "head": head, "by": ctx.operator,
+                             "files": safe}
+        try:
+            ctx.board.update_spec(job)
+        except (GHError, AttributeError):
+            pass
+        return f" (its deliverables are kept on {fork} {self.wip_branch(job)} for the next attempt)"
+
+    def restore_wip(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        """At the start of an attempt: the deliverables a failed attempt left on its wip branch put in
+        place (any worker can read the fork). Returns the files restored."""
+        wip = job.inputs.get("wip") if self.keeps_wip else None
+        if not isinstance(wip, dict) or not wip.get("repo") or not wip.get("branch"):
+            return []
+        try:
+            gitops.git(ws.board, "fetch", "-q", gitops.url(wip["repo"]), f"refs/heads/{wip['branch']}")
+        except gitops.GitError:
+            return []
+        allowed = board.allowed_paths(job, ctx.cfg.board.packages_dir, board.order_file(ctx.cfg))
+        restored = []
+        for rel in wip.get("files", []):
+            if rel not in allowed:
+                continue
+            text = gitops.git(ws.board, "show", f"FETCH_HEAD:{rel}", check=False)
+            if text:
+                (ws.board / rel).parent.mkdir(parents=True, exist_ok=True)
+                (ws.board / rel).write_text(text, encoding="utf-8")
+                restored.append(rel)
+        if restored:
+            ws.extra["wip_restored"] = (wip, restored)
+        return restored
+
+    def drop_wip(self, job: Job, ctx: Context, ws: Workspace) -> None:
+        """After a submission: the wip branch goes (when it is on this operator's fork) and the job forgets it."""
+        wip = job.inputs.pop("wip", None)
+        if not isinstance(wip, dict):
+            return
+        if str(wip.get("by", "")).lower() == (ctx.operator or "").lower():
+            gitops.git(ws.board, "push", "-q", gitops.url(wip["repo"]), f":refs/heads/{wip['branch']}", check=False)
+        try:
+            ctx.board.update_spec(job)
+        except (GHError, AttributeError):
+            pass
 
     def deliver(self, job: Job, ctx: Context, ws: Workspace) -> LaneResult:
         """The lane's last steps and the submission, once the checks passed. A branch that moved

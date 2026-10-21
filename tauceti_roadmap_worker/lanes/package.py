@@ -72,6 +72,7 @@ def package_summary(name: str, pkg: Path, what: str = "package") -> str:
 class PackageLane(Lane):
     kind = "package"
     prompt = "package"
+    keeps_wip = True
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)
