@@ -58,6 +58,11 @@ target_filers = ["team:TauCetiProject/humans", "roed-math"]
 # login). An open roadmap pull request one of them opened counts as ours in a "Merge order"
 # paragraph when the merge order names its roadmap, even if no worker opened it.
 operators = []
+# Who may answer a needs-references request with `source: KEY <URL>`: a source they have checked is
+# legal, fetched whatever its host's licence class (a denied host never) and recorded with the
+# licence class "answered-by:<login>" (or the one a trailing `licence: <class>` names). Logins or
+# "team:<org>/<slug>"; empty: the target filers and the operators.
+reference_answerers = []
 
 [roadmap]
 # Active roadmap folders in the content repository, and where completed ones live.

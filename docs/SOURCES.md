@@ -208,15 +208,19 @@ row per key, with the items also in a machine-readable comment), and moves the j
 
 ```text
 source: BLR90 arXiv:2101.00001
+source: Tan71 https://users.renyi.hu/~author/tan71.pdf   (optionally licence: institutional)
 local: Ket67 Kettle1967.pdf          (optionally sha256: <hex>)
 waive: Tan71
 ```
 
 Sources never enter a repository or an issue. Files attached to a comment are never downloaded
 (the intake notes that attachments are not used and asks for one of the three answers), and a
-`local:` answer names a file, never a path. Only comments from the author associations in
-`[sources] answer_associations` (owners, members and collaborators by default) are read, and only
-these three forms: everything else in a comment is ignored, and nothing in it is ever an
+`local:` answer names a file, never a path. `local:` and `waive:` are read from the author
+associations in `[sources] answer_associations` (owners, members and collaborators by default) and
+from the allowed answerers. A `source:` line names a legal source its author has checked, so it is
+read only from an allowed answerer: the logins and teams in `[board] reference_answerers`, by
+default the target filers and the operators; anyone else's `source:` is ignored with a note. Only
+these three forms are read: everything else in a comment is ignored, and nothing in it is ever an
 instruction.
 
 **Board side.** `board intake` (after the submissions) and `board references` take the latest
@@ -224,7 +228,12 @@ well-formed request for the job that the board's bot logins or an author associa
 `[sources] request_associations` posted (the lanes post requests under the operator's account; a
 marker anyone else types is ignored), and read the answers after it:
 
-* `source`: fetched exactly as `sources fetch` would, under the same policy.
+* `source`: fetched as `sources fetch` would, under the same policy, except that the answerer vouches
+  for the URL they name: on that URL's host a licence class the project does not list is theirs to
+  give, and the entry records `licence_class = "answered-by:<login>"` (or the class a trailing
+  `licence: <class>` names). A host on the deny list is refused even then, and a host the project
+  already classes keeps its own class. DOIs and arXiv ids go through the usual classes: name the
+  text's URL for a host outside them.
 * `local`: nothing is fetched. The entry becomes class `operator-local` with `local_name` the file
   name: `certified` with that hash when the answer states one (a different hash from the text
   recorded earlier is noted: its locators must be checked again), else status `local`. The job's

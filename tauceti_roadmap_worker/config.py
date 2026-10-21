@@ -73,6 +73,10 @@ class Board:
     # login). Their open roadmap pull requests in the merge order count as ours in a "Merge order"
     # paragraph, whoever opened them and however.
     operators: list[str] = field(default_factory=list)
+    # Who may answer a needs-references request with `source:` (a legal source they have checked,
+    # fetched whatever its host's licence class, except a denied host): logins or "team:<org>/<slug>".
+    # Empty: the target filers and the operators.
+    reference_answerers: list[str] = field(default_factory=list)
 
 
 @dataclass

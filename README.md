@@ -118,7 +118,7 @@ job in `state:needs-references` and posts what is missing on the job's issue. An
 comment, one line per key:
 
 ```text
-source: BLR90 arXiv:2101.00001            an alternative legal source, fetched by the worker
+source: BLR90 arXiv:2101.00001            an alternative legal source you checked (filers and operators)
 local: Ket67 Kettle1967.pdf               a text operators hold in [sources] local_dirs (sha256: <hex> optional)
 waive: Tan71                              cite it by its locator alone
 ```

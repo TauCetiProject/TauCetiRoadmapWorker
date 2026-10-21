@@ -300,3 +300,85 @@ def test_an_answer_replaces_the_old_provenance(tmp_path):
     res = resolve(references.Answer("Ket67", "local", "Kettle1967.pdf", SHA), items()[0], existing, fet, True)
     assert res.entry["local_name"] == "Kettle1967.pdf" and "fetched_from" not in res.entry and "arxiv" not in res.entry
     assert res.entry["locator_scheme"] == "theorem" and "checked again" in res.entry["version_note"]
+
+
+# --- `source:` answers vouched for by allowed answerers ------------------------------------------
+
+def test_a_source_answer_may_name_its_licence_class():
+    keys = ["Ket67"]
+    [a], notes = parse_answers("source: Ket67 https://users.renyi.hu/~p/kettle.pdf licence: institutional", keys)
+    assert (a.value, a.licence, notes) == ("https://users.renyi.hu/~p/kettle.pdf", "institutional", [])
+    [b], notes = parse_answers("source: Ket67 <https://www.mathnet.ru/a.pdf> licence: free", keys)
+    assert b.value == "https://www.mathnet.ru/a.pdf" and b.licence == "" and "not a licence class" in notes[0]
+
+
+def test_only_allowed_answerers_name_sources():
+    keys = ["Ket67", "BLR90"]
+    comments = [comment(1, "source: Ket67 https://users.renyi.hu/~p/k.pdf", "MEMBER", "member-only"),
+                comment(2, "waive: BLR90", "MEMBER", "member-only"),
+                comment(3, "source: Ket67 https://www.mathnet.ru/k.pdf", "CONTRIBUTOR", "roed-math")]
+    answers, notes, read = collect_answers(comments, keys, ["MEMBER"], [], answerer=lambda login: login == "roed-math")
+    assert answers["Ket67"].login == "roed-math" and answers["Ket67"].value == "https://www.mathnet.ru/k.pdf"
+    assert answers["BLR90"].action == "waive" and read == {1, 2, 3}
+    ignored = ("`source: Ket67` from @member-only is ignored: sources are named by the project's target filers "
+               "and operators (or the logins `[board] reference_answerers` lists)")
+    assert notes == [ignored]
+
+
+def test_the_answerers_default_to_filers_and_operators():
+    cfg = example_config()
+    cfg.board.target_filers = ["roed-math"]
+    allowed = references.answerer_check(bot_context(cfg=cfg, operator="CBirkbeck"))
+    assert allowed("CBirkbeck") and allowed("Roed-Math") and not allowed("drive-by")
+    cfg.board.reference_answerers = ["someone"]
+    allowed = references.answerer_check(bot_context(cfg=cfg, operator="CBirkbeck"))
+    assert allowed("someone") and not allowed("CBirkbeck")
+
+
+def test_an_answered_source_is_fetched_on_a_host_in_no_class(tmp_path):
+    url = "https://users.renyi.hu/~p/kettle.pdf"
+    fet = make_fetcher(tmp_path, FakeTransport().add(url, PDF))
+    answer = references.Answer("Ket67", "source", url, login="roed-math", url="https://c/30")
+    res = resolve(answer, items()[0], None, fet, True)
+    assert res.ok and res.entry["licence_class"] == "answered-by:roed-math" and res.entry["fetched_from"] == url
+    data = sources.new_manifest("Foo")
+    data["source"] = [res.entry]
+    assert sources.validate_manifest(data, example_config().sources.allow, []) == []
+    # Still valid once the host is given a class of its own later.
+    assert sources.validate_manifest(data, {"institutional": [".renyi.hu"]}, []) == []
+    named = references.Answer("Ket67", "source", url, login="roed-math", licence="institutional")
+    assert resolve(named, items()[0], None, make_fetcher(tmp_path / "b", FakeTransport().add(url, PDF)),
+                   True).entry["licence_class"] == "institutional"
+    # Without an answerer (the command line), a host in no class is still refused.
+    plain = resolve(references.Answer("Ket67", "source", url), items()[0], None,
+                    make_fetcher(tmp_path / "c", FakeTransport().add(url, PDF)), True)
+    assert not plain.ok and "in no licence class" in plain.detail
+
+
+def test_an_answer_never_opens_a_denied_host(tmp_path):
+    t = FakeTransport().add("https://pastebin.com/raw/k.pdf", PDF)
+    answer = references.Answer("Ket67", "source", "https://pastebin.com/raw/k.pdf", login="roed-math",
+                               licence="institutional")
+    res = resolve(answer, items()[0], None, make_fetcher(tmp_path, t), True)
+    assert not res.ok and "deny list" in res.detail and t.requests == []
+
+
+def test_a_known_host_keeps_its_own_class(tmp_path):
+    t = FakeTransport().add("https://arxiv.org/pdf/2101.00001v1", PDF)
+    answer = references.Answer("BLR90", "source", "https://arxiv.org/pdf/2101.00001v1", login="roed-math")
+    res = resolve(answer, items()[1], None, make_fetcher(tmp_path, t), True)
+    assert res.ok and res.entry["licence_class"] == "open-repository"
+
+
+def test_the_intake_takes_an_answerers_source_and_ignores_a_drive_by(tmp_path):
+    url = "https://www.mathnet.ru/php/getFT.phtml?jrnid=im&paperid=1&what=fullt&option_lang=eng"
+    board = FakeBoard({7: [comment(1, request_comment("DESIGN-Foo", "Foo", items()[:1]), "CONTRIBUTOR"),
+                           comment(2, "source: Ket67 https://pastebin.com/raw/k.pdf", "NONE", "drive-by"),
+                           comment(3, f"source: Ket67 {url}", "CONTRIBUTOR", "maintainer")]})
+    gh = FakeGH({"packages/Foo/sources.toml": sources.dump_manifest(sources.new_manifest("Foo"))})
+    line = resume_job(bot_context(gh=gh, board=board), parked_job(), make_fetcher(tmp_path, FakeTransport().add(url, PDF)),
+                      yes=True)
+    assert line == "DESIGN-Foo: references resolved; available again"
+    [entry] = tomllib.loads(gh.files["packages/Foo/sources.toml"])["source"]
+    assert entry["licence_class"] == "answered-by:maintainer" and entry["fetched_from"] == url
+    assert "drive-by" not in board.posted[-1][1]          # an untrusted comment is not read at all

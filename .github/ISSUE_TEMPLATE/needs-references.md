@@ -18,8 +18,10 @@ __ROWS__
 
 To release the job, answer each key in a comment on this issue, one line per answer:
 
-1. `source: KEY <DOI, arXiv id or URL>` names an alternative legal source (for example the arXiv
-   version); the worker fetches it under the same rules and records it.
+1. `source: KEY <DOI, arXiv id or URL>` names an alternative legal source you have checked (for
+   example the arXiv version), read from the project's target filers and operators only. A URL on a
+   host outside the project's licence classes is fetched on your word and recorded as answered by
+   you (add `licence: <class>` to name its class); a host on the deny list is never fetched.
 2. `local: KEY <file name>` says that operators hold the text as that file in a directory of
    `[sources] local_dirs` (add `sha256: <hex>` if you know its hash). Nothing is uploaded: the job
    is resumed only by an operator whose machine holds the file, and the text stays there.

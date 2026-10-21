@@ -701,7 +701,8 @@ class Fetcher:
             tried.append(f"{cand.via} {r.url}: a PostScript file, which needs Ghostscript (gs) to read: install "
                          "ghostscript on this host and fetch again")
             return None
-        cls = vouched(r.url) or self.client.classify(r.url)
+        known = self.client.classify(r.url)
+        cls = known if known not in ("unknown", "denied") else vouched(r.url) or known
         if cls in ("unknown", "denied"):
             tried.append(f"{cand.via} {r.url}: {host_of(r.url)} is in no licence class (pass --licence-class "
                          "after checking that it is a legal source)")

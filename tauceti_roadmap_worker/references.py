@@ -46,6 +46,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import board, fetcher, sources
+from .config import LICENCE_CLASSES
 from .gh import GHError
 from .paths import ISSUE_TEMPLATES
 
@@ -244,6 +245,8 @@ class Answer:
     sha256: str = ""         # stated for a local file
     comment: int = 0
     url: str = ""            # the comment's link, recorded as the entry's resolution
+    login: str = ""          # who answered
+    licence: str = ""        # source: the licence class a trailing `licence: <class>` names
 
 
 def _markdown_url(text: str) -> str:
@@ -272,8 +275,15 @@ def parse_answers(body: str, keys: list[str]) -> tuple[list[Answer], list[str]]:
                 if action == "waive":
                     answers.append(Answer(canon[k.lower()], "waive"))
                 elif action == "source":
+                    lic = re.search(r"(?i)\s+licen[cs]e\s*:\s*`?([\w-]+)`?\s*$", rest)
+                    licence = lic.group(1).lower() if lic else ""
+                    rest = rest[:lic.start()] if lic else rest
+                    if licence and licence not in LICENCE_CLASSES:
+                        notes.append(f"`source: {k}`: `licence: {licence}` is not a licence class "
+                                     f"({', '.join(LICENCE_CLASSES)}); it is recorded as answered by its author")
+                        licence = ""
                     if rest.strip():
-                        answers.append(Answer(canon[k.lower()], "source", _markdown_url(rest)))
+                        answers.append(Answer(canon[k.lower()], "source", _markdown_url(rest), licence=licence))
                     else:
                         notes.append(f"`source: {k}` names no source")
                 else:
@@ -291,25 +301,66 @@ def parse_answers(body: str, keys: list[str]) -> tuple[list[Answer], list[str]]:
     return answers, notes
 
 
-def collect_answers(comments: list[dict], keys: list[str], trusted: list[str], skip_logins: list[str]) -> tuple[dict, list[str], set[int]]:
-    """The latest answer per key in comments from trusted associations (the board's own notes and
-    anyone else's comments are skipped), the notes, and the ids of the comments read."""
+def collect_answers(comments: list[dict], keys: list[str], trusted: list[str], skip_logins: list[str],
+                    answerer=None) -> tuple[dict, list[str], set[int]]:
+    """The latest answer per key, the notes, and the ids of the comments read. `local:` and `waive:`
+    come from trusted associations or allowed answerers; `source:` only from an allowed answerer
+    (`answerer(login)`; without the callback, from trusted associations as before), and anyone
+    else's is noted and ignored. The board's own notes and other comments are skipped."""
     latest, notes, read = {}, [], set()
     for c in comments:
         login = (c.get("user") or {}).get("login", "")
         body = c.get("body") or ""
         if login in skip_logins or REQUEST_MARK in body or PROGRESS_MARK in body:
             continue
-        if c.get("author_association") not in trusted:
+        member = c.get("author_association") in trusted
+        if not member and not (answerer and answerer(login)):
             continue
         answers, found_notes = parse_answers(body, keys)
         if answers or found_notes:
             read.add(int(c.get("id") or 0))
         for a in answers:
-            a.comment, a.url = int(c.get("id") or 0), c.get("html_url", "")
+            if a.action == "source" and answerer is not None and not answerer(login):
+                notes.append(f"`source: {a.key}` from @{login} is ignored: sources are named by the project's target "
+                             "filers and operators (or the logins `[board] reference_answerers` lists)")
+                continue
+            a.comment, a.url, a.login = int(c.get("id") or 0), c.get("html_url", ""), login
             latest[a.key] = a
         notes += found_notes
     return latest, notes, read
+
+
+def answerer_check(ctx):
+    """`answerer(login)`: whether a login may answer with `source:` (cached per run). `[board]
+    reference_answerers` when set (logins and teams), else the target filers and the operators
+    (`[board] operators`, default the running login, and the logins the claims namespace records)."""
+    from . import filers, mergeorder
+    cfg, cache = ctx.cfg, {}
+    entries = list(cfg.board.reference_answerers)
+    has_state = getattr(ctx, "state", None) is not None     # teams and the claims namespace are read through it
+    operators: set[str] | None = None
+
+    def member(entry_list: list[str], who: str) -> bool:
+        if any(e.lower() == who for e in entry_list if not e.startswith("team:")):
+            return True
+        return has_state and any(who in (filers.team_members(ctx, e[5:])[0] or set())
+                                 for e in entry_list if e.startswith("team:"))
+
+    def allowed(login: str) -> bool:
+        nonlocal operators
+        who = (login or "").lower()
+        if not who:
+            return False
+        if who not in cache:
+            if entries:
+                cache[who] = member(entries, who)
+            else:
+                if operators is None:
+                    operators = mergeorder.operators(ctx) if has_state else {
+                        x.lower() for x in (cfg.board.operators or [getattr(ctx, "operator", "")]) if x}
+                cache[who] = who in operators or member(list(cfg.board.target_filers), who)
+        return cache[who]
+    return allowed
 
 
 # --- the board side -------------------------------------------------------------------------------
@@ -344,7 +395,10 @@ def resolve(answer: Answer, item: MissingReference, existing: dict | None, fet: 
         base.update(status="waived", licence_class=sources.NO_TEXT, resolution=answer.url)
         return Resolution(item.key, True, "waived: cited by its locator alone", base)
     if answer.action == "source":
-        out = fet.fetch(fetcher.parse_citation(answer.value))
+        # The answerer vouches for the source they name: on its host, a class the project does not
+        # list is theirs to give (a denied host is still refused).
+        vouch = answer.licence or (f"answered-by:{answer.login}" if answer.login else "")
+        out = fet.fetch(fetcher.parse_citation(answer.value), licence_class=vouch)
         if out.status == "fetched":
             entry = {**base, **{k: v for k, v in out.entry.items() if k not in ("authors", "title", "year") or not base.get(k)}}
             entry.update(resolution=answer.url)
@@ -418,7 +472,8 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
                 done.update({str(k): str(v) for k, v in data.get("resolved", {}).items()})
             except (ValueError, TypeError):
                 pass
-    answers, notes, read = collect_answers(after, list(items), s.answer_associations, ctx.cfg.board.bot_logins)
+    answers, notes, read = collect_answers(after, list(items), s.answer_associations, ctx.cfg.board.bot_logins,
+                                           answerer_check(ctx))
     fresh = {k: a for k, a in answers.items() if a.comment not in handled}
     if not fresh and not (read - handled):
         waiting = [k for k in items if k not in done]
@@ -448,7 +503,7 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
     lines += [f"- note: {n}" for n in notes]
     if missing:
         lines += ["", "Still needed: " + ", ".join(f"`{k}`" for k in missing) + ". Answer with "
-                  "`source: KEY <DOI, arXiv id or URL>`, `local: KEY <file name>` or `waive: KEY`."]
+                  "`source: KEY <DOI, arXiv id or URL> [licence: <class>]`, `local: KEY <file name>` or `waive: KEY`."]
     else:
         lines += ["", "Every requested source is answered; the job is available again."]
     lines += ["", _marker(PROGRESS_MARK, {"handled": sorted((handled | read) - retry), "resolved": done})]

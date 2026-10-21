@@ -66,6 +66,8 @@ LOCATOR_SCHEMES = ("theorem", "page", "section", "tag", "chapter", "equation")
 STATUSES = ("certified", "uncertified", "waived", "local")
 NO_TEXT = "none"   # licence class of a citation whose text was not read (uncertified or waived)
 REQUIRED = ("id", "authors", "title", "year", "locator_scheme", "licence_class", "status")
+# The class of a text an allowed answerer named in a `source:` answer, vouching that it is legal.
+ANSWERED_BY = re.compile(r"answered-by:[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 REQUIRED_WAIVED = ("id", "authors", "title", "year", "status")
 REQUIRED_LOCAL = ("id", "authors", "title", "year", "status", "licence_class", "local_name")
 FIELD_ORDER = ("id", "authors", "title", "year", "venue", "doi", "arxiv", "locator_scheme", "locator", "url",
@@ -167,8 +169,9 @@ def validate_manifest(data: dict, allow: dict[str, list[str]], deny: list[str], 
             problems.append(f"{where}: locator_scheme must be one of {', '.join(LOCATOR_SCHEMES)}")
         if status and status not in STATUSES:
             problems.append(f"{where}: status must be one of {', '.join(STATUSES)}")
-        if cls and cls not in LICENCE_CLASSES + (NO_TEXT,):
-            problems.append(f"{where}: licence_class must be one of {', '.join(LICENCE_CLASSES + (NO_TEXT,))}")
+        if cls and cls not in LICENCE_CLASSES + (NO_TEXT,) and not ANSWERED_BY.fullmatch(str(cls)):
+            problems.append(f"{where}: licence_class must be one of {', '.join(LICENCE_CLASSES + (NO_TEXT,))} "
+                            "or answered-by:<login>")
         if s.get("doi") and not DOI_RE.match(str(s["doi"])):
             problems.append(f"{where}: doi must look like 10.NNNN/suffix (no resolver prefix)")
         if s.get("fetched_at") and not _is_iso_time(s["fetched_at"]):
@@ -183,7 +186,7 @@ def validate_manifest(data: dict, allow: dict[str, list[str]], deny: list[str], 
                 problems.append(f"{where}: a certified source records the URL its text was fetched from")
             if not SHA_RE.match(str(s.get("sha256", ""))):
                 problems.append(f"{where}: a certified source records the SHA-256 of the text it was checked against")
-            if s.get("fetched_from") and cls not in ("operator-local", NO_TEXT):
+            if s.get("fetched_from") and cls not in ("operator-local", NO_TEXT) and not ANSWERED_BY.fullmatch(str(cls)):
                 found = classify_url(s["fetched_from"], allow, deny)
                 if found not in ("unknown", cls) and found != "denied":
                     problems.append(f"{where}: fetched from a {found} host but recorded as {cls}")
