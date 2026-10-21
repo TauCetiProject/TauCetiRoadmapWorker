@@ -24,10 +24,11 @@ contributors will be held to, so every statement in it must be one we are sure o
   as `[CompleteSpace X]` or `[Module.Finite A M]` silently disappear. Carry every needed binder
   explicitly in the declaration's own signature (or an `include` line) and check the elaborated
   type with `#check @name` in a scratch file.
-- Imports: the single line `import Mathlib` (never `import Mathlib.<submodule>`), followed only by
-  the individual `TauCeti.*` modules actually used (the library's root module re-exports nothing)
-  and roadmap modules that exist on the content repository's main branch. Nothing from a roadmap
-  that is still a pull request.
+- Imports: exactly one import line, `import Mathlib`, and nothing else — never
+  `import Mathlib.<submodule>`, never a `TauCeti.*` module, never another roadmap's module (the
+  worker elaborates the file against Mathlib alone, so any other import fails at line 1, and the
+  gate refuses the file before that). A carrier that lives in Tau Ceti or in another roadmap is
+  named in the README as a supplier; the Lean states only what Mathlib's carriers can express.
 - Never `set_option` of any kind (no file-level `set_option`, no `set_option … in`). A statement
   that only elaborates with an override is restated so that it elaborates under the defaults.
 - Form: one module docstring, "<Name>: representative target signatures", saying that the roadmap

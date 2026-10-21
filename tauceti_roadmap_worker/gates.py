@@ -157,6 +157,40 @@ def scan_missing_mathlib_import(lean: str) -> list[Hit]:
     return [] if re.search(r"^(?:public\s+)?import\s+Mathlib\s*$", lean, re.M) else [Hit(1, "no `import Mathlib` line")]
 
 
+IMPORT_LINE = re.compile(r"^[ \t]*(?P<text>(?:public\s+)?import\s+(?P<module>[\w.«»]+))", re.M)
+IMPORTS_RULE = "Suggested.lean imports: only `import Mathlib` is allowed; found: "
+IMPORTS_LISTED = 12
+
+
+def lean_imports(lean: str) -> list[tuple[int, str, str]]:
+    """Every import of the file, in code only: (line, module, the line's text)."""
+    code = strip_lean_comments(lean)
+    return [(code.count("\n", 0, m.start()) + 1, m.group("module"), " ".join(m.group("text").split()))
+            for m in IMPORT_LINE.finditer(code)]
+
+
+def scan_lean_imports(lean: str) -> list[Hit]:
+    """Exactly one import, `import Mathlib`, in the header. The shared packages that elaborate
+    Suggested.lean hold Mathlib's object files only; a `TauCeti.*` or roadmap module is not there, so
+    a second import fails at line 1, and a duplicate or an import below the header is noise the file
+    does not need. A file with no import at all is `no-import-mathlib`'s finding."""
+    code = strip_lean_comments(lean)
+    imports = lean_imports(lean)
+    if not imports:
+        return []
+    header_end = next((line for kw, line, _ in lean_blocks(code) if kw not in ("import", "public import")), None)
+    found, ok = [], len(imports) == 1
+    for line, module, text in imports:
+        late = header_end is not None and line > header_end
+        if module != "Mathlib" or late:
+            ok = False
+        found.append(f"`{text}` (line {line}" + (", after the header" if late else "") + ")")
+    if ok:
+        return []
+    listed = ", ".join(found[:IMPORTS_LISTED]) + (f", … and {len(found) - IMPORTS_LISTED} more" if len(found) > IMPORTS_LISTED else "")
+    return [Hit(imports[0][0], IMPORTS_RULE + listed)]
+
+
 def scan_lean_length(lean: str, max_lines: int) -> list[Hit]:
     count = len(lean.splitlines())
     return [Hit(count, f"{count} lines (at most {max_lines})")] if max_lines and count > max_lines else []
@@ -448,6 +482,7 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
     r.add("sorry-examples", scan_sorry_examples(lean))
     r.add("residue", scan_process_residue(readme) + scan_lean_residue(lean))
     r.add("private-paths", scan_private_paths(readme) + scan_private_paths(lean))
+    r.add("imports", scan_lean_imports(lean))
     r.add("mathlib-subimports", scan_mathlib_subimports(lean) if opts.forbid_mathlib_subimports else [])
     r.add("no-import-mathlib", scan_missing_mathlib_import(lean))
     r.add("lean-lines", scan_lean_length(lean, opts.max_lean_lines))
@@ -491,8 +526,8 @@ def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build
         r = GateResult(name)
         r.add("missing-files", missing)
         return r
-    r = scan_folder(name, readme_path.read_text(encoding="utf-8", errors="replace"),
-                    lean_path.read_text(encoding="utf-8", errors="replace"), opts)
+    lean = lean_path.read_text(encoding="utf-8", errors="replace")
+    r = scan_folder(name, readme_path.read_text(encoding="utf-8", errors="replace"), lean, opts)
     r.add("metadata", [] if (root / folder / "metadata.toml").is_file() else [f"{folder}/metadata.toml missing"])
     material = tree_source_problems(root, folder)
     try:
@@ -508,7 +543,8 @@ def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build
         r.add("git", [str(exc)])
     r.add("source-material", material)
     if build_cmd:
-        r.add("build", build_problems(root, build_cmd.format(module=f"{opts.active_dir}.{name}.Suggested")))
+        built = build_problems(root, build_cmd.format(module=f"{opts.active_dir}.{name}.Suggested"))
+        r.add("build", explain_build_problems(lean, built))
     return r
 
 
@@ -522,11 +558,70 @@ def build_problems(worktree: Path, command: str, timeout: int = 3600) -> list[st
     return build_output_problems(text, out.returncode)
 
 
+DIAGNOSTIC = re.compile(r"^\s*(?:\S.*?\.lean:\d+:\d+:\s*)?(?P<severity>error|warning)\b")
+LAKE_STATUS = re.compile(r"^\s*(?:[✖⚠✔ℹ√×!]\s*\[\d+/\d+\]|Build completed|Some required builds|trace:|info:|- [A-Z]\w*(?:\.\w+)*\s*$)")
+SORRY_WARNING = re.compile(r"declaration uses ['`]sorry['`]")
+LEAN_FILE = re.compile(r"(\S+\.lean):\d+:\d+")
+MESSAGE_CHARS = 1000      # one diagnostic with its continuation lines: never cut mid-path
+MAX_DIAGNOSTICS = 40      # the cap is on their number, never on their length
+
+
+def build_diagnostics(text: str) -> list[tuple[str, str, str]]:
+    """(severity, file, message) of every error and warning in a build's or `lean`'s output, each
+    message carrying its continuation lines (a goal, a hint) up to MESSAGE_CHARS. The `sorry` warning
+    and Lake's `error: build failed` epilogue are not diagnostics."""
+    out: list[list[str]] = []
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        m = DIAGNOSTIC.match(line)
+        if m:
+            if "error: build failed" in line or (m.group("severity") == "warning" and SORRY_WARNING.search(line)):
+                out.append([])         # swallow its continuation too
+                continue
+            fm = LEAN_FILE.search(line)
+            out.append([m.group("severity"), fm.group(1) if fm else "", line.strip()])
+        elif out and out[-1] and line.strip() and not LAKE_STATUS.match(line):
+            out[-1][2] += "\n    " + line.strip()
+        elif LAKE_STATUS.match(line):
+            out.append([])
+    result = []
+    for d in out:
+        if d:
+            sev, file, msg = d
+            result.append((sev, file, msg if len(msg) <= MESSAGE_CHARS else msg[:MESSAGE_CHARS - 1] + "…"))
+    return result
+
+
 def build_output_problems(text: str, returncode: int) -> list[str]:
+    """The problems a build reports, each whole. With an error present the warnings are left out
+    (they return once the errors are gone); the first error of every file survives the cap."""
     problems = [] if returncode == 0 else [f"build exited {returncode}"]
-    for line in text.splitlines():
-        if re.search(r"\berror\b", line) and "error: build failed" not in line:
-            problems.append(line.strip()[:200])
-        elif re.search(r"\bwarning\b", line) and not re.search(r"declaration uses 'sorry'|declaration uses `sorry`", line):
-            problems.append(line.strip()[:200])
+    diagnostics = build_diagnostics(text)
+    errors = [d for d in diagnostics if d[0] == "error"]
+    shown = errors or diagnostics
+    if len(shown) > MAX_DIAGNOSTICS:
+        keep, seen = set(), set()
+        for k, (_sev, file, _msg) in enumerate(shown):
+            if file not in seen:
+                seen.add(file)
+                keep.add(k)
+        for k in range(len(shown)):
+            if len(keep) >= MAX_DIAGNOSTICS:
+                break
+            keep.add(k)
+        dropped = len(shown) - len(keep)
+        shown = [d for k, d in enumerate(shown) if k in keep]
+        shown.append(("", "", f"… and {dropped} more {'errors' if errors else 'warnings'} not shown"))
+    return problems + [msg for _sev, _file, msg in shown]
+
+
+IMPORT_EXPLANATION = "an import other than Mathlib cannot be elaborated here; Suggested.lean may import only Mathlib"
+
+
+def explain_build_problems(lean: str, problems: list[str]) -> list[str]:
+    """When the first error is a missing object file and the imports are not the single
+    `import Mathlib`, say what the error means (the agent otherwise reads it as a broken machine)."""
+    first = next((p for p in problems if re.search(r"\berror\b", p)), "")
+    if "object file" in first and [m for _l, m, _t in lean_imports(lean)] != ["Mathlib"]:
+        return problems + [IMPORT_EXPLANATION]
     return problems

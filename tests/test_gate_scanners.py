@@ -165,6 +165,76 @@ def test_build_output():
     assert gates.build_output_problems("error: Suggested.lean:1:0: unknown identifier\n", 1)[0] == "build exited 1"
 
 
+LONG_PATH = "/home/chris/.local/state/tauceti/projects/TauCetiRoadmap/workers/chris-4/board/packages/" \
+            "QSeriesPartitionsAndMockModularForms/Suggested.lean"
+OBJECT_FILE_ERROR = (f"{LONG_PATH}:1:0: error: object file '/home/chris/.local/state/tauceti/projects/TauCetiRoadmap/"
+                     "workers/chris-4/content/.lake/packages/TauCeti/.lake/build/lib/lean/TauCeti/Combinatorics/Enumerative/"
+                     "Partition/Conjugate.olean' of module TauCeti.Combinatorics.Enumerative.Partition.Conjugate does not exist")
+
+
+def test_elaboration_errors_are_kept_whole_and_warnings_drop_out_when_an_error_is_present():
+    """Regression (2026-10-21, chris-4, FIX-RT-QSeriesPartitionsAndMockModularForms~2): the first error
+    was cut at 200 characters, mid-path, and buried under eleven linter warnings."""
+    out = (OBJECT_FILE_ERROR + "\n"
+           "warning: TauCetiRoadmap/QSeriesPartitionsAndMockModularForms/Suggested.lean:122:70: this tactic is never executed\n"
+           "warning: TauCetiRoadmap/QSeriesPartitionsAndMockModularForms/Suggested.lean:735:36: Variable name `hτ` is not "
+           "explicitly referenced.\nHint: The binding can be removed (if unused) or named `_` (if used implicitly).\n")
+    problems = gates.build_output_problems(out, 1)
+    assert problems == ["build exited 1", OBJECT_FILE_ERROR]       # whole, over 200 characters, and no warning
+    assert len(OBJECT_FILE_ERROR) > 200
+    # Without an error the warnings stay, each with its continuation lines; `sorry` is never one.
+    warnings_only = out.split("\n", 1)[1] + "warning: Suggested.lean:3:8: declaration uses 'sorry'\nBuild completed successfully.\n"
+    problems = gates.build_output_problems(warnings_only, 0)
+    assert len(problems) == 2 and problems[0].endswith("this tactic is never executed")
+    assert problems[1].endswith("explicitly referenced.\n    Hint: The binding can be removed (if unused) or named `_` (if used implicitly).")
+    # A goal is part of its error, and a message is capped at 1000 characters, never a line at 200.
+    goal = "Suggested.lean:12:4: error: unsolved goals\nx : ℕ\n⊢ x = x\nerror: Lean exited with code 1\n"
+    assert gates.build_output_problems(goal, 1)[1] == "Suggested.lean:12:4: error: unsolved goals\n    x : ℕ\n    ⊢ x = x"
+    huge = "Suggested.lean:1:0: error: " + "y" * 2000 + "\n"
+    assert len(gates.build_output_problems(huge, 1)[1]) == 1000
+    # The cap is on the number of diagnostics; the first error of every file survives it.
+    many = "".join(f"A.lean:{k}:0: error: e{k}\n" for k in range(1, 60)) + "B.lean:7:0: error: first of B\n"
+    problems = gates.build_output_problems(many, 1)
+    assert len(problems) == 1 + gates.MAX_DIAGNOSTICS + 1 and "B.lean:7:0: error: first of B" in problems
+    assert problems[-1] == "… and 20 more errors not shown"
+
+
+def test_a_second_import_is_refused_by_the_text_gate():
+    """Regression (2026-10-21): a package with `import TauCeti.Combinatorics.Enumerative.Partition.Conjugate`
+    under `import Mathlib` passed the package lane, three reviews and two red-team rounds, then failed
+    its elaboration at line 1 (the shared packages hold no Tau Ceti object files)."""
+    assert gates.scan_lean_imports(CLEAN_LEAN) == []
+    assert gates.scan_lean_imports("") == []           # no import at all is `no-import-mathlib`'s finding
+    assert gates.scan_lean_imports("-- import TauCeti.Foo\n/-! import Mathlib.Data.Nat.Basic -/\nimport Mathlib\n") == []
+    extra = CLEAN_LEAN.replace("import Mathlib\n", "import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\n")
+    hits = gates.scan_lean_imports(extra)
+    assert [h.line for h in hits] == [1]
+    assert hits[0].text == ("Suggested.lean imports: only `import Mathlib` is allowed; found: `import Mathlib` (line 1), "
+                            "`import TauCeti.Combinatorics.Enumerative.Partition.Conjugate` (line 2)")
+    inside = CLEAN_LEAN.replace("-- a comment that mentions sorry and set_option\n", "import Mathlib.Tactic\n")
+    hits = gates.scan_lean_imports(inside)
+    assert len(hits) == 1 and hits[0].text.endswith("`import Mathlib.Tactic` (line 14, after the header)")
+    assert len(gates.scan_lean_imports("import Mathlib\nimport Mathlib\n")) == 1       # exactly one, not two
+    assert gates.scan_lean_imports("public import Mathlib\n") == []
+    for lean, count in ((CLEAN_LEAN, 0), (extra, 1), (inside, 1)):
+        assert scan_folder("Toy", CLEAN_README, lean, opts()).counts["imports"] == count
+    assert not scan_folder("Toy", CLEAN_README, extra, opts()).ok
+    assert gates.lean_imports(extra) == [(1, "Mathlib", "import Mathlib"),
+                                         (2, "TauCeti.Combinatorics.Enumerative.Partition.Conjugate",
+                                          "import TauCeti.Combinatorics.Enumerative.Partition.Conjugate")]
+
+
+def test_a_missing_object_file_is_explained_when_the_imports_are_not_mathlib_alone():
+    problems = ["build exited 1", OBJECT_FILE_ERROR]
+    extra = "import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\n"
+    assert gates.explain_build_problems(extra, problems) == problems + [
+        "an import other than Mathlib cannot be elaborated here; Suggested.lean may import only Mathlib"]
+    assert gates.explain_build_problems("import Mathlib\n", problems) == problems        # a real missing olean
+    other = ["build exited 1", "Suggested.lean:4:0: error: unknown identifier `foo`"]
+    assert gates.explain_build_problems(extra, other) == other                          # not an import's error
+    assert gates.explain_build_problems(extra, []) == []
+
+
 def test_gate_runs_depcheck_when_order_given():
     readme = CLEAN_README + "\n*Needs:* Later §2.\n"
     sib = {"Later": "# Roadmap: later\n"}

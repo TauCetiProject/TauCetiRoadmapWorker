@@ -115,6 +115,11 @@ def test_the_package_lane_elaborates_in_the_wired_checkout(live, monkeypatch):  
     calls = fake_elaboration(monkeypatch, ["build exited 1", "error: Suggested.lean:4:0: unknown identifier"])
     assert lane.check(job, ctx, ws) == ["Suggested.lean: elaboration exited 1",
                                         "error: Suggested.lean:4:0: unknown identifier"]
+    # A missing object file with a second import is explained: the file, not the machine, is at fault.
+    lean.write_text("import Mathlib\nimport TauCeti.Combinatorics.Enumerative.Partition.Conjugate\n")
+    fake_elaboration(monkeypatch, ["build exited 1", f"{lean}:1:0: error: object file '/x/Conjugate.olean' of module "
+                                   "TauCeti.Combinatorics.Enumerative.Partition.Conjugate does not exist"])
+    assert lane.check(job, ctx, ws)[-1] == gates.IMPORT_EXPLANATION
 
 
 @needs_git

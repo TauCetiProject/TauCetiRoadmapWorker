@@ -160,8 +160,11 @@ Agents fetch what they need themselves, within rules:
 - Fixes on a draft PR (red-team fix rounds and gate rounds) run under the operator who
   opened the PR, since only that operator can push to its fork branch; reviews and red-team
   passes run under any other operator.
-- Lean imports in `Suggested.lean`: the single line `import Mathlib` followed only by the
-  `TauCeti.*` modules actually used; the gate rejects `import Mathlib.<submodule>`.
+- Lean imports in `Suggested.lean`: exactly one import, the line `import Mathlib`. The text gate
+  (count `imports`, in every lane that reads the file: package, package fix, red-team fix, port,
+  gate, `tauceti-roadmap gate`) refuses a second import, an `import Mathlib.<submodule>`, a
+  `TauCeti.*` or roadmap module and an import below the header, before any elaboration; the shared
+  Lake packages hold Mathlib's object files only, so such an import would fail at line 1.
 - Budget: TauCetiWorker's quota and credit accounting applies unchanged; the design lane is
   the only expensive one and it is capped per operator per day in the toml.
 

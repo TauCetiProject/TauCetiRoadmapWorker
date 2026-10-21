@@ -63,9 +63,13 @@ def elaboration_problems(ctx: Context, ws: Workspace, lean: Path, where: Path | 
         problems = [NOT_ELABORATED + (setup.reason if setup is not None else "the Lake packages were not wired for this lane")]
     else:
         raw = gates.build_problems(where or ws.content, cfg.gates.elaborate.format(file=str(lean.resolve())))
+        try:
+            text = lean.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = "import Mathlib\n"        # a missing file is the package scan's finding, not an import's
         problems = [NOT_ELABORATED + p.removeprefix("build did not run: ") if p.startswith("build did not run: ")
                     else "Suggested.lean: elaboration exited" + p.removeprefix("build exited") if p.startswith("build exited")
-                    else p for p in raw]
+                    else p for p in gates.explain_build_problems(text, raw)]
     if not problems:
         notes = ws.extra.setdefault("notes", [])          # the round log shows that it happened; a problem shows itself
         if "Suggested.lean elaborated: sorry the only warning" not in notes:

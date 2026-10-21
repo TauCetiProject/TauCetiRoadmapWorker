@@ -45,7 +45,13 @@ the state directory's disk (the disk guard), while a ready pin costs nothing. Wh
 cannot run (no `lake`, the fetch failed, the guard tripped) the lane never skips it silently: the
 brief's `Elaborate` line says why, the worker's check adds the problem
 `Suggested.lean: not elaborated — <reason>`, the package lane's repair pass receives it and the
-round fails with it. An operator who already holds a built `.lake/packages` may still export it:
+round fails with it. Before any elaboration the text gates refuse a `Suggested.lean` whose imports
+are not exactly the one line `import Mathlib` (count `imports`; a `TauCeti.*` or roadmap module
+has no object file in the shared packages) or that carries a `set_option` (count `set_option`),
+and an elaboration that fails on a missing object file with such an import is explained in its
+problem line. Elaboration problems are reported whole: every error message up to 1000 characters
+with its continuation lines, warnings only when there is no error, at most 40 diagnostics with
+the first error of every file always among them. An operator who already holds a built `.lake/packages` may still export it:
 
 ```bash
 export TAUCETI_ROADMAP_LAKE_PACKAGES=/path/to/TauCetiRoadmap/.lake/packages
