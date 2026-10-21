@@ -132,3 +132,19 @@ def test_merge_order_plan_with_stacks_and_external():
     assert "#902 (Bravo) → **this pull request** (#903)." in paras[903]        # stacked on #902
     assert "#77 (Other, someone)" in paras[903]
     assert "can merge as soon as it is approved" in paras[901]
+
+
+def test_a_house_shaped_readme_samples_its_subsections():
+    """Regression: a README in the house shape (`### k.n` subsections, a bold consumer name under
+    Downstream consumers) gave a seeded sample of that one name instead of its targets."""
+    layers = "\n\n".join(f"## Layer {k}: Topic {k}\n\n" + "\n\n".join(
+        f"### {k}.{n} Target {k}.{n}\n\nDefine it.\n\n**Checks.**\n\n- a value" for n in range(1, 8))
+        + "\n\n### Examples\n\n### Dependencies" for k in range(1, 8))
+    readme = ("# Roadmap: x\n\n**Summary.** S.\n\n## Scope and ownership\n\n**ColemanIntegration** supplies it.\n\n"
+              + layers + "\n\n### 3.0a A lettered target\n\n## Downstream consumers\n\n**PadicHodgeRegulators** consumes it.\n")
+    items = sample_items(readme)
+    assert len(items) == 50 and items[0] == "1.1 Target 1.1" and "3.0a A lettered target" in items
+    assert not any("Regulators" in i or "ColemanIntegration" in i for i in items)
+    sample = seeded_sample(items, 15, "REV-PKG-ColemanIntegrationPartII")
+    assert len(sample) == 15 and all(s[0].isdigit() for s in sample)
+    assert sample == seeded_sample(items, 15, "REV-PKG-ColemanIntegrationPartII")      # same seeding rule

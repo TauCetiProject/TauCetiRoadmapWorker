@@ -13,24 +13,21 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import re
 import tomllib
 
 from .. import board, gitops, prreviews, sources
 from ..board import Job
-from ..gates import NOT_TARGETS, TARGET_HEADING
+from ..gates import readme_targets
 from .base import Context, Lane, Workspace, checkout_board_pr, count
 from .design import manifest_problems
 
-SUBSECTION = re.compile(r"^###\s+(\d+\.\d+.*)$", re.M)
 SAMPLE_SIZE = 15
 
 
 def sample_items(readme: str) -> list[str]:
-    """The README's targets (bold target paragraphs, else `### k.n` subsections), in order."""
-    bold = [m.group(1).strip().rstrip(".") for m in TARGET_HEADING.finditer(readme)
-            if not m.group(1).startswith(NOT_TARGETS)]
-    return bold or [m.group(1).strip() for m in SUBSECTION.finditer(readme)]
+    """The README's targets, in order, as the summaries count them (`gates.readme_targets`): the
+    `### k.n` subsections of its layers, else the bold target names inside them."""
+    return readme_targets(readme)
 
 
 def seeded_sample(items: list[str], k: int, seed: str) -> list[str]:
