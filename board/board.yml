@@ -18,10 +18,8 @@ on:
   # checks out or runs the pull request's code: the intake reads submissions as data.
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, labeled]
-  issue_comment:
-    types: [created, edited]
-  issues:
-    types: [opened, edited, reopened, labeled]
+  # Comments and issue edits do not trigger runs: the schedule covers them within ten minutes, and
+  # event-driven runs on a busy board cost the repository token's 1,000 requests per hour.
   workflow_dispatch:
 
 permissions:
