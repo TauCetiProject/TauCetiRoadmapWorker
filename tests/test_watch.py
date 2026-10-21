@@ -50,7 +50,7 @@ def test_status_lists_jobs_by_state_with_ages_and_claimants():
     lease = {"owner": "alice/w1", "acquired_at": int(at.timestamp()) - 1200, "expires_at": int(at.timestamp()) + 600}
     text = watch.status(Board(cfg, gh=None), issues, {claims.job_key(cfg.project.name, "PKG-Foo"): lease},
                         cfg.project.name, at=at)
-    assert text.splitlines() == ["available (1)", "  #1      TARGET-Bar     2d",
-                                 "claimed (1)", "  #3      PKG-Foo    30m  alice/w1 for 20m",
-                                 "needs-references (1)", "  #2      DESIGN-Baz    30s"]
+    assert text.splitlines() == ["available (1)", "  #1      TARGET-Bar     2d  target:1",
+                                 "claimed (1)", "  #3      PKG-Foo    30m  ?  alice/w1 for 20m",
+                                 "needs-references (1)", "  #2      DESIGN-Baz    30s  ?"]
     assert "REV-PKG-Qux" in watch.status(Board(cfg, gh=None), issues, {}, cfg.project.name, at=at, include_done=True)

@@ -37,12 +37,13 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import board, gitops
 from .board import Job, comment_json, make_id, new_job
-from .gh import GHError
+from .gh import GHError, transient
 
 EXPLORER = "CBirkbeck/tauceti-explorer"
 BLUEPRINT = Path("research") / "blueprint"
@@ -109,6 +110,7 @@ class Step:
     issue: int = 0
     skip: str = ""                   # why nothing is imported
     outcome: str = ""                # what the run did
+    failed: bool = False             # the run could not carry it out (the import goes on with the next)
     extra: list[Job] = field(default_factory=list)          # more jobs of the same step (red-team passes)
 
 
@@ -124,7 +126,7 @@ def verdict_of(text: str) -> str:
 
 
 def explorer_inputs(ex: Explorer, source: str) -> dict:
-    return {"explorer": {"repo": EXPLORER, "job": source, "issue": ex.issue(source)}}
+    return {"explorer": {"repo": EXPLORER, "job": source, "issue": ex.issue(source)}, "origin": f"explorer:{source}"}
 
 
 def plan_roadmap(ex: Explorer, name: str, packages_dir: str,
@@ -306,15 +308,30 @@ def open_pull_request(ctx, step: Step) -> str:
     if problems:
         return "refused by the submission gates: " + "; ".join(problems[:3])
     gitops.commit_paths(checkout, sorted(step.files), f"Import {step.name} from the explorer ({step.source})", ctx.operator)
-    fork = gitops.ensure_fork(ctx.gh, repo, ctx.operator)
-    gitops.push(checkout, fork, branch)
+    fork = retrying(lambda: gitops.ensure_fork(ctx.gh, repo, ctx.operator))
+    retrying(lambda: gitops.push(checkout, fork, branch))
     link = f"https://github.com/{EXPLORER}/issues/{step.issue}" if step.issue else EXPLORER
     body = (f"Imports `{step.name}` from the explorer: {step.source} ({link}). When this merges, `board intake` "
             f"creates `{step.job.id}`.\n\nFiles: " + ", ".join(f"`{f}`" for f in sorted(step.files)) + "\n\n"
             + encode_import([step]))
-    pr = gitops.open_pull_request(ctx.gh, repo, f"{ctx.operator}:{branch}", "main",
-                                  f"Import {step.name} from the explorer ({step.job.id})", body, draft=False)
+    pr = retrying(lambda: gitops.open_pull_request(ctx.gh, repo, f"{ctx.operator}:{branch}", "main",
+                                                   f"Import {step.name} from the explorer ({step.job.id})", body,
+                                                   draft=False))
     return f"pull request #{(pr or {}).get('number', '?')}"
+
+
+RETRIES, BACKOFF = 2, 30         # a refused push or a GitHub 5xx/timeout is tried again twice, 30 s apart
+SLEEP = time.sleep
+
+
+def retrying(do):
+    for attempt in range(RETRIES + 1):
+        try:
+            return do()
+        except (gitops.PushError, GHError) as exc:
+            if attempt == RETRIES or (isinstance(exc, GHError) and not transient(exc)):
+                raise
+            SLEEP(BACKOFF)
 
 
 def import_explorer(ctx, root: Path, kinds: tuple[str, ...] = STAGES, names: tuple[str, ...] = (),
@@ -327,13 +344,19 @@ def import_explorer(ctx, root: Path, kinds: tuple[str, ...] = STAGES, names: tup
             step.outcome = "skipped: " + step.skip
         elif not yes:
             step.outcome = "would " + ("open an import pull request" if step.files else "create the job") + " (dry run)"
-        elif step.files:
-            step.outcome = open_pull_request(ctx, step)
         else:
-            number = ctx.board.create(step.job, "available", preamble=(
-                f"Imported from the explorer's queue: {step.source} (https://github.com/{EXPLORER}/issues/{step.issue})."
-                if step.issue else f"Imported from the explorer's queue: {step.source}."))
-            step.outcome = f"created #{number}"
+            # A failure (a refused push, GitHub slow to answer) is reported, and the import goes on.
+            try:
+                if step.files:
+                    step.outcome = open_pull_request(ctx, step)
+                else:
+                    number = ctx.board.create(step.job, "available", preamble=(
+                        f"Imported from the explorer's queue: {step.source} "
+                        f"(https://github.com/{EXPLORER}/issues/{step.issue})." if step.issue
+                        else f"Imported from the explorer's queue: {step.source}."))
+                    step.outcome = f"created #{number}"
+            except (gitops.GitError, GHError, OSError) as exc:
+                step.failed, step.outcome = True, f"failed: {str(exc).splitlines()[0][:200]}"
     return steps
 
 
@@ -348,7 +371,11 @@ def summary(steps: list[Step]) -> str:
     for s in steps:
         key = "skipped" if s.skip else (s.job.kind if s.job else "-")
         counts[key] = counts.get(key, 0) + 1
-    return "\n".join(lines + ["", "  ".join(f"{k}: {v}" for k, v in sorted(counts.items())) or "nothing to import"])
+    failed = [s for s in steps if s.failed]
+    tail = [f"failed: {len(failed)} ({', '.join(s.name for s in failed)}); run the import again to retry them"] \
+        if failed else []
+    return "\n".join(lines + ["", "  ".join(f"{k}: {v}" for k, v in sorted(counts.items())) or "nothing to import"]
+                     + tail)
 
 
 # --- the board side ---------------------------------------------------------------------------------

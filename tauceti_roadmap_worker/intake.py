@@ -181,9 +181,10 @@ def stuck_on(ctx, job: Job, outcome: Outcome) -> list[str]:
 
 def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
     cfg = ctx.cfg
-    new = board.successors(job, outcome, max_rounds=cfg.board.max_rounds, redteam_rounds=cfg.redteam.rounds,
-                           redteam_agents=tuple(p.agent for p in cfg.redteam.passes),
-                           redteam_models=tuple(p.model for p in cfg.redteam.passes))
+    new = board.inherit_origin(job, board.successors(
+        job, outcome, max_rounds=cfg.board.max_rounds, redteam_rounds=cfg.redteam.rounds,
+        redteam_agents=tuple(p.agent for p in cfg.redteam.passes),
+        redteam_models=tuple(p.model for p in cfg.redteam.passes)))
     stuck = stuck_on(ctx, job, outcome) if any(s.kind == "fix" for s in new) else []
     reason = board.blocked_reason(job, outcome, max_rounds=cfg.board.max_rounds)
     capped = bool(reason) and job.kind == "review" and outcome.verdict == "needs_changes"
@@ -241,7 +242,7 @@ def park_after_rounds(ctx, review: Job, outcome: Outcome | None, existing: set[s
     as state:blocked, listing the review's findings, and the review's issue says how a human goes on:
     moving the fix to state:available runs the next round (the counter keeps counting), closing it
     stops. Returns the fix's id, or '' when it exists already."""
-    fix = board.fix_for_review(review)
+    [fix] = board.inherit_origin(review, [board.fix_for_review(review)])
     n = board.parse_job_id(review.id).round
     note = PARKED_ROUNDS.format(n=n, next=n + 1)
     if fix.id in existing:
@@ -255,6 +256,21 @@ def park_after_rounds(ctx, review: Job, outcome: Outcome | None, existing: set[s
     ctx.board.comment(review.number, f"Parked for a human after {n} rounds: `{fix.id}` (#{number}) is blocked; move it "
                                      f"to state:available to run round {n + 1}, or close it to stop.")
     return fix.id
+
+
+def sync_origins(ctx) -> list[str]:
+    """`board sync`: an open job that does not say where its roadmap came from gets the origin of its
+    roadmap (a target a human filed, `target:<issue>`, or an import, `explorer:<job>`) recorded."""
+    jobs = ctx.board.all_jobs()
+    known = board.origins(jobs)
+    out = []
+    for job in jobs:
+        if job.state == "done" or board.own_origin(job) or not known.get(job.name):
+            continue
+        job.inputs["origin"] = known[job.name]
+        ctx.board.update_spec(job)
+        out.append(f"{job.id}: origin {known[job.name]}")
+    return out
 
 
 def repark_capped(ctx) -> list[str]:

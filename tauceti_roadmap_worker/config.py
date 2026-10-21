@@ -25,6 +25,9 @@ from pathlib import Path
 from . import paths
 
 AGENTS = ("codex", "claude")
+# Job stages, closest to delivery first: what `[board] priority` orders.
+STAGE_ORDER = ("GATE", "PORT", "FIX-RT", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN", "DESIGN",
+               "TARGET")
 SANDBOX_PROFILES = ("off", "proxy", "netjail")
 LICENCE_CLASSES = ("open-repository", "publisher-open", "author-page", "institutional", "operator-local")
 # GitHub's author_association values: who may answer a `needs-references` request.
@@ -77,6 +80,10 @@ class Board:
     # fetched whatever its host's licence class, except a denied host): logins or "team:<org>/<slug>".
     # Empty: the target filers and the operators.
     reference_answerers: list[str] = field(default_factory=list)
+    # The order in which a worker takes jobs: first those whose roadmap descends from a target a human
+    # filed (`human_first`), then imported ones; within each, by stage in this order, then oldest first.
+    human_first: bool = True
+    priority: list[str] = field(default_factory=lambda: list(STAGE_ORDER))
 
 
 @dataclass
@@ -332,6 +339,9 @@ def validate(cfg: Config) -> None:
             problems.append(f"redteam.passes: agent must be one of {AGENTS}")
     if cfg.board.max_rounds < 1:
         problems.append("board.max_rounds must be at least 1")
+    unknown = [x for x in cfg.board.priority if x not in STAGE_ORDER]
+    if unknown:
+        problems.append(f"board.priority: unknown stage(s) {', '.join(unknown)} (stages: {', '.join(STAGE_ORDER)})")
     if cfg.design.daily_cap < 0:
         problems.append("design.daily_cap must be >= 0")
     if cfg.review.separation not in ("operator", "agent"):

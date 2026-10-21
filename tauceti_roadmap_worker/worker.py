@@ -1,10 +1,12 @@
 """The worker round: pick the most useful eligible job, take its lease, run its lane, release.
 
-Order: KIND_PRIORITY (humans waiting on a pull request first, then work in flight, then new work),
-then the roadmap's rank in the merge order (bottom-up), then the oldest issue. A lease is renewed
-by a heartbeat while the agent runs, so a long run is not mistaken for a dead one; it is released
-when the round ends, whatever the outcome (a submitted job is then held by its pull request, a
-parked one by its request). A round that stops before either puts the job back to `state:available`.
+Order (`rank`, configurable under `[board]`): jobs whose roadmap descends from a target a human filed
+before imported ones (`human_first`), then by stage closest to delivery first (`priority`: GATE, PORT,
+FIX-RT, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET), then the oldest issue. A
+lease is renewed by a heartbeat while the agent runs, so a long run is not mistaken for a dead one;
+it is released when the round ends, whatever the outcome (a submitted job is then held by its pull
+request, a parked one by its request). A round that stops before either puts the job back to
+`state:available`.
 """
 
 from __future__ import annotations
@@ -18,9 +20,9 @@ import time
 import json
 from pathlib import Path
 
-from . import claims
-from .board import KIND_PRIORITY, Job
-from .config import AGENTS
+from . import board, claims
+from .board import Job
+from .config import AGENTS, STAGE_ORDER
 from .gh import GHError
 from .lanes import Context, LaneResult, lane_for
 from .lanes.base import LaneBlocked
@@ -48,9 +50,19 @@ def record_failure(ctx: Context, job_id: str) -> int:
     return data[job_id]
 
 
-def rank(jobs: list[Job], order: list[str]) -> list[Job]:
-    pos = {n: i for i, n in enumerate(order)}
-    return sorted(jobs, key=lambda j: (KIND_PRIORITY.get(j.kind, 9), pos.get(j.name, len(pos)), j.number))
+def rank(jobs: list[Job], order: list[str] | None = None, priority: list[str] | tuple[str, ...] = STAGE_ORDER,
+         human_first: bool = True, known: dict[str, str] | None = None) -> list[Job]:
+    """The jobs in the order a worker takes them: those whose roadmap descends from a target a human
+    filed first (`human_first`), then imported ones (an unknown origin counts as imported); within
+    each, by stage in `priority` (closest to delivery first, unlisted stages after), then oldest first.
+    `order` (the merge order) is no longer a key; it is accepted for callers that pass it."""
+    known = known if known is not None else board.origins(jobs)
+    stage = {s: i for i, s in enumerate(priority)}
+
+    def key(j: Job):
+        human = board.origin_of(j, known).startswith("target:")
+        return (0 if human or not human_first else 1, stage.get(board.stage_of(j.id), len(stage)), j.number)
+    return sorted(jobs, key=key)
 
 
 class Heartbeat:
@@ -112,7 +124,14 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
     if job_id:
         jobs = [j for j in jobs if j.id == job_id]
     failed_before = failures(base)
-    for job in rank(jobs, order or []):
+    known = board.origins(jobs)
+    if any(not board.origin_of(j, known) for j in jobs):
+        try:     # a job that does not say where its roadmap came from: look up the roadmap's target
+            known = board.origins(base.board.all_jobs())
+        except (GHError, AttributeError):
+            pass
+    cfg = base.cfg.board
+    for job in rank(jobs, order or [], cfg.priority, cfg.human_first, known):
         if avoid and job.id in avoid:
             continue
         if failed_before.get(job.id, 0) >= MAX_ATTEMPTS:

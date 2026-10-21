@@ -612,12 +612,12 @@ def board_cmd(args) -> int:
         names = tuple(n.strip() for n in args.names.split(",") if n.strip())
         steps = explorer.import_explorer(ctx, Path(args.source).expanduser(), kinds or explorer.STAGES, names, yes=write)
         print(explorer.summary(steps))
-        return 0
+        return 1 if any(s.failed for s in steps) else 0
     if args.action == "sync":
         for line in (filers.refresh(ctx) + intake.sync_targets(ctx) + intake.sync_states(ctx, shared)
                      + intake.sync_expired(ctx, shared)
                      + intake.sync_leases(ctx, shared) + intake.sync_pull_requests(ctx)
-                     + intake.repark_capped(ctx) + boardpr.review_queue(ctx, yes=write)):
+                     + intake.repark_capped(ctx) + intake.sync_origins(ctx) + boardpr.review_queue(ctx, yes=write)):
             print(line)
         return 0
     for line in intake.stale(ctx, shared, release=args.release):

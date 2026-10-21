@@ -367,6 +367,51 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
     return []
 
 
+def stage_of(job_id: str) -> str:
+    """GATE, PORT, FIX-RT, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN or TARGET."""
+    j = parse_job_id(job_id)
+    return f"{j.prefix}-{j.subject}" if j.prefix in ("FIX", "REV") and j.subject else j.prefix
+
+
+def own_origin(job: Job) -> str:
+    """Where a job's roadmap came from, from the job alone: its recorded `origin`, an explorer import,
+    or, for a target a human filed, the target itself; '' when the job does not say."""
+    if job.inputs.get("origin"):
+        return str(job.inputs["origin"])
+    if isinstance(job.inputs.get("explorer"), dict):
+        return f"explorer:{job.inputs['explorer'].get('job', '?')}"
+    if job.kind == "target" and job.number:
+        return f"target:{job.number}"
+    return ""
+
+
+def origins(jobs: list[Job]) -> dict[str, str]:
+    """Roadmap name -> origin, from the jobs that say (a renamed design follows its target)."""
+    out: dict[str, str] = {}
+    by_id = {j.id: j for j in jobs}
+    for j in sorted(jobs, key=lambda x: x.number or 0):
+        found = own_origin(j)
+        if not found and j.inputs.get("target") in by_id:
+            found = own_origin(by_id[j.inputs["target"]])
+        if found:
+            out.setdefault(j.name, found)
+    return out
+
+
+def origin_of(job: Job, known: dict[str, str]) -> str:
+    """A job's origin: its own, else its roadmap's; an unknown origin counts as imported."""
+    return own_origin(job) or known.get(job.name, "")
+
+
+def inherit_origin(parent: Job, children: list[Job]) -> list[Job]:
+    """The jobs a finished job releases carry its roadmap's origin."""
+    found = own_origin(parent)
+    if found:
+        for child in children:
+            child.inputs.setdefault("origin", found)
+    return children
+
+
 def fix_for_review(job: Job) -> Job:
     """The repair round that follows a review asking for changes (the branch owner's, on a board
     pull request)."""

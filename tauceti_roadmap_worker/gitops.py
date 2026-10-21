@@ -177,4 +177,15 @@ def kebab(name: str) -> str:
 
 
 def open_pull_request(gh: GH, repo: str, head: str, base: str, title: str, body: str, draft: bool) -> dict | None:
-    return gh.write("POST", f"repos/{repo}/pulls", {"title": title, "head": head, "base": base, "body": body, "draft": draft})
+    """Open the pull request, or, when one is already open for this head (an earlier attempt opened
+    it before its answer was lost), return that one."""
+    try:
+        return gh.write("POST", f"repos/{repo}/pulls", {"title": title, "head": head, "base": base, "body": body,
+                                                        "draft": draft})
+    except GHError as exc:
+        if "already exists" not in str(exc):
+            raise
+        found = gh.api(f"repos/{repo}/pulls?head={head}&state=open&per_page=10") or []
+        if not found:
+            raise
+        return found[0]

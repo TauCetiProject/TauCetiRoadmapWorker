@@ -27,7 +27,7 @@ from .. import agents, board, claims, depgraph, fetcher, gates, gitops, prompts,
 from ..board import Board, Job
 from ..config import Config
 from ..depgraph import read_order
-from ..gh import GH, GHError
+from ..gh import GH, GHError, transient
 from ..paths import sanitize_worker_id
 
 PR_MARKER = "tauceti-roadmap-pr"
@@ -651,8 +651,9 @@ class Lane:
     def comment_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, body: str) -> str:
         if ctx.dry_run:
             return f"[dry-run] would comment on #{self.board_pr(job)}"
-        made = ctx.gh.write("POST", f"repos/{ctx.cfg.repositories.packages_repo()}/issues/{self.board_pr(job)}/comments",
-                            {"body": body}) or {}
+        made = self.push(lambda: ctx.gh.write(
+            "POST", f"repos/{ctx.cfg.repositories.packages_repo()}/issues/{self.board_pr(job)}/comments",
+            {"body": body})) or {}
         return made.get("html_url", "")
 
     def marker(self, job: Job, ctx: Context, ws: Workspace) -> dict:
@@ -720,13 +721,13 @@ class Lane:
             return f"[dry-run] would submit {', '.join(changed)}"
         gitops.commit_paths(ws.board, changed, message, ctx.operator)
         repo = cfg.repositories.packages_repo()
-        fork = gitops.ensure_fork(ctx.gh, repo, ctx.operator)
+        fork = self.push(lambda: gitops.ensure_fork(ctx.gh, repo, ctx.operator))
         self.push(lambda: gitops.push(ws.board, fork, ws.branch))
         body = (f"Refs #{job.number}\n\n{summary}\n\nAgent: {ctx.agent} ({ctx.model}); operator @{ctx.operator}; "
                 f"worker `{ctx.worker_id}`. Files: " + ", ".join(f"`{p}`" for p in changed) + "\n\n"
                 + board.encode_submission(job.id, ctx.worker_id, ctx.operator, ctx.agent, ctx.model))
-        pr = gitops.open_pull_request(ctx.gh, repo, f"{ctx.operator}:{ws.branch}", "main",
-                                      f"{board.title_for(job)}: submission", body, draft=False)
+        pr = self.push(lambda: gitops.open_pull_request(ctx.gh, repo, f"{ctx.operator}:{ws.branch}", "main",
+                                                        f"{board.title_for(job)}: submission", body, draft=False))
         if self.records_author(job) and ctx.claims:
             ctx.claims.record_author(job.id, ctx.agent, ctx.model)
         try:
@@ -795,7 +796,9 @@ class Lane:
             url = self.submit(job, ctx, ws, note)
         except gitops.BranchMoved as exc:
             return LaneResult(job.id, "blocked", str(exc))
-        except gitops.PushError as exc:
+        except (gitops.PushError, GHError) as exc:
+            if isinstance(exc, GHError) and not transient(exc):
+                return LaneResult(job.id, "failed", str(exc))
             tries = save_pending(ctx, job, ws, str(exc))
             if tries >= PUSH_ATTEMPTS:
                 clear_pending(ctx, job)
@@ -803,19 +806,20 @@ class Lane:
             return LaneResult(job.id, "failed", f"push failed ({exc}); the run is kept in "
                               f"{ws.job_dir / PENDING_DIR} and the next attempt pushes it without running the agent "
                               f"(try {tries} of {PUSH_ATTEMPTS})")
-        except (LaneError, gitops.GitError, GHError) as exc:
+        except (LaneError, gitops.GitError) as exc:
             return LaneResult(job.id, "failed", str(exc))
         clear_pending(ctx, job)
         return LaneResult(job.id, "submitted", note, url)
 
-    def push(self, do) -> None:
-        """A push, tried again PUSH_RETRIES times PUSH_BACKOFF seconds apart before PushError
-        stands (a moved branch is never retried)."""
+    def push(self, do):
+        """A push or a GitHub write of the submission step, tried again PUSH_RETRIES times
+        PUSH_BACKOFF seconds apart before its error stands: a refused push, a GitHub 5xx or timeout.
+        A moved branch, or any other error, is never retried."""
         for attempt in range(PUSH_RETRIES + 1):
             try:
                 return do()
-            except gitops.PushError:
-                if attempt == PUSH_RETRIES:
+            except (gitops.PushError, GHError) as exc:
+                if attempt == PUSH_RETRIES or (isinstance(exc, GHError) and not transient(exc)):
                     raise
                 self.sleep(PUSH_BACKOFF)
 

@@ -61,7 +61,12 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
 * `--worker-id` names the worker: its directory, its branch prefix and its lease owner
   (`<login>/<worker-id>`). Use distinct ids for concurrent workers.
 * `--only` pins a worker to some kinds (`target, design, package, review, fix, port, redteam, gate`);
-  without it the worker takes whatever is most useful.
+  without it the worker takes whatever is most useful: first the jobs whose roadmap descends from a
+  target a human filed (origin `target:<issue>`), then imported ones (`explorer:<job>`; an unknown
+  origin counts as imported), each by stage closest to delivery (GATE, PORT, FIX-RT, RT, FIX-PKG,
+  REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET), then the oldest issue. `[board] human_first`
+  and `[board] priority` change that order; `board sync` records the origin on jobs that lack it,
+  and `status` prints it.
 * `--agent` pins the agent family. Without it, each job runs on its lane's configured agent
   (`[agents.lanes.<kind>]`, default `[agents] default`), and a red-team pass on the agent it requires,
   if that agent is installed.

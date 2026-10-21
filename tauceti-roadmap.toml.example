@@ -65,6 +65,12 @@ operators = []
 # licence class "answered-by:<login>" (or the one a trailing `licence: <class>` names). Logins or
 # "team:<org>/<slug>"; empty: the target filers and the operators.
 reference_answerers = []
+# The order in which workers take jobs. First the jobs whose roadmap descends from a target a human
+# filed (`origin = "target:<issue>"`), then imported ones (`origin = "explorer:<job>"`), when
+# human_first is true; within each, by stage in the order below (closest to delivery first), then the
+# oldest first. Stages left out come after the listed ones.
+human_first = true
+priority = ["GATE", "PORT", "FIX-RT", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN", "DESIGN", "TARGET"]
 
 [roadmap]
 # Active roadmap folders in the content repository, and where completed ones live.

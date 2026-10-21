@@ -146,7 +146,7 @@ def submission_under_review(ctx, number: int, pr: dict, sub: dict, job: Job, job
     """A design or package submission that passed the intake's checks: it stays open, its author is
     recorded, and its review follows on it."""
     login = pr["user"]["login"]
-    new = board.successors(job, Outcome())
+    new = board.inherit_origin(job, board.successors(job, Outcome()))
     if not yes:
         return open_for_review(ctx, number, pr, new, jobs, yes)
     ctx.board.comment(job.number, AUTHOR_NOTE.format(login=login, agent=sub.get("agent") or "?",
@@ -430,9 +430,10 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
         ctx.board.set_state(fix, "available", f"Released by the board: #{number} is still at `{head[:7]}`; the fix "
                                               "was not pushed.")
         return f"#{number}: {fix.id} did not move the head; available again"
-    nxt = board.successors(fix, Outcome(), max_rounds=ctx.cfg.board.max_rounds, redteam_rounds=ctx.cfg.redteam.rounds,
-                           redteam_agents=tuple(p.agent for p in ctx.cfg.redteam.passes),
-                           redteam_models=tuple(p.model for p in ctx.cfg.redteam.passes))
+    nxt = board.inherit_origin(fix, board.successors(
+        fix, Outcome(), max_rounds=ctx.cfg.board.max_rounds, redteam_rounds=ctx.cfg.redteam.rounds,
+        redteam_agents=tuple(p.agent for p in ctx.cfg.redteam.passes),
+        redteam_models=tuple(p.model for p in ctx.cfg.redteam.passes)))
     if any(j.kind == "port" for j in nxt):
         accepted = next((j.inputs.get("accepted_review") for j in jobs if j.kind == "review"
                          and j.inputs.get("board_pr") == number and j.inputs.get("accepted_review")), None)

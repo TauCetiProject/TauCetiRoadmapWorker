@@ -12,6 +12,7 @@ Pull request and issue edits use the REST endpoints (`PATCH repos/.../pulls/N`),
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -19,6 +20,15 @@ from dataclasses import dataclass
 
 class GHError(Exception):
     pass
+
+
+TRANSIENT = re.compile(r"HTTP 5\d\d|\b50[0-4]\b|timed? ?out|couldn't respond to your request in time|"
+                       r"Server Error|Bad Gateway|Service Unavailable|connection (?:reset|refused)|EOF", re.IGNORECASE)
+
+
+def transient(exc: BaseException) -> bool:
+    """A GitHub error worth trying again: a 5xx answer, a timeout, a dropped connection."""
+    return isinstance(exc, GHError) and bool(TRANSIENT.search(str(exc)))
 
 
 def looks_like_api_error(text: str) -> bool:

@@ -5,7 +5,9 @@
   newest `jobs/<JOB>/run-*.out`). Without `--job` it follows whichever job the latest `start` line
   of the round log names, and moves on when the worker starts another. Ctrl-C stops it.
 * `status [--all]` lists the board's open jobs by state with their age (since the issue last
-  changed) and, for claimed jobs, the lease's owner and how long it has held the job.
+  changed), their roadmap's origin (`target:<issue>` for a target a human filed, `explorer:<job>`
+  for an import, `?` when unknown) and, for claimed jobs, the lease's owner and how long it has held
+  the job.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import re
 import time
 from pathlib import Path
 
+from . import board as board_mod
 from . import claims
 from .board import STATES
 
@@ -120,24 +123,27 @@ def status(board, issues: list[dict], leases: dict[str, dict], project: str, at:
            include_done: bool = False) -> str:
     """The board's jobs by state: number, id, age, and for claimed jobs the lease owner and its age."""
     rows: dict[str, list[tuple[str, ...]]] = {}
-    for issue in issues:
-        if issue.get("pull_request"):
-            continue
-        job = board._job_from_issue(issue)
-        if not job or (job.state == "done" and not include_done):
+    jobs = [(issue, job) for issue in issues if not issue.get("pull_request")
+            for job in [board._job_from_issue(issue)] if job]
+    known = board_mod.origins([job for _i, job in jobs])
+    for issue, job in jobs:
+        if job.state == "done" and not include_done:
             continue
         lease = leases.get(claims.job_key(project, job.id))
         who = ""
         if lease and claims.lease_live(lease, int((at or now()).timestamp())):
             held = dt.datetime.fromtimestamp(int(lease.get("acquired_at", 0)), dt.UTC).isoformat()
             who = f"{lease.get('owner', '?')} for {age(held, at)}"
-        rows.setdefault(job.state, []).append((f"#{job.number}", job.id, age(issue.get("updated_at", ""), at), who))
+        origin = board_mod.origin_of(job, known) or "?"
+        rows.setdefault(job.state, []).append((f"#{job.number}", job.id, age(issue.get("updated_at", ""), at),
+                                               origin, who))
     out = []
     for state in (*STATES, *sorted(set(rows) - set(STATES))):
         if state not in rows:
             continue
         out.append(f"{state} ({len(rows[state])})")
         width = max(len(r[1]) for r in rows[state])
-        for number, job_id, since, who in sorted(rows[state], key=lambda r: int(r[0][1:])):
-            out.append(f"  {number:<7} {job_id:<{width}}  {since:>5}" + (f"  {who}" if who else ""))
+        owidth = max(len(r[3]) for r in rows[state])
+        for number, job_id, since, origin, who in sorted(rows[state], key=lambda r: int(r[0][1:])):
+            out.append(f"  {number:<7} {job_id:<{width}}  {since:>5}  {origin:<{owidth}}" + (f"  {who}" if who else ""))
     return "\n".join(out) or "no open jobs"

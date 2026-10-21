@@ -116,11 +116,23 @@ def test_redteam_report_header():
     assert len(report_problems("# something else\n", 912, "Foo", "abc1234", "a (codex)")) == 2
 
 
-def test_rank_prefers_waiting_humans_then_bottom_up():
-    jobs = [new_job("DESIGN-Zeta"), new_job("REV-PKG-Beta"), new_job("GATE-Alpha~1"), new_job("REV-PKG-Alpha")]
-    for n, j in enumerate(jobs):
+def test_rank_prefers_human_targets_then_delivery_then_age():
+    """Imports never starve the roadmaps humans filed: their jobs come first, then by stage closest to
+    delivery (GATE, PORT, FIX-RT, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET), then
+    the oldest issue."""
+    imported = {"explorer": {"job": "pkg-7"}}
+    jobs = [new_job("DESIGN-Zeta", inputs={"target": "TARGET-ZetaTarget"}), new_job("REV-PKG-Beta", inputs=imported),
+            new_job("GATE-Alpha~1", inputs=imported), new_job("REV-PKG-Alpha", inputs={"origin": "target:12"}),
+            new_job("RT-Gamma~1a", inputs=imported), new_job("FIX-RT-Gamma~1", inputs=imported),
+            new_job("TARGET-ZetaTarget"), new_job("PKG-Delta")]
+    for n, j in enumerate(jobs, 1):
         j.number = n
-    assert [j.id for j in rank(jobs, ["Alpha", "Beta"])] == ["GATE-Alpha~1", "REV-PKG-Alpha", "REV-PKG-Beta", "DESIGN-Zeta"]
+    order = [j.id for j in rank(jobs)]
+    assert order == ["REV-PKG-Alpha", "DESIGN-Zeta", "TARGET-ZetaTarget",           # filed by humans
+                     "GATE-Alpha~1", "FIX-RT-Gamma~1", "RT-Gamma~1a", "REV-PKG-Beta", "PKG-Delta"]   # imports, unknown
+    # Configurable: a stage order of the project's own, and no human-first level.
+    flat = [j.id for j in rank(jobs, priority=["TARGET", "DESIGN"], human_first=False)]
+    assert flat[:2] == ["TARGET-ZetaTarget", "DESIGN-Zeta"] and flat[2] == "REV-PKG-Beta"   # unlisted: by age
 
 
 def test_merge_order_plan_with_stacks_and_external():
