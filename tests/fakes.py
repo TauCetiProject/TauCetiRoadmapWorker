@@ -191,6 +191,13 @@ class FakeIssuesGH:
     def write(self, method: str, path: str, payload: dict | None = None):
         self.writes.append((method, path, payload or {}))
         parts = path.split("/")
+        if parts[3:] == ["issues"] and method == "POST":       # a new issue, numbered after the last
+            number = max(self.issues, default=0) + 1
+            self.issues[number] = {"number": number, "state": "open", "title": payload.get("title", ""),
+                                   "body": payload.get("body", ""), "created_at": f"2026-10-21T13:{number % 60:02d}:00Z",
+                                   "labels": [{"name": name} for name in payload.get("labels", [])]}
+            self.events[number] = [{"event": "labeled", "label": dict(label)} for label in self.issues[number]["labels"]]
+            return copy.deepcopy(self.issues[number])
         number = int(parts[4])
         if len(parts) > 5 and parts[5] == "labels" and method == "POST":
             for name in payload["labels"]:
@@ -244,7 +251,7 @@ class FakeClaims:
     def renew(self, key: str, ttl: int = claims.JOB_TTL) -> int:
         return claims.ACQUIRED
 
-    def release(self, key: str) -> None:
+    def release(self, key: str, force: bool = False) -> None:
         self.released.append(key)
 
     def read(self, key: str) -> dict | None:

@@ -433,6 +433,15 @@ the port's submission, so the intake merges it with the report. When the place w
 its suppliers after one of its consumers, the job is set to `state:blocked` with the cycle in a
 comment, and nothing is submitted.
 
+A `board intake` or `board sync` that writes first takes the board lock, a 15-minute lease ref in
+the board repository (the workers' lease mechanism; the hosted workflow's token and a maintainer
+can both push it), and releases it at the end, so the hosted run and a maintainer's shell never
+interleave. A run that finds it held prints `intake already running (intake:run-<id or host>, since
+<time>); nothing done` and exits 0: wait, or let the schedule pick things up. Every job creation
+re-reads the live board first and skips a job whose issue exists (logged `already on the board as
+#n`), and each intake closes an open job issue that duplicates an older open one (`Duplicate of #n`,
+labelled `duplicate`, its lease released); a `state:done` twin and the older issue are never closed.
+
 ### The board workflow
 
 The board's maintenance need not depend on anyone running it: copy `board/board.yml` from this

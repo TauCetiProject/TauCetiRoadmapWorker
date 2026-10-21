@@ -42,6 +42,7 @@ NAME_RE = r"[A-Z][A-Za-z0-9]*"
 JOB_ID_RE = re.compile(
     rf"^(?P<prefix>TARGET|DESIGN|PKG|REV|FIX|PORT|RT|GATE)-(?:(?P<subject>DESIGN|PKG|RT)-)?"
     rf"(?P<name>{NAME_RE})(?:~(?P<round>[1-9]\d*)(?P<pass>[a-z])?)?$")
+DUPLICATE_LABEL = "duplicate"     # a job issue closed as the twin of an older one: no longer a job
 SPEC_RE = re.compile(r"<!--\s*tauceti-roadmap-job\s*(\{.*?\})\s*-->", re.S)
 SUBMISSION_RE = re.compile(r"<!--\s*tauceti-roadmap-submission\s*(\{.*?\})\s*-->", re.S)
 PRIVATE_PATH = re.compile(r"/Users/[^\s/]+|/home/[^\s/]+/|/private/(?:tmp|var)/|[A-Za-z]:\\Users\\")
@@ -162,10 +163,11 @@ class Job:
     number: int = 0
     state: str = ""
     labels: list[str] = field(default_factory=list)
+    title: str = ""
 
     def spec(self) -> dict:
         data = asdict(self)
-        for transient in ("number", "state", "labels"):
+        for transient in ("number", "state", "labels", "title"):
             data.pop(transient)
         return {k: v for k, v in data.items() if v not in ("", [], {}) or k in ("id", "kind", "name")}
 
@@ -268,6 +270,20 @@ def title_for(job: Job) -> str:
     elif j.round > 1 or job.kind in ("redteam", "gate") or (job.kind == "fix" and j.subject == "RT"):
         text += f" (round {j.round})"
     return text
+
+
+def title_key(title: str) -> str:
+    """A job title as the board compares titles: lower-cased, every run of non-alphanumerics one
+    space. Two issues with the same key are the same job."""
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+
+def made_note(board_, job: Job, number: int) -> str:
+    """`JOB (#N)` for a job the board created, `JOB (already on the board as #N)` for one whose
+    creation was skipped because the live board had it."""
+    if job.id in getattr(board_, "reused", {}):
+        return f"{job.id} (already on the board as #{number})"
+    return f"{job.id} (#{number})"
 
 
 # --- the job graph --------------------------------------------------------------------------------
@@ -718,17 +734,20 @@ class Board:
         self.gh = gh or GH()
         self.repo = cfg.repositories.board_repo()
         self.ns = cfg.board.namespace_label
+        self.made: dict[str, int] = {}      # title key -> issue this process created (a listing may lag it)
+        self.reused: dict[str, int] = {}    # job id -> the issue the live board already had at creation
 
     def _job_from_issue(self, issue: dict) -> Job | None:
         """The job an issue carries. Only issues with a `state:` label are jobs: the board sets that
-        label itself, so a spec someone typed into an issue nobody has synced is not a job."""
+        label itself, so a spec someone typed into an issue nobody has synced is not a job; an issue
+        closed as the `duplicate` of an older twin is not one either."""
         labels = [label["name"] for label in issue.get("labels", [])]
-        if not any(label.startswith("state:") for label in labels):
+        if not any(label.startswith("state:") for label in labels) or DUPLICATE_LABEL in labels:
             return None
         job = decode_spec(issue.get("body") or "")
         if not job:
             return None
-        job.number, job.labels = issue["number"], labels
+        job.number, job.labels, job.title = issue["number"], labels, issue.get("title") or ""
         job.state = state_from_labels(job.labels)
         return job
 
@@ -756,12 +775,50 @@ class Board:
                 return job
         return None
 
+    def existing(self, job: Job) -> int:
+        """The issue the live board already has for a job (open or closed, by its title as
+        `title_key` compares it), or 0. Read now, not from a listing taken earlier in the run (the
+        hosted and a local intake once both read the board, saw no job for a round, and created
+        it: #569/#571); an issue this process created counts even before the listing shows it (the
+        same scan concluded twin passes and created the round's fix twice: #580/#581)."""
+        key = title_key(title_for(job))
+        if self.made.get(key):
+            return self.made[key]
+        issues = self.gh.api(f"repos/{self.repo}/issues?labels={self.ns},kind:{job.kind}&state=all&per_page=100",
+                             paginate=True) or []
+        twins = sorted(int(i["number"]) for i in issues
+                       if not i.get("pull_request") and title_key(i.get("title") or "") == key)
+        return twins[0] if twins else 0
+
     def create(self, job: Job, state: str = "available", preamble: str = "") -> int:
+        """Create the job's issue, unless the live board has one already (then its number is
+        returned, the job is noted in `reused`, and nothing is written). Every job creation (a
+        target's design, reviews, fixes, red-team passes, ports, gates, imports) goes through here."""
+        found = self.existing(job)
+        if found:
+            self.reused[job.id] = job.number = found
+            return found
         payload = {"title": title_for(job), "body": issue_body(job, self.cfg.repositories.packages_repo(),
                                                                self.cfg.board.packages_dir, preamble),
                    "labels": labels_for(job, state, self.ns)}
         created = self.gh.write("POST", f"repos/{self.repo}/issues", payload)
-        return int(created["number"]) if created else 0
+        number = int(created["number"]) if created else 0
+        if number:
+            self.made[title_key(payload["title"])] = job.number = number
+        return number
+
+    def open_twins(self) -> list[list[Job]]:
+        """Open job issues that share a title (as `title_key` compares it), each group oldest
+        first: the same job created twice."""
+        issues = self.gh.api(f"repos/{self.repo}/issues?labels={self.ns}&state=open&per_page=100", paginate=True) or []
+        groups: dict[str, list[Job]] = {}
+        for issue in issues:
+            if issue.get("pull_request"):
+                continue
+            job = self._job_from_issue(issue)
+            if job:
+                groups.setdefault(title_key(job.title), []).append(job)
+        return [sorted(g, key=lambda j: j.number) for g in groups.values() if len(g) > 1]
 
     def set_state(self, job: Job, state: str, comment: str = "") -> None:
         """Make `state:<state>` the issue's only state label, whatever it carried before. The new

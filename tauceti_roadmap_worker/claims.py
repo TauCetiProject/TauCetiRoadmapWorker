@@ -190,13 +190,14 @@ class Claims:
         except (OSError, subprocess.SubprocessError):
             return ERROR
 
-    def release(self, key: str) -> None:
+    def release(self, key: str, force: bool = False) -> None:
+        """Delete our own lease (`force`: whoever holds it, as the board does for a job it closes)."""
         try:
             self.ensure_repo()
             ref = self._ref(key)
             cur = self.remote_oid(ref)
             lease = self.lease_at(cur, ref) if cur else None
-            if lease and lease.get("owner") == self.owner and not self.dry_run:
+            if lease and (force or lease.get("owner") == self.owner) and not self.dry_run:
                 self._git("push", f"--force-with-lease={ref}:{cur}", "origin", f":{ref}")
         except (OSError, subprocess.SubprocessError):
             pass

@@ -421,5 +421,5 @@ def intake_import(ctx, number: int, pr: dict, found: dict, yes: bool) -> str:
     if not yes:
         return f"#{number}: would merge the import and create {', '.join(j.id for j in todo) or 'nothing'} (dry run)"
     ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash"})
-    created = [f"{j.id} (#{ctx.board.create(j)})" for j in todo]
+    created = [board.made_note(ctx.board, j, ctx.board.create(j)) for j in todo]
     return f"#{number}: merged the import; created " + (", ".join(created) or "nothing (already on the board)")

@@ -13,6 +13,9 @@
   created for the branch owner when humans are waiting for a reply; held pull requests stay drafts.
 * `stale(release)`: claims whose lease lapsed and whose issue shows nothing for `stale_hours`, and
   submissions whose pull request was closed unmerged, go back to `state:available`.
+* `board_lock` / `take_lock`: one intake or sync at a time, whoever runs it (the hosted workflow and
+  a maintainer's shell share no filesystem): a lease ref in the board repository, which both can
+  push; `repair_duplicates`: a job created twice (both open) keeps its older issue.
 """
 
 from __future__ import annotations
@@ -20,7 +23,9 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import json
+import os
 import re
+import socket
 
 from . import board, boardpr, claims, depgraph, explorer, filers, prreviews, replies
 from .board import Job, Outcome
@@ -140,8 +145,7 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None) -> str:
     return f"#{number}: merged {job.id}; " + advance(ctx, job, outcome, jobs)
 
 
-def _norm(title: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+_norm = board.title_key
 
 
 def stuck_findings(repair_report: str, review: str) -> list[str]:
@@ -259,11 +263,11 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
         if s.id not in existing:
             if stuck and s.kind == "fix":
                 # Parked: the human who unblocks it lets one more repair round run.
-                ctx.board.create(s, state="blocked", preamble=STUCK_NOTE + "\n\n" + "\n".join(f"- {f}" for f in stuck))
-                created.append(f"{s.id} (blocked)")
+                number = ctx.board.create(s, state="blocked",
+                                          preamble=STUCK_NOTE + "\n\n" + "\n".join(f"- {f}" for f in stuck))
+                created.append(_created(ctx, s, number, " (blocked)"))
                 continue
-            ctx.board.create(s)
-            created.append(s.id)
+            created.append(_created(ctx, s, ctx.board.create(s)))
     notes = []
     if stuck:
         ctx.board.comment(job.number, "Parked for a human: " + STUCK_NOTE + "\n\n" + "\n".join(f"- {f}" for f in stuck))
@@ -283,6 +287,13 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
     if job.kind == "review" and outcome.verdict == "accepted" and board.parse_job_id(job.id).subject == "DESIGN":
         notes.append(add_to_order(ctx, job.name))
     return "created " + (", ".join(created) if created else "nothing") + (f" ({'; '.join(notes)})" if notes else "")
+
+
+def _created(ctx, job: Job, number: int, suffix: str = "") -> str:
+    """The `created ...` entry for a job: its id, or where the live board already had it."""
+    if job.id in getattr(ctx.board, "reused", {}):
+        return f"{job.id} (already on the board as #{number})"
+    return job.id + suffix
 
 
 PARKED_ROUNDS = ("Parked for a human after {n} rounds: move this fix to state:available to run round {next}, or "
@@ -527,6 +538,80 @@ def _held(ctx, pr: int) -> bool:
     except OSError:
         return False
     return str(pr) in held
+
+
+# --- one run at a time ------------------------------------------------------------------------------
+
+LOCK_TTL = 15 * 60     # seconds a board run holds the board; a run that dies leaves it for this long
+
+
+def lock_key(project: str) -> str:
+    return f"roadmap/{project}/board/intake"
+
+
+def lock_owner() -> str:
+    """`intake:run-<id>` on GitHub Actions, `intake:<host>-<pid>` elsewhere."""
+    run = os.environ.get("GITHUB_RUN_ID", "")
+    return f"intake:run-{run}" if run else f"intake:{socket.gethostname()}-{os.getpid()}"
+
+
+def board_lock(cfg, ctx) -> claims.Claims:
+    """The board lock: a lease (the workers' mechanism, `claims.py`) under the board repository's
+    own refs, which the hosted workflow's token and a maintainer can both push; the claims
+    namespace is another repository the workflow's token cannot write to."""
+    repo = cfg.repositories.board_repo()
+    return claims.Claims(repo=repo, gitdir=cfg.state_dir() / "claims" / (repo.replace("/", "__") + ".git"),
+                         owner=lock_owner(), operator=ctx.operator, project=cfg.project.name, dry_run=ctx.dry_run)
+
+
+def take_lock(lock, project: str) -> tuple[bool, str]:
+    """(may run, line to log). Held by another run: (False, "intake already running (owner, since
+    ...)"). A lock that cannot be written (no push access, no network) never stops a run: it is
+    taken as the leases are, fail-open, and said so."""
+    key = lock_key(project)
+    status = lock.acquire(key, LOCK_TTL)
+    if status == claims.HELD:
+        lease = lock.read(key) or {}
+        since = dt.datetime.fromtimestamp(int(lease.get("acquired_at", 0) or 0), dt.UTC)
+        return False, f"intake already running ({lease.get('owner', '?')}, since {since:%Y-%m-%d %H:%M:%SZ}); nothing done"
+    if status == claims.ERROR:
+        return True, "board lock not taken (the lock ref could not be written); running unlocked"
+    return True, ""
+
+
+# --- duplicate jobs ---------------------------------------------------------------------------------
+
+def repair_duplicates(ctx, shared: claims.Claims | None, yes: bool = False) -> list[str]:
+    """`board intake`: a job whose issue exists twice, both open (two runs created it at once),
+    keeps the older issue; each newer twin is closed as `Duplicate of #n` with the `duplicate`
+    label (no longer a job) and its lease, if any, released. The older twin is never closed, nor a
+    twin that is `state:done`."""
+    out = []
+    for group in ctx.board.open_twins():
+        keep, *rest = group
+        for dup in rest:
+            if dup.state == "done":
+                out.append(f"{dup.id}: #{dup.number} duplicates #{keep.number} but is done; left as it is")
+                continue
+            if not yes:
+                out.append(f"{dup.id}: would close #{dup.number} as a duplicate of #{keep.number} (dry run)")
+                continue
+            ctx.board.comment(dup.number, f"Duplicate of #{keep.number}: this job was created twice; the older issue "
+                                          "is the job. Closed by the board.")
+            try:
+                ctx.board.add_label(dup, board.DUPLICATE_LABEL)
+            except GHError:
+                pass
+            ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.board_repo()}/issues/{dup.number}", {"state": "closed"})
+            released = ""
+            if shared:
+                key = claims.job_key(ctx.cfg.project.name, dup.id)
+                lease = shared.read(key)
+                if lease:
+                    shared.release(key, force=True)
+                    released = f"; lease of {lease.get('owner', '?')} released"
+            out.append(f"{dup.id}: closed #{dup.number} as a duplicate of #{keep.number}{released}")
+    return out
 
 
 # --- sync ------------------------------------------------------------------------------------------

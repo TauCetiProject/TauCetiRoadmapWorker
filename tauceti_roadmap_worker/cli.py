@@ -624,17 +624,39 @@ def board_cmd(args) -> int:
 
 
 def board_run(args, cfg, ctx) -> int:
+    """`board intake` and `board sync` that write hold the board lock (one run at a time, hosted or
+    local); a run that finds it held says so and exits 0 having done nothing."""
     from . import intake
+    write = args.yes and not args.dry_run
+    lock = intake.board_lock(cfg, ctx) if write and args.action in ("intake", "sync") else None
+    if lock is not None:
+        proceed, line = intake.take_lock(lock, cfg.project.name)
+        if line:
+            print(line)
+        if not proceed:
+            return 0
+    try:
+        return _board_steps(args, cfg, ctx, intake, write)
+    finally:
+        if lock is not None:
+            lock.release(intake.lock_key(cfg.project.name))
+
+
+def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
     shared = None
     if cfg.repositories.claims:
         shared = claims.Claims(repo=cfg.repositories.claims,
                                gitdir=cfg.state_dir() / "claims" / (cfg.repositories.claims.replace("/", "__") + ".git"),
                                owner=f"{ctx.operator}/board", operator=ctx.operator, project=cfg.project.name,
                                dry_run=ctx.dry_run)
-    write = args.yes and not args.dry_run
     if args.action in ("intake", "references"):
         skipped: list[str] = []
         if args.action == "intake":
+            try:
+                for line in intake.repair_duplicates(ctx, shared, yes=write):
+                    print(line)
+            except GHError as exc:
+                print(f"duplicates: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]})")
             skipped += [f"#{n}" for n in intake.intake_open(ctx, write, only=args.pr or 0)]
         if not args.pr:
             for line in references.resume_all(ctx, ctx.sources_fetcher(), yes=write):

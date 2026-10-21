@@ -139,7 +139,7 @@ def open_for_review(ctx, number: int, pr: dict, new: list[Job], all_jobs: list[J
     for job in todo:   # earlier comments answer earlier rounds: only a review of this head counts from them
         job.inputs["after_comment"] = max((int(c.get("id") or 0) for c in comments), default=0)
     pin_brief(ctx, number, new[0], pr, comments)
-    created = [f"{j.id} (#{ctx.board.create(j)})" for j in todo]
+    created = [board.made_note(ctx.board, j, ctx.board.create(j)) for j in todo]
     return f"#{number}: open for review; created " + (", ".join(created) or "nothing")
 
 
@@ -528,7 +528,7 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
         finish_job(ctx, fix, f"Intake: fix pushed to #{number} at `{head[:7]}`.")
     if any(j.kind == "port" for j in nxt):
         existing = {j.id for j in ctx.board.all_jobs()}
-        created = [f"{j.id} (#{ctx.board.create(j)})" for j in nxt if j.id not in existing]
+        created = [board.made_note(ctx.board, j, ctx.board.create(j)) for j in nxt if j.id not in existing]
         return f"#{number}: {fix.id} done; merged; created " + (", ".join(created) or "nothing")
     for j in nxt:
         j.inputs["board_pr"] = number
