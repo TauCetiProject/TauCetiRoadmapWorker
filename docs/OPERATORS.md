@@ -538,14 +538,19 @@ after every round that submitted, parked, blocked or released a job, at most onc
 workflow's concurrency group collapses bursts, a failure is ignored, and the schedule stays the
 fallback. `[board] dispatch = false` turns it off.
 
-An accepted board pull request that conflicts with main (the intake recorded answers in the
-roadmap's sources.toml on main while the branch changed it too) is merged by the intake itself: it
-squashes the pull request onto main in a checkout of the board, merges each conflicting sources.toml
-by key (main's answered entries, those with a `resolution`, are kept; the pull request's other
-entries win), commits with the pull request's author, pushes to main and closes the pull request
-with a note. A conflict in any other file sets the job that concluded it (the accepting review, or
-the last red-team fix) to `state:blocked`: "the pull request #N conflicts with main in <files>; a
-human rebases it".
+An accepted board pull request that conflicts with main (GitHub reports it `mergeable_state:
+dirty`, or the merge call names a conflict; a merge the API refuses with any other error, a 403
+included, on a pull request it reports clean is a failure retried by the next scan) is merged by the
+intake itself: it squashes the pull request onto main in a checkout of the board, resolves each
+conflicting file, commits with the pull request's author, pushes to main and closes the pull request
+with a note. A conflicting sources.toml (the intake recorded answers in the roadmap's manifest on
+main while the branch changed it too) is merged by key (main's answered entries, those with a
+`resolution`, are kept; the pull request's other entries win). A conflicting `ORDER.txt` (an older
+import branch placed its roadmap in the merge order itself while the intake rewrote the order on
+main) is taken from main, which is authoritative, and the pull request's roadmap is inserted after
+its last supplier when main's copy lacks it. A conflict in any other file sets the job that
+concluded it (the accepting review, or the last red-team fix) to `state:blocked`: "the pull request
+#N conflicts with main in <files>; a human rebases it".
 
 An accepted design whose merge failed stays in a retry state on its review job (`merge_pending`: the
 reviewed head and the accepting comments), and every intake retries the merge. When the head has

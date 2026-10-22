@@ -36,7 +36,7 @@ import datetime as dt
 import json
 import tomllib
 
-from . import board, claims, explorer, prompts, prreviews, sources
+from . import board, claims, depgraph, explorer, prompts, prreviews, sources
 from .board import Job, Outcome
 from .gh import GHError
 
@@ -339,7 +339,7 @@ def merge(ctx, number: int, pr: dict, jobs: list[Job], verdict: dict | None, blo
     try:
         ctx.gh.write("PUT", f"repos/{repo(ctx)}/pulls/{number}/merge", {"merge_method": "squash", "sha": pr["head"]["sha"]})
     except GHError as exc:
-        if "conflict" not in str(exc).lower():
+        if "conflict" not in str(exc).lower() and not conflicts_with_main(ctx, number, pr):
             return f"merge failed ({exc})"
         done, detail = squash_with_main(ctx, number, pr)
         if not done:
@@ -362,17 +362,50 @@ def merge(ctx, number: int, pr: dict, jobs: list[Job], verdict: dict | None, blo
 MANIFEST = "sources.toml"
 
 
+def conflicts_with_main(ctx, number: int, pr: dict) -> bool:
+    """Whether GitHub reports the pull request as conflicting with main (`mergeable_state: dirty`,
+    `mergeable: false`), read from `pr` when it carries the fields (a single pull request's record),
+    else fetched (a list entry lacks them). A merge the API refuses with any error, a 403 included,
+    is then resolved in a checkout; one of a clean pull request is a real failure."""
+    if "mergeable_state" not in pr and "mergeable" not in pr:
+        try:
+            pr = ctx.gh.api(f"repos/{repo(ctx)}/pulls/{number}") or {}
+        except GHError:
+            return False
+    return pr.get("mergeable_state") == "dirty" or pr.get("mergeable") is False
+
+
+def order_after_squash(ctx, dest, main_text: str, pr: dict) -> tuple[str, list[str]]:
+    """Main's merge-order file, with every roadmap the pull request carries that it lacks inserted
+    right after its last supplier, as the README in the squashed tree names them (the package README,
+    else the design README; a roadmap with neither stays out). Returns the text and the names inserted."""
+    from .intake import DESIGN_README, PACKAGE_README, place_roadmaps, pr_roadmaps
+    listed = set(depgraph.read_order(main_text))
+    readmes = {}
+    for name in sorted(pr_roadmaps(pr) - listed):
+        pkg = dest / board.package_dir(ctx.cfg.board.packages_dir, name)
+        for rel in (PACKAGE_README, DESIGN_README):
+            if (pkg / rel).is_file():
+                readmes[name] = (pkg / rel).read_text(encoding="utf-8")
+                break
+    return place_roadmaps(main_text, readmes, set(ctx.cfg.roadmap.main_extended))
+
+
 def squash_with_main(ctx, number: int, pr: dict) -> tuple[bool, str]:
-    """The merge of an accepted board pull request that conflicts with main (the intake rewrote the
-    roadmap's sources.toml on main with answers while the branch changed it too): squashed onto main
-    in a checkout of the board, each conflicting sources.toml merged by key (main's answered entries
-    win), committed with the pull request's author, pushed to main, and the pull request closed with
-    a note. Any other conflicting file stops it: (False, "conflicts with main in <files>")."""
+    """The merge of an accepted board pull request that conflicts with main: squashed onto main in a
+    checkout of the board, each conflicting file resolved, committed with the pull request's author,
+    pushed to main, and the pull request closed with a note. A conflicting sources.toml (the intake
+    rewrote the roadmap's manifest on main with answers while the branch changed it too) is merged by
+    key, main's answered entries kept. A conflicting merge-order file (an older import branch placed
+    its roadmap in the order itself while the intake rewrote the order on main) is taken from main,
+    which is authoritative, with the pull request's roadmap inserted after its last supplier when
+    main's copy lacks it. Any other conflicting file stops it: (False, "conflicts with main in <files>")."""
     from . import gitops
     board_repo = repo(ctx)
     dest = ctx.state / "mainmerge" / "board"
     head, title = pr["head"]["sha"], pr.get("title") or f"#{number}"
     author = (pr.get("user") or {}).get("login", "board")
+    order_file = board.order_file(ctx.cfg)
     try:
         gitops.sync_checkout(board_repo, dest, "main")
         gitops.set_identity(dest, ctx.operator or "github-actions[bot]")
@@ -381,27 +414,33 @@ def squash_with_main(ctx, number: int, pr: dict) -> tuple[bool, str]:
             return False, "the pull request moved while it was being merged"
         gitops.git(dest, "merge", "--squash", "FETCH_HEAD", check=False)
         conflicts = [f for f in gitops.git(dest, "diff", "--name-only", "--diff-filter=U").splitlines() if f.strip()]
-        others = [f for f in conflicts if not f.endswith("/" + MANIFEST)]
+        others = [f for f in conflicts if not f.endswith("/" + MANIFEST) and not (order_file and f == order_file)]
         if others:
             gitops.git(dest, "reset", "-q", "--hard", "origin/main")
             return False, "conflicts with main in " + ", ".join(sorted(others))
+        resolved = []
         for path in conflicts:
             main_text = gitops.git(dest, "show", f":2:{path}", check=False)
-            pr_text = gitops.git(dest, "show", f":3:{path}", check=False)
-            merged = sources.merge_manifests(tomllib.loads(pr_text or ""), tomllib.loads(main_text or ""))
-            (dest / path).write_text(sources.dump_manifest(merged), encoding="utf-8")
+            if path == order_file:
+                text, placed = order_after_squash(ctx, dest, main_text, pr)
+                resolved.append(f"{path} taken from main" + (f" with {', '.join(placed)} inserted after its last supplier"
+                                                              if placed else ""))
+            else:
+                pr_text = gitops.git(dest, "show", f":3:{path}", check=False)
+                merged = sources.merge_manifests(tomllib.loads(pr_text or ""), tomllib.loads(main_text or ""))
+                text = sources.dump_manifest(merged)
+                resolved.append(f"{path} merged by key (main's answered entries kept)")
+            (dest / path).write_text(text, encoding="utf-8")
             gitops.git(dest, "add", "--", path)
-        message = (f"{title} (#{number})\n\nMerged by the board's intake onto main"
-                   + (f", with {', '.join(conflicts)} merged by key (main's answered entries kept)" if conflicts else "")
-                   + ".")
+        how = "; ".join(resolved)
+        message = (f"{title} (#{number})\n\nMerged by the board's intake onto main" + (f", with {how}" if how else "") + ".")
         gitops.git(dest, "commit", "-q", "--author", f"{author} <{author}@users.noreply.github.com>", "-m", message)
         gitops.git(dest, "push", "-q", "origin", "HEAD:refs/heads/main")
         sha = gitops.git(dest, "rev-parse", "HEAD").strip()
     except (gitops.GitError, tomllib.TOMLDecodeError, OSError) as exc:
         return False, f"could not merge it with main ({str(exc).splitlines()[0][:200]})"
     note(ctx, number, f"Intake: merged as `{sha[:7]}` on main: the pull request conflicted with main"
-                      + (f" in {', '.join(conflicts)}, merged by key (main's answered entries kept)" if conflicts else "")
-                      + ". Closing it.")
+                      + (f": {how}" if how else "") + ". Closing it.")
     ctx.gh.write("PATCH", f"repos/{board_repo}/pulls/{number}", {"state": "closed"})
     return True, sha
 
