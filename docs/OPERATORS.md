@@ -193,6 +193,11 @@ A design or package submission is not merged right away: its board pull request 
 `needs-review`, through its reviews, their fix rounds (pushed to its branch by its owner) and, for a
 package, the red-team rounds; every review or pass is a comment on it (see "Reviewing from a browser
 model" below for the shape). After the last red-team fix the intake merges it and creates the port.
+The merge carries the deliverables of the jobs that wrote the pull request and, for an explorer
+import, the files its import marker declares under the roadmap's folder (the explorer's
+`review.json`), each through the submission checks (source material, local paths, JSON/TOML). A merge
+the checks refuse (`#N: FIX-RT-<Name>~r pushed, but not merged yet (...)`) leaves the fix submitted,
+and every intake run tries it again; nothing needs to be pushed.
 
 **Consolidation.** Before a target becomes a design, its triage compares it with every other open
 target and every open design on the board (names, statements, and the triage or design files that

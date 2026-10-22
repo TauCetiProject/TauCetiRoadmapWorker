@@ -364,3 +364,94 @@ def test_the_merge_order_reads_the_package_readme_when_there_is_no_design_readme
     ctx, _board, gh = last_red_team_fix({ORDER: "Alpha\n"})
     assert intake.add_to_order(ctx, "Foo").startswith("merge order not updated (no design/README.md or README.md")
     assert gh.files[ORDER] == "Alpha\n" and gh.writes == []
+
+
+# --- an explorer import's own files merge with its last red-team fix ---------------------------------
+
+IMPORTED = ["packages/Foo/README.md", "packages/Foo/Suggested.lean", "packages/Foo/metadata.toml",
+            "packages/Foo/review.json", "packages/Foo/sources.toml"]
+VERDICT = '{"review": {"status": "accepted", "reviewer": "independent-review-REV-PKG-Foo"}}\n'
+
+
+def import_marker(files):
+    from pathlib import Path
+
+    from tauceti_roadmap_worker import explorer
+    step = explorer.Step("Foo", "package", new_job("RT-Foo~1a"), {f: Path(f) for f in files}, "REV-PKG-Foo", 7,
+                         extra=[new_job("RT-Foo~1b")])
+    return explorer.encode_import([step])
+
+
+class ImportedFilesGH(ImportGH):
+    """The import pull request at the head its last red-team fix pushed: `changed` are the files it
+    adds, its body the import's marker (declaring `declared`), its checks still running `running` times."""
+
+    def __init__(self, files, changed, declared=tuple(IMPORTED), running=0):
+        super().__init__(files)
+        self.changed, self.running = list(changed), running
+        self.pr["body"] = "Imports `Foo` from the explorer: REV-PKG-Foo.\n\n" + import_marker(declared)
+
+    def api(self, path, paginate=False):
+        if "/pulls/12/files" in path:
+            return [{"filename": f, "status": "added"} for f in self.changed]
+        if "/check-runs" in path and self.running:
+            self.running -= 1
+            return {"check_runs": [{"name": "build", "status": "in_progress", "conclusion": None, "started_at": "t"}]}
+        return super().api(path, paginate)
+
+
+def imported_red_team_fix(files, changed, **kw):
+    ctx, board, _gh = last_red_team_fix({})
+    gh = ImportedFilesGH(files, changed, **kw)
+    ctx.gh = gh
+    return ctx, board, gh
+
+
+FILES = {ORDER: "Alpha\nFoo\n", "packages/Foo/README.md": "*Needs:* Alpha §1.\n", "packages/Foo/Suggested.lean":
+         "import Mathlib\n", "packages/Foo/metadata.toml": "name = \"Foo\"\n", "packages/Foo/review.json": VERDICT,
+         "packages/Foo/sources.toml": "", "packages/Foo/reports/FIX-RT-Foo~1.md": "# Repairs\n"}
+CHANGED = IMPORTED + ["packages/Foo/reports/FIX-RT-Foo~1.md"]
+
+
+def test_an_imports_own_review_json_merges_with_its_last_red_team_fix():
+    """Regression (2026-10-22, #132 ConformalMappingPartII, #122 AbelianSchemesAndArithmeticModuliPartII):
+    `FIX-RT-...~2 pushed, but not merged yet (packages/<Name>/review.json is not a deliverable of this
+    job)`. The explorer's verdict came with the import; no board job writes it."""
+    ctx, board, gh = imported_red_team_fix(dict(FILES), CHANGED)
+    assert boardpr.merge_problems(ctx, 12, gh.pr, board.all_jobs()) == []
+    out = boardpr.scan(ctx, yes=True)
+    assert gh.merged and "FIX-RT-Foo~1 done; merged; created PORT-Foo" in out[0]
+    assert board.find("FIX-RT-Foo~1").state == "done"
+
+
+def test_a_refused_merge_is_retried_by_the_next_scan_without_a_new_push():
+    ctx, board, gh = imported_red_team_fix(dict(FILES), CHANGED, running=1)
+    first = boardpr.scan(ctx, yes=True)
+    assert first == ["#12: FIX-RT-Foo~1 pushed, but not merged yet (checks still running)"]
+    assert not gh.merged and board.find("FIX-RT-Foo~1").state == "submitted"
+    second = boardpr.scan(ctx, yes=True)                # the same head: nothing was pushed in between
+    assert gh.merged and "FIX-RT-Foo~1 done; merged; created PORT-Foo" in second[0]
+
+
+def test_files_the_import_did_not_place_are_still_refused_and_its_own_still_checked():
+    # A board-designed package (a submission, no import marker) carries no review.json of its own.
+    ctx, board, gh = imported_red_team_fix(dict(FILES), CHANGED)
+    gh.pr["body"] = "Refs #3\n\n" + encode_submission("PKG-Foo", "w1", "alice", "codex", "gpt-6.1-sol")
+    assert boardpr.merge_problems(ctx, 12, gh.pr, board.all_jobs()) == [
+        "packages/Foo/review.json is not a deliverable of this job"]
+    out = boardpr.scan(ctx, yes=True)
+    assert out == ["#12: FIX-RT-Foo~1 pushed, but not merged yet (packages/Foo/review.json is not a deliverable of "
+                   "this job)"] and not gh.merged
+    # The import's own files pass the usual checks; a file it did not declare, or declared outside the
+    # folders of the roadmaps it names, is no deliverable.
+    files = {**FILES, "packages/Foo/review.json": '{"review": {"notes": "/home/alice/x"}}\n',
+             "packages/Foo/notes.md": "x\n", "packages/Bar/README.md": "# Bar\n"}
+    ctx, board, gh = imported_red_team_fix(files, CHANGED + ["packages/Foo/notes.md", "packages/Bar/README.md"],
+                                           declared=IMPORTED + ["packages/Bar/README.md"])
+    assert sorted(boardpr.merge_problems(ctx, 12, gh.pr, board.all_jobs())) == [
+        "local path in packages/Foo/review.json", "packages/Bar/README.md is not a deliverable of this job",
+        "packages/Foo/notes.md is not a deliverable of this job"]
+    files["packages/Foo/review.json"] = "{not json\n"
+    ctx, board, gh = imported_red_team_fix(files, CHANGED)
+    assert [p[:41] for p in boardpr.merge_problems(ctx, 12, gh.pr, board.all_jobs())] == [
+        "invalid JSON in packages/Foo/review.json:"]

@@ -397,6 +397,17 @@ def decode_import(body: str) -> dict | None:
     return {"jobs": jobs, "files": [str(f) for f in files]}
 
 
+def import_deliverables(found: dict | None, packages_dir: str) -> set[str]:
+    """The files an import pull request carries as its own: those its marker declares under the
+    package folders of the roadmaps it names (what `intake_import` checks when it takes the pull
+    request in). They stay deliverables of the pull request at every later merge of it, beside the
+    files of the fixes pushed to it (the explorer's review.json, which no board job writes)."""
+    if not found:
+        return set()
+    folders = tuple(board.package_dir(packages_dir, j.name) + "/" for j in found["jobs"])
+    return {f for f in found["files"] if f.startswith(folders)}
+
+
 def open_imports(ctx) -> dict[str, int]:
     """Roadmap name -> open import pull request on the packages repository."""
     repo = ctx.cfg.repositories.packages_repo()
@@ -573,8 +584,7 @@ def intake_import(ctx, number: int, pr: dict, found: dict, yes: bool) -> str:
         return f"#{number}: an import from @{login}, who is not a maintainer of the board; left for the maintainer"
     if pr.get("draft") or pr.get("state") != "open":
         return f"#{number}: an import that is a draft or not open"
-    folders = tuple(board.package_dir(cfg.board.packages_dir, j.name) + "/" for j in found["jobs"])
-    allowed = {f for f in found["files"] if f.startswith(folders)}
+    allowed = import_deliverables(found, cfg.board.packages_dir)
     problems = []
     for f in ctx.gh.api(f"repos/{repo}/pulls/{number}/files?per_page=100", paginate=True):
         if f.get("status") == "removed":

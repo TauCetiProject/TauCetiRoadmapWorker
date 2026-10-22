@@ -13,7 +13,12 @@ reviews the new head. `scan` (run by `board intake`) reads the comments and adva
 * a red-team pass completes its pass job; a complete round opens the round's fix;
 * a fix that was pushed is done, and the next review or red-team round follows; after the last
   red-team round's fix the pull request is merged, the port job created and the roadmap inserted
-  into the merge order when it is absent.
+  into the merge order when it is absent. A merge the intake's checks refuse leaves the fix
+  submitted, and every scan tries the merge again (no new push needed).
+
+At every merge a pull request may carry the deliverables of the jobs that wrote it, and, for an
+explorer import, the files its import marker declares (`explorer.import_deliverables`: the
+explorer's review.json, which no board job writes), each through the same checks.
 
 A comment counts only from a login of `[review] comment_reviewers`, the board's bots, or the
 worker that claimed the job (its claim note on the job's issue names the login); it must review
@@ -30,7 +35,7 @@ import datetime as dt
 import json
 import tomllib
 
-from . import board, claims, prompts, prreviews, sources
+from . import board, claims, explorer, prompts, prreviews, sources
 from .board import Job, Outcome
 from .gh import GHError
 
@@ -284,10 +289,15 @@ def finish_job(ctx, job: Job, text: str) -> None:
     ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}", {"state": "closed"})
 
 
+def imported_files(ctx, pr: dict) -> set[str]:
+    """The files an explorer import pull request placed on itself (none for a board submission)."""
+    return explorer.import_deliverables(explorer.decode_import(pr.get("body") or ""), ctx.cfg.board.packages_dir)
+
+
 def merge_problems(ctx, number: int, pr: dict, jobs: list[Job]) -> list[str]:
     """The intake's checks again, on the head about to be merged (fixes pushed since the submission):
-    only the deliverables of the jobs that wrote it, no source material, local path or bad data,
-    and passing checks."""
+    only the deliverables of the jobs that wrote it (and of an explorer import, the files its marker
+    declares), no source material, local path or bad data, and passing checks."""
     from .intake import _checks
     sub = board.decode_submission(pr.get("body") or "") or {}
     od = board.order_file(ctx.cfg)
@@ -295,6 +305,7 @@ def merge_problems(ctx, number: int, pr: dict, jobs: list[Job]) -> list[str]:
     allowed = set().union(*(board.allowed_paths(j, ctx.cfg.board.packages_dir, od) for j in writers), set())
     if not allowed:
         allowed = {f for j in jobs_of(number, jobs) for f in board.allowed_paths(j, ctx.cfg.board.packages_dir, od)}
+    allowed |= imported_files(ctx, pr)
     # A pull request that carries a package (no job of the design stage wrote it) changes plan.json in its gaps only.
     gaps_only = bool(writers) and all(board.gaps_only(j) for j in writers)
     problems = []
@@ -560,16 +571,18 @@ def accepted_reviews(ctx, job: Job, comments: list[dict], shared, ids: list[int]
     return [(c, p) for c, p in found if p.verdict == "accepted"]
 
 
-def owned_changes(ctx, number: int, old: str, new: str, jobs: list[Job], sub_job: str) -> list[str] | None:
-    """What a pull request's own deliverables changed between two heads, sources.toml aside (a human
-    rebase that merged main, whose answers rewrote the manifest); None when it cannot be read."""
+def owned_changes(ctx, number: int, old: str, new: str, jobs: list[Job], sub_job: str,
+                  pr: dict | None = None) -> list[str] | None:
+    """What a pull request's own deliverables (with an import's declared files) changed between two
+    heads, sources.toml aside (a human rebase that merged main, whose answers rewrote the manifest);
+    None when it cannot be read."""
     try:
         compared = ctx.gh.api(f"repos/{repo(ctx)}/compare/{old}...{new}") or {}
     except GHError:
         return None
     od = board.order_file(ctx.cfg)
     owned = set().union(*(board.allowed_paths(j, ctx.cfg.board.packages_dir, od)
-                          for j in authors_of(number, sub_job, jobs)), set())
+                          for j in authors_of(number, sub_job, jobs)), set()) | imported_files(ctx, pr or {})
     return sorted(f["filename"] for f in compared.get("files", [])
                   if f.get("filename") in owned and not f["filename"].endswith("/sources.toml"))
 
@@ -584,7 +597,7 @@ def retry_merges(ctx, number: int, pr: dict, jobs: list[Job], comments: list[dic
                 and j.state not in ("done", "blocked")]:
         pending, head = job.inputs["merge_pending"], pr["head"]["sha"]
         if head != pending.get("head"):
-            changed = owned_changes(ctx, number, pending.get("head", ""), head, jobs, sub)
+            changed = owned_changes(ctx, number, pending.get("head", ""), head, jobs, sub, pr)
             if changed is None:
                 continue
             if changed:
