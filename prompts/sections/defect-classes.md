@@ -25,8 +25,8 @@ Test every class on every target.
    versus ℕ with junk values, additive versus multiplicative normalisations, different hypotheses
    for the same notion.
 8. **Checks**: a Check that is false, vacuous (it also holds for the wrong object), or a
-   restatement of the definition; fewer than three Checks for a definition; a statable Check with no
-   Lean mirror; a Check about a carrier that does not exist in the file.
+   restatement of the definition; fewer than three Checks for a definition; a Check about a carrier
+   that does not exist in the file.
 9. **Lean signature defects**: a truncated type, a sorry'd data field, a Lean statement at a
    different generality from the README (a missing Noetherian, topological-group or open-subgroup
    hypothesis), arbitrary-topology carriers that make a statement vacuous or false; a `def` or
@@ -47,3 +47,8 @@ Test every class on every target.
     owner or moving the consumed target down.
 15. **Invented vocabulary**: a term that is neither standard nor defined in the roadmap. Use the
     literature's and Mathlib's name for the object, or define the new one.
+16. **Padding in Suggested.lean**: declarations that restate definitions, follow in one tactic from
+    the library, mirror Checks or compute small values (and boundary-case theorems, "controls",
+    examples per definition): a P3 finding whose repair is deleting them (the README keeps the
+    statement as a target or Check), never proving them in place. And the converse: a headline
+    theorem that is statable at the pins but absent (P2).

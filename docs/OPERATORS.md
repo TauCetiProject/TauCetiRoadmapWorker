@@ -303,6 +303,16 @@ read as an instruction.
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review since the last reply | commits on the PR branch, a reply, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
 
+**What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
+headline theorems the finished roadmap will prove, stated now against the pinned Mathlib and Tau
+Ceti with `sorry`, plus only the simple definitions they need; a headline that is not statable at
+the pins is named in the module docstring. The package brief has its agent list the headline
+theorems first; reviews and red-team passes ask whether every statable headline is stated and
+report padding (API lemmas, boundary cases, declarations mirroring README Checks, value-computing
+examples) as P3 deletions. The text gates check form only (imports, `set_option`, sorry'd data, an
+admitted `example`, README names of the roadmap's own that the file lacks); none counts
+declarations or examples, and there is no minimum size.
+
 Before the agent of a package fix (or of a red-team fix on a board pull request) runs, the lane runs
 the package gate on the package as it stands. It removes `<a id>` anchor tags itself (internal links
 pointed at the heading slugs) and lists every other failure in the brief's mandatory section "Gate

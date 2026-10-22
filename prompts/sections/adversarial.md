@@ -19,7 +19,7 @@ For EVERY theorem, identity, definition and convention:
    by zero, an out-of-range index, the degree of the zero polynomial. Test an "iff" or an equality
    of sets in both directions; where a group is involved, on a non-abelian one (S₃, Q₈) and a
    cyclic one. If an instance makes the statement false, add the hypothesis or fix the claim, and
-   add the instance as a negative-control Check (and `example` where statable).
+   add the instance as a negative-control Check.
 2. **Context.** A Lean statement is only as true as its `variable`/`include` block: for each
    statement that needs a standing hypothesis (invertibility, compactness, Hausdorffness, a domain,
    finite residue field, finite generation, a scalar tower), confirm it is actually in scope.
@@ -32,8 +32,8 @@ For EVERY theorem, identity, definition and convention:
 4. **Conventions with a witness.** Every sign, parity, direction of a map and normalisation (δ_P
    versus δ_P⁻¹, ϖ versus p, left versus right cosets, 2πi factors, Tate twists, duals, arithmetic
    versus geometric Frobenius) is pinned by one explicit two-term example whose value is computed,
-   as a README Check and a Lean test. Recompute that witness in every layer, and in every supplier,
-   that uses the same object.
+   as a README Check. Recompute that witness in every layer, and in every supplier, that uses the
+   same object.
 5. **Definitions determine their object.** Check each defining property against one example that
    satisfies it and one that fails it. Then name the most plausible wrong model — the inverse or
    geometric convention, a rescaling by a unit, the zero map, the trivial structure, a larger value

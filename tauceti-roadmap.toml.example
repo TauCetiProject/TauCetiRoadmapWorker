@@ -105,7 +105,8 @@ build = "lake build {module}"
 # absolute path. Empty = do not elaborate (say so in the report). When it is set but cannot run,
 # the lane reports `Suggested.lean: not elaborated — <reason>` rather than skipping.
 elaborate = "lake env lean {file}"
-# Suggested.lean states and does not develop: at most this many lines.
+# Suggested.lean states the roadmap's headline theorems and does not develop: at most this many
+# lines (there is no minimum).
 max_lean_lines = 5000
 # Reject `import Mathlib.<submodule>`: the Mathlib import is the single line `import Mathlib`.
 forbid_mathlib_subimports = true

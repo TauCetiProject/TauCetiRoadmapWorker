@@ -24,8 +24,9 @@ Ceti, written so that an AI contributor and its reviewers can act on it without 
 - **Specify the mathematics, not existing code.** Existing formalisations are cited sources, never
   the specification; improve on them, keep any file-by-file map in a secondary provenance section,
   and respect their licences.
-- **Prototype honestly.** `Suggested.lean` is suggested forms, never an exhaustive checklist; it may
-  import individual `TauCeti.*` modules; conventions are pinned in advance.
+- **Prototype honestly.** `Suggested.lean` states the roadmap's headline theorems against the pins,
+  never an exhaustive checklist or an API catalogue; it may import individual `TauCeti.*` modules;
+  conventions are pinned in advance.
 - **Make contact with the library**: the lowest rung of a roadmap must be close to what exists.
 - **Do not tail off** into an under-specified ambitious extension; label any such closing section as
   motivation for a future roadmap.

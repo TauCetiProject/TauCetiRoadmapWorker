@@ -242,7 +242,8 @@ class RedTeamLane(Lane):
                       "passes did not find. Number new findings from S01.")
         else:
             second = ("This is the first red-team round of an independently reviewed package: expect what the review "
-                      "missed (supplier names that do not match the siblings' current heads, missing Lean mirrors, "
+                      "missed (supplier names that do not match the siblings' current heads, padding in Suggested.lean "
+                      "or a statable headline theorem it lacks, "
                       "locators the sample did not cover) as well as mathematical defects.")
         if self.board_pr(job):
             outside = f"git -C {ws.workdir} diff --stat origin/main...HEAD"

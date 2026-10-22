@@ -314,7 +314,7 @@ Estimated cost of one review round of such a roadmap:
 | Checks and worked examples against the theorems of their section | Self-refuting roadmaps among the merged misses | about 300 tokens per Check | Keep, inside the table |
 | Colloquial milestones stated exactly, including quantifier order | Quantifier-order and "the standard bound" findings | small | Keep |
 | Binder rule for every `def` and `instance`; one batched `#check` file, reported | 25–45% re-escape; six false declarations in one audit of 138 | one elaboration | Keep (and move to the harness, section 8) |
-| One example per definition computes a known value | Definitions identically zero, a radical taken in ℝ | one elaboration | Keep |
+| One example per definition computes a known value | Definitions identically zero, a radical taken in ℝ | one elaboration | Superseded: `Suggested.lean` states the headline theorems only, so the computed value is a README Check |
 | A headline names the roadmap's objects | Headline theorems that were algebra on free variables | none | Keep |
 | Supplier drift includes the sibling's head, the pin, two open owners and colliding Lean names | Supplier plus duplication 20% of findings; identical fully qualified names | none in the brief | Keep |
 | Ownership against open roadmap pull requests whose files the brief gives; citations resolved at the cited head every round, library declarations at the pins | Largest driver of rounds; citation rot | turn-heavy for agents | Keep in the brief, only over the files the brief gives (an agent never goes looking for pull requests); move to the harness (section 8) |

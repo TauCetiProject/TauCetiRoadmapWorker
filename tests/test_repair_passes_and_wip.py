@@ -53,8 +53,9 @@ def test_repairs_go_on_while_the_problems_fall(live, monkeypatch):  # noqa: F811
 
 def test_the_package_brief_states_the_identifier_rule():
     text = prompts.template("package")
-    assert "must be declared in `Suggested.lean` (a sorried statement is fine) or be written as prose" in text
-    assert "`congruenceKernel.inv_mem`, `congruenceKernel.mem_iff` and `congruenceKernel.mul_mem`" in text
+    assert "must be declared in `Suggested.lean` or be written\nas prose without a namespace" in text
+    assert "`congruenceKernel.inv_mem`, `congruenceKernel.mem_iff` and\n`congruenceKernel.mul_mem`" in text
+    assert "a sorried statement is fine" not in text and "Never satisfy it with padding" in text
     assert text.index("The gate's rule on identifiers") < text.index("## Inputs")
 
 
