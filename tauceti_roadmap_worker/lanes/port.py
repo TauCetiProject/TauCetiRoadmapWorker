@@ -164,6 +164,10 @@ class PortLane(Lane):
             ctx.gh, cfg.repositories.content, f"{ctx.operator}:{ws.extra['branch']}", cfg.project.branch, title, body,
             draft=cfg.roadmap.open_as_draft and not cfg.redteam.ready_after))
         number = int(pr["number"])
+        # A pull request an earlier attempt opened (a retry, a lost answer) follows the push late.
+        self.await_pr_head(ctx, cfg.repositories.content, number,
+                           gitops.git(ws.workdir, "rev-parse", "HEAD").strip(),
+                           seen=(pr.get("head") or {}).get("sha") or None, then="not labelling it")
         try:
             ctx.gh.write("POST", f"repos/{cfg.repositories.content}/issues/{number}/labels",
                          {"labels": [cfg.roadmap.pr_label, cfg.replies.awaiting_review]})

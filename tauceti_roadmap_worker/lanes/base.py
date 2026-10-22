@@ -1018,6 +1018,10 @@ class Lane:
         self.push(lambda: gitops.push_branch(ws.board, fork, ws.extra.get("pr_ref") or ws.branch,
                                              expected=ws.extra.get("push_base") or ws.extra.get("head")))
         head = gitops.git(ws.board, "rev-parse", "HEAD").strip()
+        # The intake reads the pull request's head once it sees this comment (a head still at the
+        # fix's base releases the fix as not pushed): the comment waits for the head.
+        self.await_pr_head(ctx, ctx.cfg.repositories.packages_repo(), self.board_pr(job), head,
+                           then="not commenting")
         marker = {**self.marker(job, ctx, ws), "head": head}
         url = self.comment_on_board_pr(job, ctx, ws, f"Fix `{job.id}` pushed `{head[:7]}` by @{ctx.operator} "
                                                      f"({ctx.agent}, {ctx.model}): {summary}\n\n"
@@ -1259,6 +1263,26 @@ class Lane:
                     raise
                 self.sleep(PUSH_BACKOFF)
 
+    def await_pr_head(self, ctx: Context, repo: str, number: int, sha: str, *, seen: str | None = None,
+                      then: str = "", wait: int | None = None, poll: int | None = None) -> None:
+        """After a push, before anything that relies on the pull request's head: GitHub's pull-request
+        record follows a pushed branch only after a few seconds, so its head is read again every
+        `poll` seconds until it is the pushed `sha`. `seen` is a head already in hand (the answer
+        that opened the pull request), counted as the first read. A transient read error counts as
+        a read that did not show it. LaneError (ending with `then`) once `wait` seconds (HEAD_WAIT)
+        have passed without it."""
+        wait = HEAD_WAIT if wait is None else wait
+        poll = max(1, HEAD_POLL if poll is None else poll)
+        live = seen if seen is not None else pr_head(ctx, repo, number)
+        waited = 0
+        while live != sha and waited < wait:
+            self.sleep(poll)
+            waited += poll
+            live = pr_head(ctx, repo, number)
+        if live != sha:
+            raise LaneError(f"#{number}: the pull request head did not update to the pushed {sha[:7]} within "
+                            f"{wait} s (it is still {live[:7] or 'unreadable'})" + (f"; {then}" if then else ""))
+
     sleep = staticmethod(time.sleep)
 
     def resume_push(self, job: Job, ctx: Context, pending: dict) -> LaneResult:
@@ -1301,6 +1325,19 @@ PENDING_DIR = "pending-push"
 PUSH_ATTEMPTS = 3       # attempts (each with its in-run retries) before a run whose push fails is given up
 PUSH_RETRIES = 2        # retries of a push inside one attempt
 PUSH_BACKOFF = 60       # seconds between them
+HEAD_WAIT = 90          # seconds a pushed head may take to become the pull request's head
+HEAD_POLL = 5           # seconds between the reads of the pull request while it does
+
+
+def pr_head(ctx: Context, repo: str, number: int) -> str:
+    """The head sha of pull request #number as GitHub reports it now ('' when a transient error
+    leaves it unread; any other error stands)."""
+    try:
+        return ((ctx.gh.api(f"repos/{repo}/pulls/{number}") or {}).get("head") or {}).get("sha", "")
+    except GHError as exc:
+        if not transient(exc):
+            raise
+        return ""
 
 
 def pending_path(ctx: Context) -> Path:

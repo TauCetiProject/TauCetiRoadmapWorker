@@ -217,7 +217,7 @@ def test_a_worker_review_and_a_worker_fix_on_the_board_pull_request(tmp_path, mo
     from tauceti_roadmap_worker.lanes import lane_for
 
     from .fakes import FakeBoard, FakeClaims, FakeGH
-    from .test_lane_dry_run import fake_checkout, fake_git
+    from .test_lane_dry_run import SHA, fake_checkout, fake_git
     monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
     monkeypatch.setattr(gitops, "git", fake_git)
     monkeypatch.setattr(gitops, "sync_checkout", fake_checkout)
@@ -228,7 +228,8 @@ def test_a_worker_review_and_a_worker_fix_on_the_board_pull_request(tmp_path, mo
     monkeypatch.setattr(gitops, "changed_files", lambda wt, base="HEAD": ["packages/Foo/README.md"])
     gh = FakeGH()
     gh.api = lambda path, paginate=False: {"state": "open", "user": {"login": "alice"},
-                                           "head": {"ref": "w1/PKG-Foo", "repo": {"full_name": "alice/TauCetiRoadmapJobs"}}}
+                                           "head": {"ref": "w1/PKG-Foo", "sha": SHA,      # the pushed head, current
+                                                    "repo": {"full_name": "alice/TauCetiRoadmapJobs"}}}
     gh.raw_file = lambda repo, path, ref="": "Review (chatgpt) of ccccccc\n\nVerdict: needs_changes\n\n1. **F01** (P1) x\n"
     from tauceti_roadmap_worker.lanes import Context
     ctx = Context(cfg=example_config(), gh=gh, board=FakeBoard(), claims=FakeClaims(), worker_id="alice-1",

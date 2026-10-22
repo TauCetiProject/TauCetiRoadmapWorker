@@ -95,9 +95,7 @@ class GateLane(Lane):
             fork = gitops.ensure_fork(ctx.gh, cfg.repositories.content, ctx.operator)
             self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"],
                                           expected=ws.extra.get("push_base") or ws.extra["head"]))
-            live = (ctx.gh.api(f"repos/{cfg.repositories.content}/pulls/{pr}") or {}).get("head", {}).get("sha", "")
-            if live != new:
-                raise LaneError(f"#{pr}: the pull request head is {live[:7]}, not the pushed {new[:7]}; not replying")
+            self.await_pr_head(ctx, cfg.repositories.content, pr, new, then="not replying")
         intro = "reply to the review" if moved else "reply to the review, no change needed"
         text = replies.build_reply(new[:7], ws.report.read_text(encoding="utf-8"),
                                    replies.validation_sentence(new[:7], ws.extra["gate"]), intro, cfg.replies.review_markers)
