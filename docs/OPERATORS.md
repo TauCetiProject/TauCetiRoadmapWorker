@@ -228,7 +228,11 @@ conditional on them (`conditional_gaps` in the verdict, or a `Conditional on the
 line in a comment review). A design-stage roadmap is checked as a merge-order candidate
 (`gate --candidate <folder> --only <Name>` places it after its last supplier), since it enters the
 merge order only when its design is accepted (an imported package or accepted design when it is
-imported).
+imported). The dependency check takes a roadmap the README names as its consumer (listed under
+`## Downstream consumers` or a heading nested there, "X consumes ...", "consumed by X") as a supplier
+only where an explicit supplier statement names it (a `*Needs:*` clause, a `### From X` heading, a
+supplier table row or contract bullet, a `### Dependencies` sentence), never from a prose line that
+also says "supplier".
 
 States are the labels `state:available`, `claimed`, `submitted`, `done`, `blocked` and
 `needs-references`. A job issue carries exactly one: every state change adds the new label first and

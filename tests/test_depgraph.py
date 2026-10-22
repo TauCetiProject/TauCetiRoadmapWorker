@@ -1,6 +1,7 @@
 import textwrap
 
-from tauceti_roadmap_worker.depgraph import check_order, read_order, strongly_connected, supplier_edges, units
+from tauceti_roadmap_worker.depgraph import (check_order, declared_consumers, read_order, strongly_connected,
+                                            supplier_edges, units)
 
 ORDER = read_order("# suppliers first\nAlpha\nBeta\nGamma  # a trailing comment\n\nBeta\n")
 
@@ -94,3 +95,95 @@ def test_insert_into_order_after_last_supplier():
     assert insert_into_order(text, "Delta", set()) == text + "Delta\n"
     assert insert_into_order(text, "Beta", {"Gamma"}) == text
     assert read_order(insert_into_order(text, "Delta", {"Gamma", "Alpha"})) == ["Alpha", "Beta", "Gamma", "Delta"]
+
+
+# --- consumer-only mentions (2026-10-22: a false `CYCLE among: HabiroCohomologyFoundations, QWittVectors`) ---
+
+QWITT = readme("""\
+    # Roadmap: arithmetic Λ-rings and q-Witt vectors
+
+    ## Scope and ownership
+
+    HabiroCyclotomicCompletions owns integral cyclotomic ideal theory. HabiroRings and HabiroCohomologyFoundations own Habiro rings, gluing, q-Hodge filtrations and descent; RefinedTraceMethods owns refined traces. The completion extension of DerivedModuleAlgebra requires Part II suppliers with the interfaces below.
+
+    ## Exact supplier contracts
+
+    ### From TauCetiRoadmap.HabiroCyclotomicCompletions
+
+    The integral cyclotomic contract.
+
+    ## Downstream consumers
+
+    - **HabiroCohomologyFoundations**: Layers 2–6 supply relative arithmetic Λ and degree-zero q-Witt theory.
+    - **HabiroRings**: Layers 1–6: arithmetic Λ-perfection.
+    - **RefinedTraceMethods**: Layers 7–10 provide the q-Witt operations.
+
+    Consumers use the exported algebraic interfaces. Their constructions supply no prerequisites to QWittVectors.
+    """)
+HABIRO = readme("""\
+    # Roadmap: Habiro cohomology
+
+    ## Layer 1: the completed overlap
+
+    Construct the overlap. *Needs:* QWittVectors Layer 6 (the completed overlap).
+    """)
+QWITT_ORDER = ["DerivedModuleAlgebra", "HabiroCyclotomicCompletions", "HabiroRings", "QWittVectors",
+               "RefinedTraceMethods", "HabiroCohomologyFoundations"]
+
+
+def test_a_roadmap_named_only_as_a_consumer_is_no_supplier():
+    """QWittVectors' scope paragraph says "suppliers" and names HabiroCohomologyFoundations as an owner;
+    its consumers section lists it. The old parser read the paragraph whole: QWittVectors ->
+    HabiroCohomologyFoundations, and with HabiroCohomologyFoundations' *Needs:* a cycle."""
+    readmes = {"QWittVectors": QWITT, "HabiroCohomologyFoundations": HABIRO}
+    scope = next(unit for _ln, unit in units(QWITT, "QWittVectors") if "own Habiro rings" in unit)
+    assert "HabiroCohomologyFoundations" in scope          # the prose line is still read ...
+    edges = supplier_edges(readmes, set(QWITT_ORDER))
+    # ... but a declared consumer is not taken from it; the explicit suppliers stay.
+    assert set(edges["QWittVectors"]) == {"HabiroCyclotomicCompletions", "DerivedModuleAlgebra"}
+    assert set(edges["HabiroCohomologyFoundations"]) == {"QWittVectors"}
+    assert check_order(edges, QWITT_ORDER) == []
+    assert declared_consumers(QWITT, "QWittVectors") >= {"HabiroCohomologyFoundations", "HabiroRings",
+                                                         "RefinedTraceMethods"}
+
+
+def test_headings_nested_in_a_consumers_section_are_consumers_too():
+    text = readme("""\
+        *Needs:* Alpha §1.
+
+        ## Downstream consumers
+
+        ### Gamma
+
+        Gamma reads the supplier interface of layer 2 through Delta's carrier.
+
+        ## References
+        """)
+    edges = supplier_edges({"Beta": text}, {"Alpha", "Gamma", "Delta"})
+    assert set(edges["Beta"]) == {"Alpha"}
+    # "What this roadmap consumes" is not a consumers section: its nested `### From` headings still count.
+    text = "## What this roadmap consumes\n\n### From Alpha\n\nThe carrier.\n"
+    assert set(supplier_edges({"Beta": text}, {"Alpha"})["Beta"]) == {"Alpha"}
+
+
+def test_x_consumes_and_consumed_by_x_name_consumers():
+    text = readme("""\
+        Our supplier is Alpha. Gamma R3 consumes Delta's carrier together with ours.
+
+        Layer 2 is consumed by Epsilon and Zeta.
+
+        The supplier contract of layer 3 is the one Epsilon reads with Alpha.
+        """)
+    edges = supplier_edges({"Beta": text}, {"Alpha", "Gamma", "Delta", "Epsilon", "Zeta"})
+    assert set(edges["Beta"]) == {"Alpha"}
+    assert declared_consumers(text, "Beta") >= {"Gamma", "Epsilon", "Zeta"}
+    # The README's own roadmap consuming a supplier names that supplier.
+    own = "Beta consumes Alpha's carrier; the supplier contract is below.\n"
+    assert set(supplier_edges({"Beta": own}, {"Alpha"})["Beta"]) == {"Alpha"}
+
+
+def test_an_explicit_supplier_statement_counts_for_a_declared_consumer():
+    """A roadmap both consumes and supplies (stage-level mutual citation): an explicit *Needs:* keeps
+    the edge, and check_order reports the cycle as before."""
+    text = "*Needs:* Gamma §2.\n\n## Downstream consumers\n\n- **Gamma**: uses layer 3.\n"
+    assert set(supplier_edges({"Beta": text}, {"Gamma"})["Beta"]) == {"Gamma"}

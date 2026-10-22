@@ -6,8 +6,15 @@ functions over README texts (no /tmp lists, no hard-coded pull requests or bundl
 * `units(text)` yields the README lines and clauses that name suppliers: `*Needs:*` clauses (cut
   at their first sentence end), lines saying "Supplied by", "supplier", "prerequisites are", rows
   of supplier tables, supplier-contract bullets, `### From <Name>` headings and the sentences of a
-  `### Dependencies` section, minus anything that describes consumers.
-* `supplier_edges(readmes, ...)` turns those into edges consumer -> supplier.
+  `### Dependencies` section, minus anything that describes consumers: a consumers section
+  (`## Downstream consumers` and every heading nested in it; any heading that says "consum",
+  "export", "outbound" or "downstream" up to the next heading) and, in a prose line, a sentence
+  "X consumes ..." of another roadmap X.
+* `supplier_edges(readmes, ...)` turns those into edges consumer -> supplier. A roadmap the README
+  names as its consumer (`declared_consumers`: listed in a consumers section, "X consumes ...",
+  "consumed by X") is a supplier only where an explicit supplier statement names it (a `*Needs:*`
+  clause, a `### From` heading, a supplier table or contract bullet, a `### Dependencies`
+  sentence), never by a mention in a prose line that happens to say "supplier".
 * `check_order(edges, order, ...)` reports UPWARD edges (a supplier later in the merge order),
   CYCLEs and roadmaps missing from the order: every one is a design defect.
 * `merge_chain(...)` is the transitive closure of a roadmap's downward suppliers among the open
@@ -29,6 +36,22 @@ DEPCONS = re.compile(
     r"consum|consumes?\b|used by|asks? for|not a prerequisite|re-?export|export|downstream|outbound|belongs? to|owned by|"
     r"kept as a hypothesis|are [A-Z][A-Za-z0-9]+ [A-Z0-9.–-]+'s", re.I)
 NAME = re.compile(r"\b([A-Z][A-Za-z0-9]+(?:PartII|PartIII|PartIV)?)\b")
+HEADING = re.compile(r"(#{1,6})(?:\s|$)")
+CONSUMER_HEADING = re.compile(r"consum|export|outbound|downstream", re.I)
+# The section that lists a roadmap's consumers (`## Downstream consumers`, by convention), whose
+# nested headings belong to it too. Other headings that say "consume" or "export" ("What this roadmap
+# consumes", "Layer 7: exports") are skipped, as before, only up to the next heading.
+CONSUMERS_SECTION = re.compile(r"^#{1,6}\s+(?:Other\s+)?(?:Downstream(?:\s+consumers|\s+roadmaps|\s+branch\s+roadmaps)?|"
+                               r"Consumers)\s*:?\s*$", re.I)
+# "X consumes ...", "X R3 consumes ...", "Y and X likewise only consume ...": X names a consumer (unless X
+# is the README's own roadmap); so do the names after "consumed by".
+ROADMAP = r"(?!(?:It|Its|This|That|These|Those|Which|Each|Every|The|Layers?|Sections?|Stages?|Parts?)\b)[A-Z][A-Za-z0-9]+"
+LABEL = r"(?:[:\s]+(?:Layers?\s+|§)?[A-Z]{0,3}\d[\w.–/-]*)?"           # R3, :L5a, G5.5, Layer 6, §3A
+CONSUMES = re.compile(rf"\b({ROADMAP}){LABEL}`?\)?,?\s+(?:(?:also|only|likewise|directly|itself|then)\s+)*consumes?\b")
+CONSUMED_BY = re.compile(rf"consumed (?:only |directly |also )?by (?:the )?(?:roadmaps? )?`?({ROADMAP}(?:{LABEL}`?(?:,? and |, )`?"
+                         rf"{ROADMAP})*)")
+LISTED = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+[*_`]{0,3}(?:TauCetiRoadmap\.)?([A-Z][A-Za-z0-9]+)|^\s*\|\s*[*_`]{0,3}"
+                    r"(?:TauCetiRoadmap\.)?([A-Z][A-Za-z0-9]+)")
 
 
 def _sentences(text: str) -> list[str]:
@@ -41,19 +64,64 @@ def _sentences(text: str) -> list[str]:
     return out
 
 
-def units(text: str):
-    """Yield (line_no, text) units of a README that name its suppliers (see the module docstring)."""
+def heading_level(line: str) -> int:
+    """The level of a Markdown heading; a line that only starts with `#` (`#279 ...`, wrapped text) is
+    deeper than any heading."""
+    m = HEADING.match(line)
+    return len(m.group(1)) if m else 7
+
+
+def declared_consumers(text: str, name: str = "") -> set[str]:
+    """The roadmaps a README names as its consumers: the entries listed in a consumers section (the
+    names that open its bullets and table rows, and its nested headings), the subject of "X
+    consumes ..." and the names after "consumed by". `name` (the README's own roadmap) is never one."""
+    found: set[str] = set()
+    level = 0
+    for line in text.split("\n"):
+        if line.startswith("#"):
+            depth = heading_level(line)
+            if level and depth > level:
+                found.update(NAME.findall(line))
+                continue
+            level = depth if CONSUMERS_SECTION.match(line) else 0
+            continue
+        if level:
+            m = LISTED.match(line)
+            if m:
+                found.add(m.group(1) or m.group(2))
+        found.update(CONSUMES.findall(line))
+        for group in CONSUMED_BY.findall(line):
+            found.update(NAME.findall(group))
+    return found - {name}
+
+
+def units(text: str, name: str = ""):
+    """Yield (line_no, text) units of a README that name its suppliers (see the module docstring).
+    `name` is the README's own roadmap, when known ("<name> consumes X" names a supplier)."""
+    for line_no, unit, _prose in _units(text, name):
+        yield line_no, unit
+
+
+def _units(text: str, name: str = ""):
+    """`units` as (line_no, text, prose): `prose` marks a line taken only because it says "supplier"
+    (or "supplies", "Supplied by", "prerequisites are"), the one kind of unit that also mentions
+    roadmaps in other roles."""
     lines = text.split("\n")
     sec_supplier = sec_consumer = sec_deplist = False
+    consumer_level = 0            # the level of the consumers heading whose section this is (0: none)
     buf: list[tuple[int, str]] = []
     for i, line in enumerate(lines):
         if line.startswith("#"):
-            sec_consumer = bool(re.search(r"consum|export|outbound|downstream", line, re.I))
+            level = heading_level(line)
+            if consumer_level and level > consumer_level:
+                continue          # a heading nested in a consumers section: still consumers
+            sec_consumer = bool(CONSUMER_HEADING.search(line))
+            consumer_level = level if CONSUMERS_SECTION.match(line) else 0
             sec_supplier = bool(re.search(r"suppl|depend|input|needs|prerequisit|contract|builds? on|^#+\s*From\b",
                                           line, re.I)) and not sec_consumer
             sec_deplist = bool(re.match(r"#+\s*Dependencies\b", line)) and not sec_consumer
             if sec_supplier and re.match(r"#+\s*From\b", line):
-                yield i + 1, line
+                yield i + 1, line, False
             buf = []
             continue
         if sec_consumer:
@@ -66,12 +134,18 @@ def units(text: str):
                 joined, start = " ".join(t for _, t in buf), buf[0][0]
                 for sent in _sentences(joined):
                     if sent.strip() and not DEPCONS.search(sent):
-                        yield start, sent
+                        yield start, sent, False
                 buf = []
             continue
         if re.search(r"\*Needs:\*|^\s*Needs:|Supplied by|\| *Supplied|supplies|supplier|prerequisites? (?:are|is|:)", line) \
                 and "*Needs:*" not in line:
-            yield i + 1, line
+            if re.match(r"\s*\|", line) or EXCL.search(line):
+                yield i + 1, line, True       # a table row, or a line EXCL refuses: judged whole
+            else:
+                # A sentence "X consumes ..." of another roadmap X names a consumer, not a supplier.
+                keep = [s for s in _sentences(line) if s.strip() and not (set(CONSUMES.findall(s)) - {name})]
+                if keep:
+                    yield i + 1, " ".join(keep), True
         m = re.search(r"\*Needs:\*", line)
         if m:
             clause, j = line[m.end():], i + 1
@@ -80,12 +154,12 @@ def units(text: str):
                 clause += " " + lines[j].strip()
                 j += 1
             cut = re.search(r"\.(\s|$)", clause)
-            yield i + 1, "*Needs:*" + (clause[:cut.start()] if cut else clause)
+            yield i + 1, "*Needs:*" + (clause[:cut.start()] if cut else clause), False
             continue
         if sec_supplier and re.match(r"\s*\|", line) and not re.match(r"\s*\|\s*-{2,}", line):
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             if cells and not re.match(r"(?i)(supplier|roadmap|source|from)\b", cells[0]) and not DEPCONS.search(line):
-                yield i + 1, line
+                yield i + 1, line, False
             continue
         if sec_supplier and re.match(r"\s*- \*{1,2}(?:TauCetiRoadmap\.)?[A-Z][A-Za-z0-9]+", line):
             bullet, j = line, i + 1
@@ -94,25 +168,27 @@ def units(text: str):
                 j += 1
             keep = [s for s in _sentences(bullet) if s.strip() and not DEPCONS.search(s)]
             if keep:
-                yield i + 1, " ".join(keep)
+                yield i + 1, " ".join(keep), False
 
 
 def supplier_edges(readmes: dict[str, str], known: set[str] | None = None,
                    main_extended: set[str] | frozenset = frozenset()) -> dict[str, dict[str, set[int]]]:
     """Edges consumer -> supplier -> README line numbers, among the roadmaps in `readmes` (and
     `known`, if given). Roadmaps already on main that are being extended (`main_extended`) are
-    suppliers for everyone and never consumers."""
+    suppliers for everyone and never consumers. A roadmap the README declares as its consumer is
+    not taken from a prose line (see the module docstring)."""
     ours = set(readmes) - set(main_extended)
     names = ours | set(known or ())
     graph: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
     for consumer, text in readmes.items():
         if consumer in main_extended:
             continue
-        for line_no, unit in units(text):
+        declared = declared_consumers(text, consumer)
+        for line_no, unit, prose in _units(text, consumer):
             if EXCL.search(unit):
                 continue
             for supplier in set(NAME.findall(unit)):
-                if supplier in names and supplier != consumer:
+                if supplier in names and supplier != consumer and not (prose and supplier in declared):
                     graph[consumer][supplier].add(line_no)
     return graph
 
