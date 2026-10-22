@@ -41,8 +41,8 @@ def validation_paragraph(gate: gates.GateResult) -> str:
     build = ("the targeted Lake build succeeds with `sorry` as the only warning" if c.get("build") == 0
              else "the targeted build was not run")
     return (f"Validation: {build}; README identifiers missing from the Lean: {c.get('readme-ids-missing', 0)}; "
-            f"Check labels missing from the Lean: {c.get('check-labels-missing', 0)}; no `set_option` overrides "
-            f"({c.get('set_option', 0)}); sorry'd data: {c.get('sorry-data', 0)}; the dependency gate shows "
+            f"no `set_option` overrides ({c.get('set_option', 0)}); sorry'd data: {c.get('sorry-data', 0)}; "
+            f"the dependency gate shows "
             f"{c.get('depcheck', 'no')} problem(s) for this roadmap; the outside-folder diff has {c.get('outside-folder', 0)} path(s).")
 
 

@@ -109,10 +109,11 @@ Roadmap folder `TauCetiRoadmap/Foo` (...)
 def test_extract_synopsis_and_body():
     syn = extract_synopsis(REPORT)
     assert syn.startswith("This roadmap develops") and "\n" not in syn
-    gate = gates.GateResult("Foo", counts={"build": 0, "readme-ids-missing": 0, "check-labels-missing": 0,
+    gate = gates.GateResult("Foo", counts={"build": 0, "readme-ids-missing": 0,
                                            "set_option": 0, "sorry-data": 0, "depcheck": 0, "outside-folder": 0})
     body = compose_body("Foo", syn, "TauCetiRoadmap", "Dependencies ... none.", gate, "codex", "m", "PORT-Foo")
     assert "succeeds with `sorry` as the only warning" in body and "codex (m)" in body
+    assert "Check labels" not in body
     marker = body.split("<!-- tauceti-roadmap-pr ")[1].split(" -->")[0]
     assert json.loads(marker) == {"roadmap": "Foo", "job": "PORT-Foo"}
     assert pr_number_from_report(REPORT + "\n\nPull request: #912 (roadmap/foo at abc1234)\n") == 912

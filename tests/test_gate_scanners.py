@@ -135,10 +135,34 @@ def test_configured_patterns_and_private_paths():
 def test_mechanical_agreement():
     readme = "Prove `Toy.order_one` and `Toy.order_mul` and Mathlib's `Nat.card_eq`. Check (*order-trivial*), (*order-two*)."
     assert gates.readme_identifiers_missing(readme, CLEAN_LEAN) == ["Toy.order_mul"]
-    assert gates.check_labels_missing(readme, CLEAN_LEAN) == ["order-two"]
     empty = "/-! ## Layer 1: a -/\n\n/-! ## Layer 2: b -/\ntheorem t : True := trivial\n"
     assert [h.text for h in gates.empty_lean_sections(empty)] == ["Layer 1: a"]
     assert gates.round_labels("label continuation-2 and gate3") and not gates.round_labels("analytic continuation")
+
+
+def test_no_gate_asks_for_lean_counterparts_of_checks_or_counts_declarations():
+    """Suggested.lean states the headline theorems: README Checks stay prose, and a file that states
+    one theorem, or nothing at all, passes."""
+    readme = CLEAN_README.replace("(*order-trivial*);", "(*order-trivial*);\n- the group of order two (*order-two*);")
+    r = scan_folder("Toy", readme, CLEAN_LEAN, opts())
+    assert r.ok, r.details
+    assert "check-labels-missing" not in r.counts and "check-labels-missing" not in gates.GATE_RULES
+    headline = CLEAN_LEAN.replace(
+        "example : Toy.order PUnit = 1 := by simp [Toy.order] -- order-trivial\n", "")
+    assert scan_folder("Toy", readme, headline, opts()).ok
+    empty = textwrap.dedent("""\
+        import Mathlib
+
+        /-! # Toy: target signatures
+
+        The roadmap is README.md. No headline theorem is statable at the pins. -/
+
+        namespace TauCetiRoadmap.Toy
+
+        end TauCetiRoadmap.Toy
+        """)
+    prose = "# Roadmap: toy groups\n\n**Summary.** Builds the order of a group.\n"
+    assert scan_folder("Toy", prose, empty, opts()).ok
 
 
 def test_dirty_fixture_fails_with_counts():

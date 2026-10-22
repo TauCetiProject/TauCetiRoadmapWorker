@@ -15,6 +15,9 @@ Differences from gate.sh, deliberately:
   gate.sh regex `[^:]*:=\\s*sorry` missed every definition with a type ascription.
 - The campaign-specific checks (one forbidden theorem family, a dropped-names list in /tmp) became
   configuration: `gates.forbidden_patterns` and `gates.dropped_names_file`.
+- `Suggested.lean` is the roadmap's acceptance test (its headline theorems), so no scanner counts its
+  declarations or examples, sets a minimum size, or asks for a Lean counterpart of a README Check;
+  an admitted `example` is still refused (`sorry-examples`).
 """
 
 from __future__ import annotations
@@ -548,12 +551,6 @@ def round_labels(text: str) -> list[Hit]:
     return _hits(r"\b[\w-]*(?:continuation[-_]\d|round[-_]?\d|gate\d|_r\d)\b", text, re.I)
 
 
-def check_labels_missing(readme: str, lean: str) -> list[str]:
-    """README Check labels `(*label*)` with no counterpart in the Lean file."""
-    labels = set(re.findall(r"\(\*([a-z0-9][a-z0-9_-]*)\*\)", readme))
-    return sorted(lab for lab in labels if lab not in lean and lab.replace("-", "_") not in lean)
-
-
 # --- source material: sources never enter a repository ---------------------------------------------
 
 SOURCE_SUFFIXES = (".pdf", ".djvu", ".djv", ".ps", ".eps", ".epub")
@@ -716,7 +713,6 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
     r.add("forbidden", scan_forbidden(readme, opts.forbidden_patterns) + scan_forbidden(lean, opts.forbidden_patterns))
     r.add("dropped", scan_dropped_names(readme, opts.dropped_names) + scan_dropped_names(lean, opts.dropped_names))
     r.add("readme-ids-missing", readme_identifiers_missing(readme, lean))
-    r.add("check-labels-missing", check_labels_missing(readme, lean))
     r.add("empty-sections", empty_lean_sections(lean))
     r.add("round-labels", round_labels(readme + "\n" + lean))
     r.add("long-fences", scan_long_fences(readme))
@@ -756,7 +752,6 @@ GATE_RULES = {
     "dropped": "no name of the project's dropped-names list",
     "readme-ids-missing": "every backticked identifier the README presents as this roadmap's own declaration is "
                           "declared or mentioned in Suggested.lean",
-    "check-labels-missing": "every Check label `(*label*)` of the README has its counterpart in Suggested.lean",
     "empty-sections": "no `/-! ## ... -/` section header in Suggested.lean without a declaration under it",
     "round-labels": "no labels named after the process (`continuation-2`, `round2`, `gate3`, `_r2`)",
     "long-fences": "no fenced block of more than 40 lines that is neither Lean nor a table: quote a locator, not "
