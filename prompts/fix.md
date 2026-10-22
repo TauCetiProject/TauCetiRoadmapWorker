@@ -58,9 +58,8 @@ For each finding:
    contracts"); when it already is, say so: that is the reason. Never
    invent a supplier target or restate the finding to make it go away. A finding re-raised after you
    marked it not actionable is decided by a human, not by another round.
-4. **Repair the pattern, not the line.** A defect found in one place usually recurs: search the
-   whole roadmap for the same construction, hypothesis, sign or citation and repair every
-   occurrence; name the other places in the report. A repair is new text: run the adversarial pass
+4. **Repair the pattern, not the line.** Search the whole roadmap for the same construction,
+   hypothesis, sign or citation and repair every occurrence; name the other places in the report. A repair is new text: run the adversarial pass
    on every statement you add or change, including lemmas you introduce to make a repair work, and
    recompute every Check and worked example that uses the object you changed.
 5. Keep the README and `Suggested.lean` in agreement: a Lean statement whose README target changes

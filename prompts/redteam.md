@@ -58,8 +58,7 @@ context, and of every bold README target. For each:
    target of a named roadmap at its current version (check that the section and the declaration
    name exist there with the same hypotheses), a declared supplier gap (below), or a pinned
    declaration (grep it). Flag unowned prerequisites, forward references and cycles; run the
-   dependency check below. Before you report a cited section or declaration as missing, confirm that
-   the copy you searched is the cited roadmap's current head or the pin.
+   dependency check below.
 4. **Ownership and duplication**: anything a sibling or a roadmap on main already states (grep for the
    object) must cite the owner instead.
 5. **Sources**: verify every locator you can against the text (legal sources only); flag misprints

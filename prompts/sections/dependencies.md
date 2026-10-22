@@ -12,19 +12,20 @@ consume only:
 
 Never cite these roadmaps as suppliers: __DROPPED__.
 
-**Ownership is checked against open work, not only against main.** Two open roadmaps independently
-specifying the same reusable construction is the most frequent finding in roadmap reviews, and the
-costliest in rounds. Before this roadmap states a construction another roadmap could own (a generic
-carrier, a comparison, a foundational theorem), search the open roadmap pull requests (__SIBLINGS__)
-and the board's packages for the same object, by object rather than by name; cite an existing owner,
-or say in your report why this roadmap is the owner. Check that no declaration in `Suggested.lean`
-has the fully qualified name of a declaration in another open roadmap.
+**Ownership against open work.** Before this roadmap states a construction another roadmap could
+own (a generic carrier, a comparison, a foundational theorem), search for the same object, by object
+rather than by name, in the roadmaps on main, in the board's packages, and in the open roadmap pull
+requests whose files this brief gives you (the sibling checkouts listed with a path: __SIBLINGS__).
+Cite an existing owner, or say in your report why this roadmap is the owner, and give no declaration
+of `Suggested.lean` the fully qualified name of a declaration in a roadmap you can read. Where the
+brief names open pull requests without their files, or none, do not look for them yourself: say in
+your report that ownership against open pull requests was not checked.
 
-**Citations are resolved, not remembered.** Every cross-roadmap citation (roadmap, section or
-target, declaration name) is checked against the cited roadmap as it is now: on main, or at the
-head of its open pull request. Sections are renumbered and moved during review; a citation that was
-right last round is checked again. A citation correct on a newer main but absent at the pin is a
-defect.
+**Citations are resolved, not remembered.** Check every cross-roadmap citation (roadmap, section or
+target, declaration name) against the cited roadmap as it is now, every round: on main, or at the
+head of its open pull request where this brief gives you that head. Check every library declaration
+at the pins, not on a newer Mathlib or Tau Ceti. Before you report a citation or a declaration as
+missing, confirm that the copy you searched is that main, that head or that pin.
 
 A notion this roadmap needs from a roadmap later in the order is stated here as a target instead
 (the notion moves down), and the move is recorded in your report. Never add a `*Needs:*` line, a

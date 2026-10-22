@@ -43,8 +43,7 @@ House style and rules:
 - No target-numbering tables (`**T017**` blocks) and no `Hypotheses:/API:/Tests:/Sources:` field
   lists: the catalogue is an input, the README is prose for mathematicians.
 - Standard vocabulary: every term is either the literature's or Mathlib's name for the object, or
-  is defined where it first appears. Coined jargon is the defect human reviewers most often catch
-  and agents least often notice.
+  is defined where it first appears.
 - Mathematics, not algorithms: no executable procedures, certificates, implementations or large
   computations. The mathematical background of an algorithm and small worked examples as Checks
   are welcome.

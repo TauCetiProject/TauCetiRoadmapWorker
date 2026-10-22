@@ -65,3 +65,9 @@ def test_prompts_carry_nothing_machine_or_person_specific(path: Path):
     text = path.read_text(encoding="utf-8")
     for pattern in FORBIDDEN:
         assert not re.search(pattern, text), f"{path.name}: {pattern}"
+
+
+def test_the_evidence_document_carries_no_pull_request_numbers_dates_or_prices():
+    text = (HERE / "docs" / "REVIEW-EVIDENCE.md").read_text(encoding="utf-8")
+    for pattern in (r"#\d{2,5}\b", r"\b20\d\d-\d\d(-\d\d)?\b", r"\$\d", r"Fable|Opus|Sonnet|Haiku|gpt-6|Astra"):
+        assert not re.search(pattern, text), pattern

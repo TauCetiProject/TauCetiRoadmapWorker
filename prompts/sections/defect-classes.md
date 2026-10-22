@@ -15,9 +15,9 @@ Test every class on every target.
    characters in adjunctions, duals of Tate modules, the direction of a comparison map.
 5. **Unowned prerequisites**: a proof plan uses a result that no layer, no named supplier section
    and no pinned declaration provides; a standard theorem restated instead of cited.
-6. **Supplier drift**: a cited supplier declaration or section that does not exist at the
-   supplier's current version (the sibling pull request's current head, or the pin, not a newer
-   main), a supplier cited for a statement it does not make, two owners for one object (including
+6. **Supplier drift**: a cited supplier declaration or section that does not exist where it is
+   cited (a roadmap's section on main or at its open head, a library declaration at the pin), a
+   supplier cited for a statement it does not make, two owners for one object (including
    two open pull requests that each build it, and two `Suggested.lean` files that declare the same
    fully qualified name), a cycle between two roadmaps' layers, a `*Needs:*` edge that uses
    something the scope section excludes.

@@ -4,9 +4,8 @@ A `sorry` build checks elaboration, not truth. Past roadmaps reached review with
 0/0, units and non-units reversed, ℤ_p-only formulas stated over a general discrete valuation ring,
 a wrong determinant parity, statements quantified over arbitrary data with no hypothesis tying the
 data to the construction, and whole API blocks restating lemmas the pinned libraries already have.
-Locator checks, test counts and the build see none of these. Almost every such defect that reached
-the roadmap repository was in a class this list already names: the pass failed because nobody
-computed, not because nobody was told. So the pass is computed, and its record shows the values.
+Locator checks, test counts and the build see none of these, so the pass is computed, and its
+record shows the values.
 
 For EVERY theorem, identity, definition and convention:
 
@@ -48,9 +47,9 @@ For EVERY theorem, identity, definition and convention:
    no hypothesis relating it to the construction is vacuous or false: fix it or delete it. A
    hypothesis that contains the conclusion is a defect, and so is a headline whose statement
    mentions none of the objects the roadmap defines.
-7. **Hypotheses are used.** Flag a hypothesis that neither the proof sketch nor any consumer uses.
-   Do not search for a separating counterexample for every hypothesis: an over-strong hypothesis is
-   cheap for the library to relax when it proves the weaker statement.
+7. **Unused hypotheses.** A hypothesis that neither the statement's truth, the proof sketch nor any
+   consumer needs is a P3 note, not a finding, unless you show with an instance that the statement
+   holds without it. Do not search for a separating counterexample for every hypothesis.
 8. **Imported lemmas and proof routes.** Every input a proof route uses is a target here, a named
    supplier section, or a pinned declaration, and none of them is derived from the target itself; a
    citation is not a supplier. Where a step is taken from inside a source's proof rather than from

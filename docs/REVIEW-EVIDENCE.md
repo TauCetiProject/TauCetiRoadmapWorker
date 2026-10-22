@@ -4,11 +4,10 @@ The adversarial pass, the defect classes, the Lean form and the review, red-team
 the product's quality control. This document records what reviews of the roadmap repository
 actually found, what they missed, what a missed defect costs once the library tries to formalize
 it, and what each check in the briefs costs to run. Each change to the briefs is justified from
-that evidence, and so is each alternative that was considered and rejected. The survey was made on
-2026-10-21.
+that evidence, and so is each alternative that was considered and rejected.
 
-Pull request numbers below are written "roadmap #n" for TauCetiProject/TauCetiRoadmap and
-"Tau Ceti #n" for TauCetiProject/TauCeti.
+Examples name the roadmap they come from. The survey's data (per-finding records, per-pull-request
+dossiers, the Tau Ceti sample) is kept outside the repository.
 
 ## 1. In short
 
@@ -49,7 +48,7 @@ are listed as follow-ups in section 8.
 ## 2. Data and method
 
 **Sources**
-- All 1,092 pull requests of the roadmap repository from 2026-06-04 to 2026-10-21, with their
+- All 1,092 pull requests of the roadmap repository up to the survey, with their
   3,387 comments, 2,586 reviews and 1,492 inline review comments, fetched through the GraphQL API.
 - The repository's history and its 253 issues.
 - About 1,900 Tau Ceti pull requests that mention a roadmap.
@@ -84,14 +83,14 @@ are listed as follow-ups in section 8.
 **Limits**
 - Category, escape and outcome are an agent's reading of each review, not a human's. Quotes were
   spot-checked against the raw data. One attribution was wrong: the extraction credited a
-  maintainer's review with the Dieudonné-module counterexample of roadmap #879, but a later review
-  from the author's account found it. That attribution is not used here.
+  maintainer's review with the Dieudonné-module counterexample of the finite flat group schemes
+  roadmap, but a later review from the author's account found it. That attribution is not used here.
 - "Escape" depends on reconstructing rounds from comment order. It undercounts on pull requests
   whose earlier rounds are summarised only in commit messages.
 - Tau Ceti pull requests that meet a defect are also 1.8 times larger than the baseline, so part
   of the extra cost reflects harder targets.
-- Neither repository records token usage. The token costs of review below are estimates, using
-  prices from the Claude API reference and token counts measured on the survey's own agents.
+- Neither repository records token usage. The costs of review below are estimates in tokens, from
+  token counts measured on the survey's own agents.
 
 ## 3. What the reviews find
 
@@ -158,22 +157,22 @@ The classes, with the change in the briefs that addresses each:
 
 1. **False at a degenerate case the list already names.** Rank 1, an empty fan, m = 0, k = 0,
    p = ∞, q = 0, a finite ℤ/2, imperfect fields, an out-of-range index returning a junk value.
-   - Roadmap #244 was found false at m = 0 three days after four approving rounds.
+   - A profinite-groups statement was found false at m = 0 three days after four approving rounds.
    - *Change:* a table row without computed values does not count. The list is extended with empty
      structures, junk values of total functions, nilpotent thickenings and universe bounds.
 2. **Underdetermined objects:** a plausible wrong model satisfies every stated law.
-   - The geometric Artin map instead of the arithmetic one (roadmap #512); the zero pairing
-     (roadmap #250); a rescaled character or basis; a level condition every larger level also
+   - The geometric Artin map instead of the arithmetic one, and the zero pairing (class field
+     theory); a rescaled character or basis; a level condition every larger level also
      meets.
    - *Change:* the wrong-model test (adversarial pass, item 5).
 3. **Lemmas imported at the wrong generality, and circular routes.**
    - A step lifted from inside a source's proof and restated beyond the source's setting.
-   - A route circular through the source's own proof (roadmap #704).
+   - A route circular through the source's own proof (class field theory).
    - A citation standing in for a supplier.
    - *Change:* adversarial item 8.
 4. **The roadmap contradicts itself.**
-   - A worked example refutes a theorem of the same roadmap: roadmap #250's biquadratic example,
-     found in round 7; roadmap #256's Δ = 12.
+   - A worked example refutes a theorem of the same roadmap: the biquadratic example of class
+     field theory, found in round 7; the Δ = 12 example of integral lattices.
    - Two Checks on one object cannot both hold.
    - *Change:* adversarial item 10.
 5. **Lean binder loss.** A `sorry`'d declaration, a `def` or an `instance` keeps only the section
@@ -185,7 +184,7 @@ The classes, with the change in the briefs that addresses each:
 6. **Wrong beliefs about native definitions.**
    - `CWComplex` without a separation axiom; `IndepFun` without measurability.
    - "Proven upstream", where the upstream lemma assumes separability.
-   - A nonexistent lemma called "genuinely available" (roadmap #349).
+   - A nonexistent lemma called "genuinely available" (universal covers).
    - *Change:* adversarial item 9 quotes the definition at the pin and says what it omits.
 7. **Over-strong hypotheses**, found only when Tau Ceti proved the weaker statement. Three of these
    had been requested by a pre-merge review.
@@ -197,25 +196,27 @@ The classes, with the change in the briefs that addresses each:
 
 ### How the review process lets them through
 
-- **Diff-scoped and summary reviews pass what whole-roadmap reviews catch.** On roadmap #898,
-  #882, #1101, #1181 and #1011, one review approved the same head on which another found blockers.
+- **Diff-scoped and summary reviews pass what whole-roadmap reviews catch.** On five revisions
+  (stable reduction, algebraic curves, modular curves, orthogonal and spin groups, reductive groups),
+  one review approved the same head on which another found blockers.
 - **Repairs introduce defects, and the same defect survives elsewhere.**
-  - Roadmap #1071 fixed a twist error in one section; it recurred verbatim in another two rounds
+  - GL₂ modularity lifting fixed a twist error in one section; it recurred verbatim in another two rounds
     later.
-  - Roadmap #1043's fix covered one case of an exterior-power comparison and not the next.
-  - Reviewers' own proposed repairs were false in several cases (three of seven on roadmap #875),
+  - Coleman integration's fix covered one case of an exterior-power comparison and not the next.
+  - Reviewers' own proposed repairs were false in several cases (three of seven in one review of
+    classical étale cohomology),
     and at least five defects later corrected on main had been requested by a review.
 - **Citations rot.** Sibling roadmaps are renumbered while a pull request is under review, so a
   citation correct in one round is wrong in the next. In the other direction, reviewers reported
   sections as missing nine times when the section existed and the reviewer was reading a stale copy.
 - **Two open pull requests own the same object.** This is the largest category by review rounds
   (supplier plus duplication, 20% of findings), and it is invisible from main and the merge order.
-  Roadmap #1056 and a sibling both declared the same fully qualified Lean name with different
+  Formal connections and opers and a sibling both declared the same fully qualified Lean name with different
   bodies.
 - **Errata parked in closed or unmerged fix pull requests stay on main** and are found again later.
-- **Findings get skipped.** A fix addressed other findings and left one open for weeks (roadmap
-  #253, six rounds with the same proposed repair), or pushed unrelated material instead (roadmap
-  #957, #1107).
+- **Findings get skipped.** A fix addressed other findings and left one open for weeks (zeros of
+  L-functions, six rounds with the same proposed repair), or pushed unrelated material instead
+  (Heegaard Floer, tensor product combinatorics).
 
 ### Defects met by formalizers
 
@@ -223,18 +224,18 @@ The classes, with the change in the briefs that addresses each:
   had raised none.
 - 16 of the 50 are still on main. One reason is that Tau Ceti agents are not permitted to open
   roadmap issues, so the reports live only in Tau Ceti pull request descriptions. An example is the
-  set equality `frobeniusPrimeSet_preimage_fixedField` in Chebotarev's Suggested.lean, reported
-  false in both directions in Tau Ceti #7089.
+  set equality `frobeniusPrimeSet_preimage_fixedField` in Chebotarev's Suggested.lean, which a Tau
+  Ceti pull request showed false in both directions.
 - Classes: false 10, hypothesis 8, generality 8, Lean signature 4, design 3, unowned 3, supplier 3,
   duplication 3, other 8.
 
 ### What humans add
 
 Human comments were 6% of findings, and what they contributed differs from the AI reviews:
-- invented terminology ("made up AI nonsense", roadmap #184);
+- invented terminology ("made up AI nonsense", elliptic curves);
 - scope and taste ("far too general for FLT, and not general enough for a general theory of
-  automorphic representations", roadmap #120);
-- one-line pointers to existing Mathlib API (roadmap #21, #66);
+  automorphic representations", weight-two automorphic forms);
+- one-line pointers to existing Mathlib API (exchangeability, graph regularity);
 - missing named variants of a conjecture;
 - checks of a hypothesis against the roadmap's actual consumers;
 - a few genuine counterexamples, among them one from a 1967 Grothendieck letter.
@@ -245,8 +246,8 @@ Human comments were 6% of findings, and what they contributed differs from the A
 
 ### A defect that reaches Tau Ceti
 
-109 pull requests that met a roadmap defect, against 100 random clean merged pull requests from
-2026-07 to 2026-10:
+109 pull requests that met a roadmap defect, against 100 random clean merged pull requests from the
+same months:
 
 | Per pull request | Met a defect | Baseline | Ratio |
 |---|---|---|---|
@@ -263,13 +264,13 @@ Human comments were 6% of findings, and what they contributed differs from the A
   - needed a human roadmap edit: 4%.
 - **The tail.** About one defect in twelve, mostly ordering or unowned-prerequisite defects that a
   rubric enforced literally, costs 10–30 times a normal pull request:
-  - Tau Ceti #16864: 124 review events, still open;
-  - Tau Ceti #1677: 18 days, closed unmerged;
-  - Tau Ceti #4043: 71 review events.
+  - a mandatory proof route in DG Floer theory: 124 review events, still open;
+  - a scope ruling in conformal mapping: 18 days, closed unmerged;
+  - a forgotten hypothesis in profinite cohomology: 71 review events.
 - **Repeats.** At least 9% of defects were met by more than one pull request; 15–35% is the
   estimate.
-- **The direct rubric spend is small** (about $0.10 a round). The real costs are formalizer
-  sessions, elapsed time, discarded work and repeated attempts.
+- **The direct rubric spend is small.** The real costs are formalizer sessions, elapsed time,
+  discarded work and repeated attempts.
 
 ### A defect caught in roadmap review
 
@@ -279,10 +280,8 @@ merge, a review spends about 1.4k visible tokens per finding.
 
 ### What a check costs
 
-Prices from the Claude API reference, per million tokens:
-- Fable 5.1: $10 input, $50 output, $0.25 cache read.
-- Opus 5.5: $4, $20 and $0.20.
-- Thinking is billed as output. Codex prices were not checked.
+Output tokens, thinking included, are priced several times input tokens, and a cache read is a
+small fraction of an input token. Prices change; the estimates below are in tokens.
 
 Measured on the survey's own agents: each read 30–100 million cached tokens, wrote 1–4 million to
 the cache, and produced 0.03–0.16 million output tokens. Every tool call re-reads the whole
@@ -295,31 +294,31 @@ A roadmap in the current style (20 roadmaps on main with `*Needs:*` lines) has a
 - 128 Lean declarations, 46 of them definitions;
 - 40 cross-roadmap citations.
 
-Estimated cost of one review round of such a roadmap at Fable prices:
-- 60–150 turns at about 200k average context: 12–30 million cache reads, $3–8;
+Estimated cost of one review round of such a roadmap:
+- 60–150 turns at about 200k average context: 12–30 million cache reads;
 - about 12k visible output tokens (the worker's design reviews on the board are 7–12k), with an
-  assumed 3–10 times that in thinking: $2–6.
-- **About $5–15 a review**, and as much again for the fix that follows.
+  assumed 3–10 times that in thinking: 50–130k output tokens;
+- and as much again for the fix that follows.
 
 ## 6. The changes, check by check
 
 | Change | Evidence | Estimated marginal cost per median roadmap | Decision |
 |---|---|---|---|
-| Adversarial table with computed values; a row without values does not count | 94% of escapes in named classes; 67 of 111 merged misses passed by a summary; computing is what found defects | 1–2k thinking per target, about 120–240k output, $6–12, once | Keep, once at full depth (author pass and first review), then on changed text only |
+| Adversarial table with computed values; a row without values does not count | 94% of escapes in named classes; 67 of 111 merged misses passed by a summary; computing is what found defects | 1–2k thinking per target, about 120–240k output tokens, once | Keep, once at full depth (author pass and first review), then on changed text only |
 | Degenerate cases extended: empty structures, junk values, nilpotent thickenings, universe bounds, both directions of an iff | Merged misses at rank 1, empty fan, m = 0, p = ∞; Tau Ceti counterexamples on S₃ and C₄; ULift and cardinal-cutoff findings | inside the table | Keep |
 | Conventions recomputed in every layer and supplier | Convention errors 6% of findings; cross-layer sign contradictions in merged roadmaps | few conventions times their users | Keep |
 | Wrong-model test | Underdetermined maps and definitions in merged roadmaps; "elaborates but means something else" in Tau Ceti | 1–3k per object | Keep, restricted to opaque or sorried maps, candidate-operation structures and parameter-fixing hypotheses |
-| Unused hypotheses flagged | Over-strong hypotheses relaxed cheaply by formalizers | a by-product of the table | Keep the flag only (see rejected alternatives) |
+| Unused hypotheses: a hypothesis that neither the statement's truth, the proof sketch nor any consumer needs is a P3 note unless an instance shows the statement holds without it | Over-strong hypotheses relaxed cheaply by formalizers; a short proof sketch omits hypotheses the statement needs | a by-product of the table | Keep as a note only (see rejected alternatives) |
 | Proof-route inputs owned; steps lifted from inside a source's proof re-checked there | Unowned prerequisites 10%; imported-generality falsity escapes the author's red team | reading sources costs input and turns | Keep, restricted to steps from inside a proof |
 | Native definitions and has/lacks/proves claims checked at the pin | Wrong beliefs about native definitions; false "Mathlib lacks" claims | a few greps per claim with a local pin | Keep |
-| Checks and worked examples against the theorems of their section | Self-refuting roadmaps among the merged misses | about 300 tokens per Check, $4 | Keep, inside the table |
+| Checks and worked examples against the theorems of their section | Self-refuting roadmaps among the merged misses | about 300 tokens per Check | Keep, inside the table |
 | Colloquial milestones stated exactly, including quantifier order | Quantifier-order and "the standard bound" findings | small | Keep |
 | Binder rule for every `def` and `instance`; one batched `#check` file, reported | 25–45% re-escape; six false declarations in one audit of 138 | one elaboration | Keep (and move to the harness, section 8) |
 | One example per definition computes a known value | Definitions identically zero, a radical taken in ℝ | one elaboration | Keep |
 | A headline names the roadmap's objects | Headline theorems that were algebra on free variables | none | Keep |
 | Supplier drift includes the sibling's head, the pin, two open owners and colliding Lean names | Supplier plus duplication 20% of findings; identical fully qualified names | none in the brief | Keep |
-| Ownership against open roadmap pull requests; citations resolved at the cited head every round | Largest driver of rounds; citation rot | turn-heavy for agents | Keep in the brief; move to the harness (section 8) |
-| Missing citations reported only after checking the copy is current | Nine false "missing" findings from stale copies | none | Keep |
+| Ownership against open roadmap pull requests whose files the brief gives; citations resolved at the cited head every round, library declarations at the pins | Largest driver of rounds; citation rot | turn-heavy for agents | Keep in the brief, only over the files the brief gives (an agent never goes looking for pull requests); move to the harness (section 8) |
+| Missing citations reported only after checking the copy is current (stated once, with the citation rules) | Nine false "missing" findings from stale copies | none | Keep |
 | A proof sketch is not a mandatory route; `*Needs:*` per item | The 10–30 times tail in Tau Ceti; ordering blocks | none | Keep |
 | Standard vocabulary | Humans' most frequent catch | none | Keep |
 | Later rounds: repairs re-reviewed, their pattern searched elsewhere, and sections earlier passed without computed values reviewed in full | Repairs introduce defects; recurrence elsewhere; the round plateau | proportional to the diff | Keep, in place of reviewing the whole document again |
@@ -327,8 +326,9 @@ Estimated cost of one review round of such a roadmap at Fable prices:
 | Acceptance carries its evidence (computed table, declarations opened, citations resolved) | Approvals that verified nothing were followed by false statements in the next round | 5–15k output | Keep (and refuse in the harness, section 8) |
 | Fix and gate: repair the pattern, not the line; adversarial pass on added lemmas; one report section per finding | Recurring defects; skipped findings | proportional to the repairs | Keep |
 
-The briefs grow by 22–29% in words: review 4,671 → 5,954, design 3,701 → 4,520, package 3,550 →
-4,509, fix 3,575 → 4,622, red team 4,160 → 5,186. The brief is read once per turn as cached input,
+The briefs grow by 22–26% in words: review 4,671 → 5,875, design 3,701 → 4,520, package 3,550 →
+4,494, fix 3,575 → 4,599, red team 4,160 → 5,163. The rules carry no history (that is in this
+document), and each is stated once. The brief is read once per turn as cached input,
 so this costs less than the whole-document re-review it replaces.
 
 ## 7. Alternatives considered and rejected
@@ -342,10 +342,12 @@ so this costs less than the whole-document re-review it replaces.
      `max_rounds` park stays as the backstop.
 2. **A separating counterexample for every hypothesis** (the first draft's "hypotheses earn their
    place").
-   - Rejected on cost: about 300 hypotheses at 1–2k thinking each is $15–30 a pass.
+   - Rejected on cost: about 300 hypotheses at 1–2k thinking each is 300–600k output tokens a pass.
    - The defect it prevents is the one formalizers handle most cheaply: they prove the weaker
      statement and note the departure.
-   - Only unused hypotheses are flagged.
+   - A hypothesis that neither the statement's truth, the proof sketch nor any consumer needs is a
+     P3 note, not a finding, unless an instance shows the statement holds without it: a short proof
+     sketch can omit a hypothesis the statement needs.
 3. **Reviewing the whole document again in every round** (the briefs' previous rule).
    - Replaced. It is the largest cost multiplier (full context, times turns, times rounds), and the
      plateau shows each round finds little of what remains.
@@ -368,8 +370,10 @@ so this costs less than the whole-document re-review it replaces.
    themselves.**
    - Rejected as the long-term mechanism. 282 open roadmap pull requests are tens of millions of
      tokens, and per-citation greps add a turn each.
-   - The briefs ask for the check, because it is the largest driver of rounds. The harness should
-     supply an index and a resolver so the agent reads only the hits (section 8).
+   - The briefs ask for the check over the open pull requests whose files the brief gives, and tell
+     the agent not to look for others; where it has none, the report says ownership against open
+     pull requests was not checked. The harness should supply an index and a resolver so the agent
+     reads only the hits (section 8).
 7. **A dedicated late "final deep review"**, which in the existing campaign caught locator and name
    tails after several approvals.
    - Not adopted as an extra round. What it caught is mostly mechanical (stale names, page slips)
@@ -398,7 +402,7 @@ In order of cost-effectiveness:
    usage and cost, and Codex's JSON event stream reports token counts. Until this exists, the costs
    in section 5 are estimates. It is the cheapest way to confirm or overturn the decisions above.
 2. **The sibling list sees almost none of the open roadmap pull requests.** `open_roadmap_prs` keeps
-   only pull requests labelled `roadmap.pr_label`, which on 2026-10-21 was 1 of 282. The ownership
+   only pull requests labelled `roadmap.pr_label`, which at the survey was 1 of 282. The ownership
    and citation checks need the list of every open pull request that adds or changes a roadmap
    folder: names, folders and heads, which are cheap even where full checkouts are limited.
 3. **Mechanical checks in the harness:**
