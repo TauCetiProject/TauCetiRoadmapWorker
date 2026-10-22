@@ -41,8 +41,10 @@ Nothing else: no other folder, no pull-request text, no tooling.
 For each point: verify it against the sources (legal sources only), the roadmap's own definitions,
 the roadmaps on main and the open roadmap pull requests (read-only: __SIBLINGS__) and the pinned
 libraries (__LIBRARY__). If it is right, repair it (or repair it correctly and say why the
-suggested repair would be wrong); if it is wrong, gather the evidence. Keep README and Lean in
-agreement, and do not widen the scope. Then build and gate:
+suggested repair would be wrong); if it is wrong, gather the evidence. Repair the pattern, not
+only the line: search the roadmap for other occurrences of the defect, and run the adversarial pass
+on every statement your repair adds or changes. Keep README and Lean in agreement, and do not widen
+the scope. Then build and gate:
 
     __BUILD__
 

@@ -78,3 +78,9 @@ def test_the_fix_brief_carries_the_gate_failures_between_the_findings_and_the_fi
     text = prompts.render("fix", values)
     assert "Gate failures to clear" not in text
     assert "settle each once where they overlap.\n\n## What you may edit" in text
+
+
+def test_the_evidence_document_carries_no_pull_request_numbers_dates_or_prices():
+    text = (HERE / "docs" / "REVIEW-EVIDENCE.md").read_text(encoding="utf-8")
+    for pattern in (r"#\d{2,5}\b", r"\b20\d\d-\d\d(-\d\d)?\b", r"\$\d", r"Fable|Opus|Sonnet|Haiku|gpt-6|Astra"):
+        assert not re.search(pattern, text), pattern

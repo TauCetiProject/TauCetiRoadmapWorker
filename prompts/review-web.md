@@ -33,7 +33,9 @@ __FILES__
 
 The pull request: __PR__. Earlier reviews, red-team passes and fixes of this pull request are its
 comments; when there are earlier findings, first check finding by finding that each is repaired at
-this head (quote the repaired passage), then review the whole __SUBJECT__ again.
+this head (quote the repaired passage), then run the adversarial pass on every passage the repairs
+changed or added and look for each repaired pattern elsewhere in the file, then review in full
+every section the earlier reviews passed without computed instances.
 
 Context: the roadmap repository `__CONTENT_REPO__` at its main branch (roadmaps under
 `__ACTIVE_DIR__/`, completed ones under `__COMPLETED_DIR__/`), its open roadmap pull requests, and
@@ -87,7 +89,11 @@ then your findings, numbered, each starting with its id and severity:
 
 then `## Verified sound` (what you checked and found correct, with counts) and `## Not verifiable`
 (each item and why). Severity: P1 false, vacuous or unowned; P2 overclaim or missing hypothesis; P3
-locator, Check, style or policy. `accepted` means only P3 notes remain; `needs_changes` needs at
+locator, Check, style or policy. Test each repair you propose on the instance that refuted the
+original. Accept only with evidence: the instances you computed (with values), the declarations and
+cross-roadmap sections you opened; review a section you only skimmed before you accept, and put
+under `## Not verifiable` only what you cannot check (a text you cannot open), with the reason.
+`accepted` means only P3 notes remain; `needs_changes` needs at
 least one P1 or P2 finding; `rejected` is for a __SUBJECT__ no fix can repair (it re-plans an
 existing roadmap, or its scope is wrong): a human decides. Review only the head named in the first
 line: a review of an older head is not counted. Quote locators, never passages.

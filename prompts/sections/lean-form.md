@@ -9,7 +9,9 @@ contributors will be held to, so every statement in it must be one we are sure o
   proved by `sorry`, and only when every carrier in the statement exists in Mathlib or Tau Ceti at
   the pins or is a kept real-bodied definition; (c) at most two proved, discriminating `example`s
   per kept definition, testing a definition this roadmap introduces and exhibiting one of its main
-  themes. No admitted (`sorry`) examples; no examples about library objects unrelated to the
+  themes. One of them computes a known value of the definition, so that a body that elaborates
+  but means something else (a quantity that is identically zero, a radical taken in a field)
+  fails. No admitted (`sorry`) examples; no examples about library objects unrelated to the
   roadmap; no random numerical calculations. A boundary case that cannot be proved yet becomes a
   named `sorry`'d theorem target listed in the README.
 - Headline theorems appear only when they are easy to state on existing carriers. Never force a
@@ -20,10 +22,16 @@ contributors will be held to, so every statement in it must be one we are sure o
   mentions one. A heavy definition (a site or topos, a building, a tilt, a moduli stack, an
   analytification functor, a completion whose construction is itself a theorem) is a README target
   with its intended signature: formalising it is the library's work, the roadmap is the deliverable.
-- A `sorry`'d declaration keeps only the section `variable`s its type mentions, so hypotheses such
-  as `[CompleteSpace X]` or `[Module.Finite A M]` silently disappear. Carry every needed binder
-  explicitly in the declaration's own signature (or an `include` line) and check the elaborated
-  type with `#check @name` in a scratch file.
+- A `sorry`'d declaration, and every `def` and `instance` whatever its body, keeps only the section
+  `variable`s its type mentions, so hypotheses such as `[CompleteSpace X]` or `[Module.Finite A M]`
+  silently disappear (a `theorem` proved later does not bring them back to the `def` it is about).
+  Carry every needed binder explicitly in the declaration's own signature (or an `include` line).
+  Check it mechanically: put `#check @name` for every declaration in one scratch file, elaborate it
+  once, compare each elaborated type with its README statement, and say in your report that you did
+  and what changed.
+- A headline names the roadmap's objects. A theorem about free variables only (functions `ℂ → ℂ`,
+  bare scalars, an arbitrary type) whose conclusion is algebra on its hypotheses is not a headline:
+  state it on the actual carriers or leave it as a README target.
 - Imports: the single line `import Mathlib` followed only by the individual `TauCeti.*` modules
   actually used (the library's root module re-exports nothing; every module named must exist at
   the pinned Tau Ceti); never `Mathlib.<submodule>` lines, never another roadmap's module, nothing

@@ -35,10 +35,15 @@ House style and rules:
 - Timeless: no process narrative ("so far", "to be checked", "current", "removed", "checkpoint",
   "handoff", "packet", job ids, review or pull-request references, round labels, local paths). A
   reader a year from now cannot tell which parts were contentious.
+- A proof sketch names a route and its inputs; it does not make the route mandatory. A target's
+  `*Needs:*` line lists what its statement and its route need, item by item, so that an implementer
+  who proves it another way is not blocked behind an unrelated layer.
 - Definite about scope: nothing is "optional", "deferred" or "for later". Every item lives in some
   layer. A roadmap that is unwieldy is split into Parts.
 - No target-numbering tables (`**T017**` blocks) and no `Hypotheses:/API:/Tests:/Sources:` field
   lists: the catalogue is an input, the README is prose for mathematicians.
+- Standard vocabulary: every term is either the literature's or Mathlib's name for the object, or
+  is defined where it first appears.
 - Mathematics, not algorithms: no executable procedures, certificates, implementations or large
   computations. The mathematical background of an algorithm and small worked examples as Checks
   are welcome.

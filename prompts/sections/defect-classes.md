@@ -15,9 +15,12 @@ Test every class on every target.
    characters in adjunctions, duals of Tate modules, the direction of a comparison map.
 5. **Unowned prerequisites**: a proof plan uses a result that no layer, no named supplier section
    and no pinned declaration provides; a standard theorem restated instead of cited.
-6. **Supplier drift**: a cited supplier declaration or section that does not exist at the
-   supplier's current version, a supplier cited for a statement it does not make, two owners for
-   one object, a cycle between two roadmaps' layers.
+6. **Supplier drift**: a cited supplier declaration or section that does not exist where it is
+   cited (a roadmap's section on main or at its open head, a library declaration at the pin), a
+   supplier cited for a statement it does not make, two owners for one object (including
+   two open pull requests that each build it, and two `Suggested.lean` files that declare the same
+   fully qualified name), a cycle between two roadmaps' layers, a `*Needs:*` edge that uses
+   something the scope section excludes.
 7. **Convention mismatches between roadmaps**: row versus column conventions, indexing by `Fin d`
    versus ℕ with junk values, additive versus multiplicative normalisations, different hypotheses
    for the same notion.
@@ -26,7 +29,10 @@ Test every class on every target.
    Lean mirror; a Check about a carrier that does not exist in the file.
 9. **Lean signature defects**: a truncated type, a sorry'd data field, a Lean statement at a
    different generality from the README (a missing Noetherian, topological-group or open-subgroup
-   hypothesis), arbitrary-topology carriers that make a statement vacuous or false.
+   hypothesis), arbitrary-topology carriers that make a statement vacuous or false; a `def` or
+   `instance` that lost a section variable its type does not mention; a quantifier order that lets
+   a "uniform" bound depend on what it should not; natural-number subtraction or division where
+   the junk value matters; `ULift` used to move morphisms where objects had to change universe.
 10. **Source locators**: the wrong chapter or page, a source whose hypothesis the target drops, a
     misprint in the source copied into the roadmap, a locator into a text that does not contain the
     statement, a survey cited for a theorem that needs the primary source.
@@ -39,3 +45,5 @@ Test every class on every target.
 14. **Upward dependency**: a `*Needs:*`, supplier-table or "Supplied by" citation of a roadmap later
     in the merge order, or two roadmaps citing each other. Repair by repointing to the earliest
     owner or moving the consumed target down.
+15. **Invented vocabulary**: a term that is neither standard nor defined in the roadmap. Use the
+    literature's and Mathlib's name for the object, or define the new one.

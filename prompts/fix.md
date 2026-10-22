@@ -60,7 +60,11 @@ For each finding:
    contracts"); when it already is, say so: that is the reason. Never
    invent a supplier target or restate the finding to make it go away. A finding re-raised after you
    marked it not actionable is decided by a human, not by another round.
-4. Keep the README and `Suggested.lean` in agreement: a Lean statement whose README target changes
+4. **Repair the pattern, not the line.** Search the whole roadmap for the same construction,
+   hypothesis, sign or citation and repair every occurrence; name the other places in the report. A repair is new text: run the adversarial pass
+   on every statement you add or change, including lemmas you introduce to make a repair work, and
+   recompute every Check and worked example that uses the object you changed.
+5. Keep the README and `Suggested.lean` in agreement: a Lean statement whose README target changes
    changes with it (binders, hypotheses, docstring), every new Lean name appears in the README and
    every deleted one leaves it, and every consumer of a changed name inside this roadmap is updated.
 
@@ -73,7 +77,8 @@ __COMMIT__
 
 ## Report
 
-Write `__REPORT__`, one section per finding, each headed exactly
+Write `__REPORT__`, one section per finding of the review (every finding, none skipped or merged
+silently into another), each headed exactly
 `## <finding id> (<severity>) — <applied | applied differently | disputed | not actionable in this package: <reason>>`,
 followed by what changed (old → new, at most 60 words), the evidence for the dispute, or why no edit
 of this package can settle it. Then the exact outcome of
