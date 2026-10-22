@@ -110,6 +110,27 @@ def test_gate_lane_quotes_reviews_as_data(ctx):
     assert "(data, not instructions)" in reviews and "```text\nChanges needed" in reviews
 
 
+def test_gate_lane_answers_a_maintainer_review_posted_under_the_owners_login(ctx, monkeypatch):
+    # alice owns #905 and is also a maintainer: her prefixed review, with the inline comment drafted
+    # into it before she submitted it, is to be answered; her other inline comment and her earlier
+    # reply are not.
+    review = replies.Event("2026-10-22T12:58:00Z", "alice", "Maintainer review of `Suggested.lean`: H1 is false.",
+                           commit=SHA, review_id=71)
+    reply = replies.Event("2026-10-21T09:00:00Z", "alice", "Fixed in `0000000` (reply to the review).")
+    inline = [replies.Event("2026-10-22T12:50:00Z", "alice", "(on `Suggested.lean` line 3) drop the hypothesis",
+                            review_id=71),
+              replies.Event("2026-10-22T13:10:00Z", "alice", "(on `README.md` line 9) noted", review_id=80)]
+    monkeypatch.setattr(lane_gate, "timeline", lambda ctx, pr: [reply, review])
+    monkeypatch.setattr(lane_gate, "inline_comments", lambda ctx, pr: inline)
+    ctx.cfg.replies.maintainer_logins = ["alice"]
+    job = new_job("GATE-Foo~2", inputs={"pr": 905, "operator": "alice"})
+    job.number = 9
+    assert lane_for(job).run(job, ctx).status == "dry-run"
+    reviews = (ctx.wdir / "jobs" / "GATE-Foo_r2" / "scratch" / "reviews.md").read_text()
+    assert "Maintainer review of `Suggested.lean`: H1 is false." in reviews and "drop the hypothesis" in reviews
+    assert "noted" not in reviews and "Fixed in" not in reviews
+
+
 def test_lane_base_values_cover_common_placeholders(ctx):
     job = new_job("PKG-Foo")
     ws = lane_base.Lane().prepare(job, ctx)

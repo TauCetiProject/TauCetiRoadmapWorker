@@ -1,6 +1,7 @@
 from tauceti_roadmap_worker.gates import GateResult
-from tauceti_roadmap_worker.replies import (REPLY_PREFIX, Event, build_reply, classify, guard_reply, parse_findings,
-                                            reply_is_safe, reviews_since_reply, validation_sentence, wanted_label)
+from tauceti_roadmap_worker.replies import (REPLY_PREFIX, Event, build_reply, classify, guard_reply,
+                                            is_maintainer_review, parse_findings, reply_is_safe, reviews_since_reply,
+                                            validation_sentence, wanted_label)
 
 MARKERS = ["ChatGPT", "GPT-", "Astra", "\U0001f916", ":robot:", "AI-assisted", "Deep re-review", "Deep review"]
 HOUSE = ["Red-team repairs at", "Housekeeping at"]
@@ -74,6 +75,53 @@ def test_every_review_since_the_last_reply_is_ingested():
     got = reviews_since_reply(events, US, MARKERS, HOUSE)
     assert [e.body.split(":")[0] for e in got] == ["Changes needed", "Request changes"]
     assert classify(events, US, MARKERS, HOUSE)[1] == "2026-10-19T12:00:00Z"
+
+
+# --- a maintainer's review under the owner's login ------------------------------------------------
+
+MAINTAINER = {"author"}      # the maintainer acts as the same login as the workers (CBirkbeck)
+M_REVIEW = "Maintainer review of `Suggested.lean`: H1 the hypothesis on p is missing."
+
+
+def m_label(events, maintainers=MAINTAINER):
+    return wanted_label(events, US, HEAD, markers=MARKERS, housekeeping=HOUSE, approvers=[],
+                        ignore={"github-actions[bot]"}, maintainers=maintainers)
+
+
+def test_maintainer_review_from_the_owner_login_is_awaiting_author():
+    events = [Event("2026-10-22T09:00:00Z", "author", "Fixed in `abc1234` (reply to the review): R01 applied."),
+              Event("2026-10-22T12:58:00Z", "author", M_REVIEW)]
+    assert m_label(events) == ("awaiting-author", ["awaiting-review"])
+    assert [e.body for e in reviews_since_reply(events, US, MARKERS, HOUSE, maintainers=MAINTAINER)] == [M_REVIEW]
+    # Without the login configured it stays the author's own reply, as before.
+    assert m_label(events, maintainers=set())[0] == "awaiting-review"
+
+
+def test_the_gate_lanes_reply_from_the_same_login_is_not_a_maintainer_review():
+    report = "## H01 (author) — applied\nMaintainer review asked for the hypothesis on p; it is added to `foo`.\n"
+    reply = build_reply("def5678", report, "At `def5678`: gate passed.", markers=MARKERS)
+    events = [Event("2026-10-22T12:58:00Z", "author", M_REVIEW), Event("2026-10-22T14:00:00Z", "author", reply)]
+    assert not is_maintainer_review(events[1], MAINTAINER)
+    assert m_label(events) == ("awaiting-review", ["awaiting-author"])
+    assert reviews_since_reply(events, US, MARKERS, HOUSE, maintainers=MAINTAINER) == []
+
+
+def test_an_owner_comment_without_the_prefix_stays_a_reply():
+    events = [Event("2026-10-22T10:00:00Z", "reviewer", "Changes needed: Check 3 is false."),
+              Event("2026-10-22T11:00:00Z", "author", "Answered below; see the Maintainer review of yesterday.")]
+    assert m_label(events)[0] == "awaiting-review"
+
+
+def test_the_maintainer_prefix_is_case_insensitive_after_emoji_and_exact_at_the_start():
+    def review(body, user="author"):
+        return is_maintainer_review(Event("2026-10-22T12:58:00Z", user, body), {"Author"})
+    assert review("maintainer REVIEW of `Suggested.lean`")
+    assert review("\U0001f50d\ufe0f  Maintainer review: two points")
+    assert review(":mag: Maintainer review: two points")
+    assert not review("Fixed in `abc1234`: Maintainer review points applied.")
+    assert not review("> Maintainer review of `Suggested.lean`")
+    assert not review("Maintainer review of `Suggested.lean`", user="someone-else")
+    assert not is_maintainer_review(Event("t", "author", "anything"), {"author"}, prefix="")
 
 
 # --- the reply guard -----------------------------------------------------------------------------

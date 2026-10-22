@@ -1,6 +1,7 @@
 """The `gate` lane: answer the human reviewers of a draft pull request.
 
-Every review and comment since our last reply is ingested (not only the newest), a fix agent
+Every review and comment since our last reply is ingested (not only the newest), a maintainer's
+review posted under the branch owner's own login included (`[replies] maintainer_logins`), a fix agent
 repairs or disputes each point on the pull request branch, the push gate must pass, the branch is
 pushed, a finding-by-finding reply is posted (guarded so that it never reads as a review), and the
 labels are flipped. The final merge is a human action. Port of review-batch.sh, mk-gfix.sh,
@@ -41,10 +42,14 @@ class GateLane(Lane):
         r = ctx.cfg.replies
         events = timeline(ctx, pr)
         since = replies.reviews_since_reply(events, {mine["owner"]}, r.review_markers, r.housekeeping_prefixes,
-                                            set(r.ignore_logins))
+                                            set(r.ignore_logins), maintainers=set(r.maintainer_logins),
+                                            maintainer_prefix=r.maintainer_review_prefix)
         if since:
-            cutoff = since[0].t
-            since += [e for e in inline_comments(ctx, pr) if e.t >= cutoff and e.user.lower() != mine["owner"].lower()]
+            # The inline comments of the reviews being answered (a maintainer's review under the owner's
+            # login brings its own), and every other reviewer's since the first of them.
+            cutoff, answered = since[0].t, {e.review_id for e in since if e.review_id}
+            since += [e for e in inline_comments(ctx, pr)
+                      if e.review_id in answered or (e.t >= cutoff and e.user.lower() != mine["owner"].lower())]
             since.sort(key=lambda e: e.t)
         if not since:
             raise LaneError(f"#{pr}: no review since the last reply")

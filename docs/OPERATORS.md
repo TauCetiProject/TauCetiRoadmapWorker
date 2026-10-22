@@ -776,6 +776,15 @@ alternative for operators who already use it.
   `targets import-intentions`; there is nothing else to do.
 * **A draft pull request**: review it on GitHub. Your comments feed the gate lane; the reply answers
   every point, and the labels flip between awaiting-author and awaiting-review. Merging is yours.
+  A maintainer whose login is also the one the workers act as is the author of every worker-ported
+  draft, so on those drafts their comments would read as the author's own replies. List that login
+  in `[replies] maintainer_logins` and open each review with `[replies] maintainer_review_prefix`
+  (default `Maintainer review`; case-insensitive, emoji and whitespace before it allowed), for
+  example `gh pr review <n> --comment --body "Maintainer review of Suggested.lean: ..."`. Such a
+  review or issue comment counts as anyone else's review: the next `board sync` flips the draft to
+  awaiting-author and creates its GATE job, and the gate lane answers it with its inline comments.
+  Every other comment of that login on its own drafts stays a reply; the gate lane's replies open
+  with `Fixed in`, never with the prefix.
 * **The configuration and the prompts** are CODEOWNERS-protected; changes go through review.
 
 ## Known limits of this version

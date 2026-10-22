@@ -208,6 +208,11 @@ class Replies:
     awaiting_review: str = "awaiting-review"
     housekeeping_prefixes: list[str] = field(default_factory=lambda: [
         "Red-team repairs at", "Scope change at", "Supplier change at", "Ownership change at", "Housekeeping at"])
+    # Logins of maintainers who may act as the same login as the workers: their review or comment that
+    # opens with `maintainer_review_prefix` (case-insensitive, after optional emoji) is a review even
+    # on a pull request that login owns.
+    maintainer_logins: list[str] = field(default_factory=list)
+    maintainer_review_prefix: str = "Maintainer review"
 
 
 @dataclass

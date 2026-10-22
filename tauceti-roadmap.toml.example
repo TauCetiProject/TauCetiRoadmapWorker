@@ -270,6 +270,12 @@ awaiting_author = "awaiting-author"
 awaiting_review = "awaiting-review"
 # Our own comments that start like this are housekeeping, not replies to a review.
 housekeeping_prefixes = ["Red-team repairs at", "Scope change at", "Supplier change at", "Ownership change at", "Housekeeping at"]
+# Maintainer logins that are also the login the workers act as (so a worker's draft is "theirs").
+# Such a login's review or comment whose text starts with `maintainer_review_prefix`
+# (case-insensitive, after optional emoji and whitespace) counts as a review that the gate lane
+# answers; everything else it posts on its own pull requests stays a reply.
+maintainer_logins = []
+maintainer_review_prefix = "Maintainer review"
 
 [prompts]
 # Optional file (in the packages repository) of project-specific rules appended to every brief.

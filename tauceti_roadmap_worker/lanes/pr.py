@@ -122,13 +122,15 @@ def inline_comments(ctx: Context, pr: int) -> list[replies.Event]:
     repo = ctx.cfg.repositories.content
     items = ctx.gh.api(f"repos/{repo}/pulls/{pr}/comments?per_page=100", paginate=True)
     return [replies.Event(c.get("created_at", ""), (c.get("user") or {}).get("login", ""),
-                          f"(on `{c.get('path')}` line {c.get('line') or c.get('original_line')}) {c.get('body') or ''}")
+                          f"(on `{c.get('path')}` line {c.get('line') or c.get('original_line')}) "
+                          f"{c.get('body') or ''}", review_id=c.get("pull_request_review_id") or 0)
             for c in items]
 
 
 def events_from_api(reviews: list[dict], comments: list[dict]) -> list[replies.Event]:
     out = [replies.Event(r.get("submitted_at") or "", (r.get("user") or {}).get("login", ""), r.get("body") or "",
-                         approved=r.get("state") == "APPROVED", commit=r.get("commit_id") or "")
+                         approved=r.get("state") == "APPROVED", commit=r.get("commit_id") or "",
+                         review_id=r.get("id") or 0)
            for r in reviews if r.get("submitted_at")]
     out += [replies.Event(c.get("created_at", ""), (c.get("user") or {}).get("login", ""), c.get("body") or "")
             for c in comments]
@@ -140,7 +142,8 @@ def flip_labels(ctx: Context, pr: int, events: list[replies.Event], head_sha: st
     want, drop = replies.wanted_label(events, {owner}, head_sha, markers=r.review_markers,
                                       housekeeping=r.housekeeping_prefixes, approvers=r.approvers,
                                       ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,
-                                      awaiting_review=r.awaiting_review)
+                                      awaiting_review=r.awaiting_review, maintainers=set(r.maintainer_logins),
+                                      maintainer_prefix=r.maintainer_review_prefix)
     repo = ctx.cfg.repositories.content
     have = {label["name"] for label in ctx.gh.api(f"repos/{repo}/issues/{pr}/labels")}
     if want and want not in have:

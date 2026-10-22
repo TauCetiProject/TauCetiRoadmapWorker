@@ -6,6 +6,10 @@ Ported from the maintainer's label-sync.sh, review-batch.sh and mk-reply.py:
   replies. A comment counts as a review when it comes from someone else, or when it is ours but
   names an AI review tool in its first 60 characters (a review we posted on a reviewer's behalf).
   Approvals and "findings addressed" notes are not reviews that need an answer.
+* `is_maintainer_review`: the maintainer may act as the same login as the workers, so a worker's
+  pull request can carry the maintainer's own review under the owner's login. A review or comment
+  by a configured maintainer login that opens with the maintainer-review prefix is read as another
+  reviewer's comment; every other comment of the owner stays ours.
 * `wanted_label` is the label state machine: an approval by a configured approver at the current
   head clears both labels; a review newer than our last reply means `awaiting-author`; otherwise
   `awaiting-review`.
@@ -21,6 +25,7 @@ Ported from the maintainer's label-sync.sh, review-batch.sh and mk-reply.py:
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 
 CHANGES = re.compile(
@@ -34,6 +39,11 @@ SETTLED = re.compile(
     r"comments addressed|are addressed|is addressed|fully addressed|— addressed|- addressed")
 APPROVE_VERDICT = re.compile(r"Verdict[^\n]{0,30}APPROVE")
 THANKS = re.compile(r"^(?:Thank you|Thanks)")
+MAINTAINER_REVIEW_PREFIX = "Maintainer review"
+SHORTCODE = re.compile(r":[a-z0-9_+-]+:")
+# Leading characters skipped before the prefix: emoji and other symbols, skin tones, variation
+# selectors, keycaps and joiners (besides whitespace).
+DECORATION = frozenset({"So", "Sk", "Mn", "Me", "Cf"})
 
 
 @dataclass(frozen=True)
@@ -43,17 +53,42 @@ class Event:
     body: str
     approved: bool = False   # a PR review in state APPROVED
     commit: str = ""         # the head a PR review was submitted on
+    review_id: int = 0       # the PR review this is (a review) or belongs to (an inline comment)
 
 
 def _markers_re(markers: list[str]) -> re.Pattern:
     return re.compile("|".join(re.escape(m) for m in markers)) if markers else re.compile(r"(?!)")
 
 
-def is_review(e: Event, ours: set[str], markers: list[str], ignore: set[str] = frozenset()) -> bool:
+def undecorated(body: str) -> str:
+    """The text after any leading whitespace and emoji (characters or `:shortcode:`)."""
+    i = 0
+    while i < len(body):
+        m = SHORTCODE.match(body, i)
+        if m:
+            i = m.end()
+        elif body[i].isspace() or unicodedata.category(body[i]) in DECORATION:
+            i += 1
+        else:
+            break
+    return body[i:]
+
+
+def is_maintainer_review(e: Event, maintainers: set[str], prefix: str = MAINTAINER_REVIEW_PREFIX) -> bool:
+    """A review or comment by a maintainer login whose text opens with `prefix` (case-insensitive,
+    after optional emoji and whitespace). Exact at the start: a reply that only mentions the prefix
+    later on, or quotes it after other text, is not one. An empty prefix matches nothing."""
+    if not prefix or e.user.lower() not in {m.lower() for m in maintainers}:
+        return False
+    return undecorated(e.body or "")[:len(prefix)].lower() == prefix.lower()
+
+
+def is_review(e: Event, ours: set[str], markers: list[str], ignore: set[str] = frozenset(),
+              maintainers: set[str] = frozenset(), maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> bool:
     if e.user in ignore:
         return False
     body = ("Verdict: APPROVE " if e.approved else "") + (e.body or "")
-    mine = e.user.lower() in ours
+    mine = e.user.lower() in ours and not is_maintainer_review(e, maintainers, maintainer_prefix)
     if mine and not (_markers_re(markers).search(body[:60]) and not THANKS.match(body)):
         return False
     if APPROVE_VERDICT.search(body):
@@ -61,8 +96,9 @@ def is_review(e: Event, ours: set[str], markers: list[str], ignore: set[str] = f
     return bool(CHANGES.search(body)) or not SETTLED.search(body)
 
 
-def is_reply(e: Event, ours: set[str], markers: list[str], housekeeping: list[str]) -> bool:
-    if e.user.lower() not in ours:
+def is_reply(e: Event, ours: set[str], markers: list[str], housekeeping: list[str],
+             maintainers: set[str] = frozenset(), maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> bool:
+    if e.user.lower() not in ours or is_maintainer_review(e, maintainers, maintainer_prefix):
         return False
     if _markers_re(markers).search((e.body or "")[:40]):
         return False
@@ -70,12 +106,13 @@ def is_reply(e: Event, ours: set[str], markers: list[str], housekeeping: list[st
 
 
 def classify(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
-             ignore: set[str] = frozenset()) -> tuple[str, str]:
+             ignore: set[str] = frozenset(), maintainers: set[str] = frozenset(),
+             maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> tuple[str, str]:
     """(time of the last review, time of our last reply); '' when there is none."""
     ours = {o.lower() for o in ours}
     ordered = sorted(events, key=lambda e: e.t)
-    reviews = [e.t for e in ordered if is_review(e, ours, markers, ignore)]
-    replies = [e.t for e in ordered if is_reply(e, ours, markers, housekeeping)]
+    reviews = [e.t for e in ordered if is_review(e, ours, markers, ignore, maintainers, maintainer_prefix)]
+    replies = [e.t for e in ordered if is_reply(e, ours, markers, housekeeping, maintainers, maintainer_prefix)]
     return (reviews[-1] if reviews else ""), (replies[-1] if replies else "")
 
 
@@ -88,23 +125,27 @@ def approved_at_head(events: list[Event], approvers: list[str], head: str) -> bo
 
 def wanted_label(events: list[Event], ours: set[str], head: str, *, markers: list[str], housekeeping: list[str],
                  approvers: list[str], ignore: set[str] = frozenset(),
-                 awaiting_author: str = "awaiting-author", awaiting_review: str = "awaiting-review") -> tuple[str, list[str]]:
+                 awaiting_author: str = "awaiting-author", awaiting_review: str = "awaiting-review",
+                 maintainers: set[str] = frozenset(),
+                 maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> tuple[str, list[str]]:
     """(label to add or '', labels to remove)."""
     if approved_at_head(events, approvers, head):
         return "", [awaiting_author, awaiting_review]
-    last_review, last_reply = classify(events, ours, markers, housekeeping, ignore)
+    last_review, last_reply = classify(events, ours, markers, housekeeping, ignore, maintainers, maintainer_prefix)
     if last_review and last_review > last_reply:
         return awaiting_author, [awaiting_review]
     return awaiting_review, [awaiting_author]
 
 
 def reviews_since_reply(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
-                        ignore: set[str] = frozenset()) -> list[Event]:
-    """Every review newer than our last reply, oldest first (not only the latest)."""
+                        ignore: set[str] = frozenset(), maintainers: set[str] = frozenset(),
+                        maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> list[Event]:
+    """Every review newer than our last reply, oldest first (not only the latest), a maintainer's
+    review under the owner's login included."""
     ours_l = {o.lower() for o in ours}
-    _, last_reply = classify(events, ours_l, markers, housekeeping, ignore)
+    _, last_reply = classify(events, ours_l, markers, housekeeping, ignore, maintainers, maintainer_prefix)
     return [e for e in sorted(events, key=lambda e: e.t)
-            if e.t > last_reply and is_review(e, ours_l, markers, ignore)]
+            if e.t > last_reply and is_review(e, ours_l, markers, ignore, maintainers, maintainer_prefix)]
 
 
 REPLY_PREFIX = "Reply to the review comments above, finding by finding:\n\n"
