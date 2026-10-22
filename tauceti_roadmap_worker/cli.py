@@ -5,6 +5,8 @@
     tauceti-roadmap work --worker-id ID [--only kind,...] [--agent codex|claude] [--loop]
     tauceti-roadmap tail --worker-id ID [--job JOB]      follow a worker's rounds and its agent's output
     tauceti-roadmap status [--all]                       the board's jobs by state, ages and claimants
+    tauceti-roadmap roadmaps refresh | list | grep <regex> | show <Name> [--file F] | resolve <README.md>
+    tauceti-roadmap usage [--worker-id ID] [--by lane|kind|job|agent|model|worker|day|label] [--since DATE]
     tauceti-roadmap gate <worktree> <Name> [--base origin/main] [--json] [--out FILE]
     tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE] [--movable]
     tauceti-roadmap gate --candidate <folder | README.md> --only <Name> [--order FILE]
@@ -46,6 +48,7 @@ from . import (
     filers,
     gates,
     gitops,
+    openroadmaps,
     paths,
     prompts,
     references,
@@ -53,6 +56,7 @@ from . import (
     watch,
 )
 from . import targets as target_files
+from . import usage as usage_mod
 from .board import KINDS, Board
 from .gh import GH, GHError
 
@@ -609,6 +613,74 @@ def status_cmd(args) -> int:
     return 0
 
 
+def roadmaps_cmd(args) -> int:
+    """The open roadmap pull requests: refresh the host's index, list, search, show a file, resolve a
+    README's citations. Only `refresh` reads GitHub; the rest works from the local mirror."""
+    cfg = _load(args)
+    state = cfg.state_dir()
+    if args.action == "refresh":
+        index = openroadmaps.refresh(GH(), cfg, force=True)
+        print(f"{len(index['prs'])} open roadmap pull requests indexed at {index['at']} (main {index['main'][:7]})")
+        return 0
+    index = openroadmaps.load(state)
+    if not index:
+        raise SystemExit("no index of the open roadmap pull requests on this host: run `roadmaps refresh`")
+    if args.action == "list":
+        print(f"{len(index['prs'])} open roadmap pull requests, index of {index['at']}:")
+        print("\n".join(openroadmaps.rows(index)))
+        return 0
+    if not args.target:
+        wanted = {"grep": "pattern", "show": "roadmap name"}.get(args.action, "README path")
+        raise SystemExit(f"roadmaps {args.action}: give a {wanted}")
+    if args.action == "grep":
+        try:
+            lines = openroadmaps.grep(state, index, args.target, fixed=args.fixed, ignore_case=args.ignore_case,
+                                      lean=not args.readme_only, readme=not args.lean_only, limit=args.limit)
+        except ValueError as exc:
+            raise SystemExit(f"roadmaps grep: {exc}") from exc
+        print("\n".join(lines) if lines else "no match on main or in any open roadmap pull request")
+        return 0
+    if args.action == "show":
+        places = openroadmaps.sources_for(index, args.target)
+        if args.pr:
+            places = [(label, ref) for label, ref in places if label == f"#{args.pr}"]
+        if not places:
+            raise SystemExit(f"no roadmap {args.target} on main or in an open roadmap pull request"
+                             + (f" #{args.pr}" if args.pr else ""))
+        label, ref = places[0]
+        text = openroadmaps.read(state, index, ref, args.target, args.file)
+        if not text:
+            raise SystemExit(f"{args.target} has no {args.file} at {label}")
+        sys.stdout.write(f"<!-- {args.target}/{args.file} at {label} -->\n" + text)
+        return 0
+    readme = Path(args.target)
+    lean = Path(args.lean) if args.lean else readme.parent / "Suggested.lean"
+    packages = Path(args.packages) if args.packages else openroadmaps.packages_dir()
+    citations, names, note = openroadmaps.resolve(
+        state, index, readme.read_text(encoding="utf-8"), own=args.name or readme.parent.name,
+        lean=lean.read_text(encoding="utf-8") if lean.is_file() else "", packages=packages)
+    text = openroadmaps.report(citations, names, note, index, str(readme))
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+    sys.stdout.write(text)
+    return 0
+
+
+def usage_cmd(args) -> int:
+    """The agent runs' token usage on this host, summed by lane (or job, agent, model, worker, day)."""
+    cfg = _load(args)
+    worker = paths.sanitize_worker_id(args.worker_id) if args.worker_id else ""
+    records = usage_mod.load(cfg.state_dir(), worker)
+    rows = usage_mod.summarize(records, by=args.by, since=args.since)
+    if args.json:
+        print(json.dumps(rows, indent=1, ensure_ascii=False))
+    elif not rows:
+        print("no agent run recorded yet" + (f" by {args.worker_id}" if args.worker_id else "") + " on this host")
+    else:
+        print(usage_mod.table(rows, args.by))
+    return 0
+
+
 RATE_WARN = 200      # a board run warns when fewer REST requests than this are left this hour
 
 
@@ -814,6 +886,29 @@ def parser() -> argparse.ArgumentParser:
     st = sub.add_parser("status", help="the board's jobs by state, with their ages and claimants")
     st.add_argument("--all", action="store_true", help="include done jobs and closed issues")
 
+    r = sub.add_parser("roadmaps", help="the open roadmap pull requests: refresh the index, list, search them, show a "
+                                        "file, resolve a README's citations")
+    r.add_argument("action", choices=["refresh", "list", "grep", "show", "resolve"])
+    r.add_argument("target", nargs="?", default="", help="grep: a pattern (extended regex); show: a roadmap name; "
+                                                         "resolve: a README.md")
+    r.add_argument("--fixed", action="store_true", help="grep: the pattern is a fixed string")
+    r.add_argument("-i", "--ignore-case", action="store_true")
+    r.add_argument("--readme-only", action="store_true")
+    r.add_argument("--lean-only", action="store_true")
+    r.add_argument("--limit", type=int, default=200, help="grep: at most this many lines")
+    r.add_argument("--pr", type=int, default=0, help="show: this pull request's copy")
+    r.add_argument("--file", default="README.md", choices=["README.md", "Suggested.lean"], help="show: which file")
+    r.add_argument("--name", default="", help="resolve: the roadmap's own name (default: the README's folder)")
+    r.add_argument("--lean", default="", help="resolve: its Suggested.lean (default: beside the README)")
+    r.add_argument("--packages", default="", help="resolve: the pinned Lake packages (default: the host's shared ones)")
+    r.add_argument("--out", default="", help="resolve: also write the report here")
+
+    u = sub.add_parser("usage", help="the agent runs' token usage on this host, summed by lane, job, agent, ...")
+    u.add_argument("--worker-id", default="", help="only this worker's runs")
+    u.add_argument("--by", choices=usage_mod.GROUPS, default="lane")
+    u.add_argument("--since", default="", help="only runs at or after this UTC date or time (2026-10-21)")
+    u.add_argument("--json", action="store_true")
+
     b = sub.add_parser("board", help="board maintenance for the bot or a maintainer (dry run unless --yes)")
     b.add_argument("action", choices=["intake", "references", "sync", "stale", "import-explorer"])
     b.add_argument("--pr", type=int, default=0)
@@ -828,7 +923,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     handlers = {"doctor": doctor, "targets": targets, "work": work, "gate": gate, "merge-order": merge_order,
-                "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd}
+                "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd,
+                "usage": usage_cmd, "roadmaps": roadmaps_cmd}
     try:
         return handlers[args.command](args)
     except GHError as exc:

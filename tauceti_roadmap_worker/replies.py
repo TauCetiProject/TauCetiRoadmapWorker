@@ -139,6 +139,25 @@ def parse_findings(report: str) -> list[tuple[str, str, str]]:
     return []
 
 
+def coverage_problems(reviews: list[str], report: str) -> list[str]:
+    """The review's findings that the repair report has no section for: one section per finding, every
+    finding settled (applied, applied differently, disputed, or not actionable with the reason). Several
+    reviews (a red-team round's passes) are covered by their ids together."""
+    from .prreviews import findings_with_bodies
+    wanted: list[str] = []
+    for text in reviews:
+        for fid, _sev, _title, _body in findings_with_bodies(text):
+            if fid not in wanted:
+                wanted.append(fid)
+    covered = {fid for fid, _how, _body in parse_findings(report)}
+    missing = [fid for fid in wanted if fid not in covered]
+    if not missing:
+        return []
+    return [f"report: no section for the review's finding{'s' if len(missing) > 1 else ''} {', '.join(missing)}: "
+            "write one section per finding, headed `## <finding id> (<severity>) — <applied | applied differently | "
+            "disputed | not actionable in this package: <reason>>`"]
+
+
 NOT_ACTIONABLE = re.compile(r"^not[ -]actionable\b", re.IGNORECASE)
 
 

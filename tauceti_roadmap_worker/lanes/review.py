@@ -165,6 +165,13 @@ class ReviewLane(Lane):
                 "SAMPLE": "; ".join(f"“{s}”" for s in sample) or f"a random sample of {SAMPLE_SIZE} targets (none found by heading)",
                 "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)), "PREVIOUS": previous or "none"}
 
+    def accepts(self, job: Job, ctx: Context, ws: Workspace) -> bool:
+        try:
+            verdict = json.loads(self.verdict_file(job, ctx, ws).read_text(encoding="utf-8"))
+            return verdict["review"]["status"] == "accepted"
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)
         vf = self.verdict_file(job, ctx, ws)
@@ -175,6 +182,9 @@ class ReviewLane(Lane):
             problems.append(f"verdict file: {exc}")
         if ws.report.is_file() and not ws.report.read_text(encoding="utf-8").startswith(f"# Review of {job.name}"):
             problems.append("report: first line must be '# Review of <Name> (...)'")
+        if ws.report.is_file() and self.accepts(job, ctx, ws) and not prreviews.adversarial_rows(
+                ws.report.read_text(encoding="utf-8")):
+            problems.append("report: " + prreviews.EVIDENCE)
         manifest = board.manifest_path(ctx.cfg.board.packages_dir, job.name)
         changed = gitops.changed_files(ws.board)
         touched = [p for p in changed if str(ws.board / p) in self.files(job, ctx, ws) and p != manifest]

@@ -137,6 +137,19 @@ def for_job(ctx: Context, job: Job, paused: dict[str, dt.datetime] | None = None
     return dataclasses.replace(ctx, agent=agent, model=model), ""
 
 
+def other_family(ctx: Context, job: Job, lane, paused: dict | None = None) -> Context | None:
+    """The context of another agent family this worker can run that is eligible for the job (a review
+    the author's family may not take), or None. A worker pinned with --agent or --model never switches."""
+    if ctx.agent_fixed or ctx.model_fixed:
+        return None
+    for agent in sorted(usable_families(ctx) - {ctx.agent} - set(paused or {})):
+        model = ctx.cfg.lane_model(job.kind, agent) or ctx.cfg.model_for(agent)
+        alt = dataclasses.replace(ctx, agent=agent, model=model)
+        if not lane.eligible(job, alt):
+            return alt
+    return None
+
+
 def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", order: list[str] | None = None,
               log=print, avoid: set[str] | None = None, paused: dict[str, dt.datetime] | None = None,
               noted: dict[str, dt.datetime] | None = None) -> LaneResult:
@@ -172,6 +185,11 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
             continue
         lane = lane_for(job)
         reason = lane.eligible(job, ctx)
+        if reason and job.independent_of and not job.requires_agent:
+            # Separation by family: a worker with another family installed takes the review with it.
+            other = other_family(ctx, job, lane, paused)
+            if other is not None:
+                ctx, reason = other, ""
         if reason:
             log(f"skip {job.id}: {reason}")
             continue

@@ -625,7 +625,8 @@ def separation_problems(job: Job, submitter: str, authors: dict, mode: str = "op
     from .claims import authorship, independent
     if not job.independent_of:
         return []
-    same = f" with the same agent and model as this reviewer ({agent}, {model}), or none recorded" if mode == "agent" else ""
+    same = (f" with the same agent and model as this reviewer ({agent}, {model}), or none recorded" if mode == "agent"
+            else " with the same family of models, or as the same operator" if mode == "family" else "")
     return [f"{submitter} also did {other}{same}" for other in job.independent_of
             if any(not independent(mode, (submitter, agent, model), authorship(a)) for a in authors.get(other, ()))]
 

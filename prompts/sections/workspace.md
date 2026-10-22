@@ -15,3 +15,7 @@
   in this brief are for your tools: never write an absolute path, a home directory, the worker's
   state directory or a temporary path into a report, a README, a Lean file or the manifest. A
   submission with a machine path is refused.
+
+## Tools
+
+__TOOLS__

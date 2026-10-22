@@ -117,6 +117,45 @@ one; Ctrl-C stops it. `tauceti-roadmap status [--all]` lists the board's jobs by
 age since the issue last changed and, for claimed jobs, the lease's owner and how long it has
 held the job.
 
+**What it costs.** Both agent CLIs stream their events (`claude -p --output-format stream-json
+--verbose`, `codex exec --json`); the raw events are kept as `jobs/<JOB>/run-N.jsonl`, and
+`run-N.out` gets a readable rendering as they arrive (messages, tools and commands, errors the CLI
+reports; never a tool's output), so `tail` shows a Claude run live too. Every run's token usage is
+written as a `USAGE` line before its `EXIT` line and recorded, with its job, kind, lane, run, agent,
+model, seconds and brief size, in `jobs/<JOB>/usage.jsonl` and `workers/<id>/usage.jsonl`. The
+fields are the same for both CLIs: `input_tokens` (read without the cache), `cache_read_tokens`,
+`cache_write_tokens`, `output_tokens` (thinking included), `thinking_tokens`, and for Claude its own
+`cost_usd` and `turns`. `tauceti-roadmap usage [--worker-id ID] [--by lane|kind|job|agent|model|worker|day|label]
+[--since DATE] [--json]` sums them for the host. Input read from the cache dominates long runs
+(every turn reads the whole context again); output includes the thinking.
+
+**The tools a brief lists.** Before the agent runs, the worker prepares three things and the brief's
+"Tools" section points at them; each is best effort (a failure is a line in the round log and in the
+brief, never a failed round):
+
+* the index of open roadmap pull requests: every open pull request of the roadmap repository that
+  adds or changes a roadmap folder, listed by one GraphQL query and fetched into a bare mirror shared
+  by the host's workers (`<state>/open-roadmaps/`, about 60 MB), rebuilt at most every half hour
+  under a lock. `tauceti-roadmap roadmaps list | grep <regex> | show <Name> [--file Suggested.lean]
+  [--pr N]` read it with no GitHub token (`grep` searches the folders the open pull requests carry,
+  at their heads, then every roadmap on main); `roadmaps refresh` rebuilds it by hand;
+* `scratch/citations.md`: `roadmaps resolve` on the roadmap's README. It lists only what is found
+  nowhere: a cross-roadmap citation (`Name §1.2`, `Name Layer 3`, `Name A1.2`) whose id the cited
+  roadmap does not contain on main or at any open head (an item of a numbered list under its parent
+  heading counts), a cited roadmap that exists nowhere, a backticked Lean name whose last component
+  occurs nowhere in the pinned Mathlib and Tau Ceti sources (its additive or multiplicative twin
+  counts), or a `TauCetiRoadmap.<Name>.x` that roadmap's Suggested.lean does not have. These are
+  leads for the agent, never gates;
+* `scratch/signatures.md` (lanes that elaborate, with the pin's Lake packages ready): the elaborated
+  type of every declaration of Suggested.lean (`#check @name` appended to a copy, elaborated with
+  `[gates] elaborate` and `--json`, split like a command line and run without a shell), and the
+  section binders that look lost: an instance or a named hypothesis `h…` every variable of which the
+  type keeps while the binder itself is gone. A red-team pass, which does not elaborate, gets the
+  transcript only when the pin's packages are already fetched on the host: it never starts a fetch.
+  The transcript is made before the lane's own gates read the file, so the worker first refuses a
+  file that matches `[gates] forbidden_patterns` or runs code at elaboration (`#eval`, `run_cmd`,
+  `initialize`, macros and elaborators, `unsafe`, `IO`); the brief then says why there is none.
+
 When the worker's checks of a run's deliverables fail (the plan's schema, the report's shape, the
 manifest, the privacy and source-material rules), the agent gets one repair run in the same
 workspace, with the problems appended to its brief ("Repair these problems in place; change
@@ -257,10 +296,10 @@ read as an instruction.
 | target | the filed form (quoted as data), roadmaps, open roadmap PRs, packages | `packages/<Name>/target.md`, `sources.toml` | anyone | Verdict/Name/Base/Owner header, sources manifest if changed |
 | design | `target.md`, roadmaps, libraries, merge order | `design/README.md`, `design/plan.json`, `sources.toml` | daily cap | plan.json schema, sources manifest, residue, dependency check |
 | package | accepted design and its review | `README.md`, `Suggested.lean`, `metadata.toml`, `sources.toml` | anyone | every text gate, sources manifest, elaboration |
-| review | the board PR's head (read-only) | a comment on the board PR in the review shape (from its report and verdict) | not an author's operator (or, with `separation = "agent"`, not the authoring agent and model) | verdict schema, report header, reviewed files untouched |
-| fix (design/package) | the review's comments | commits pushed to the board PR's branch | its owner (a fresh review follows) | finding sections, gates |
-| redteam | the board PR's head (read-only) | a comment on the board PR in the red-team shape | the agent and model the pass requires | report header, checkout untouched |
-| fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | finding sections, the package's gates, elaboration, the targeted build in a roadmap checkout |
+| review | the board PR's head (read-only) | a comment on the board PR in the review shape (from its report and verdict) | not an author's operator (or, with `separation = "agent"`, not the authoring agent and model; with `"family"`, not the authoring family of models) | verdict schema, report header, reviewed files untouched, an acceptance's adversarial table with computed values |
+| fix (design/package) | the review's comments | commits pushed to the board PR's branch | its owner (a fresh review follows) | a section for every finding of the review, gates |
+| redteam | the board PR's head (read-only) | a comment on the board PR in the red-team shape | the agent and model the pass requires | report header, checkout untouched, a pass with no finding has its adversarial table with computed values |
+| fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review since the last reply | commits on the PR branch, a reply, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
 
@@ -447,7 +486,13 @@ can write). With `[review] separation = "agent"` (a project with a single operat
 operator may take the review when the reviewing agent and model differ from the authoring ones
 recorded for the job (an author record without its agent and model never counts as different), and
 the intake applies the same test to the submission's agent and model. Projects with several
-operators keep the default `"operator"`. A fix worker's own acceptance never counts.
+operators keep the default `"operator"`. With `separation = "family"` the reviewing agent's family of
+models must differ from the authoring agent's (OpenAI's Codex and ChatGPT are one family, Anthropic's
+Claude another), whoever the operators are; an author record without its agent falls back to another
+operator. In every separation mode, a worker not pinned with `--agent` or `--model` that has
+another family installed takes a review its default family may not take with that family: under
+`"family"` that is what makes it independent, under `"agent"` another agent and model can be, and
+under `"operator"` it changes nothing (the operator is the same), so the review is skipped as before. A fix worker's own acceptance never counts.
 
 ## Board maintenance
 
@@ -649,7 +694,10 @@ machine are here:
 | `workers/<id>/board`, `content` | the worker's checkouts of the packages and content repositories |
 | `workers/<id>/port/<Name>`, `pr/<Name>` | worktrees for the port lane and for work on a pull request branch; their `.lake/packages` is a link to `lake/<pin>/packages`; removed after the lane submits, and at worker start when the roadmap has no open job (only git worktrees of the content checkout under `pr/` and `port/`; `build/` holds the worker's snapshot of the briefs and is never swept) |
 | `lake/<pin>/packages` | the machine's one copy of the Lake packages (Mathlib and Tau Ceti oleans, about 16 GB) per pin of the content repository's manifest, toolchain and lakefile, shared by every worktree of every worker; `lake exe cache get` fills it once (`.ready` marks it) |
-| `workers/<id>/jobs/<JOB>/` | brief, agent logs (`run-N.out` with START/EXIT lines), scratch, problems, gate result |
+| `workers/<id>/jobs/<JOB>/` | brief, agent logs (`run-N.out` with START/USAGE/EXIT lines, `run-N.err`, the raw events `run-N.jsonl`), scratch (with the worker's `citations.md` and `signatures.md`), problems, gate result, `usage.jsonl` |
+| `workers/<id>/usage.jsonl` | the tokens of every agent run of this worker (`tauceti-roadmap usage`) |
+| `open-roadmaps/mirror.git`, `open-roadmaps/index.json` | the bare mirror of the roadmap repository with the head of every open roadmap pull request (`refs/open/<n>`), and their index; shared by the host's workers, rebuilt at most every half hour |
+| `open-roadmaps/tokens-<pin>.txt` | the identifiers of the pinned Mathlib and Tau Ceti sources, for `roadmaps resolve` |
 | `workers/<id>/attempts.json` | failures per job on this worker |
 | `workers/<id>/pending-push.json`, `workers/<id>/jobs/<JOB>/pending-push/` | runs kept after their push failed (the job's deliverables, and the commit as a bundle and a `refs/tauceti-pending/` ref): the next attempt on this worker pushes them without running the agent |
 | `workers/<id>/rounds.log` | every line the worker printed, timestamped (what `tail` follows) |
@@ -725,6 +773,12 @@ alternative for operators who already use it.
 * Two workers of the branch owner may run a red-team fix and a gate round on the same pull request
   at once; the branch push uses `--force-with-lease`, so one of them fails and retries rather than
   overwriting the other.
+* The citation resolver and the lost-binder flags are heuristics: a citation written in running
+  prose, a generated Lean name (`to_additive`, `simps`, a structure projection) or a binder named
+  otherwise than `h…` can be missed or flagged wrongly. They are leads for the agent, never gates.
+* The sibling checkouts (`rev/<pr>/`), the merge-order chain and the push gate's sibling READMEs still
+  come from the pull requests labelled `[roadmap] pr_label`; the index of every open roadmap pull
+  request feeds the agents' search and the citation resolver only.
 * A job parked for references is run again from the start once answered; its earlier partial work
   stays only in that worker's job folder (`unsubmitted/`).
 * A `local:` requirement is recorded on the answered job only: a later job of the roadmap (its

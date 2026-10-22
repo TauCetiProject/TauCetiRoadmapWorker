@@ -173,8 +173,13 @@ idle_seconds = 600
 [review]
 # Who counts as independent of an author. "operator": another operator login (projects with several
 # operators keep this). "agent": also the same operator, when the reviewing agent and model differ
-# from the authoring agent and model recorded for the job (a single-operator project). The worker
-# checks it before a review and the intake again before it merges one.
+# from the authoring agent and model recorded for the job (a single-operator project). "family": the
+# reviewing agent's family of models differs from the authoring agent's (OpenAI's Codex and ChatGPT
+# are one family, Anthropic's Claude another), whoever the operators are; a reviewer of another
+# family repeatedly found what approving rounds of the author's family had passed. The worker checks
+# it before a review, and the intake again before it merges one. In every mode, a worker not pinned
+# with --agent or --model switches to another installed family when that family may take a review
+# its default family may not.
 separation = "operator"
 # Logins whose review comments on a board pull request count, besides the board's bots and the
 # project's own workers (for example a maintainer reviewing from a browser model).

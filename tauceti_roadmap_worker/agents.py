@@ -8,6 +8,14 @@ The agent runs with a minimal environment: HOME, PATH, locale and terminal setti
 own config directory (CODEX_HOME / CLAUDE_CONFIG_DIR) and its API key if one is set. GitHub tokens
 are never passed to an agent; the worker itself does every GitHub write.
 
+Both CLIs stream their events as JSON Lines (`claude -p --output-format stream-json --verbose`,
+`codex exec --json`). The raw events are kept beside the log (`run-N.jsonl`); the log itself
+(`run-N.out`) gets a readable rendering as they arrive: the agent's messages, the commands and tools
+it runs, and any error the CLI reports, but never a tool's output (which can quote anything, a
+usage-limit message included). The run's token usage is read from the events (Claude's final
+`result` event, Codex's `turn.completed` events), written as a `USAGE` line before the `EXIT` line,
+and returned with the result.
+
 Sandbox profiles (`[sandbox] profile`): "off" (default) runs on the host; "proxy" points the agent's
 HTTP(S)_PROXY at the allow-everything-and-log proxy (bundled sandbox/allowproxy.py); "netjail" runs
 the agent in a private network namespace whose only route out is that proxy, and falls back to
@@ -22,7 +30,9 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -121,6 +131,7 @@ class AgentResult:
     timed_out: bool = False
     reset_at: dt.datetime | None = None
     message: str = ""       # the first line of the usage-limit message, for the log
+    usage: dict = field(default_factory=dict)    # the run's tokens (see `usage_from_events`); {} when unknown
 
     @property
     def ok(self) -> bool:
@@ -169,10 +180,11 @@ def command_for(run: AgentRun, base_env: dict | None = None) -> tuple[list[str],
     """(argv, environment, cwd) for one agent run. Pure apart from writing the Claude settings file."""
     env = agent_env(run.agent, base_env, run.extra_env)
     if run.agent == "codex":
-        argv = ["codex", "exec", "-m", run.model, "--skip-git-repo-check",
+        argv = ["codex", "exec", "-m", run.model, "--skip-git-repo-check", "--json",
                 "--dangerously-bypass-approvals-and-sandbox", "-C", str(run.workdir), "-"]
     elif run.agent == "claude":
-        argv = ["claude", "-p", "--model", run.model, "--dangerously-skip-permissions", "--output-format", "text"]
+        argv = ["claude", "-p", "--model", run.model, "--dangerously-skip-permissions",
+                "--output-format", "stream-json", "--verbose"]
         if run.claude_hook and run.settings_dir:
             argv += ["--settings", str(claude_settings(run.settings_dir))]
     else:
@@ -189,25 +201,218 @@ def stamp() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def run_agent(run: AgentRun) -> AgentResult:
+def events_path(log_out: Path) -> Path:
+    """Where a run's raw JSON events are kept: `run-N.jsonl` beside `run-N.out`."""
+    return log_out.with_suffix(".jsonl")
+
+
+def run_agent(run: AgentRun, launch=None) -> AgentResult:
+    """Run the agent on the brief. Its events are rendered into the log as they arrive (`tail` follows
+    it) and kept raw beside it; the usage-limit check reads the rendered log and stderr, and the
+    token usage comes from the events. `launch` (tests) replaces `subprocess.Popen`."""
     argv, env, cwd = command_for(run)
-    if not shutil.which(argv[0]) and not Path(argv[0]).is_file():
+    if launch is None and not shutil.which(argv[0]) and not Path(argv[0]).is_file():
         raise FileNotFoundError(f"{argv[0]} is not installed (run `tauceti-roadmap doctor`)")
     run.log_out.parent.mkdir(parents=True, exist_ok=True)
     started = time.time()
-    with open(run.log_out, "a", encoding="utf-8") as out, open(run.log_err, "a", encoding="utf-8") as err:
+    events: list[dict] = []
+    with open(run.log_out, "a", encoding="utf-8") as out, open(run.log_err, "a", encoding="utf-8") as err, \
+            open(events_path(run.log_out), "a", encoding="utf-8") as raw:
         out.write(f"START {stamp()} {run.agent} {run.model} {cwd}\n")
         out.flush()
         timed_out = False
+        # Its own process group, so that a timeout or an interrupt stops the agent's children too.
+        proc = (launch or subprocess.Popen)(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
+                                            text=True, encoding="utf-8", errors="replace", env=env, cwd=cwd,
+                                            start_new_session=True)
+        feeder = threading.Thread(target=_feed, args=(proc.stdin, run.brief), daemon=True)
+        reader = threading.Thread(target=_read_events, args=(proc.stdout, run.agent, out, raw, events), daemon=True)
+        feeder.start()
+        reader.start()
         try:
-            proc = subprocess.run(argv, input=run.brief, stdout=out, stderr=err, text=True, env=env, cwd=cwd,
-                                  timeout=run.timeout)
-            code = proc.returncode
+            code = proc.wait(timeout=run.timeout)
         except subprocess.TimeoutExpired:
+            _kill_group(proc)
             code, timed_out = 124, True
+        except BaseException:              # Ctrl-C or a stop signal: the agent goes too, then the round ends
+            _kill_group(proc)
+            raise
+        finally:
+            reader.join(timeout=60)
+            try:
+                proc.stdout.close()        # after the reader: a child that kept the pipe cannot hold it open
+            except (OSError, ValueError, AttributeError):
+                pass
+        if timed_out:
             out.write("\nwall-clock timeout\n")
+        usage = usage_from_events(run.agent, events)
+        if usage:
+            out.write(f"USAGE {json.dumps(usage, sort_keys=True)}\n")
         out.write(f"EXIT {code} {stamp()}\n")
-    return classify(code, _text(run.log_out), _text(run.log_err), time.time() - started, timed_out)
+    result = classify(code, _text(run.log_out), _text(run.log_err), time.time() - started, timed_out)
+    result.usage = usage
+    return result
+
+
+def _kill_group(proc) -> None:
+    """Kill the agent and every process it started (its process group), then reap it."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, AttributeError, TypeError, OSError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _feed(stdin, brief: str) -> None:
+    """Write the brief to the agent's stdin and close it (in a thread: a large brief must not block
+    the reader)."""
+    try:
+        stdin.write(brief)
+    except (BrokenPipeError, OSError, ValueError):
+        pass
+    finally:
+        try:
+            stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+
+def _read_events(stream, agent: str, out, raw, events: list[dict]) -> None:
+    """Read the agent's stdout line by line: keep each line raw, render it into the log, and keep the
+    parsed events for the usage. A line that is not JSON is logged as it is."""
+    for line in stream:
+        raw.write(line)
+        raw.flush()
+        try:
+            event = json.loads(line)
+        except ValueError:
+            event = None
+        if not isinstance(event, dict):
+            if line.strip():
+                out.write(line if line.endswith("\n") else line + "\n")
+                out.flush()
+            continue
+        events.append(event)
+        for text in render_event(agent, event):
+            out.write(text.rstrip("\n") + "\n")
+        out.flush()
+
+
+TOOL_SUMMARY = 200      # characters of a tool call's input shown in the log
+
+
+def _short(value) -> str:
+    text = " ".join(str(value).split())
+    return text if len(text) <= TOOL_SUMMARY else text[:TOOL_SUMMARY - 1] + "…"
+
+
+def render_event(agent: str, event: dict) -> list[str]:
+    """The readable lines of one streamed event: the agent's messages, the tools and commands it
+    runs, and any error the CLI reports (where usage-limit messages arrive). Tool output, thinking
+    and bookkeeping events are not shown."""
+    kind = event.get("type")
+    if agent == "claude":
+        if kind == "assistant":
+            lines = []
+            for block in (event.get("message") or {}).get("content") or []:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and block.get("text"):
+                    lines.append(block["text"])
+                elif block.get("type") == "tool_use":
+                    data = block.get("input") or {}
+                    what = next((data[k] for k in ("command", "file_path", "path", "pattern", "url", "query",
+                                                   "description") if data.get(k)), "")
+                    tool = block.get("name", "tool")
+                    lines.append(f"→ {tool}: {_short(what)}" if what else f"→ {tool}")
+            return lines
+        if kind == "result" and (event.get("is_error") or event.get("subtype") not in (None, "success")):
+            return [str(event.get("result") or event.get("subtype") or "error")]
+        return []
+    if kind in ("item.started", "item.completed"):
+        item = event.get("item") or {}
+        itype = item.get("type")
+        if itype == "agent_message" and kind == "item.completed":
+            return [str(item.get("text") or "")]
+        if itype == "command_execution":
+            if kind == "item.started":
+                return [f"$ {_short(item.get('command', ''))}"]
+            code = item.get("exit_code")
+            return [f"  (exit {code})"] if code not in (None, 0) else []
+        if itype == "error":
+            return [str(item.get("message") or "error")]
+        if itype == "file_change" and kind == "item.completed":
+            paths = [c.get("path", "") for c in item.get("changes") or [] if isinstance(c, dict)]
+            return [f"edited {', '.join(p for p in paths if p)}"] if paths else []
+        return []
+    if kind == "error":
+        return [str(event.get("message") or "error")]
+    if kind == "turn.failed":
+        error = event.get("error") or {}
+        return [str(error.get("message") if isinstance(error, dict) else error)]
+    return []
+
+
+USAGE_KEYS = ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens", "thinking_tokens")
+
+
+def usage_from_events(agent: str, events: list[dict]) -> dict:
+    """A run's token usage from its events, in one shape for both CLIs:
+
+    * `input_tokens`: input read without the cache; `cache_read_tokens`, `cache_write_tokens`: input
+      read from and written to the prompt cache;
+    * `output_tokens`: tokens generated, thinking included; `thinking_tokens`: the thinking part;
+    * `cost_usd` (Claude only: the CLI's own figure), `turns` (Claude only).
+
+    Claude reports the run's totals in its final `result` event (summed over models, subagents
+    included, from `modelUsage` when present); Codex reports each turn's usage in `turn.completed`,
+    with `input_tokens` counting the cached part too. {} when the events carry no usage."""
+    if agent == "claude":
+        result = next((e for e in reversed(events) if e.get("type") == "result"), None)
+        if not result:
+            return {}
+        out = dict.fromkeys(USAGE_KEYS, 0)
+        models = result.get("modelUsage") or {}
+        if isinstance(models, dict) and models:
+            for m in models.values():
+                if not isinstance(m, dict):
+                    continue
+                out["input_tokens"] += int(m.get("inputTokens") or 0)
+                out["cache_read_tokens"] += int(m.get("cacheReadInputTokens") or 0)
+                out["cache_write_tokens"] += int(m.get("cacheCreationInputTokens") or 0)
+                out["output_tokens"] += int(m.get("outputTokens") or 0)
+                out["thinking_tokens"] += int(m.get("thinkingTokens") or 0)
+            out["models"] = sorted(str(k) for k in models)
+        else:
+            u = result.get("usage") or {}
+            out["input_tokens"] = int(u.get("input_tokens") or 0)
+            out["cache_read_tokens"] = int(u.get("cache_read_input_tokens") or 0)
+            out["cache_write_tokens"] = int(u.get("cache_creation_input_tokens") or 0)
+            out["output_tokens"] = int(u.get("output_tokens") or 0)
+            out["thinking_tokens"] = int((u.get("output_tokens_details") or {}).get("thinking_tokens") or 0)
+        if result.get("total_cost_usd") is not None:
+            out["cost_usd"] = round(float(result["total_cost_usd"]), 6)
+        if result.get("num_turns") is not None:
+            out["turns"] = int(result["num_turns"])
+        return out
+    turns = [e.get("usage") or {} for e in events if e.get("type") == "turn.completed"]
+    if not turns:
+        return {}
+    out = dict.fromkeys(USAGE_KEYS, 0)
+    for u in turns:
+        cached = int(u.get("cached_input_tokens") or 0)
+        out["input_tokens"] += max(int(u.get("input_tokens") or 0) - cached, 0)
+        out["cache_read_tokens"] += cached
+        out["cache_write_tokens"] += int(u.get("cache_write_input_tokens") or 0)
+        out["output_tokens"] += int(u.get("output_tokens") or 0)
+        out["thinking_tokens"] += int(u.get("reasoning_output_tokens") or 0)
+    return out
 
 
 def classify(code: int, out: str, err: str, seconds: float = 0.0, timed_out: bool = False) -> AgentResult:

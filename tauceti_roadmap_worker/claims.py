@@ -81,11 +81,28 @@ def authorship(record) -> tuple[str, str, str]:
     return (str(record or ""), "", "")
 
 
+# Agents (worker CLIs and the names browser reviewers sign with) by the family of models behind them.
+FAMILIES = {"codex": "openai", "chatgpt": "openai", "gpt": "openai", "openai": "openai",
+            "claude": "anthropic", "fable": "anthropic", "opus": "anthropic", "sonnet": "anthropic"}
+
+
+def family(agent: str) -> str:
+    """The model family of an agent name (`codex` and `chatgpt` are both OpenAI's); an unknown name is
+    its own family."""
+    name = (agent or "").strip().lower()
+    return FAMILIES.get(name) or FAMILIES.get(name.split("-")[0]) or name
+
+
 def independent(mode: str, reviewer: tuple[str, str, str], author: tuple[str, str, str]) -> bool:
     """Whether a reviewer (operator, agent, model) is independent of an author. Another operator
-    always is. In `agent` mode (a single-operator project) the same operator is too, when the
-    reviewing agent and model differ from the authoring ones recorded for the job; an author record
-    that lacks its agent or its model never counts as different."""
+    always is, except in `family` mode. In `agent` mode (a single-operator project) the same operator
+    is too, when the reviewing agent and model differ from the authoring ones recorded for the job; an
+    author record that lacks its agent or its model never counts as different. In `family` mode the
+    reviewing agent's model family must differ from the authoring agent's (`family`), whoever the
+    operators are: different families find different defects; an author record without its agent
+    falls back to another operator."""
+    if mode == "family" and author[1]:
+        return bool(reviewer[1]) and family(reviewer[1]) != family(author[1])
     if not author[0] or reviewer[0].lower() != author[0].lower():
         return True
     return mode == "agent" and bool(author[1] and author[2]) and (reviewer[1], reviewer[2]) != (author[1], author[2])
@@ -103,6 +120,8 @@ def separation_problem(review_independent_of: list[str], operator: str, recorded
     if mode == "agent":
         return (f"operator {operator} authored {', '.join(clash)} with the same agent and model as this reviewer "
                 f"({agent}, {model}), or none recorded")
+    if mode == "family":
+        return f"{', '.join(clash)} was written by the {family(agent)} family of models too, or by this operator"
     return f"operator {operator} authored {', '.join(clash)}"
 
 
