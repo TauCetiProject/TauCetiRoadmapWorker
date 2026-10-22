@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import re
 import subprocess
+import unicodedata
 from dataclasses import dataclass, field, replace as _replace
 from pathlib import Path
+from urllib.parse import unquote
 
 from . import depgraph
 
@@ -258,6 +260,165 @@ PROCESS_WORDS = (r"\(removed\)|\bpacket\b|\bcheckpoint\b|\bhandoff\b|lean-check|
 
 def scan_process_residue(readme: str) -> list[Hit]:
     return _hits(PROCESS_WORDS, readme, re.I)
+
+
+# --- the one residue repaired mechanically: HTML anchor tags ----------------------------------------
+#
+# Explorer READMEs carry `<a id="..."></a>` before their headings. GitHub gives every heading its own
+# id (its slug), so the tags go; an internal link `](#id)` to a tag is pointed at the slug of the
+# heading the tag precedes (or, for a tag before a paragraph, of the section that holds it). Nothing
+# else of the text changes.
+
+ANCHOR_TAG = re.compile(r"""<a\s+(?:id|name)\s*=\s*(["'])(?P<id>[^"'<>]*)\1\s*>(?P<body>[^<]*)</a>""", re.IGNORECASE)
+ATX_HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+(?P<text>.*?))?(?:[ \t]+#+)?[ \t]*$")
+FENCE_LINE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+LINK_FRAGMENT = re.compile(r"(?P<head>(?<!\\)\]\(\s*<?)#(?P<frag>[^)\s>]+)"                       # [text](#id)
+                           r"|(?P<defhead>^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<?)#(?P<deffrag>[^\s>]+)",  # [ref]: #id
+                           re.MULTILINE)
+
+
+def heading_text(raw: str) -> str:
+    """The text of a heading as GitHub renders it: HTML tags dropped, links and images reduced to their
+    text, code-span backticks and emphasis markers removed."""
+    text = re.sub(r"<[^>]+>", "", raw or "")
+    text = re.sub(r"&(?:#\d+|#x[0-9a-fA-F]+|[A-Za-z]+);", "", text)
+    text = re.sub(r"!?\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])", r"\1", text)
+    text = text.replace("`", "")
+    text = re.sub(r"(?<![\w\\])(_{1,3})(?=\S)(.+?)(?<=\S)\1(?!\w)", r"\2", text)
+    return text.replace("*", "").strip()
+
+
+SLUG_KEPT = ("Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me", "Nd", "Nl", "Pc")
+
+
+def github_slug(raw: str) -> str:
+    """GitHub's id for a heading (before de-duplication), as github-slugger makes it: lower case;
+    letters, marks, decimal and letter digits, `_` and `-` kept; every space a hyphen; everything else
+    (punctuation, symbols, superscripts and subscripts) dropped."""
+    out = []
+    for ch in heading_text(raw).lower():
+        if ch == " ":
+            out.append("-")
+        elif ch == "-" or unicodedata.category(ch) in SLUG_KEPT:
+            out.append(ch)
+    return "".join(out)
+
+
+def drop_anchor_tags(line: str) -> str:
+    """The line without its anchor tags: a tag wrapping text leaves the text; an empty tag goes, with
+    the space after it when a space (or the line's start) precedes it, so that `a <tag> b` reads
+    `a b` and `### <tag>0.1` reads `### 0.1`."""
+    out, last = [], 0
+    for m in ANCHOR_TAG.finditer(line):
+        out.append(line[last:m.start()])
+        end = m.end()
+        if m.group("body"):
+            out.append(m.group("body"))
+        elif (m.start() == 0 or line[m.start() - 1] in " \t") and line[end:end + 1] in (" ", "\t"):
+            end += 1
+        last = end
+    return ("".join(out) + line[last:]).rstrip() if last else line
+
+
+@dataclass
+class AnchorRepair:
+    text: str
+    removed: int = 0                                     # anchor tags taken out
+    rewritten: int = 0                                   # internal links pointed at a heading slug
+    unresolved: list[str] = field(default_factory=list)  # internal fragments that name no heading
+
+    def summary(self, path: str = "README.md") -> str:
+        """`497 anchor tags removed from README.md, 12 internal links pointed at heading slugs`."""
+        parts = [f"{self.removed} anchor tag{'s' if self.removed != 1 else ''} removed from {path}"]
+        if self.rewritten:
+            parts.append(f"{self.rewritten} internal link{'s' if self.rewritten != 1 else ''} pointed at heading slugs")
+        if self.unresolved:
+            parts.append("internal links to no heading: " + ", ".join(f"#{f}" for f in self.unresolved[:10])
+                         + (f" and {len(self.unresolved) - 10} more" if len(self.unresolved) > 10 else ""))
+        return ", ".join(parts)
+
+
+def strip_anchors(readme: str) -> AnchorRepair:
+    """Remove every `<a id="..."></a>` tag (an anchor wrapping text keeps its text) and point the
+    internal links `](#id)` and `[ref]: #id` at the slug of the heading each tag marked: the heading
+    on the tag's line, else the next heading when only blank lines or other tags come between, else
+    the heading of the section the tag stands in. Headings are ATX headings outside fenced code;
+    slugs are de-duplicated as GitHub does (`-1`, `-2`, ...). A line that held only tags goes, with a
+    blank line after it when one also precedes it."""
+    lines, out, fenced = (readme or "").split("\n"), [], ""
+    slugs: list[str] = []
+    seen: dict[str, int] = {}
+    target: dict[str, int | None] = {}      # anchor id -> index of its heading in `slugs`
+    waiting: list[str] = []                 # tags on lines of their own, before the next line of text
+    removed, drop_blank = 0, False
+
+    def heading_slug(text: str) -> int:
+        base = github_slug(text)
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        slugs.append(base if n == 0 else f"{base}-{n}")
+        return len(slugs) - 1
+
+    for line in lines:
+        fence = FENCE_LINE.match(line)
+        if fenced:
+            fenced = "" if fence and fence.group(1)[0] == fenced[0] and len(fence.group(1)) >= len(fenced) else fenced
+        elif fence:
+            fenced = fence.group(1)
+        ids = [m.group("id") for m in ANCHOR_TAG.finditer(line)]
+        if ids:
+            removed += len(ids)
+            line = drop_anchor_tags(line)
+        if ids and not line.strip():
+            waiting += ids
+            drop_blank = bool(out) and not out[-1].strip()
+            continue
+        if drop_blank and not line.strip():
+            drop_blank = False
+            continue
+        drop_blank = False
+        out.append(line)
+        heading = None if fenced or fence else ATX_HEADING.match(line)
+        if heading:
+            index = heading_slug(heading.group("text") or "")
+            for anchor in waiting + ids:
+                target.setdefault(anchor, index)
+            waiting = []
+        elif line.strip():
+            enclosing = len(slugs) - 1 if slugs else None
+            for anchor in waiting + ids:
+                target.setdefault(anchor, enclosing)
+            waiting = []
+    for anchor in waiting:
+        target.setdefault(anchor, len(slugs) - 1 if slugs else None)
+    text = "\n".join(out)
+    if not removed:
+        return AnchorRepair(readme)
+
+    known, rewritten, unresolved = set(slugs), 0, []
+
+    def relink(m: re.Match) -> str:
+        nonlocal rewritten
+        head, frag = (m.group("head"), m.group("frag")) if m.group("head") else (m.group("defhead"), m.group("deffrag"))
+        plain = unquote(frag)
+        if plain in known:
+            return m.group(0)
+        index = target.get(plain)
+        if index is None:
+            if plain not in unresolved:
+                unresolved.append(plain)
+            return m.group(0)
+        rewritten += 1
+        return f"{head}#{slugs[index]}"
+
+    code = strip_markdown_code(text)
+    pieces, last = [], 0
+    for m in LINK_FRAGMENT.finditer(text):
+        if code[m.start():m.end()].strip() != m.group(0).strip():
+            continue                       # inside code: not a link
+        pieces += [text[last:m.start()], relink(m)]
+        last = m.end()
+    return AnchorRepair("".join(pieces) + text[last:], removed, rewritten, unresolved)
 
 
 def scan_private_paths(text: str) -> list[Hit]:
@@ -566,6 +727,45 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
         edges = depgraph.supplier_edges(readmes, set(opts.order), set(opts.main_extended))
         r.add("depcheck", depgraph.check_order(edges, opts.order, only={name}))
     return r
+
+
+# The rule behind each count of `scan_folder`, in the words a repair brief quotes.
+GATE_RULES = {
+    "set_option": "no `set_option` in the code of Suggested.lean",
+    "blob": "no link into the roadmap repository pinned to a commit (`github.com/<repo>/blob/<sha>`): link a path "
+            "on main, or name the roadmap and section",
+    "latex": "no LaTeX delimiters (`\\(`, `\\[`, `$`) outside code spans and code blocks: write the mathematics in "
+             "Unicode, or put it in a code span",
+    "tex": "no TeX-only syntax (`_{`, `^{`, `\\frac`, `\\mathbb`, `\\sum`, ...) outside code spans and code blocks, "
+           "headings included: write it in Unicode or put it in a code span, saying the same mathematics; a heading "
+           "you change gets a new slug, so update the internal links `](#...)` that point at it",
+    "prnum": "no pull-request numbers in the README",
+    "sorry-data": "no `sorry` in the body of a `def`, `abbrev`, `instance` or `opaque`",
+    "sorry-examples": "every `example` is proved: an admitted example tests nothing",
+    "residue": "no process residue: in the README none of `(removed)`, packet, checkpoint, handoff, lean-check, "
+               "catalogue, stand-in, so far, to be checked, `<a id=` anchor tags, TODO, XXX, bold job numbers like "
+               "`**T123**`, job id, review round; in Suggested.lean no `#print axioms`, `#eval`, `#synth`, `lemma`, "
+               "`: True :=` or `: Prop := sorry`",
+    "private-paths": "no machine paths (home directories, temporary folders) in the README or Suggested.lean",
+    "imports": "Suggested.lean imports `Mathlib` first, then only the individual `TauCeti.*` modules it uses, each "
+               "once and all in the header, and each one exists at the pinned Tau Ceti",
+    "mathlib-subimports": "no `import Mathlib.<submodule>`: the single line `import Mathlib`",
+    "no-import-mathlib": "Suggested.lean has the line `import Mathlib`",
+    "lean-lines": "Suggested.lean stays within the project's line limit (`[gates] max_lean_lines`)",
+    "forbidden": "no match of the project's forbidden patterns (`[gates] forbidden_patterns`)",
+    "dropped": "no name of the project's dropped-names list",
+    "readme-ids-missing": "every backticked identifier the README presents as this roadmap's own declaration is "
+                          "declared or mentioned in Suggested.lean",
+    "check-labels-missing": "every Check label `(*label*)` of the README has its counterpart in Suggested.lean",
+    "empty-sections": "no `/-! ## ... -/` section header in Suggested.lean without a declaration under it",
+    "round-labels": "no labels named after the process (`continuation-2`, `round2`, `gate3`, `_r2`)",
+    "long-fences": "no fenced block of more than 40 lines that is neither Lean nor a table: quote a locator, not "
+                   "a passage",
+    "layer-ids": "a layer heading reads `Layer N: title`: its id, before the colon, is a bare label",
+    "depcheck": "every supplier the README names comes before this roadmap in the merge order (an UPWARD edge or a "
+                "CYCLE is a design defect: break it by moving ownership), and the roadmap is listed there; the "
+                "merge-order file is not yours to edit, so a `NOT IN ORDER` line is the board's to settle: report it",
+}
 
 
 def outside_folder(changed: list[str], folder: str, allow: list[str]) -> list[str]:

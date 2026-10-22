@@ -148,3 +148,121 @@ def test_board_pull_request_jobs_check_out_its_head_and_read_the_board_reports(c
     brief = (ctx.wdir / "jobs" / "RT-Foo_r2a" / "brief.md").read_text()
     assert "request #12, at head" in brief and "packages/Foo" in brief
     assert str(ctx.wdir / "jobs" / "RT-Foo_r2a" / "scratch" / "previous" / "FIX-RT-Foo_r1.md") in brief
+
+
+# --- the fix lanes run the package gate before their agent ----------------------------------------------
+
+ANCHORED_README = ('# Foo\n\nSee [the states](#legacy-states).\n\n## Layer 1: States\n\n'
+                   '<a id="legacy-states"></a>\n\n### 1.1 The states φ_{β,u}\n\n*Needs:* Base §1.\n')
+CLEAN_README = "# Foo\n\n## Layer 1: States\n\n### 1.1 The states\n\n*Needs:* Base §1.\n"
+MANIFEST = ('schema = "tauceti-roadmap-sources/v1"\nroadmap = "Foo"\n\n[[source]]\nid = "Ser73"\n'
+            'authors = "J.-P. Serre"\ntitle = "A course in arithmetic"\nyear = 1973\nlocator_scheme = "theorem"\n'
+            'licence_class = "none"\nstatus = "uncertified"\n')
+
+
+def put_package(ctx, readme=ANCHORED_README, manifest="", order="Base\n"):
+    board = ctx.wdir / "board"
+    pkg = board / "packages" / "Foo"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "README.md").write_text(readme)
+    (pkg / "Suggested.lean").write_text("import Mathlib\n\ntheorem foo_one : 1 + 1 = 2 := rfl\n")
+    (pkg / "metadata.toml").write_text('topic = "math.NT"\n')
+    if manifest:
+        (pkg / "sources.toml").write_text(manifest)
+    (board / "merge-order").mkdir(parents=True, exist_ok=True)
+    (board / "merge-order" / "ORDER.txt").write_text(order)
+    return pkg
+
+
+def brief_of(ctx, job_id, inputs):
+    job = new_job(job_id, inputs=inputs)
+    job.number = 7
+    assert lane_for(job).run(job, ctx).status == "dry-run"
+    return (ctx.wdir / "jobs" / job_id.replace("~", "_r") / "brief.md").read_text()
+
+
+@pytest.mark.parametrize("job_id,inputs", [
+    ("FIX-PKG-Foo~2", {"review": "REV-PKG-Foo"}),
+    ("FIX-PKG-Foo~3", {"board_pr": 12, "operator": "alice", "review": "REV-PKG-Foo~2"}),
+    ("FIX-RT-Foo~2", {"board_pr": 12, "operator": "alice", "reviews": ["RT-Foo~2a", "RT-Foo~2b"]}),
+])
+def test_a_fix_brief_lists_the_gate_failures_of_the_package_as_it_stands(ctx, job_id, inputs):
+    """Regression (2026-10-22, FIX-PKG-AnalyticNumberTheory~2): an imported package failed the gate
+    after its fix on four properties the agent was never asked to repair."""
+    pkg = put_package(ctx)
+    brief = brief_of(ctx, job_id, inputs)
+    section = brief[brief.index(lane_fix.GATE_HEADING):brief.index("## What you may edit")]
+    assert brief.index("## The findings to resolve") < brief.index(lane_fix.GATE_HEADING)
+    # The anchor residue is repaired before the agent runs, and the brief says so.
+    readme = (pkg / "README.md").read_text()
+    assert "<a id" not in readme and "[the states](#11-the-states-φ_βu)" in readme
+    assert ("Repaired by the worker before this round, mechanically (no longer a gate failure; do not undo it): "
+            "1 anchor tag removed from README.md, 1 internal link pointed at heading slugs.") in section
+    assert "residue=" not in section
+    # Each failure verbatim as the round log shows it, with its rule and its hits.
+    line = readme.split("\n").index("### 1.1 The states φ_{β,u}") + 1
+    assert "- tex=1: ### 1.1 The states φ_{β,u}\n  - Rule: no TeX-only syntax" in section
+    assert f"  - line {line}: ### 1.1 The states φ_{{β,u}}" in section
+    assert "- missing sources.toml\n  - Rule: a package folder holds README.md, Suggested.lean" in section
+    assert f"sources fetch --manifest {pkg / 'sources.toml'}" in section
+    if job_id.startswith("FIX-PKG"):
+        assert "- depcheck=1: NOT IN ORDER: Foo (insert it after its last supplier)" in section
+        assert "the merge-order file is not yours to edit" in section
+    else:                                   # a red-team fix on the board pull request places it itself
+        assert "depcheck" not in section
+    assert "what you changed for each gate failure listed above (if any)" in brief
+
+
+def test_the_gate_reads_the_board_mains_merge_order_when_a_pull_requests_head_is_older(ctx, monkeypatch):
+    put_package(ctx, readme=CLEAN_README, manifest=MANIFEST, order="Base\n")        # the head's file lacks Foo
+
+    def git(cwd, *args, check=True, timeout=900):
+        if args[:1] == ("show",) and args[1].endswith(":merge-order/ORDER.txt"):
+            return "Base\nFoo\n"                                                     # main lists it
+        return fake_git(cwd, *args, check=check, timeout=timeout)
+    monkeypatch.setattr(gitops, "git", git)
+    brief = brief_of(ctx, "FIX-PKG-Foo~3", {"board_pr": 12, "operator": "alice", "review": "REV-PKG-Foo~2"})
+    assert lane_fix.GATE_HEADING not in brief                                         # the package passes as it stands
+    copy = ctx.wdir / "jobs" / "FIX-PKG-Foo_r3" / "scratch" / lane_base.MAIN_ORDER_COPY
+    assert f"--order {copy}" in brief and copy.read_text() == "Base\nFoo\n"
+
+
+def test_a_package_that_passes_the_gate_gets_no_section(ctx):
+    put_package(ctx, readme=CLEAN_README, manifest=MANIFEST, order="Base\nFoo\n")
+    brief = brief_of(ctx, "FIX-PKG-Foo~2", {"review": "REV-PKG-Foo"})
+    assert lane_fix.GATE_HEADING not in brief and "Repaired by the worker" not in brief
+    assert "## The findings to resolve" in brief and "## What you may edit" in brief
+
+
+def test_the_section_lists_every_hit_up_to_a_cap():
+    from tauceti_roadmap_worker import gates
+    result = gates.GateResult("Foo")
+    result.add("latex", [gates.Hit(k, f"$x_{k}$") for k in range(1, lane_fix.HITS_LISTED + 6)])
+    problem = "latex=45: $x_1$; $x_2$; $x_3$"
+    section = lane_fix.gate_section([problem, "sources.toml: no [[source]] entries"], result, [],
+                                    "tauceti-roadmap sources fetch")
+    assert section.startswith(lane_fix.GATE_HEADING + "\n\n")
+    assert f"- {problem}\n  - Rule: no LaTeX delimiters" in section
+    assert f"  - line {lane_fix.HITS_LISTED}: $x_{lane_fix.HITS_LISTED}$" in section
+    assert f"line {lane_fix.HITS_LISTED + 1}:" not in section and "  - ... and 5 more of the same kind" in section
+    assert "- sources.toml: no [[source]] entries\n  - Rule: the sources manifest `sources.toml`" in section
+    assert "`tauceti-roadmap sources fetch --id KEY" in section
+    assert lane_fix.gate_section([], None, [], "f") == ""
+
+
+def test_a_red_team_fix_does_not_place_again_what_the_board_mains_order_lists(ctx, monkeypatch):
+    """The head of an import's board pull request predates the roadmap's insertion on main: placing it
+    on the branch as well would list it twice once the pull request merges."""
+    put_package(ctx, readme=CLEAN_README, manifest=MANIFEST, order="Base\n")
+    order = ctx.wdir / "board" / "merge-order" / "ORDER.txt"
+
+    def git(cwd, *args, check=True, timeout=900):
+        if args[:1] == ("show",) and args[1].endswith(":merge-order/ORDER.txt"):
+            return "Base\nFoo\n"
+        return fake_git(cwd, *args, check=check, timeout=timeout)
+    monkeypatch.setattr(gitops, "git", git)
+    brief = brief_of(ctx, "FIX-RT-Foo~2", {"board_pr": 12, "operator": "alice", "reviews": ["RT-Foo~2a", "RT-Foo~2b"]})
+    assert order.read_text() == "Base\n" and lane_fix.GATE_HEADING not in brief
+    monkeypatch.setattr(gitops, "git", fake_git)                  # main does not list it: the fix places it
+    brief_of(ctx, "FIX-RT-Foo~2", {"board_pr": 12, "operator": "alice", "reviews": ["RT-Foo~2a", "RT-Foo~2b"]})
+    assert order.read_text() == "Base\nFoo\n"

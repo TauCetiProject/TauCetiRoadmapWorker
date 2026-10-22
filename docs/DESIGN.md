@@ -83,7 +83,10 @@ checkout, submits a PR to the board, and the intake advances the state.
    leaves the family free, and every red-team pass job carries the agent and model of its pass
    (`requires_agent`, `requires_model`). Authoring lanes (design, package, fix, port, gate) run on
    the family defaults.
-5. `fix` — resolves a review's findings in the package files only.
+5. `fix` — resolves a review's findings in the package files only. Before its agent runs, a
+   package fix runs the package gate on the package as it stands: it repairs the anchor-tag residue
+   itself and lists every other failure, with its rule, in a mandatory section of the brief, so the
+   agent clears what the gate after it will refuse.
 
    A design or package is reviewed on its own submission pull request on the board, which is not
    merged while the review lasts: the intake labels it `needs-review`, pins a brief for browser

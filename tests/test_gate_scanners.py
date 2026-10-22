@@ -292,3 +292,76 @@ def test_gate_runs_depcheck_when_order_given():
     sib = {"Later": "# Roadmap: later\n"}
     r = scan_folder("Toy", readme, CLEAN_LEAN, opts(order=["Toy", "Later"], sibling_readmes=sib))
     assert r.counts["depcheck"] == 1 and r.details["depcheck"][0].startswith("UPWARD: Toy")
+
+
+# --- the anchor residue, repaired mechanically (explorer imports, the fix lane before its agent) -----
+
+def test_github_slugs():
+    assert gates.github_slug("Layer 0: Entire functions and quantitative prime estimates") == \
+        "layer-0-entire-functions-and-quantitative-prime-estimates"
+    # Mathematics in a heading: Greek letters stay (lower-cased), TeX braces, bars and operators go.
+    assert gates.github_slug("0.11 Mertens's first theorem and Σ_{p | N} log p/p = O(log log N)") == \
+        "011-mertenss-first-theorem-and-σ_p--n-log-pp--olog-log-n"
+    assert gates.github_slug("6.43 The Gibbs states φ_{β,u}") == "643-the-gibbs-states-φ_βu"
+    assert gates.github_slug("Foo — Bar") == "foo--bar"
+    assert gates.github_slug("The `snake_case` lemma and *emphasis* and _also_") == \
+        "the-snake_case-lemma-and-emphasis-and-also"
+    assert gates.github_slug("x² and a₀ in [a link](https://example.org) &amp; more") == "x-and-a-in-a-link--more"
+
+
+ANCHORED = textwrap.dedent("""\
+    # Roadmap
+
+    See [the estimate](#chebyshev-estimate-legacy), [layer 0](#layer-0-primes),
+    [the remark](#remark-legacy) and [a missing one](#nowhere).
+
+    <a id="layer-0-primes"></a>
+
+    ## Layer 0: Primes
+
+    <a id="chebyshev-estimate-legacy"></a>
+    <a id="second-legacy-id"></a>
+
+    ### 0.1 Chebyshev's estimate for θ(x)
+
+    Text with \\[#I(κ)\\](#I(κ)/2) as mathematics, and `[code](#chebyshev-estimate-legacy)` in a span.
+
+    <a id="remark-legacy"></a>
+
+    A remark under 0.1, then an inline <a id="inline-legacy"></a> tag.
+
+    ### <a id="dup-legacy"></a>0.1 Chebyshev's estimate for θ(x)
+
+    [again][ref]
+
+    [ref]: #dup-legacy
+    """)
+
+
+def test_strip_anchors_removes_the_tags_and_points_links_at_heading_slugs():
+    fixed = gates.strip_anchors(ANCHORED)
+    assert "<a " not in fixed.text and gates.scan_process_residue(fixed.text) == []
+    assert fixed.removed == 6 and fixed.unresolved == ["nowhere"]
+    first = "01-chebyshevs-estimate-for-θx"
+    assert f"[the estimate](#{first})" in fixed.text
+    assert "[layer 0](#layer-0-primes)" in fixed.text                     # the tag's id is already the slug
+    assert f"[the remark](#{first})" in fixed.text                        # a tag before a paragraph: its section
+    assert "[ref]: #01-chebyshevs-estimate-for-θx-1" in fixed.text        # the second heading of that name
+    assert fixed.rewritten == 3
+    # Nothing else changes: the mathematics, the code span, a link to no tag, the headings' text.
+    assert "\\[#I(κ)\\](#I(κ)/2)" in fixed.text and "`[code](#chebyshev-estimate-legacy)`" in fixed.text
+    assert "[a missing one](#nowhere)" in fixed.text
+    assert "### 0.1 Chebyshev's estimate for θ(x)\n\n[again][ref]" in fixed.text
+    assert "an inline tag." in fixed.text
+    # A line that held only tags goes with the blank line after it.
+    assert "## Layer 0: Primes\n\n### 0.1" in fixed.text and "\n\n\n" not in fixed.text
+    assert fixed.summary() == ("6 anchor tags removed from README.md, 3 internal links pointed at heading slugs, "
+                               "internal links to no heading: #nowhere")
+
+
+def test_strip_anchors_leaves_a_readme_without_tags_alone():
+    text = "# R\n\n[x](#nowhere)\n\n```\n<a id=\"in-code\">\n```\n"
+    fixed = gates.strip_anchors(text)
+    assert fixed.text == text and fixed.removed == 0 and fixed.rewritten == 0
+    wrapped = gates.strip_anchors('A <a id="t">Theorem</a> named.\n')
+    assert wrapped.text == "A Theorem named.\n" and wrapped.removed == 1

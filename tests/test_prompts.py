@@ -65,3 +65,16 @@ def test_prompts_carry_nothing_machine_or_person_specific(path: Path):
     text = path.read_text(encoding="utf-8")
     for pattern in FORBIDDEN:
         assert not re.search(pattern, text), f"{path.name}: {pattern}"
+
+
+def test_the_fix_brief_carries_the_gate_failures_between_the_findings_and_the_files():
+    assert "GATE_FAILURES" in prompts.placeholders("fix")
+    values = all_values()
+    values["GATE_FAILURES"] = "## Gate failures to clear (the submission is refused until these pass)\n\n- tex=1: x"
+    text = prompts.render("fix", values)
+    assert text.index("<reviews>") < text.index("## Gate failures to clear") < text.index("## What you may edit")
+    assert "- tex=1: x\n\n## What you may edit" in text
+    values["GATE_FAILURES"] = ""                          # the gate passed: no section, no gap
+    text = prompts.render("fix", values)
+    assert "Gate failures to clear" not in text
+    assert "settle each once where they overlap.\n\n## What you may edit" in text

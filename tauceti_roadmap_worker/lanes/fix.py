@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 
 from .. import board, gates, gitops, replies
@@ -19,8 +20,82 @@ from ..board import Job
 from .base import (Context, Lane, LaneError, Workspace, board_reports, checkout_board_pr, count, dropped_names,
                    ensure_in_order, load_order, open_roadmap_prs, order_path, scan_problems, sibling_checkouts,
                    sibling_readmes)
-from .package import elaboration_problems, package_scan
+from .package import PACKAGE_FILES, elaboration_problems, package_gate, package_scan
 from .pr import fresh_worktree, pr_branch_worktree, remove_worktree
+
+
+# --- before the agent: the package gate on the package as it stands ------------------------------------
+
+GATE_HEADING = "## Gate failures to clear (the submission is refused until these pass)"
+HITS_LISTED = 40         # hits listed per failure in the brief (the round log shows three)
+COUNT_LINE = re.compile(r"^(?P<key>[a-z][a-z-]*)=\d+: ")
+
+
+def problem_rule(problem: str, fetch: str) -> str:
+    """The gate's rule behind one problem line of the package gate."""
+    m = COUNT_LINE.match(problem)
+    if m and m.group("key") in gates.GATE_RULES:
+        return gates.GATE_RULES[m.group("key")]
+    manifest = ("the sources manifest `sources.toml` (schema `tauceti-roadmap-sources/v1`) records every work the "
+                "package cites, at least one, each with `id`, `authors`, `title`, `year`, `locator_scheme`, "
+                f"`licence_class` and `status`: fetch each cited work with `{fetch} --id KEY --locator-scheme theorem "
+                "--locator \"Theorem 2.3\" --cited-for \"1.2\" \"<citation>\"`, which records its entry (a work "
+                "behind a paywall is recorded as `uncertified` with its locator), as the section on sources below says")
+    if problem.startswith("missing "):
+        return (f"a package folder holds {', '.join(PACKAGE_FILES)}"
+                + ("; " + manifest if "sources.toml" in problem else ""))
+    if problem.startswith("sources.toml"):
+        return manifest
+    if problem.startswith("README names gap:"):
+        return ("every `gap:<slug>` the README names is declared in the top-level `gaps` of design/plan.json, with "
+                "`needs`, `supplier` and `section`")
+    return "the worker's package check"
+
+
+def gate_section(problems: list[str], result: gates.GateResult | None, repairs: list[str], fetch: str) -> str:
+    """The brief's section on the package gate run before the agent: each failure as the round log
+    shows it, its rule and every hit; and what the worker repaired itself. '' when there is neither."""
+    if not problems and not repairs:
+        return ""
+    lines = [GATE_HEADING, ""]
+    if problems:
+        lines += [("The worker ran the package gate on the package as checked out, before this round, and it "
+                   "failed. Clearing these failures is part of this round's work, beside the findings and whatever "
+                   "they say (it is not widening the scope): the worker runs the same gate after you and refuses the "
+                   "submission while any of them remains. Each item is the gate's own line, then its rule and its "
+                   "hits (line numbers of README.md or Suggested.lean)."), ""]
+        for problem in problems:
+            lines += [f"- {problem}", f"  - Rule: {problem_rule(problem, fetch)}."]
+            m = COUNT_LINE.match(problem)
+            hits = (result.details.get(m.group("key"), []) if result is not None and m else [])
+            for h in hits[:HITS_LISTED]:
+                lines.append(f"  - line {h.line}: {h.text}" if isinstance(h, gates.Hit) else f"  - {h}")
+            if len(hits) > HITS_LISTED:
+                lines.append(f"  - ... and {len(hits) - HITS_LISTED} more of the same kind")
+        lines += ["", "Say in the report, after the finding sections, what you changed for each of them."]
+    if repairs:
+        lines += ["", "Repaired by the worker before this round, mechanically (no longer a gate failure; do not undo "
+                  "it): " + "; ".join(repairs) + ". GitHub gives every heading its own id, so the tags were residue."]
+    return "\n".join(lines)
+
+
+def pre_gate(lane: Lane, job: Job, ctx: Context, ws: Workspace) -> str:
+    """Before the agent runs: the anchor tags of the package README removed (with its internal links
+    pointed at the heading slugs), then the package gate on the package as checked out. Returns the
+    brief's section on what fails ('' when the gate passes and nothing was repaired)."""
+    pkg = ws.package(ctx.cfg, job.name)
+    readme, repairs = pkg / "README.md", []
+    if readme.is_file():
+        fixed = gates.strip_anchors(readme.read_text(encoding="utf-8"))
+        if fixed.removed:
+            readme.write_text(fixed.text, encoding="utf-8")
+            repairs.append(fixed.summary())
+    problems = package_scan(ctx, ws, job.name, pkg)        # the post-agent check's own lines
+    result = package_gate(ctx, ws, job.name, pkg)[1] if any(COUNT_LINE.match(p) for p in problems) else None
+    if problems or repairs:
+        found = [f"{count(len(problems), 'gate failure')} in the brief"] if problems else []
+        lane.note(ws, "before the agent: " + "; ".join(repairs + found))
+    return gate_section(problems, result, repairs, lane.fetch_command(job, ctx, ws))
 
 
 def worktree_elaboration_problems(ctx: Context, ws: Workspace, name: str) -> list[str]:
@@ -66,6 +141,8 @@ class ArtefactFixLane(Lane):
             ws.extra["reviews"] = board_reports(ctx, ws, job.name, [job.inputs.get("review", "")])
         if self.art(job) == "DESIGN":
             ws.extra["readme"] = ws.package(ctx.cfg, job.name) / "design" / "README.md"
+        elif self.art(job) == "PKG":
+            ws.extra["gate_failures"] = pre_gate(self, job, ctx, ws)
         return ws
 
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
@@ -81,14 +158,16 @@ class ArtefactFixLane(Lane):
                     "CHECK": "- The dependency check (command in the section on suppliers below)." if what == "design"
                     else f"- Elaborate `Suggested.lean`: {self.common_values(job, ctx, ws)['ELABORATE']}.",
                     "COMMIT": "Do not commit: the worker commits your changes after its checks and pushes them "
-                              "to the pull request."}
+                              "to the pull request.",
+                    "GATE_FAILURES": ws.extra.get("gate_failures", "")}
         check = ["- The dependency check (command in the section on suppliers below)."]
         if what == "package":
             check.insert(0, f"- Elaborate `Suggested.lean`: {self.common_values(job, ctx, ws)['ELABORATE']}.")
         return {"REVIEWS": f"- `{pkg / 'reports' / (review + '.md')}` (verdict in `{verdict}`)",
                 "FILES": files_list(self.editable(job, ctx, ws), what == "package"),
                 "CONTEXT": f"the {what}, round {job.round}, in the board's package folder",
-                "CHECK": "\n".join(check), "COMMIT": "Do not commit: the worker commits your changes after its checks."}
+                "CHECK": "\n".join(check), "COMMIT": "Do not commit: the worker commits your changes after its checks.",
+                "GATE_FAILURES": ws.extra.get("gate_failures", "")}
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """`round 2 of the Name design repaired: 4 of 5 findings applied`."""
@@ -139,7 +218,8 @@ class RedTeamFixLane(Lane):
                 "CHECK": f"- Elaborate `Suggested.lean`: {elaborate}.\n- The dependency check (command in the section "
                          "on suppliers below).",
                 "COMMIT": "Do not commit: the worker builds the module, commits your changes after its checks and "
-                          "pushes them to the pull request."}
+                          "pushes them to the pull request.",
+                "GATE_FAILURES": ws.extra.get("gate_failures", "")}
 
     def board_check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         """The package's text gates, its elaboration, and the targeted build of the module in a fresh
@@ -179,6 +259,7 @@ class RedTeamFixLane(Lane):
             ws.extra["readme"] = pkg / "README.md"
             texts = [(pkg / f).read_text(encoding="utf-8") if (pkg / f).is_file() else "" for f in ("README.md", "Suggested.lean")]
             ws.extra["order_notes"] = ensure_in_order(ctx, ws, job.name, *texts)
+            ws.extra["gate_failures"] = pre_gate(self, job, ctx, ws)
             return ws
         ws = super().prepare(job, ctx)
         pr = int(job.inputs.get("pr") or 0)
@@ -206,7 +287,8 @@ class RedTeamFixLane(Lane):
                 "CONTEXT": f"red-team round {job.round} on pull request #{ws.extra['pr']}, branch `{ws.extra['branch']}`",
                 "CHECK": (f"    {build}\n\n" if build else "") + f"    {gate}",
                 "COMMIT": (f"Then `git add {folder} && git commit -m \"{job.name}: red-team repairs (<your summary, at most "
-                           "15 words>)\"` on the checked-out branch. Do not push.")}
+                           "15 words>)\"` on the checked-out branch. Do not push."),
+                "GATE_FAILURES": ""}
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         if self.board_pr(job):

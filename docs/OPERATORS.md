@@ -255,6 +255,12 @@ read as an instruction.
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review since the last reply | commits on the PR branch, a reply, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
 
+Before the agent of a package fix (or of a red-team fix on a board pull request) runs, the lane runs
+the package gate on the package as it stands. It removes `<a id>` anchor tags itself (internal links
+pointed at the heading slugs) and lists every other failure in the brief's mandatory section "Gate
+failures to clear": the round log's line, the gate's rule and every hit (logged `before the agent: ...`).
+The gate after the agent is unchanged.
+
 Every lane writes its report to `packages/<Name>/reports/<JOB>.md` on the board, so the next lane
 (often another operator) can read it. The roadmap's `sources.toml` is a deliverable of every job that
 works on its sources (target, design, package, review, and the design and package fixes); the lanes

@@ -30,6 +30,8 @@ __REVIEWS__
 
 When there are several reviews, merge their findings and settle each once where they overlap.
 
+__GATE_FAILURES__
+
 ## What you may edit
 
 __FILES__
@@ -62,8 +64,8 @@ For each finding:
    changes with it (binders, hypotheses, docstring), every new Lean name appears in the README and
    every deleted one leaves it, and every consumer of a changed name inside this roadmap is updated.
 
-Do not widen the scope: no new targets beyond what the findings need, no rewrites of untouched
-sections, no reorganised layers. Then run:
+Do not widen the scope: no new targets beyond what the findings and the gate failures listed above
+(if any) need, no rewrites of untouched sections, no reorganised layers. Then run:
 
 __CHECK__
 
@@ -75,7 +77,8 @@ Write `__REPORT__`, one section per finding, each headed exactly
 `## <finding id> (<severity>) — <applied | applied differently | disputed | not actionable in this package: <reason>>`,
 followed by what changed (old → new, at most 60 words), the evidence for the dispute, or why no edit
 of this package can settle it. Then the exact outcome of
-each check above and anything the maintainer should know (consequences for other roadmaps, names
+each check above, what you changed for each gate failure listed above (if any), and anything the
+maintainer should know (consequences for other roadmaps, names
 other roadmaps cite that changed).
 
 <!-- include: sections/lean-form.md -->

@@ -189,6 +189,35 @@ def load_order(path: Path) -> list[str]:
         return []
 
 
+MAIN_ORDER_COPY = "merge-order-main.txt"
+
+
+def main_order_text(cfg: Config, ws: Workspace) -> str:
+    """The merge-order file as the board's main has it ('' when it cannot be read)."""
+    try:
+        return gitops.git(ws.board, "show", f"refs/remotes/origin/main:{cfg.roadmap.merge_order_file}",
+                          check=False) or ""
+    except (gitops.GitError, OSError):
+        return ""
+
+
+def gate_order_file(cfg: Config, ws: Workspace, name: str) -> Path:
+    """The merge-order file the package gate and the agents' dependency check read: the board
+    checkout's, or, when the roadmap is missing there and the board's main lists it, a copy of main's
+    in the job's scratch folder. The head of a board pull request opened before the roadmap entered
+    the merge order (an explorer import) carries the older file."""
+    path = order_path(cfg, ws.board, ws.content)
+    if cfg.roadmap.merge_order_repo != "packages" or name in load_order(path):
+        return path
+    text = main_order_text(cfg, ws)
+    if name not in read_order(text):
+        return path
+    copy = ws.scratch / MAIN_ORDER_COPY
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    copy.write_text(text, encoding="utf-8")
+    return copy
+
+
 def dropped_names(cfg: Config) -> list[str]:
     if not cfg.gates.dropped_names_file:
         return []
@@ -261,6 +290,10 @@ def ensure_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: s
     order = read_order(text)
     if name in order:
         return []
+    if ws.extra.get("board_pr") and name in read_order(main_order_text(ctx.cfg, ws)):
+        # The head of a board pull request older than the roadmap's insertion on main: placing it again
+        # on the branch would add it twice when the pull request merges.
+        return [f"{name} is in the merge order on the board's main"]
     active = ws.content / ctx.cfg.roadmap.active_dir
     readmes = {p.parent.name: p.read_text(encoding="utf-8", errors="replace")
                for p in active.glob("*/README.md")} if active.is_dir() else {}
@@ -440,7 +473,7 @@ class Lane:
 
     def common_values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
         cfg = ctx.cfg
-        order_file = order_path(cfg, ws.board, ws.content)
+        order_file = gate_order_file(cfg, ws, job.name)
         order = load_order(order_file)
         prs = ws.extra.get("prs") or cached_prs(ctx.state)
         sibs = ws.extra.get("siblings") or []

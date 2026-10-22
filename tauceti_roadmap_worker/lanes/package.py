@@ -11,7 +11,8 @@ from pathlib import Path
 
 from .. import gates
 from ..board import Job
-from .base import Context, Lane, Workspace, count, dropped_names, load_order, order_path, scan_problems, sibling_readmes
+from .base import (Context, Lane, Workspace, count, dropped_names, gate_order_file, load_order, scan_problems,
+                   sibling_readmes)
 from .lake import MIN_FREE_GB_BUILD, free_gb, pin_lock
 from .design import manifest_problems
 
@@ -20,19 +21,30 @@ PACKAGE_FILES = ("README.md", "Suggested.lean", "metadata.toml", "sources.toml")
 
 def package_scan(ctx: Context, ws: Workspace, name: str, pkg: Path) -> list[str]:
     """Every text gate on a package folder (no git, no build), plus the sources manifest."""
+    return package_gate(ctx, ws, name, pkg)[0]
+
+
+def package_gate(ctx: Context, ws: Workspace, name: str, pkg: Path) -> tuple[list[str], gates.GateResult | None]:
+    """`package_scan`'s problems, and the text gates' result behind them (every hit; None when the
+    README or Suggested.lean is missing, so nothing could be scanned). A missing metadata.toml or
+    sources.toml is a problem of its own; the text gates still run."""
     missing = [f for f in PACKAGE_FILES if not (pkg / f).is_file()]
-    if missing:
-        return [f"missing {', '.join(missing)}"]
-    order = load_order(order_path(ctx.cfg, ws.board, ws.content))
+    if "README.md" in missing or "Suggested.lean" in missing:
+        return [f"missing {', '.join(missing)}"], None
+    # The intake inserts a roadmap into the merge order when its design is accepted (an imported
+    # package when it is imported), so a package missing from the order is a real problem; the head of
+    # a board pull request older than the insertion is checked against the board main's order.
+    order = load_order(gate_order_file(ctx.cfg, ws, name))
     opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
                                          siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir),
                                          tauceti=gates.tauceti_sources(ws.content))
-    result = gates.scan_folder(name, (pkg / "README.md").read_text(encoding="utf-8"),
-                               (pkg / "Suggested.lean").read_text(encoding="utf-8"), opts)
-    # The intake inserts a roadmap into the merge order when its design is accepted, so a package
-    # missing from the order is a real problem.
-    return (scan_problems(result) + manifest_problems(ctx, pkg / "sources.toml")
-            + gap_reference_problems((pkg / "README.md").read_text(encoding="utf-8"), pkg / "design" / "plan.json"))
+    readme = (pkg / "README.md").read_text(encoding="utf-8")
+    result = gates.scan_folder(name, readme, (pkg / "Suggested.lean").read_text(encoding="utf-8"), opts)
+    problems = [f"missing {', '.join(missing)}"] if missing else []
+    problems += scan_problems(result)
+    if (pkg / "sources.toml").is_file():
+        problems += manifest_problems(ctx, pkg / "sources.toml")
+    return problems + gap_reference_problems(readme, pkg / "design" / "plan.json"), result
 
 
 GAP_REF = re.compile(r"\bgap:([A-Za-z0-9][\w.-]*)")
