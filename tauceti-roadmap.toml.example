@@ -177,8 +177,9 @@ idle_seconds = 600
 # reviewing agent's family of models differs from the authoring agent's (OpenAI's Codex and ChatGPT
 # are one family, Anthropic's Claude another), whoever the operators are; a reviewer of another
 # family repeatedly found what approving rounds of the author's family had passed. The worker checks
-# it before a review (and switches to another installed family when that one may), and the intake
-# again before it merges one.
+# it before a review, and the intake again before it merges one. In every mode, a worker not pinned
+# with --agent or --model switches to another installed family when that family may take a review
+# its default family may not.
 separation = "operator"
 # Logins whose review comments on a board pull request count, besides the board's bots and the
 # project's own workers (for example a maintainer reviewing from a browser model).

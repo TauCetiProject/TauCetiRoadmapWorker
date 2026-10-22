@@ -2,18 +2,20 @@
 
 A `def`, an `instance` or a `sorry`'d declaration keeps only the section `variable`s its type
 mentions, so a hypothesis such as `[CompleteSpace X]` or `(hp : p.Prime)` written in a `variable`
-block silently disappears from what contributors will be held to. Reviews find this defect again
-after it was "fixed" more often than any other Lean defect, because nothing shows the elaborated
-type. The worker shows it: it elaborates a copy of the file with `#check @<name>` appended for every
-declaration, and writes a transcript with each elaborated type and the section binders that look
-dropped (an instance binder whose class occurs nowhere in the type, or a named hypothesis `h…` whose
-name does not). The flags are leads for the reviewer, never a gate.
+block silently disappears from what contributors will be held to, and nothing shows it but the
+elaborated type. The worker shows it: it elaborates a copy of the file with `#check @<name>` appended
+for every declaration, and writes a transcript with each elaborated type and the section binders
+that look dropped (see `dropped`). The flags are leads for the reviewer, never a gate.
+
+Only a file that runs no code at elaboration is elaborated (`executes_code`): a Suggested.lean
+states and does not develop, and the transcript is made before any other gate has read the file.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -218,9 +220,28 @@ def transcript(text: str, output: str, decls: list[Decl], at: dict[int, Decl]) -
     return Transcript(entries, errors)
 
 
+COMMENT = re.compile(r"/-.*?-/|--[^\n]*", re.S)
+EXECUTES = re.compile(
+    r"#eval\b|#reduce\b|#exit\b|\brun_(?:cmd|elab|meta|tac)\b|\b(?:builtin_)?initialize\b|^\s*(?:elab|elab_rules|macro|"
+    r"macro_rules|syntax|declare_syntax_cat)\b|@\[[^\]]*\b(?:init|extern|implemented_by|command_elab|term_elab|tactic)\b|"
+    r"\bunsafe\b|\bIO\b", re.M)
+
+
+def executes_code(text: str) -> list[str]:
+    """The constructs of a Lean file, outside comments, that run code or extend the elaborator when it is
+    elaborated (`#eval`, `run_cmd`, `initialize`, macros and elaborators, `unsafe`, `IO`): such a file
+    is never elaborated for a transcript."""
+    return sorted({m.group(0).strip() for m in EXECUTES.finditer(COMMENT.sub("", text))})
+
+
 def elaborate(command: str, lean: Path, out_dir: Path, cwd: Path, timeout: int = TIMEOUT) -> Transcript:
-    """Elaborate a copy of `lean` with the checks appended (`command` holds `{file}`), in `cwd`."""
+    """Elaborate a copy of `lean` with the checks appended (`command` holds `{file}`, split like a
+    command line and run without a shell), in `cwd`; never a file that runs code (`executes_code`)."""
     text = lean.read_text(encoding="utf-8")
+    runs = executes_code(text)
+    if runs:
+        return Transcript([], [], "the file runs code at elaboration (" + ", ".join(f"`{r}`" for r in runs)
+                          + "), so the worker does not elaborate it")
     decls = declarations(text)
     if not decls:
         return Transcript([], [], "no named declaration")
@@ -228,9 +249,9 @@ def elaborate(command: str, lean: Path, out_dir: Path, cwd: Path, timeout: int =
     out_dir.mkdir(parents=True, exist_ok=True)
     copy = out_dir / "SignatureCheck.lean"
     copy.write_text(copy_text, encoding="utf-8")
+    argv = [part.format(file=str(copy.resolve())) for part in shlex.split(json_command(command))]
     try:
-        result = subprocess.run(json_command(command).format(file=str(copy.resolve())), shell=True, cwd=cwd,
-                                capture_output=True,
+        result = subprocess.run(argv, cwd=cwd, capture_output=True,
                                 text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return Transcript([], [], f"the elaboration took longer than {timeout // 60} minutes")

@@ -164,3 +164,27 @@ def test_a_lane_resolves_its_readme_and_lists_the_tools(world, tmp_path):
     ws.extra.clear()
     assert "not available this round" in lane.tools_text(ctx, ws)
     assert json.loads(openroadmaps.index_path(cfg.state_dir()).read_text())["prs"][0]["pr"] == 7
+
+
+def test_a_pull_request_with_more_than_a_hundred_files_is_listed_whole(world):
+    cfg, _gh = world
+
+    class BigGH:
+        def graphql(self, query, **variables):
+            first = [{"path": f"docs/{i}.md"} for i in range(100)]
+            return {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": [
+                {"number": 9, "title": "Big", "isDraft": False, "headRefOid": "x", "author": {"login": "c"},
+                 "files": {"totalCount": 101, "nodes": first}}]}}}
+
+        def api(self, path, paginate=False):
+            assert path == "repos/TauCetiProject/TauCetiRoadmap/pulls/9/files?per_page=100" and paginate
+            return [{"filename": f"docs/{i}.md"} for i in range(100)] + [{"filename": "TauCetiRoadmap/Big/README.md"}]
+    prs = openroadmaps.inventory(BigGH(), "TauCetiProject/TauCetiRoadmap", ("TauCetiRoadmap", "Completed"))
+    assert prs[0]["roadmaps"] == ["Big"]
+
+
+def test_a_name_on_several_lines_is_reported_at_its_first(world):
+    cfg, gh = world
+    index = openroadmaps.refresh(gh, cfg)
+    readme = "`Foo.made_up_name` here\nand `Foo.made_up_name` again\n"
+    assert openroadmaps.name_problems(cfg.state_dir(), index, readme, "", set())[0].startswith("README 1: Foo.made_up_name")

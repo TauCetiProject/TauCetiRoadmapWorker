@@ -50,7 +50,8 @@ requests at their heads: __SIBLINGS__; the board's packages `__PACKAGES__`; the 
    flagged as unverified and these targets chosen by the worker's seeded sample: __SAMPLE__. Check
    the theorem number, the page, the hypotheses and that the source supports the statement as
    written. Record what you could not read and why.
-3. **Adversarial pass** over every statement (below), with the table.
+3. **Adversarial pass** over every statement (below), with the table: each row gives the values you
+   computed on each side. An accepted verdict without such rows is refused.
 4. **Duplication audit** against the current library and roadmaps, by object: what Mathlib, Tau
    Ceti, a roadmap on main or an open roadmap pull request already states must be cited, not
    restated.

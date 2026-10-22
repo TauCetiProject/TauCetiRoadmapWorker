@@ -125,3 +125,52 @@ def test_a_lane_writes_the_transcript_and_lists_it(tmp_path, monkeypatch):
     assert calls == [("lake env lean {file}", pkg / "Suggested.lean", tmp_path)]
     assert "Looks dropped" in (ws.scratch / "signatures.md").read_text()
     assert "4 of them look to have lost a section binder" in lane.tools_text(Ctx(), ws)
+
+
+def test_a_file_that_runs_code_is_never_elaborated(tmp_path):
+    assert sig.executes_code("#eval IO.println 1\n") == ["#eval", "IO"]
+    assert sig.executes_code("run_cmd do pure ()\nmacro \"x\" : term => `(1)\n") == ["macro", "run_cmd"]
+    assert sig.executes_code("-- #eval in a comment\n/- run_cmd -/\ntheorem t : True := trivial\n") == []
+    lean = tmp_path / "Suggested.lean"
+    lean.write_text(T + "\nrun_cmd pure ()\n")
+    found = sig.elaborate("definitely-not-a-command {file}", lean, tmp_path / "out", tmp_path)
+    assert "runs code at elaboration (`run_cmd`)" in found.reason and not (tmp_path / "out").exists()
+
+
+def test_a_pass_uses_ready_packages_without_fetching_and_skips_forbidden_files(tmp_path, monkeypatch):
+    from tauceti_roadmap_worker.board import new_job
+    from tauceti_roadmap_worker.lanes import base, lane_for
+    from tauceti_roadmap_worker.lanes.lake import LakeSetup
+    job = new_job("RT-Mine~1a", inputs={"board_pr": 12})
+    lane = lane_for(job)
+    assert lane.transcribes_if_ready and not lane.elaborates(job)
+    pkg = tmp_path / "board" / "packages" / "Mine"
+    pkg.mkdir(parents=True)
+    (pkg / "README.md").write_text("# Roadmap: mine\n")
+    (pkg / "Suggested.lean").write_text(T)
+    ws = base.Workspace(job_dir=tmp_path / "j", scratch=tmp_path / "j" / "s", board=tmp_path / "board",
+                        content=tmp_path, workdir=tmp_path / "board", report=tmp_path / "r.md", branch="b",
+                        job_id=job.id)
+    ws.scratch.mkdir(parents=True)
+    fetches, ready = [], {"value": True}
+
+    def fake_lake(checkout, state, content=None, fetch=True, **kw):
+        fetches.append(fetch)
+        return LakeSetup(tmp_path) if ready["value"] else LakeSetup(tmp_path, reason="not fetched yet")
+    monkeypatch.setattr(base, "prepare_lake", fake_lake)
+    monkeypatch.setattr(sig, "elaborate", lambda command, lean, out_dir, cwd: sig.transcript(
+        T, TEXT_OUTPUT, sig.declarations(T), sig.augmented(T, sig.declarations(T))[1]))
+
+    class Ctx:
+        dry_run, state = False, tmp_path
+        cfg = type("C", (), {"gates": type("G", (), {"elaborate": "lake env lean {file}", "forbidden_patterns": []})(),
+                             "board": type("B", (), {"packages_dir": "packages"})()})()
+    lane.prepare_signatures(job, Ctx(), ws)
+    assert fetches == [False] and ws.extra["signatures"][2] == 4               # ready: transcribed, no fetch
+    ready["value"], ws.extra = False, {}
+    lane.prepare_signatures(job, Ctx(), ws)
+    assert fetches == [False, False] and "signatures" not in ws.extra           # not fetched: nothing, still no fetch
+    ready["value"], ws.extra = True, {}
+    Ctx.cfg.gates.forbidden_patterns = [r"\bf1\b"]
+    lane.prepare_signatures(job, Ctx(), ws)
+    assert "forbidden patterns (line 3)" in ws.extra["signatures"][3]

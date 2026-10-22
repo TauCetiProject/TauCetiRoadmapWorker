@@ -148,3 +148,24 @@ def test_summary_by_lane_and_the_command(tmp_path, monkeypatch, capsys):
     conf = Path(__file__).resolve().parents[1] / "tauceti-roadmap.toml.example"
     assert cli.main(["--conf", str(conf), "usage", "--by", "kind"]) == 0
     assert "review" in capsys.readouterr().out
+
+
+def test_a_timeout_kills_the_agent_and_what_it_started(tmp_path, monkeypatch):
+    import time
+    script = tmp_path / "slow_cli.py"
+    # The agent starts a child that inherits its stdout and outlives it, then sleeps past the timeout.
+    script.write_text(textwrap.dedent("""
+        import subprocess, sys, time
+        sys.stdin.read()
+        print('{"type": "item.completed", "item": {"type": "agent_message", "text": "working"}}', flush=True)
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+        time.sleep(300)
+    """))
+    task = agents.AgentRun(agent="codex", model="m", workdir=tmp_path, brief="b", timeout=2,
+                           log_out=tmp_path / "run-1.out", log_err=tmp_path / "run-1.err")
+    monkeypatch.setattr(agents, "command_for", lambda run: ([sys.executable, str(script)], {}, tmp_path))
+    started = time.monotonic()
+    result = agents.run_agent(task, launch=__import__("subprocess").Popen)
+    assert result.timed_out and result.exit_code == 124
+    assert time.monotonic() - started < 30                      # the grandchild did not hold the pipe open
+    assert "working" in task.log_out.read_text() and "wall-clock timeout" in task.log_out.read_text()

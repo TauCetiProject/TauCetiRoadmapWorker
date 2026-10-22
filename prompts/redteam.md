@@ -46,7 +46,8 @@ numbers). The pinned libraries (grep, read-only): __LIBRARY__. The merge order: 
 ## The pass
 
 Keep a running table of every Suggested.lean declaration with its section, variable and instance
-context, and of every bold README target. For each:
+context, and of every bold README target, with the values you computed on each side of every instance
+(a pass with no finding is refused without them). For each:
 
 1. **Truth as stated**: instantiate the degenerate and boundary cases of the adversarial pass below;
    whenever a hypothesis is missing, give the explicit counterexample. Check every "iff", every "for

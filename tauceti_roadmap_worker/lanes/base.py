@@ -529,6 +529,17 @@ class Lane:
             setup = prepare_lake(ws.content, ctx.state, fetch=False, free=free_gb)
         if setup is None or not setup.ready:
             return
+        # The project's forbidden patterns are read before anything is elaborated (`signatures.elaborate`
+        # itself refuses a file that runs code at elaboration).
+        forbidden = gates.scan_forbidden(lean.read_text(encoding="utf-8", errors="replace"),
+                                         list(getattr(ctx.cfg.gates, "forbidden_patterns", []) or []))
+        if forbidden:
+            found = signatures.Transcript([], [], f"the file matches the project's forbidden patterns (line "
+                                                  f"{forbidden[0].line}), so the worker does not elaborate it")
+            path = ws.scratch / "signatures.md"
+            path.write_text(signatures.report(found, "Suggested.lean"), encoding="utf-8")
+            ws.extra["signatures"] = (path, 0, 0, found.reason)
+            return
         try:
             found = signatures.elaborate(ctx.cfg.gates.elaborate, lean, ws.scratch / "signatures", ws.content)
         except Exception as exc:  # noqa: BLE001 - a tool for the agent: its failure must never fail the round

@@ -1,8 +1,8 @@
 """Every open roadmap pull request, searchable, and a resolver for the citations a roadmap makes.
 
-Ownership collisions between open pull requests (two roadmaps specifying one object) and citations
-that rot while siblings are renumbered are the most frequent review findings, and neither can be seen
-from main or from the merge order. This module gives authors and reviewers the open work itself:
+Neither the ownership of an object by another open pull request nor a citation of a section that a
+sibling has since renumbered can be seen from main or from the merge order. This module gives
+authors and reviewers the open work itself:
 
 * `refresh` lists the content repository's open pull requests that add or change a roadmap folder
   (one GraphQL listing) and fetches their heads into a full bare mirror of the repository shared by
@@ -50,7 +50,7 @@ QUERY = """query($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 50, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
-      nodes { number title isDraft headRefOid author { login } files(first: 100) { nodes { path } } }
+      nodes { number title isDraft headRefOid author { login } files(first: 100) { totalCount nodes { path } } }
     }
   }
 }"""
@@ -107,7 +107,12 @@ def inventory(gh, repo: str, dirs: tuple[str, ...]) -> list[dict]:
         data = gh.graphql(QUERY, owner=owner, name=name, after=after)
         page = ((data.get("repository") or {}).get("pullRequests") or {})
         for pr in page.get("nodes") or []:
-            paths = [f.get("path", "") for f in ((pr.get("files") or {}).get("nodes") or [])]
+            files = pr.get("files") or {}
+            paths = [f.get("path", "") for f in files.get("nodes") or []]
+            if int(files.get("totalCount") or 0) > len(paths):
+                # The listing gives the first 100 files; the rest come from the REST listing (rare).
+                paths = [f.get("filename", "") for f in gh.api(f"repos/{repo}/pulls/{pr['number']}/files?per_page=100",
+                                                               paginate=True) or []]
             folders = roadmap_folders(paths, dirs)
             if folders:
                 out.append({"pr": pr["number"], "title": pr.get("title", ""), "head": pr.get("headRefOid", ""),
@@ -388,10 +393,12 @@ def name_problems(state: Path, index: dict, readme: str, lean: str, tokens: set[
     Suggested.lean on main or at an open head; any other qualified name in the pinned sources."""
     out, seen = [], set()
     roadmap_lean: dict[str, str] = {}
-    candidates = [(f"README {n}", m.group(1).lstrip("@")) for n, line in enumerate(readme.split("\n"), 1)
-                  for m in LEAN_NAME.finditer(line)]
-    for name in sorted(set(candidates), key=lambda c: c[1]):
-        where, full = name
+    first: dict[str, int] = {}           # each name at its first line, in document order
+    for n, line in enumerate(readme.split("\n"), 1):
+        for m in LEAN_NAME.finditer(line):
+            first.setdefault(m.group(1).lstrip("@"), n)
+    for full, n in sorted(first.items(), key=lambda item: (item[0], item[1])):
+        where = f"README {n}"
         if full in seen:
             continue
         seen.add(full)

@@ -30,6 +30,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -220,8 +221,10 @@ def run_agent(run: AgentRun, launch=None) -> AgentResult:
         out.write(f"START {stamp()} {run.agent} {run.model} {cwd}\n")
         out.flush()
         timed_out = False
+        # Its own process group, so that a timeout or an interrupt stops the agent's children too.
         proc = (launch or subprocess.Popen)(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
-                                            text=True, encoding="utf-8", errors="replace", env=env, cwd=cwd)
+                                            text=True, encoding="utf-8", errors="replace", env=env, cwd=cwd,
+                                            start_new_session=True)
         feeder = threading.Thread(target=_feed, args=(proc.stdin, run.brief), daemon=True)
         reader = threading.Thread(target=_read_events, args=(proc.stdout, run.agent, out, raw, events), daemon=True)
         feeder.start()
@@ -229,10 +232,17 @@ def run_agent(run: AgentRun, launch=None) -> AgentResult:
         try:
             code = proc.wait(timeout=run.timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            _kill_group(proc)
             code, timed_out = 124, True
-        reader.join(timeout=60)
+        except BaseException:              # Ctrl-C or a stop signal: the agent goes too, then the round ends
+            _kill_group(proc)
+            raise
+        finally:
+            reader.join(timeout=60)
+            try:
+                proc.stdout.close()        # after the reader: a child that kept the pipe cannot hold it open
+            except (OSError, ValueError, AttributeError):
+                pass
         if timed_out:
             out.write("\nwall-clock timeout\n")
         usage = usage_from_events(run.agent, events)
@@ -242,6 +252,21 @@ def run_agent(run: AgentRun, launch=None) -> AgentResult:
     result = classify(code, _text(run.log_out), _text(run.log_err), time.time() - started, timed_out)
     result.usage = usage
     return result
+
+
+def _kill_group(proc) -> None:
+    """Kill the agent and every process it started (its process group), then reap it."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, AttributeError, TypeError, OSError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _feed(stdin, brief: str) -> None:

@@ -146,11 +146,15 @@ brief, never a failed round):
   occurs nowhere in the pinned Mathlib and Tau Ceti sources (its additive or multiplicative twin
   counts), or a `TauCetiRoadmap.<Name>.x` that roadmap's Suggested.lean does not have. These are
   leads for the agent, never gates;
-* `scratch/signatures.md` (lanes that elaborate, with the pin's Lake packages ready; a red-team
-  pass uses them only when they are already fetched): the elaborated type of every declaration of
-  Suggested.lean (`#check @name` appended to a copy, elaborated with `[gates] elaborate` and
-  `--json`), and the section binders that look lost: an instance or a named hypothesis `h…` every
-  variable of which the type keeps while the binder itself is gone.
+* `scratch/signatures.md` (lanes that elaborate, with the pin's Lake packages ready): the elaborated
+  type of every declaration of Suggested.lean (`#check @name` appended to a copy, elaborated with
+  `[gates] elaborate` and `--json`, split like a command line and run without a shell), and the
+  section binders that look lost: an instance or a named hypothesis `h…` every variable of which the
+  type keeps while the binder itself is gone. A red-team pass, which does not elaborate, gets the
+  transcript only when the pin's packages are already fetched on the host: it never starts a fetch.
+  The transcript is made before the lane's own gates read the file, so the worker first refuses a
+  file that matches `[gates] forbidden_patterns` or runs code at elaboration (`#eval`, `run_cmd`,
+  `initialize`, macros and elaborators, `unsafe`, `IO`); the brief then says why there is none.
 
 When the worker's checks of a run's deliverables fail (the plan's schema, the report's shape, the
 manifest, the privacy and source-material rules), the agent gets one repair run in the same
@@ -469,8 +473,10 @@ the intake applies the same test to the submission's agent and model. Projects w
 operators keep the default `"operator"`. With `separation = "family"` the reviewing agent's family of
 models must differ from the authoring agent's (OpenAI's Codex and ChatGPT are one family, Anthropic's
 Claude another), whoever the operators are; an author record without its agent falls back to another
-operator. A worker not pinned with `--agent` or `--model` that has another family installed takes a
-review its default family may not take with that family. A fix worker's own acceptance never counts.
+operator. In every separation mode, a worker not pinned with `--agent` or `--model` that has
+another family installed takes a review its default family may not take with that family: under
+`"family"` that is what makes it independent, under `"agent"` another agent and model can be, and
+under `"operator"` it changes nothing (the operator is the same), so the review is skipped as before. A fix worker's own acceptance never counts.
 
 ## Board maintenance
 
