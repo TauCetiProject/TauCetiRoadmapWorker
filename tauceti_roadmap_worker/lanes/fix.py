@@ -18,8 +18,8 @@ import shutil
 from .. import board, gates, gitops, replies
 from ..board import Job
 from .base import (Context, Lane, LaneError, Workspace, board_reports, checkout_board_pr, count, dropped_names,
-                   ensure_in_order, load_order, open_roadmap_prs, order_path, scan_problems, sibling_checkouts,
-                   sibling_readmes)
+                   ensure_in_order_logged, load_order, open_roadmap_prs, order_path, repair_order_file, scan_problems,
+                   sibling_checkouts, sibling_readmes)
 from .package import PACKAGE_FILES, elaboration_problems, package_gate, package_scan
 from .pr import fresh_worktree, pr_branch_worktree, remove_worktree
 
@@ -258,7 +258,7 @@ class RedTeamFixLane(Lane):
             pkg = ws.package(ctx.cfg, job.name)
             ws.extra["readme"] = pkg / "README.md"
             texts = [(pkg / f).read_text(encoding="utf-8") if (pkg / f).is_file() else "" for f in ("README.md", "Suggested.lean")]
-            ws.extra["order_notes"] = ensure_in_order(ctx, ws, job.name, *texts)
+            ws.extra["order_notes"] = ensure_in_order_logged(ctx, ws, job.name, *texts)
             ws.extra["gate_failures"] = pre_gate(self, job, ctx, ws)
             return ws
         ws = super().prepare(job, ctx)
@@ -302,7 +302,12 @@ class RedTeamFixLane(Lane):
             problems.append("uncommitted changes left in the worktree")
         if problems:
             return problems
-        order = load_order(order_path(ctx.cfg, ws.board, ws.content))
+        # A repair that names a supplier the order lists after the roadmap: the job's board submission
+        # carries the board checkout's order, with the roadmap moved after its last supplier.
+        folder = ws.workdir / ctx.cfg.roadmap.active_dir / job.name
+        texts = [(folder / f).read_text(encoding="utf-8") if (folder / f).is_file() else "" for f in ("README.md", "Suggested.lean")]
+        order = load_order(repair_order_file(ctx, ws, job.name, *texts, order_path(ctx.cfg, ws.board, ws.content),
+                                             carry=True))
         opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
                                              siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]))
         result = gates.run_gate(ws.workdir, job.name, opts, base=f"origin/{ctx.cfg.project.branch}",

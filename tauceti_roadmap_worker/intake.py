@@ -11,6 +11,9 @@
   (the board's invariant: exactly one); live leases are mirrored as `state:claimed`;
   roadmap pull requests get their awaiting-author / awaiting-review labels, and a GATE job is
   created for the branch owner when humans are waiting for a reply; held pull requests stay drafts.
+* `replace_upward_roadmaps()`: every roadmap the merge order on the board's main lists above a
+  supplier its board README names is moved right after the last of them (`board intake`'s last step;
+  idempotent), as the merge of a package whose port follows does for that package.
 * `stale(release)`: claims whose lease lapsed and whose issue shows nothing for `stale_hours`, and
   submissions whose pull request was closed unmerged, go back to `state:available`.
 * `board_lock` / `take_lock`: one intake or sync at a time, whoever runs it (the hosted workflow and
@@ -28,7 +31,7 @@ import os
 import re
 import socket
 
-from . import board, boardpr, claims, depgraph, explorer, filers, prreviews, replies
+from . import board, boardpr, claims, depgraph, explorer, filers, gitops, prreviews, replies
 from .board import Job, Outcome
 from .gh import GHError, transient
 from .lanes.base import open_roadmap_prs
@@ -666,11 +669,140 @@ def head_readme(ctx, pr: dict, name: str) -> str | None:
 def add_to_order_for_port(ctx, name: str) -> str:
     """Insert the roadmap of a package whose port follows into the merge order when it is absent
     (an imported package never had its design accepted on the board), its suppliers read from the
-    merged package README; a failed write is reported, not raised."""
+    merged package README; a listed roadmap that the order puts above one of those suppliers is moved
+    right after the last of them (`move_listed`). A failed write is reported, not raised."""
     try:
-        return add_to_order(ctx, name, (PACKAGE_README, DESIGN_README))
+        note = add_to_order(ctx, name, (PACKAGE_README, DESIGN_README))
     except GHError as exc:
         return f"merge order not updated ({exc})"
+    if note != f"{name} already in the merge order":
+        return note
+    try:
+        moved = move_listed(ctx, name)
+    except (GHError, gitops.GitError, OSError) as exc:
+        return f"{note}; its place was not checked against its suppliers ({str(exc).splitlines()[0][:200]})"
+    return f"{note}; {moved}" if moved else note
+
+
+# --- a roadmap listed above one of its suppliers ------------------------------------------------------
+
+SWEEP_CHECKOUT = ("order-sweep", "board")
+
+
+def readme_path(packages_dir: str) -> re.Pattern:
+    return re.compile(rf"^{re.escape(packages_dir.strip('/'))}/({board.NAME_RE})/(?:design/)?README\.md$")
+
+
+def pr_roadmaps(pr: dict) -> set[str]:
+    """The roadmaps a board pull request carries: the job its submission marker names, or the jobs of
+    its import marker."""
+    body = pr.get("body") or ""
+    sub = board.decode_submission(body)
+    if sub:
+        try:
+            return {board.parse_job_id(sub["job"]).name}
+        except board.JobIdError:
+            return set()
+    found = explorer.decode_import(body)
+    return {j.name for j in found["jobs"]} if found else set()
+
+
+def board_readmes(ctx, pulls: list[dict]) -> dict[str, str]:
+    """Every roadmap README on the board, by git (no REST request): `packages/<Name>/README.md`, else
+    its `design/README.md`, on main, and for a roadmap that an open pull request under review carries
+    (`needs-review`: a design or package the intake took in, an import), the one at that pull
+    request's head. One shallow fetch of main and those heads into the state directory."""
+    cfg = ctx.cfg
+    pkgs = cfg.board.packages_dir.strip("/")
+    dest = ctx.state.joinpath(*SWEEP_CHECKOUT)
+    if not (dest / ".git").exists():
+        dest.mkdir(parents=True, exist_ok=True)
+        gitops.git(dest, "init", "-q")
+    gitops.git(dest, "config", "remote.origin.url", gitops.url(cfg.repositories.packages_repo()))
+    carried = {int(p["number"]): pr_roadmaps(p) for p in pulls
+               if boardpr.NEEDS_REVIEW in {label.get("name") for label in p.get("labels") or []}}
+    carried = {n: names for n, names in carried.items() if names}
+    gitops.git(dest, "fetch", "-q", "--depth=1", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main",
+               *(f"+refs/pull/{n}/head:refs/remotes/pull/{n}" for n in sorted(carried)))
+    main, path = "refs/remotes/origin/main", readme_path(pkgs)
+    found: dict[str, tuple[str, str]] = {}        # name -> (ref, path); README.md wins over design/README.md
+    for rel in gitops.git(dest, "ls-tree", "-r", "--name-only", main, "--", pkgs).splitlines():
+        m = path.match(rel)
+        if m and (m.group(1) not in found or not rel.endswith("/design/README.md")):
+            found[m.group(1)] = (main, rel)
+    for n, names in sorted(carried.items()):
+        for name in names:
+            for rel in (f"{pkgs}/{name}/README.md", f"{pkgs}/{name}/design/README.md"):
+                if gitops.git(dest, "ls-tree", "--name-only", f"refs/remotes/pull/{n}", "--", rel).strip():
+                    found[name] = (f"refs/remotes/pull/{n}", rel)
+                    break
+    return {name: gitops.git(dest, "show", f"{ref}:{rel}") for name, (ref, rel) in found.items()}
+
+
+def reorder(ctx, readmes: dict[str, str], only: set[str] | None = None, yes: bool = True,
+            current: tuple[str, str | None] | None = None) -> dict[str, str]:
+    """`depgraph.repair_upward` on the merge order of the board's main (`current`: its text and blob
+    sha, when in hand), written in one commit when anything moved. Returns name -> what happened (a
+    move, or why it was not made)."""
+    cfg = ctx.cfg
+    text, sha = current or read_merge_order(ctx)
+    new, notes = depgraph.repair_upward(text, readmes, set(cfg.roadmap.main_extended), only)
+    if new == text:
+        return notes
+    moved = [n for n in depgraph.read_order(text) if n in notes and " moved in the merge order " in notes[n]]
+    if not yes:
+        return {n: (v + " (dry run: not written)" if n in moved else v) for n, v in notes.items()}
+    payload = {"message": (f"Merge order: move {moved[0]} after its last supplier" if len(moved) == 1 else
+                           f"Merge order: move {', '.join(moved)} after their last suppliers"),
+               "content": base64.b64encode(new.encode()).decode()}
+    if sha:
+        payload["sha"] = sha
+    ctx.gh.write("PUT", f"repos/{cfg.repositories.packages_repo()}/contents/{cfg.roadmap.merge_order_file}", payload)
+    return notes
+
+
+def move_listed(ctx, name: str) -> str:
+    """The merge path's repair: when the merge order lists the roadmap above a supplier its README on
+    the board's main names, it is moved right after the last of them (the board's READMEs read for
+    its consumers only then). Returns what happened ('' when its place is right)."""
+    cfg = ctx.cfg
+    if cfg.roadmap.merge_order_repo != "packages":
+        return ""
+    text, sha = read_merge_order(ctx)
+    order = depgraph.read_order(text)
+    pkg = board.package_dir(cfg.board.packages_dir, name)
+    readme = None
+    for rel in (PACKAGE_README, DESIGN_README):
+        try:
+            readme = ctx.gh.raw_file(cfg.repositories.packages_repo(), f"{pkg}/{rel}")
+            break
+        except GHError as exc:
+            if transient(exc):
+                raise
+    if readme is None or name not in order:
+        return ""
+    pos = {n: i for i, n in enumerate(order)}
+    suppliers = depgraph.supplier_edges({name: readme}, set(order), set(cfg.roadmap.main_extended)).get(name, {})
+    if not any(pos[s] > pos[name] for s in suppliers if s in pos):
+        return ""
+    pulls = ctx.gh.api(f"repos/{cfg.repositories.packages_repo()}/pulls?state=open&per_page=100", paginate=True) or []
+    readmes = {**board_readmes(ctx, pulls), name: readme}
+    return reorder(ctx, readmes, only={name}, current=(text, sha)).get(name, "")
+
+
+def replace_upward_roadmaps(ctx, yes: bool = False) -> list[str]:
+    """`board intake`'s catch-up of the merge order (idempotent: a clean order is only read): every
+    roadmap the order on the board's main lists above a supplier its board README names (at the head
+    of its open pull request, else on main) is moved right after the last of them, all in one commit,
+    unless that would put one of its consumers before it (logged, left as it is). It repairs roadmaps
+    placed by a README that named its suppliers under names the dependency check did not know, which
+    a later fix repointed. One line per roadmap moved or left."""
+    cfg = ctx.cfg
+    if cfg.roadmap.merge_order_repo != "packages":
+        return []
+    pulls = ctx.gh.api(f"repos/{cfg.repositories.packages_repo()}/pulls?state=open&per_page=100", paginate=True) or []
+    notes = reorder(ctx, board_readmes(ctx, pulls), yes=yes)
+    return [f"merge order: {line}" for _name, line in sorted(notes.items())]
 
 
 def _held(ctx, pr: int) -> bool:

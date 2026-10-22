@@ -104,7 +104,8 @@ checkout, submits a PR to the board, and the intake advances the state.
    instantiating every statement on small examples catches pinning gaps that whole-document
    passes miss. After the last round's fix the board pull request is merged.
 7. `port` — copies the red-teamed package into the content repository on a fork branch, places
-   the roadmap in the merge order if it is not there yet, runs the gates (build of the module,
+   the roadmap in the merge order if it is not there yet (or moves it after its last supplier when
+   the order lists it above one), runs the gates (build of the module,
    mechanical identifier check, dependency check against the merge order, residue and
    `set_option` scans, outside-folder diff empty), writes the merge-order chain into the
    description, and opens the roadmap pull request (a draft, or ready with

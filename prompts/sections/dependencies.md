@@ -24,7 +24,8 @@ Check the direction mechanically after your edits:
     __DEPCHECK__
 
 It must show no UPWARD or CYCLE line for this roadmap; include its output in your report. A
-roadmap at the design stage is not in the merge order yet: the check places it right after its last
+`moved:` line means the merge order lists this roadmap above a supplier it names and the worker moves
+it right after the last of them when it submits: that is not a defect. A roadmap at the design stage is not in the merge order yet: the check places it right after its last
 supplier (the intake inserts it there when its design is accepted), so "not in the merge order" is
 not a defect before then. If you
 believe it reports a false positive, say so with the exact line; never edit the tooling or the

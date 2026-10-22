@@ -266,3 +266,48 @@ def test_a_red_team_fix_does_not_place_again_what_the_board_mains_order_lists(ct
     monkeypatch.setattr(gitops, "git", fake_git)                  # main does not list it: the fix places it
     brief_of(ctx, "FIX-RT-Foo~2", {"board_pr": 12, "operator": "alice", "reviews": ["RT-Foo~2a", "RT-Foo~2b"]})
     assert order.read_text() == "Base\nFoo\n"
+
+
+# --- the package gate repairs an UPWARD edge of the roadmap it checks (2026-10-22, PeriodsAndSpecialValues) ---
+
+LATER_README = CLEAN_README + "\n### 1.2 The periods\n\n*Needs:* Later §2.\n"
+
+
+def test_a_red_team_fix_checks_against_main_with_the_roadmap_moved_after_its_last_supplier(ctx, monkeypatch):
+    """Main lists the imported roadmap above a supplier its README names (placed under an older name):
+    the fix's gate and its agent's dependency check read a copy of main's order with the roadmap moved
+    after it; the branch's file is left alone (the intake moves it on main)."""
+    put_package(ctx, readme=LATER_README, manifest=MANIFEST, order="Base\n")
+    order = ctx.wdir / "board" / "merge-order" / "ORDER.txt"
+
+    def git(cwd, *args, check=True, timeout=900):
+        if args[:1] == ("show",) and args[1].endswith(":merge-order/ORDER.txt"):
+            return "Base\nFoo\nLater\n"
+        return fake_git(cwd, *args, check=check, timeout=timeout)
+    monkeypatch.setattr(gitops, "git", git)
+    brief = brief_of(ctx, "FIX-RT-Foo~2", {"board_pr": 12, "operator": "alice", "reviews": ["RT-Foo~2a", "RT-Foo~2b"]})
+    copy = ctx.wdir / "jobs" / "FIX-RT-Foo_r2" / "scratch" / lane_base.MOVED_ORDER_COPY
+    assert copy.read_text() == "Base\nLater\nFoo\n" and order.read_text() == "Base\n"
+    assert lane_fix.GATE_HEADING not in brief and f"--order {copy} --movable" in brief
+    log = (ctx.wdir / "jobs" / "FIX-RT-Foo_r2" / "requests.log").read_text()
+    assert ("Foo moved in the merge order from #2 to #3, right after its last supplier Later (in the copy the gate "
+            "reads; the intake moves it on the board's main)") in log
+
+
+def test_the_package_gate_checks_a_package_fix_with_the_roadmap_moved_after_its_last_supplier(ctx):
+    put_package(ctx, readme=LATER_README, manifest=MANIFEST, order="Base\nFoo\nLater\n")
+    brief = brief_of(ctx, "FIX-PKG-Foo~2", {"review": "REV-PKG-Foo"})
+    copy = ctx.wdir / "jobs" / "FIX-PKG-Foo_r2" / "scratch" / lane_base.MOVED_ORDER_COPY
+    assert copy.read_text() == "Base\nLater\nFoo\n"
+    assert (ctx.wdir / "board" / "merge-order" / "ORDER.txt").read_text() == "Base\nFoo\nLater\n"  # not a deliverable
+    assert lane_fix.GATE_HEADING not in brief and f"--order {copy} --movable" in brief
+    # A consumer listed before that supplier: no move, and the UPWARD edge is a gate failure as before.
+    put_package(ctx, readme=LATER_README, manifest=MANIFEST, order="Base\nFoo\nBar\nLater\n")
+    rev = ctx.state / "rev" / "906" / ctx.cfg.roadmap.active_dir / "Bar"      # an open roadmap PR that reads Foo
+    rev.mkdir(parents=True)
+    (rev / "README.md").write_text("*Needs:* Foo §1.\n")
+    (ctx.state / "prs.json").write_text(f'[{{"pr": 906, "name": "Bar", "head": "{SHA}", "branch": "roadmap/bar", '
+                                        '"owner": "bob"}]')
+    brief = brief_of(ctx, "FIX-PKG-Foo~3", {"review": "REV-PKG-Foo~2"})
+    assert "- depcheck=1: UPWARD: Foo (#2) -> Later (#4)" in brief
+    assert not (ctx.wdir / "jobs" / "FIX-PKG-Foo_r3" / "scratch" / lane_base.MOVED_ORDER_COPY).exists()

@@ -17,8 +17,9 @@ from pathlib import Path
 from .. import depgraph, gates, gitops
 from ..board import Job
 from ..gh import GHError
-from .base import (PR_MARKER, Context, Lane, LaneError, Workspace, count, dropped_names, ensure_in_order, load_order,
-                   open_roadmap_prs, order_path, scan_problems, sibling_checkouts, sibling_readmes)
+from .base import (PR_MARKER, Context, Lane, LaneError, Workspace, count, dropped_names, ensure_in_order_logged,
+                   load_order, open_roadmap_prs, order_path, repair_order_file, scan_problems, sibling_checkouts,
+                   sibling_readmes)
 from .pr import fresh_worktree, release_branch
 
 
@@ -98,7 +99,7 @@ class PortLane(Lane):
         ws.extra["prs"] = prs
         pkg = ws.package(ctx.cfg, job.name)
         texts = [(pkg / f).read_text(encoding="utf-8") if (pkg / f).is_file() else "" for f in ("README.md", "Suggested.lean")]
-        ws.extra["order_notes"] = ensure_in_order(ctx, ws, job.name, *texts)
+        ws.extra["order_notes"] = ensure_in_order_logged(ctx, ws, job.name, *texts)
         ws.extra["siblings"] = sibling_checkouts(ctx, prs, skip=job.name)
         wt = fresh_worktree(ctx, ws.content, job.name, "port", ws)
         release_branch(ws.content, f"roadmap/{gitops.kebab(job.name)}", keep=wt)   # the agent creates it here
@@ -115,7 +116,12 @@ class PortLane(Lane):
                 "GATE": ctx.cli("gate", str(ws.workdir), job.name, "--base", f"origin/{ctx.cfg.project.branch}")}
 
     def gate(self, job: Job, ctx: Context, ws: Workspace) -> gates.GateResult:
-        order = load_order(order_path(ctx.cfg, ws.board, ws.content))
+        # The ported README may name a supplier the order lists after it: the port's submission
+        # carries the board checkout's order, with the roadmap moved after its last supplier.
+        folder = ws.workdir / ctx.cfg.roadmap.active_dir / job.name
+        texts = [(folder / f).read_text(encoding="utf-8") if (folder / f).is_file() else "" for f in ("README.md", "Suggested.lean")]
+        order = load_order(repair_order_file(ctx, ws, job.name, *texts, order_path(ctx.cfg, ws.board, ws.content),
+                                             carry=True))
         opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
                                              siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]))
         return gates.run_gate(ws.workdir, job.name, opts, base=f"origin/{ctx.cfg.project.branch}",

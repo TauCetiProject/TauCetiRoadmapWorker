@@ -11,8 +11,8 @@ from pathlib import Path
 
 from .. import gates
 from ..board import Job
-from .base import (Context, Lane, Workspace, count, dropped_names, gate_order_file, load_order, scan_problems,
-                   sibling_readmes)
+from .base import (Context, Lane, Workspace, count, dropped_names, gate_order_file, load_order, repair_order_file,
+                   scan_problems, sibling_readmes)
 from .lake import MIN_FREE_GB_BUILD, free_gb, pin_lock
 from .design import manifest_problems
 
@@ -33,13 +33,16 @@ def package_gate(ctx: Context, ws: Workspace, name: str, pkg: Path) -> tuple[lis
         return [f"missing {', '.join(missing)}"], None
     # The intake inserts a roadmap into the merge order when its design is accepted (an imported
     # package when it is imported), so a package missing from the order is a real problem; the head of
-    # a board pull request older than the insertion is checked against the board main's order.
-    order = load_order(gate_order_file(ctx.cfg, ws, name))
+    # a board pull request older than the insertion is checked against the board main's order. A
+    # roadmap listed above one of its suppliers is checked as moved right after the last of them (the
+    # worker's copy; the intake moves it on the board's main), unless that puts a consumer before it.
+    readme = (pkg / "README.md").read_text(encoding="utf-8")
+    lean = (pkg / "Suggested.lean").read_text(encoding="utf-8")
+    order = load_order(repair_order_file(ctx, ws, name, readme, lean, gate_order_file(ctx.cfg, ws, name)))
     opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
                                          siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir),
                                          tauceti=gates.tauceti_sources(ws.content))
-    readme = (pkg / "README.md").read_text(encoding="utf-8")
-    result = gates.scan_folder(name, readme, (pkg / "Suggested.lean").read_text(encoding="utf-8"), opts)
+    result = gates.scan_folder(name, readme, lean, opts)
     problems = [f"missing {', '.join(missing)}"] if missing else []
     problems += scan_problems(result)
     if (pkg / "sources.toml").is_file():

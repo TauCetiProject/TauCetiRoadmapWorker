@@ -13,7 +13,8 @@ reviews the new head. `scan` (run by `board intake`) reads the comments and adva
 * a red-team pass completes its pass job; a complete round opens the round's fix;
 * a fix that was pushed is done, and the next review or red-team round follows; after the last
   red-team round's fix the pull request is merged, the port job created and the roadmap inserted
-  into the merge order when it is absent. A merge the intake's checks refuse leaves the fix
+  into the merge order when it is absent (moved after its last supplier when the order lists it
+  above one). A merge the intake's checks refuse leaves the fix
   submitted, and every scan tries the merge again (no new push needed).
 
 At every merge a pull request may carry the deliverables of the jobs that wrote it, and, for an

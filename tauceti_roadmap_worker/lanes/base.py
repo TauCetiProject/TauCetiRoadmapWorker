@@ -190,6 +190,7 @@ def load_order(path: Path) -> list[str]:
 
 
 MAIN_ORDER_COPY = "merge-order-main.txt"
+MOVED_ORDER_COPY = "merge-order-moved.txt"
 
 
 def main_order_text(cfg: Config, ws: Workspace) -> str:
@@ -205,7 +206,11 @@ def gate_order_file(cfg: Config, ws: Workspace, name: str) -> Path:
     """The merge-order file the package gate and the agents' dependency check read: the board
     checkout's, or, when the roadmap is missing there and the board's main lists it, a copy of main's
     in the job's scratch folder. The head of a board pull request opened before the roadmap entered
-    the merge order (an explorer import) carries the older file."""
+    the merge order (an explorer import) carries the older file. Once the worker has moved the
+    roadmap after its last supplier in a copy (`repair_order_file`), that copy."""
+    moved = ws.extra.get("order_file")
+    if moved and Path(moved).is_file():
+        return Path(moved)
     path = order_path(cfg, ws.board, ws.content)
     if cfg.roadmap.merge_order_repo != "packages" or name in load_order(path):
         return path
@@ -279,25 +284,109 @@ def set_aside(checkout: Path, jobs: Path, worker: str, base: str = "main") -> Pa
     return dest
 
 
+def roadmap_readmes(ctx: Context, ws: Workspace) -> dict[str, str]:
+    """The READMEs the merge-order placement reads for consumers: the roadmaps on the content
+    repository's main and in its open roadmap pull requests."""
+    active = ws.content / ctx.cfg.roadmap.active_dir
+    readmes = {p.parent.name: p.read_text(encoding="utf-8", errors="replace")
+               for p in active.glob("*/README.md")} if active.is_dir() else {}
+    readmes.update(sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra.get("prs")))
+    return readmes
+
+
+def move_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: str, text: str) -> tuple[str, list[str]]:
+    """The repair of an UPWARD edge of the roadmap being submitted: the merge-order file `text`, which
+    lists `name`, with `name` moved right after its last supplier (its README's, as the dependency check
+    reads them, and every `TauCetiRoadmap.<X>` its Lean names) when one of them comes after it, and the
+    notes. A move that would put one of its consumers before it is not made: `text` comes back as it is,
+    with a note saying why, and the dependency check reports the UPWARD edge as before."""
+    order = read_order(text)
+    pos = {n: i for i, n in enumerate(order)}
+    suppliers = depgraph.package_suppliers(name, readme, lean, set(order))
+    if name not in pos or not any(pos[s] > pos[name] for s in suppliers if s in pos):
+        return text, []                 # nothing to move: the other READMEs are not read
+    readmes = roadmap_readmes(ctx, ws)
+    edges = depgraph.supplier_edges({**readmes, name: readme}, set(order) | set(readmes) | {name})
+    consumers = {c for c, sups in edges.items() if name in sups and c != name}
+    try:
+        new, note = depgraph.move_after_suppliers(text, name, suppliers, consumers)
+    except depgraph.OrderCycle as exc:
+        return text, [f"merge order: {name} not moved after its last supplier: {exc}"]
+    return new, [note] if note else []
+
+
+def note_line(ws: Workspace, line: str) -> None:
+    """A line for the round's log (printed, kept in the job folder's requests.log and in the result)."""
+    print(f"{ws.job_dir.name}: {line}")
+    ws.extra.setdefault("notes", []).append(line)
+    try:
+        with open(ws.job_dir / "requests.log", "a", encoding="utf-8") as f:
+            f.write(f"{dt.datetime.now(dt.UTC):%Y-%m-%dT%H:%M:%SZ} {line}\n")
+    except OSError:
+        pass
+
+
+def repair_order_file(ctx: Context, ws: Workspace, name: str, readme: str, lean: str, path: Path,
+                      carry: bool = False) -> Path:
+    """The merge-order file a gate checks the roadmap against, once its UPWARD edges are repaired
+    (`move_in_order`; each move or refusal logged once). `carry`: `path` is the board checkout's file
+    and the job's submission carries it to the board's main (the port, a red-team fix of a roadmap pull
+    request), so it is edited in place; else the moved order is written to a copy in the job's scratch
+    folder, which the gate and the agents' dependency check read from then on, and the intake moves
+    the roadmap on the board's main (`board intake`, and the merge of its board pull request)."""
+    if ctx.cfg.roadmap.merge_order_repo != "packages" or not path.is_file():
+        return path
+    text = path.read_text(encoding="utf-8")
+    if name not in read_order(text):
+        return path
+    new, notes = move_in_order(ctx, ws, name, readme, lean, text)
+    for line in notes:
+        if line not in ws.extra.get("notes", []):
+            note_line(ws, line + ("" if new == text or carry else
+                                  " (in the copy the gate reads; the intake moves it on the board's main)"))
+    if new == text:
+        return path
+    if carry:
+        path.write_text(new, encoding="utf-8")
+        return path
+    copy = ws.scratch / MOVED_ORDER_COPY
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    copy.write_text(new, encoding="utf-8")
+    ws.extra["order_file"] = str(copy)
+    return copy
+
+
 def ensure_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: str) -> list[str]:
     """Place the roadmap in the board's merge-order file (in the board checkout, so the submission
     carries the change) right after its last supplier, when it is not listed yet; returns notes.
-    A placement that would put a supplier after a consumer raises LaneBlocked."""
+    A placement that would put a supplier after a consumer raises LaneBlocked. A roadmap listed above
+    one of its suppliers is moved right after the last of them (`move_in_order`): in the board
+    checkout's file, or, on a board pull request whose roadmap the board's main lists, in a copy of
+    main's that the gate reads (the intake moves it on main)."""
     path = order_path(ctx.cfg, ws.board, ws.content)
     if ctx.cfg.roadmap.merge_order_repo != "packages" or not path.is_file():
         return []
     text = path.read_text(encoding="utf-8")
     order = read_order(text)
+    if ws.extra.get("board_pr"):
+        main = main_order_text(ctx.cfg, ws)
+        if name in read_order(main):
+            # The head of a board pull request older than the roadmap's insertion on main: placing (or
+            # moving) it on the branch as well would list it twice, or conflict, when the pull request merges.
+            new, notes = move_in_order(ctx, ws, name, readme, lean, main)
+            if new != main:
+                copy = ws.scratch / MOVED_ORDER_COPY
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                copy.write_text(new, encoding="utf-8")
+                ws.extra["order_file"] = str(copy)
+                notes = [n + " (in the copy the gate reads; the intake moves it on the board's main)" for n in notes]
+            return ([] if name in order else [f"{name} is in the merge order on the board's main"]) + notes
     if name in order:
-        return []
-    if ws.extra.get("board_pr") and name in read_order(main_order_text(ctx.cfg, ws)):
-        # The head of a board pull request older than the roadmap's insertion on main: placing it again
-        # on the branch would add it twice when the pull request merges.
-        return [f"{name} is in the merge order on the board's main"]
-    active = ws.content / ctx.cfg.roadmap.active_dir
-    readmes = {p.parent.name: p.read_text(encoding="utf-8", errors="replace")
-               for p in active.glob("*/README.md")} if active.is_dir() else {}
-    readmes.update(sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra.get("prs")))
+        new, notes = move_in_order(ctx, ws, name, readme, lean, text)
+        if new != text:
+            path.write_text(new, encoding="utf-8")
+        return notes
+    readmes = roadmap_readmes(ctx, ws)
     known = set(order) | set(readmes)
     suppliers = depgraph.package_suppliers(name, readme, lean, known)
     edges = depgraph.supplier_edges({**readmes, name: readme}, known | {name})
@@ -311,6 +400,14 @@ def ensure_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: s
     at = placed.index(name)
     where = f"after {placed[at - 1]}" if at else "first"
     return [f"{name} placed in the merge order {where}"] + notes
+
+
+def ensure_in_order_logged(ctx: Context, ws: Workspace, name: str, readme: str, lean: str) -> list[str]:
+    """`ensure_in_order`, its notes (a placement, a move, why a move was not made) in the round's log."""
+    notes = ensure_in_order(ctx, ws, name, readme, lean)
+    for line in notes:
+        note_line(ws, line)
+    return notes
 
 
 def checkout_board_pr(ctx: Context, ws: Workspace, number: int) -> None:
@@ -510,7 +607,7 @@ class Lane:
         readme = str(ws.extra.get("readme") or ws.package(ctx.cfg, job.name) / "README.md")
         if job.kind in ("target", "design") or board.artefact_of(job.id) == "DESIGN":
             return ctx.cli("gate", "--candidate", readme, "--only", job.name, "--order", str(order_file))
-        return ctx.cli("gate", "--depcheck", readme, "--name", job.name, "--order", str(order_file))
+        return ctx.cli("gate", "--depcheck", readme, "--name", job.name, "--order", str(order_file), "--movable")
 
     def fetch_command(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """The command line an agent runs to fetch a source through the service."""
@@ -678,13 +775,7 @@ class Lane:
 
     def note(self, ws: Workspace, line: str) -> None:
         """A line for the round's log (printed, kept in the job folder's requests.log and in the result)."""
-        print(f"{ws.job_dir.name}: {line}")
-        ws.extra.setdefault("notes", []).append(line)
-        try:
-            with open(ws.job_dir / "requests.log", "a", encoding="utf-8") as f:
-                f.write(f"{dt.datetime.now(dt.UTC):%Y-%m-%dT%H:%M:%SZ} {line}\n")
-        except OSError:
-            pass
+        note_line(ws, line)
 
     def briefs(self, job: Job, ctx: Context, ws: Workspace, values: dict) -> list[tuple[str, str]]:
         """(label, brief) for each agent run of the job, in order; '' labels the main brief."""

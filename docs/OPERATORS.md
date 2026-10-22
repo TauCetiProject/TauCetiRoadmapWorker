@@ -487,6 +487,20 @@ the port's submission, so the intake merges it with the report. When the place w
 its suppliers after one of its consumers, the job is set to `state:blocked` with the cycle in a
 comment, and nothing is submitted.
 
+A roadmap the order lists above a supplier its README names (an UPWARD edge; typically an import
+placed by a README that cited the supplier under a name the dependency check did not know, which a
+later fix repointed) is moved right after its last supplier instead of failing, unless a consumer of
+it comes at or before that supplier (then the UPWARD line stands, with the reason in the log). The
+port lane and a red-team fix of a roadmap pull request move it in the board checkout's order, which
+their submission carries; the package gate (a package, its fixes, a red-team fix on a board pull
+request) checks against a copy with the move, and the agents' check (`gate --depcheck ... --movable`)
+prints `moved: ...` instead of the UPWARD line; when the port is created, the intake moves it on the
+board's main. Every `board intake` also moves each roadmap the order lists above a supplier its board
+README names (at the head of its open pull request under review, else on main; read by one shallow
+git fetch of the board, no REST request), all in one commit, logged `merge order: <Name> moved in the
+merge order from #a to #b, right after its last supplier <S>` (or `... not moved ...` with the
+reason). A clean order is only read.
+
 A `board intake` or `board sync` that writes first takes the board lock, a 15-minute lease ref in
 the board repository (the workers' lease mechanism; the hosted workflow's token and a maintainer
 can both push it), and releases it at the end, so the hosted run and a maintainer's shell never

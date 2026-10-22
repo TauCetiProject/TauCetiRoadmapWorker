@@ -340,10 +340,31 @@ def test_an_imported_package_enters_the_merge_order_after_its_last_supplier_when
 
 def test_a_package_already_in_the_merge_order_is_left_alone_when_its_port_is_created():
     order = "# Merge order\nAlpha\nFoo\nBeta\n"
-    ctx, board, gh = last_red_team_fix({ORDER: order, "packages/Foo/README.md": "# Foo\n\n*Needs:* Beta §2.\n"})
+    ctx, board, gh = last_red_team_fix({ORDER: order, "packages/Foo/README.md": "# Foo\n\n*Needs:* Alpha §2.\n"})
     out = boardpr.scan(ctx, yes=True)
     assert out[0].endswith(f"created PORT-Foo (#{board.find('PORT-Foo').number}); Foo already in the merge order")
     assert gh.files[ORDER] == order and not any(path.endswith(ORDER) for _m, path, _p in gh.writes)
+
+
+def test_a_package_listed_above_its_supplier_moves_after_it_when_its_port_is_created(monkeypatch):
+    """The merge path's dependency read: an imported package placed by a README that named its
+    suppliers under names the check did not know, and repointed by a later fix (2026-10-22,
+    PeriodsAndSpecialValues at #151, its suppliers at #173 and #185)."""
+    order = "# Merge order\nAlpha\nFoo  # imported\nBeta\nGamma\n"
+    ctx, _board, gh = last_red_team_fix({ORDER: order, "packages/Foo/README.md": "# Foo\n\n*Needs:* Beta §2.\n"})
+    read = []
+    monkeypatch.setattr(intake, "board_readmes", lambda ctx, pulls: read.append(pulls) or {"Gamma": "*Needs:* Foo §1.\n"})
+    out = boardpr.scan(ctx, yes=True)
+    assert out[0].endswith("Foo already in the merge order; Foo moved in the merge order from #2 to #3, right after "
+                           "its last supplier Beta")
+    assert gh.files[ORDER] == "# Merge order\nAlpha\nBeta\nFoo  # imported\nGamma\n" and len(read) == 1
+    # A move that would put a consumer (Gamma reads Foo) before it is not made, and the line says why.
+    ctx, _board, gh = last_red_team_fix({ORDER: order, "packages/Foo/README.md": "# Foo\n\n*Needs:* Gamma §2.\n"})
+    monkeypatch.setattr(intake, "board_readmes", lambda ctx, pulls: {"Beta": "*Needs:* Foo §1.\n"})
+    out = boardpr.scan(ctx, yes=True)
+    assert "Foo already in the merge order; Foo not moved in the merge order: Foo consumes Gamma (#4) and is " \
+           "consumed by Beta (#3), which comes first" in out[0]
+    assert gh.files[ORDER] == order
 
 
 def test_the_merge_order_reads_the_package_readme_when_there_is_no_design_readme():
@@ -440,8 +461,8 @@ def test_files_the_import_did_not_place_are_still_refused_and_its_own_still_chec
     assert boardpr.merge_problems(ctx, 12, gh.pr, board.all_jobs()) == [
         "packages/Foo/review.json is not a deliverable of this job"]
     out = boardpr.scan(ctx, yes=True)
-    assert out == ["#12: FIX-RT-Foo~1 pushed, but not merged yet (packages/Foo/review.json is not a deliverable of "
-                   "this job)"] and not gh.merged
+    assert out == [("#12: FIX-RT-Foo~1 pushed, but not merged yet (packages/Foo/review.json is not a deliverable of "
+                    "this job)")] and not gh.merged
     # The import's own files pass the usual checks; a file it did not declare, or declared outside the
     # folders of the roadmaps it names, is no deliverable.
     files = {**FILES, "packages/Foo/review.json": '{"review": {"notes": "/home/alice/x"}}\n',

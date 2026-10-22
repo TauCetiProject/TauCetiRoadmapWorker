@@ -6,7 +6,7 @@
     tauceti-roadmap tail --worker-id ID [--job JOB]      follow a worker's rounds and its agent's output
     tauceti-roadmap status [--all]                       the board's jobs by state, ages and claimants
     tauceti-roadmap gate <worktree> <Name> [--base origin/main] [--json] [--out FILE]
-    tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE]
+    tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE] [--movable]
     tauceti-roadmap gate --candidate <folder | README.md> --only <Name> [--order FILE]
     tauceti-roadmap merge-order [--list] [--pr N]
     tauceti-roadmap targets import-intentions [--limit N] [--number N] [--yes]
@@ -45,6 +45,7 @@ from . import (
     fetcher,
     filers,
     gates,
+    gitops,
     paths,
     prompts,
     references,
@@ -366,13 +367,27 @@ def candidate_readme(path: Path) -> Path:
 
 
 def depcheck_lines(name: str, readme: str, siblings: dict[str, str], order: list[str], main_extended: set[str],
-                   candidate: bool = False) -> tuple[list[str], list[str]]:
+                   candidate: bool = False, movable: bool = False) -> tuple[list[str], list[str]]:
     """(the lines to print, the problems) of the dependency check of one roadmap. A candidate that the
     merge order does not list yet (a design) is placed right after its last supplier for the check:
-    the intake inserts it there when its design is accepted, so its absence is not a problem."""
+    the intake inserts it there when its design is accepted, so its absence is not a problem.
+    `movable` (the agents' check): a roadmap the order lists above one of its suppliers is checked as
+    moved right after the last of them, as the worker moves it when it submits, unless that would put
+    one of its consumers before it (then the UPWARD line stands, with why)."""
     readmes = {**siblings, name: readme}
     edges = depgraph.supplier_edges(readmes, set(order) | {name}, main_extended)
     lines = []
+    if movable and name in order:
+        consumers = {c for c, sup in edges.items() if name in sup and c != name}
+        try:
+            text, note = depgraph.move_after_suppliers("\n".join(order) + "\n", name, set(edges.get(name, {})),
+                                                       consumers)
+        except depgraph.OrderCycle as exc:
+            lines.append(f"not movable: {exc}")
+        else:
+            if note:
+                order = depgraph.read_order(text)
+                lines.append(f"moved: {note}; checked as moved (the worker moves it there when it submits)")
     if candidate and name not in order:
         consumers = {c for c, sup in edges.items() if name in sup}
         try:
@@ -404,7 +419,8 @@ def gate(args) -> int:
             return 0
         readme = candidate_readme(Path(args.candidate)) if args.candidate else Path(args.depcheck)
         lines, problems = depcheck_lines(args.name, readme.read_text(encoding="utf-8"), siblings, order,
-                                         set(cfg.roadmap.main_extended), candidate=bool(args.candidate))
+                                         set(cfg.roadmap.main_extended), candidate=bool(args.candidate),
+                                         movable=args.movable)
         for line in lines:
             print(line)
         return 1 if problems else 0
@@ -666,6 +682,15 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
                 print(line)
                 if ": skipped: GitHub did not answer" in line:
                     skipped.append(line.split(":", 1)[0])
+            if not args.pr:
+                # A roadmap the order lists above one of its suppliers moves after the last of them (a
+                # catch-up: its trouble is logged, as the import backfill's is, and fails no run).
+                try:
+                    for line in intake.replace_upward_roadmaps(ctx, yes=write):
+                        print(line)
+                except (GHError, gitops.GitError, OSError) as exc:
+                    print(f"merge order: suppliers not checked ({str(exc).splitlines()[0][:200]}); the next run "
+                          "tries again")
         if skipped:
             print("skipped (GitHub errors; the next run tries again): " + ", ".join(dict.fromkeys(skipped)))
             return 1
@@ -745,6 +770,9 @@ def parser() -> argparse.ArgumentParser:
     g.add_argument("--json", action="store_true")
     g.add_argument("--out", default="")
     g.add_argument("--depcheck", default="", metavar="README", help="only the dependency check of this README")
+    g.add_argument("--movable", action="store_true",
+                   help="with --depcheck: check a roadmap listed above one of its suppliers as moved right after the "
+                        "last of them (the worker moves it so when it submits), unless a consumer of it comes earlier")
     g.add_argument("--candidate", default="", metavar="PATH",
                    help="the dependency check of a roadmap that may not be in the merge order yet (a design): its "
                         "README (or a folder holding README.md or design/README.md); when the order does not list it, "

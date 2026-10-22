@@ -17,6 +17,9 @@ functions over README texts (no /tmp lists, no hard-coded pull requests or bundl
   sentence), never by a mention in a prose line that happens to say "supplier".
 * `check_order(edges, order, ...)` reports UPWARD edges (a supplier later in the merge order),
   CYCLEs and roadmaps missing from the order: every one is a design defect.
+* `move_after_suppliers(...)` and `repair_upward(...)` repair an UPWARD edge of a listed roadmap by
+  moving it right after its last supplier, unless one of its consumers comes no later than that
+  supplier (the move would put a supplier after a consumer).
 * `merge_chain(...)` is the transitive closure of a roadmap's downward suppliers among the open
   pull requests, in merge-order rank: what must merge before it. The PR paragraph carries this
   chain only, never a position number, because a position in a moving list goes stale the moment
@@ -394,3 +397,67 @@ def insert_into_order(text: str, name: str, suppliers: set[str]) -> str:
     else:
         lines.insert(last + 1, name)
     return "\n".join(lines) + "\n"
+
+
+def move_after_suppliers(text: str, name: str, suppliers: set[str],
+                         consumers: set[str] = frozenset()) -> tuple[str, str]:
+    """The repair of an UPWARD edge of `name`: the merge-order file with `name`, listed above one of
+    its listed `suppliers`, moved to right after the last of them (its line and comment kept, a
+    duplicate line of it dropped), and a note saying so. Unchanged with no note when `name` is not
+    listed or no listed supplier comes after it. Raises OrderCycle when a listed consumer of `name`
+    comes no later than that last supplier: the move would put a supplier after a consumer."""
+    order = read_order(text)
+    if name not in order:
+        return text, ""
+    pos = {n: i for i, n in enumerate(order)}
+    below = [s for s in suppliers if s in pos and s != name and pos[s] > pos[name]]
+    if not below:
+        return text, ""
+    last = max(below, key=pos.get)
+    early = [c for c in consumers if c in pos and c != name and pos[c] <= pos[last]]
+    if early:
+        c = min(early, key=pos.get)
+        raise OrderCycle(f"{name} consumes {last} (#{pos[last] + 1}) and is consumed by {c} (#{pos[c] + 1}), which "
+                         f"comes first: moving {name} after {last} would put a supplier after a consumer, a cycle "
+                         f"through {name}")
+    lines = text.splitlines()
+    names = [line.split("#", 1)[0].strip() for line in lines]
+    mine = [i for i, n in enumerate(names) if n == name]
+    line = lines[mine[0]]
+    kept = [(ln, n) for i, (ln, n) in enumerate(zip(lines, names, strict=True)) if i not in mine]
+    at = next(i for i, (_ln, n) in enumerate(kept) if n == last)
+    kept.insert(at + 1, (line, name))
+    others = sorted(set(below) - {last}, key=pos.get)
+    note = (f"{name} moved in the merge order from #{pos[name] + 1} to #{pos[last] + 1}, right after its last supplier "
+            f"{last}" + (f" ({', '.join(others)} also came after it)" if others else ""))
+    return "\n".join(ln for ln, _n in kept) + "\n", note
+
+
+def repair_upward(text: str, readmes: dict[str, str], main_extended: set[str] | frozenset = frozenset(),
+                  only: set[str] | None = None) -> tuple[str, dict[str, str]]:
+    """The merge-order file with every roadmap of `readmes` (or of `only`) that it lists above a
+    supplier its README names moved right after its last supplier (`move_after_suppliers`), until no
+    such move is left; and name -> what happened to it (moved, or why not: a move that would put one
+    of its consumers among `readmes` before it is not made). Idempotent: a clean order is returned as
+    it is, with no notes."""
+    order = read_order(text)
+    edges = supplier_edges(readmes, set(order) | set(readmes), main_extended)
+    consumers: dict[str, set[str]] = defaultdict(set)
+    for c, sups in edges.items():
+        for s in sups:
+            consumers[s].add(c)
+    notes: dict[str, str] = {}
+    for _ in range(len(order) + 1):
+        moved = False
+        for name in [n for n in read_order(text) if n in edges and (only is None or n in only)]:
+            try:
+                new, note = move_after_suppliers(text, name, set(edges[name]), consumers[name])
+            except OrderCycle as exc:
+                notes[name] = f"{name} not moved in the merge order: {exc}"
+                continue
+            if note:
+                text, notes[name], moved = new, note, True
+                break                   # positions changed: start again from the top
+        if not moved:
+            break
+    return text, notes

@@ -140,3 +140,20 @@ def test_sources_ocr_without_the_extra(tmp_path, capsys):
     (tmp_path / "scan.pdf").write_bytes(make_pdf([""]))
     assert cli.main(["--conf", EXAMPLE, "sources", "ocr", str(tmp_path / "scan.pdf")]) == 2
     assert "OCR is not installed" in capsys.readouterr().err
+
+
+def test_depcheck_movable_checks_a_listed_roadmap_as_moved_after_its_last_supplier(worktree, tmp_path, capsys):
+    """The agents' check (`--movable`) agrees with the worker, which moves the roadmap when it submits."""
+    upward = tmp_path / "README.md"
+    upward.write_text("*Needs:* Toy §1.\n", encoding="utf-8")
+    order = str(tmp_path / "ORDER.txt")
+    args = ["--conf", EXAMPLE, "gate", "--depcheck", str(upward), "--name", "Alpha", "--order", order, "--movable"]
+    assert cli.main(args) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("moved: Alpha moved in the merge order from #1 to #2, right after its last supplier Toy; "
+                          "checked as moved (the worker moves it there when it submits)\n") and "UPWARD" not in out
+    # A consumer of it in between: the UPWARD line stands, with why it cannot move.
+    lines, problems = cli.depcheck_lines("Alpha", "*Needs:* Toy §1.\n", {"Toy": "*Needs:* Alpha §2.\n"},
+                                         ["Alpha", "Toy"], set(), movable=True)
+    assert lines[0].startswith("not movable: Alpha consumes Toy (#2) and is consumed by Toy (#2)")
+    assert "UPWARD: Alpha (#1) -> Toy (#2) at README lines [1]" in problems
