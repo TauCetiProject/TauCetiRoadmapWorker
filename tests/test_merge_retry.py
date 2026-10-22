@@ -2,7 +2,7 @@
 its review (regressions on #63: the accepted verdict was consumed by the failed merge, nothing retried
 it after a hand rebase, and after a hand merge the review job went back to `state:available`)."""
 
-from tauceti_roadmap_worker import boardpr
+from tauceti_roadmap_worker import boardpr, depgraph
 from tauceti_roadmap_worker.board import encode_submission, new_job
 from tauceti_roadmap_worker.gh import GHError
 
@@ -109,3 +109,4 @@ def test_a_package_merged_on_github_goes_on_to_its_port():
     gh.pr["merged"] = True
     boardpr.scan(ctx, yes=True)
     assert pkg_rev.state == "done" and board.find("PORT-Foo") is not None and board.find("RT-Foo~1a") is None
+    assert "Foo" in depgraph.read_order(gh.files["merge-order/ORDER.txt"])     # placed when its port was created

@@ -290,6 +290,8 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
         notes.append("parked")
     if job.kind == "review" and outcome.verdict == "accepted" and board.parse_job_id(job.id).subject == "DESIGN":
         notes.append(add_to_order(ctx, job.name))
+    if any(s.kind == "port" for s in new):
+        notes.append(add_to_order_for_port(ctx, job.name))
     return "created " + (", ".join(created) if created else "nothing") + (f" ({'; '.join(notes)})" if notes else "")
 
 
@@ -509,8 +511,12 @@ def absorb(ctx, job: Job, into: str, jobs: list[Job]) -> str:
     return f"merged into {survivor.id}"
 
 
-def add_to_order(ctx, name: str) -> str:
-    """Insert an accepted design into the merge order after its last supplier (packages repository)."""
+DESIGN_README, PACKAGE_README = "design/README.md", "README.md"
+
+
+def add_to_order(ctx, name: str, readmes: tuple[str, ...] = (DESIGN_README, PACKAGE_README)) -> str:
+    """Insert a roadmap into the merge order after its last supplier (packages repository), its
+    suppliers read from the first of `readmes` (paths in its package folder on main) that exists."""
     cfg = ctx.cfg
     if cfg.roadmap.merge_order_repo != "packages":
         return "merge order not updated (not kept in the packages repository)"
@@ -522,8 +528,18 @@ def add_to_order(ctx, name: str) -> str:
         sha = current["sha"]
     except GHError:
         text, sha = "# Merge order: suppliers before consumers, one roadmap per line.\n", None
-    readme = ctx.gh.raw_file(repo, f"{pkg}/design/README.md")
     order = depgraph.read_order(text)
+    if name in order:
+        return f"{name} already in the merge order"
+    readme = None
+    for rel in readmes:
+        try:
+            readme = ctx.gh.raw_file(repo, f"{pkg}/{rel}")
+            break
+        except GHError:
+            continue
+    if readme is None:
+        return f"merge order not updated (no {' or '.join(readmes)} of {name} on main)"
     edges = depgraph.supplier_edges({name: readme}, set(order), set(cfg.roadmap.main_extended))
     new = depgraph.insert_into_order(text, name, set(edges.get(name, {})))
     if new == text:
@@ -534,6 +550,16 @@ def add_to_order(ctx, name: str) -> str:
         payload["sha"] = sha
     ctx.gh.write("PUT", f"repos/{repo}/contents/{path}", payload)
     return f"{name} inserted into the merge order"
+
+
+def add_to_order_for_port(ctx, name: str) -> str:
+    """Insert the roadmap of a package whose port follows into the merge order when it is absent
+    (an imported package never had its design accepted on the board), its suppliers read from the
+    merged package README; a failed write is reported, not raised."""
+    try:
+        return add_to_order(ctx, name, (PACKAGE_README, DESIGN_README))
+    except GHError as exc:
+        return f"merge order not updated ({exc})"
 
 
 def _held(ctx, pr: int) -> bool:

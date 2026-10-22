@@ -12,7 +12,8 @@ reviews the new head. `scan` (run by `board intake`) reads the comments and adva
   rejected, or too many rounds, parks it for a human;
 * a red-team pass completes its pass job; a complete round opens the round's fix;
 * a fix that was pushed is done, and the next review or red-team round follows; after the last
-  red-team round's fix the pull request is merged and the port job created.
+  red-team round's fix the pull request is merged, the port job created and the roadmap inserted
+  into the merge order when it is absent.
 
 A comment counts only from a login of `[review] comment_reviewers`, the board's bots, or the
 worker that claimed the job (its claim note on the job's issue names the login); it must review
@@ -534,7 +535,9 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
     if any(j.kind == "port" for j in nxt):
         existing = {j.id for j in ctx.board.all_jobs()}
         created = [board.made_note(ctx.board, j, ctx.board.create(j)) for j in nxt if j.id not in existing]
-        return f"#{number}: {fix.id} done; merged; created " + (", ".join(created) or "nothing")
+        from .intake import add_to_order_for_port
+        return (f"#{number}: {fix.id} done; merged; created " + (", ".join(created) or "nothing")
+                + "; " + add_to_order_for_port(ctx, fix.name))
     for j in nxt:
         j.inputs["board_pr"] = number
     return open_for_review(ctx, number, pr, nxt, jobs, yes).replace("open for review", f"{fix.id} done; next round")

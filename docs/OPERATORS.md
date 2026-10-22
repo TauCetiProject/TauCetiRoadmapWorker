@@ -227,7 +227,8 @@ the intake announces such gaps on the supplier's job when the package is accepte
 conditional on them (`conditional_gaps` in the verdict, or a `Conditional on the announced gaps:`
 line in a comment review). A design-stage roadmap is checked as a merge-order candidate
 (`gate --candidate <folder> --only <Name>` places it after its last supplier), since it enters the
-merge order only when its design is accepted.
+merge order only when its design is accepted (an imported package, which has no design accepted on
+the board, when its port is created).
 
 States are the labels `state:available`, `claimed`, `submitted`, `done`, `blocked` and
 `needs-references`. A job issue carries exactly one: every state change adds the new label first and
@@ -455,10 +456,13 @@ tauceti-roadmap --conf $CONF targets import-intentions --yes   # intentions → 
 tauceti-roadmap --conf $CONF board import-explorer --from ~/tauceti-explorer --yes   # see below
 ```
 
-A roadmap that reaches the port without a place in the merge order (an imported package, say) is
-placed by the port lane: right after its last supplier that the order lists (its README's supplier
-lines, as the dependency check reads them, and every `TauCetiRoadmap.<X>` its Lean names), at the end
-when it has none, with a warning for a supplier the order lacks. The edited `ORDER.txt` is part of
+When a package's port is created, the intake inserts the roadmap into the merge order on the board's
+main if it is absent, after its last supplier as its merged README names them (logged `<Name>
+inserted into the merge order` or `already in the merge order`). A roadmap that still reaches the
+port without a place in the merge order is placed by the port lane: right after its last supplier
+that the order lists (its README's supplier lines, as the dependency check reads them, and every
+`TauCetiRoadmap.<X>` its Lean names), at the end when it has none, with a warning for a supplier the
+order lacks. The edited `ORDER.txt` is part of
 the port's submission, so the intake merges it with the report. When the place would put one of
 its suppliers after one of its consumers, the job is set to `state:blocked` with the cycle in a
 comment, and nothing is submitted.

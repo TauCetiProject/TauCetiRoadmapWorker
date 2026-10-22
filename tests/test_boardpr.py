@@ -3,8 +3,9 @@ driven by comments (from a browser model's listed login and from workers), with 
 
 import base64
 
-from tauceti_roadmap_worker import boardpr, intake, prreviews
+from tauceti_roadmap_worker import boardpr, depgraph, intake, prreviews
 from tauceti_roadmap_worker.board import encode_submission, new_job
+from tauceti_roadmap_worker.gh import GHError
 
 from .fakes import bot_context, example_config
 
@@ -177,7 +178,8 @@ def test_a_package_through_review_fix_review_red_team_and_port():
     fix_rt.state = "submitted"
     gh.pr["head"]["sha"] = "d" * 40
     out = boardpr.scan(ctx, yes=True)
-    assert out == [f"#12: FIX-RT-Foo~1 done; merged; created PORT-Foo (#{board.find('PORT-Foo').number})"]
+    assert out == [(f"#12: FIX-RT-Foo~1 done; merged; created PORT-Foo (#{board.find('PORT-Foo').number}); "
+                    "Foo inserted into the merge order")]
     assert gh.merged and pkg.state == "done" and '"status": "accepted"' in gh.files["packages/Foo/review.json"]
     assert "independent-review-REV-PKG-Foo~2" in gh.files["packages/Foo/review.json"]
     assert board.find("PORT-Foo").state == "available"
@@ -284,3 +286,81 @@ def test_the_review_queue_lists_open_reviews_and_is_edited_in_place():
     rev.state = "done"
     assert boardpr.review_queue(ctx, yes=True) == ["review queue #50 updated"]
     assert "Nothing is waiting for a review." in issues[0]["body"]
+
+
+# --- the merge order: a package whose port follows enters it when absent ------------------------------
+
+ORDER = "merge-order/ORDER.txt"
+
+
+class ImportGH(GH):
+    """An explorer import's board pull request (no submission marker, no design folder) after its
+    last red-team round; files on the board's main are read raw, a missing one is a 404."""
+
+    def __init__(self, files):
+        super().__init__("d" * 40)
+        self.pr["title"] = "Import Foo from the explorer (package accepted)"
+        self.pr["body"] = "Imported from the explorer."
+        self.pr["labels"] = [{"name": "needs-review"}]
+        self.files.update(files)
+
+    def api(self, path, paginate=False):
+        if "/pulls/12/files" in path:
+            return [{"filename": "packages/Foo/README.md", "status": "modified"}]
+        return super().api(path, paginate)
+
+    def raw_file(self, repo, path, ref=""):
+        if path not in self.files:
+            raise GHError("404")
+        return self.files[path]
+
+
+def last_red_team_fix(files):
+    cfg = example_config()
+    cfg.board.bot_logins = ["board-bot"]
+    cfg.redteam.rounds = 1
+    fix = new_job("FIX-RT-Foo~1", requires_operator="alice",
+                  inputs={"board_pr": 12, "operator": "alice", "base_head": "c" * 40,
+                          "reviews": ["RT-Foo~1a", "RT-Foo~1b"]})
+    fix.number, fix.state = 8, "submitted"
+    board, gh = Board([fix]), ImportGH(files)
+    return bot_context(cfg=cfg, gh=gh, board=board, operator="board-bot"), board, gh
+
+
+def test_an_imported_package_enters_the_merge_order_after_its_last_supplier_when_its_port_is_created():
+    ctx, board, gh = last_red_team_fix({ORDER: "# Merge order\nAlpha\nBeta\nGamma\n",
+                                        "packages/Foo/README.md": "# Foo\n\n*Needs:* Alpha §1 and Beta §2.\n"})
+    out = boardpr.scan(ctx, yes=True)
+    assert out == [(f"#12: FIX-RT-Foo~1 done; merged; created PORT-Foo (#{board.find('PORT-Foo').number}); "
+                    "Foo inserted into the merge order")]
+    assert depgraph.read_order(gh.files[ORDER]) == ["Alpha", "Beta", "Foo", "Gamma"]
+    paths = [path for _m, path, _p in gh.writes]
+    assert paths.index(f"repos/{REPO}/pulls/12/merge") < paths.index(f"repos/{REPO}/contents/{ORDER}")   # merged first
+
+
+def test_a_package_already_in_the_merge_order_is_left_alone_when_its_port_is_created():
+    order = "# Merge order\nAlpha\nFoo\nBeta\n"
+    ctx, board, gh = last_red_team_fix({ORDER: order, "packages/Foo/README.md": "# Foo\n\n*Needs:* Beta §2.\n"})
+    out = boardpr.scan(ctx, yes=True)
+    assert out[0].endswith(f"created PORT-Foo (#{board.find('PORT-Foo').number}); Foo already in the merge order")
+    assert gh.files[ORDER] == order and not any(path.endswith(ORDER) for _m, path, _p in gh.writes)
+
+
+def test_the_merge_order_reads_the_package_readme_when_there_is_no_design_readme():
+    files = {ORDER: "Alpha\nBeta\nGamma\n", "packages/Foo/README.md": "*Needs:* Alpha §1.\n"}
+    ctx, _board, gh = last_red_team_fix(dict(files))
+    assert intake.add_to_order(ctx, "Foo") == "Foo inserted into the merge order"      # the design-time call
+    assert depgraph.read_order(gh.files[ORDER]) == ["Alpha", "Foo", "Beta", "Gamma"]
+    # With both READMEs, an accepted design is placed by its design README, a port by its package README.
+    both = {**files, "packages/Foo/README.md": "*Needs:* Gamma §3.\n",
+            "packages/Foo/design/README.md": "*Needs:* Alpha §1.\n"}
+    ctx, _board, gh = last_red_team_fix(dict(both))
+    intake.add_to_order(ctx, "Foo")
+    assert depgraph.read_order(gh.files[ORDER]) == ["Alpha", "Foo", "Beta", "Gamma"]
+    ctx, _board, gh = last_red_team_fix(dict(both))
+    assert intake.add_to_order_for_port(ctx, "Foo") == "Foo inserted into the merge order"
+    assert depgraph.read_order(gh.files[ORDER]) == ["Alpha", "Beta", "Gamma", "Foo"]
+    # Neither README: nothing is written.
+    ctx, _board, gh = last_red_team_fix({ORDER: "Alpha\n"})
+    assert intake.add_to_order(ctx, "Foo").startswith("merge order not updated (no design/README.md or README.md")
+    assert gh.files[ORDER] == "Alpha\n" and gh.writes == []
