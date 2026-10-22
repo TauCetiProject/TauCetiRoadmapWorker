@@ -55,7 +55,8 @@ def test_the_package_brief_states_the_identifier_rule():
     text = prompts.template("package")
     assert "must be declared in `Suggested.lean` or be written\nas prose without a namespace" in text
     assert "`congruenceKernel.inv_mem`, `congruenceKernel.mem_iff` and\n`congruenceKernel.mul_mem`" in text
-    assert "a sorried statement is fine" not in text and "Never satisfy it with padding" in text
+    assert "a sorried statement is fine" not in text
+    assert "so the repair is the prose, never padding" in text
     assert text.index("The gate's rule on identifiers") < text.index("## Inputs")
 
 

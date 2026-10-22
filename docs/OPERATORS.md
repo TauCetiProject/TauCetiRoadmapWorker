@@ -309,9 +309,11 @@ Ceti with `sorry`, plus only the simple definitions they need; a headline that i
 the pins is named in the module docstring. The package brief has its agent list the headline
 theorems first; reviews and red-team passes ask whether every statable headline is stated and
 report padding (API lemmas, boundary cases, declarations mirroring README Checks, value-computing
-examples) as P3 deletions. The text gates check form only (imports, `set_option`, sorry'd data, an
-admitted `example`, README names of the roadmap's own that the file lacks); none counts
-declarations or examples, and there is no minimum size.
+examples) as P3 deletions. README API bullets and Checks state their facts in prose and carry a
+backticked Lean name only for a declaration of `Suggested.lean`. The text gates check form only
+(imports, `set_option`, sorry'd data, an admitted `example`, and `readme-ids-missing`: every name of
+the roadmap's own the README claims exists in the file); none counts declarations or examples, and
+there is no minimum size.
 
 Before the agent of a package fix (or of a red-team fix on a board pull request) runs, the lane runs
 the package gate on the package as it stands. It removes `<a id>` anchor tags itself (internal links

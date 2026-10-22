@@ -48,7 +48,8 @@ PADDING_QUESTIONS = ("statable at the pins stated in `Suggested.lean`", "Is anyt
                      "as P3 with the repair \"delete it from `Suggested.lean`\"", "never as \"prove it in place\"")
 # The rules the acceptance test replaced: an example quota and Lean counterparts of README Checks.
 RETIRED = ("two proved", "at most two", "lean mirror", "proved examples that test", "has its `example`",
-           "`example` where statable", "with no Lean `example`", "and a Lean test", "one of them computes")
+           "`example` where statable", "with no Lean `example`", "and a Lean test", "one of them computes",
+           "api as named lemmas", "prove `foobar_mul`", "a sorried statement is fine")
 
 
 @pytest.mark.parametrize("lane", ["package", "port", "fix", "gate", "review", "review-web", "redteam",
@@ -73,6 +74,15 @@ def test_review_and_red_team_briefs_ask_for_headlines_and_padding(lane):
     for phrase in PADDING_QUESTIONS:
         assert phrase in text, f"{lane}: {phrase}"
     assert "Padding in Suggested.lean" in text or lane == "redteam-section"   # the defect class
+
+
+@pytest.mark.parametrize("lane", ["design", "package", "port", "fix", "gate", "review", "review-web"])
+def test_readme_api_bullets_and_checks_are_prose_and_a_lean_name_is_a_claim(lane):
+    text = " ".join(prompts.render(lane, all_values()).split())
+    assert "lists its API as bullets that state each fact in prose, hypotheses and conclusion" in text
+    assert ("An API bullet carries a backticked Lean name only when that declaration exists in "
+            "`Suggested.lean`") in text
+    assert "a Check never names or claims a Lean counterpart" in text
 
 
 def test_the_package_brief_lists_the_headline_theorems_first():

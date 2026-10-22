@@ -147,6 +147,7 @@ def test_no_gate_asks_for_lean_counterparts_of_checks_or_counts_declarations():
     r = scan_folder("Toy", readme, CLEAN_LEAN, opts())
     assert r.ok, r.details
     assert "check-labels-missing" not in r.counts and "check-labels-missing" not in gates.GATE_RULES
+    assert "never by adding a declaration" in gates.GATE_RULES["readme-ids-missing"]
     headline = CLEAN_LEAN.replace(
         "example : Toy.order PUnit = 1 := by simp [Toy.order] -- order-trivial\n", "")
     assert scan_folder("Toy", readme, headline, opts()).ok

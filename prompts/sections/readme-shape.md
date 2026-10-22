@@ -18,13 +18,18 @@ Shape (headings as upstream uses them):
    TauCetiRoadmap.<X>`), the declarations or sections consumed, by name, and what is assumed of them.
 5. `## How to read the build`: one paragraph on the layer order and what each layer delivers.
 6. `## Layer k: <title>` in build order, with `### k.n <topic>` subsections written as prose:
-   "Define `fooBar` as … . Prove `fooBar_mul`, `fooBar_zero` (Source, Thm 3.2, p. 41). *Needs:*
-   Mathlib `X`, Layer 1 `Y`, OtherRoadmap §2.1." Lean names in backticks; hypotheses in the
-   sentence; the locator in parentheses at the claim. Each definition lists its API as named lemmas
-   and its unit tests as a `**Checks.**` bullet list, one bullet per test, each saying what is
-   computed and what a plausible wrong definition would get wrong (a computed value, the degenerate
-   case, agreement with the library notion, a non-example). Every layer ends with `### Examples` and
-   `### Dependencies`.
+   "Define `fooBar` as … . Prove that `fooBar` is multiplicative on coprime arguments and vanishes
+   at zero (Source, Thm 3.2, p. 41). *Needs:* Mathlib `X`, Layer 1 `Y`, OtherRoadmap §2.1."
+   Library and supplier declarations in backticks; hypotheses in the sentence; the locator in
+   parentheses at the claim. Each definition lists its API as bullets that state each fact in prose,
+   hypotheses and conclusion. An API bullet carries a backticked Lean name only when that
+   declaration exists in `Suggested.lean` (a headline statement or one of the few definitions it
+   needs): a backticked name of this roadmap's own is a claim that `Suggested.lean` declares it,
+   and the gate checks every such claim. Each definition lists its unit tests as a `**Checks.**`
+   bullet list, one bullet per test, each saying in prose what is computed and what a plausible
+   wrong definition would get wrong (a computed value, the degenerate case, agreement with the
+   library notion, a non-example); a Check never names or claims a Lean counterpart. Every layer
+   ends with `### Examples` and `### Dependencies`.
 7. `## Downstream consumers`, optionally `## Worked examples`, and `## References`.
 
 House style and rules:

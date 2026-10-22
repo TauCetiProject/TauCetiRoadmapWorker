@@ -750,8 +750,10 @@ GATE_RULES = {
     "lean-lines": "Suggested.lean stays within the project's line limit (`[gates] max_lean_lines`)",
     "forbidden": "no match of the project's forbidden patterns (`[gates] forbidden_patterns`)",
     "dropped": "no name of the project's dropped-names list",
-    "readme-ids-missing": "every backticked identifier the README presents as this roadmap's own declaration is "
-                          "declared or mentioned in Suggested.lean",
+    "readme-ids-missing": "every backticked identifier the README presents as this roadmap's own declaration (a "
+                          "claim that Suggested.lean declares it) is declared or mentioned in Suggested.lean; repair "
+                          "an API bullet or Check by stating its fact in prose without the name, never by adding a "
+                          "declaration",
     "empty-sections": "no `/-! ## ... -/` section header in Suggested.lean without a declaration under it",
     "round-labels": "no labels named after the process (`continuation-2`, `round2`, `gate3`, `_r2`)",
     "long-fences": "no fenced block of more than 40 lines that is neither Lean nor a table: quote a locator, not "

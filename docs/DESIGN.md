@@ -173,8 +173,10 @@ Agents fetch what they need themselves, within rules:
   statable at the pins is named in the module docstring and nothing stands in for it. There is no
   minimum size. API lemmas, boundary cases, Lean counterparts of README Checks and value-computing
   examples are padding: reviews report them as P3 deletions, and a statable headline that is absent
-  as P2. No gate counts declarations or examples; the text gate still refuses an admitted `example`
-  and a README name of the roadmap's own that the Lean file lacks.
+  as P2. README API bullets and Checks state their facts in prose and carry a backticked Lean name
+  only for a declaration of `Suggested.lean`, so a name is a claim and `readme-ids-missing` checks
+  every one. No gate counts declarations or examples; the text gate still refuses an admitted
+  `example`.
 - Lean imports in `Suggested.lean`: the single line `import Mathlib` followed only by the
   individual `TauCeti.*` modules actually used; never `Mathlib.<submodule>` lines (the maintainer's
   rule of 2026-10-19; Tau Ceti's root module is empty). The text gate (count `imports`, in every

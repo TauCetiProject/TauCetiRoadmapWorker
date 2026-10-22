@@ -58,5 +58,6 @@ finished roadmap is tested against, so every statement in it must be one we are 
   `Prop`-valued field standing for a condition you cannot state, a hypothesis that contains the
   conclusion, catalogues of names, or process comments. Use `sorry` honestly: a condition that
   cannot be stated yet is omitted, never named emptily.
-- README and Lean agree: every Lean name appears in the README, and the README's generality equals
-  the Lean's. README Checks are prose; they are not restated in the Lean.
+- README and Lean agree: every Lean name appears in the README, every backticked name of this
+  roadmap's own in the README is declared here, and the README's generality equals the Lean's.
+  README API bullets and Checks are prose; they are not restated in the Lean.

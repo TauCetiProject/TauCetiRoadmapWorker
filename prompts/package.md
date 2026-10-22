@@ -32,8 +32,9 @@ roadmap's own declaration (a dotted name under a definition or namespace of `Sug
 as prose without a namespace; the gate counts the missing ones and the package is refused while any
 remain. For example, `congruenceKernel.inv_mem`, `congruenceKernel.mem_iff` and
 `congruenceKernel.mul_mem` in an API list fail it when `Suggested.lean` declares `congruenceKernel`
-and none of them. Never satisfy it with padding: an API lemma of a kept definition that restates it
-or follows in one tactic from the library is written in the README as prose, not declared.
+and none of them. API bullets and Checks state their facts in prose and carry a Lean name only for a
+declaration of `Suggested.lean` (the README shape below), so the repair is the prose, never padding:
+write "the congruence kernel is closed under inverses", not a new declaration.
 
 ## Inputs (read-only)
 
