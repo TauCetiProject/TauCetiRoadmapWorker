@@ -227,8 +227,8 @@ the intake announces such gaps on the supplier's job when the package is accepte
 conditional on them (`conditional_gaps` in the verdict, or a `Conditional on the announced gaps:`
 line in a comment review). A design-stage roadmap is checked as a merge-order candidate
 (`gate --candidate <folder> --only <Name>` places it after its last supplier), since it enters the
-merge order only when its design is accepted (an imported package, which has no design accepted on
-the board, when its port is created).
+merge order only when its design is accepted (an imported package or accepted design when it is
+imported).
 
 States are the labels `state:available`, `claimed`, `submitted`, `done`, `blocked` and
 `needs-references`. A job issue carries exactly one: every state change adds the new label first and
@@ -464,7 +464,12 @@ tauceti-roadmap --conf $CONF board import-explorer --from ~/tauceti-explorer --y
 
 When a package's port is created, the intake inserts the roadmap into the merge order on the board's
 main if it is absent, after its last supplier as its merged README names them (logged `<Name>
-inserted into the merge order` or `already in the merge order`). A roadmap that still reaches the
+inserted into the merge order` or `already in the merge order`). Every `board intake` also inserts
+each open import pull request (`Import <Name> from the explorer (...)`) whose roadmap the order lacks,
+by the README at its head, in one commit (logged `#N: <Name> inserted into the merge order (an open
+explorer import)`); an import whose design is still under review is left to that review. The
+package gate reads the board main's order when the head of a board pull request carries an older
+file. A roadmap that still reaches the
 port without a place in the merge order is placed by the port lane: right after its last supplier
 that the order lists (its README's supplier lines, as the dependency check reads them, and every
 `TauCetiRoadmap.<X>` its Lean names), at the end when it has none, with a warning for a supplier the
@@ -583,6 +588,14 @@ request), a roadmap with an explorer job `external` or claimed (in flight), a re
 that asks for changes or has no readable verdict, a roadmap the board already has a job for, and one
 waiting in an open import pull request. Every job records the explorer job and issue it rests on
 (`inputs.explorer`), so reruns import nothing twice.
+
+On the way a README loses its `<a id>` anchor tags (process residue to the package gate), its internal
+links pointed at the heading slugs, and a roadmap whose `packets/<Name>.json` lists sources gets a
+`sources.toml` made from them: each work `uncertified` (licence class `none`, since the board has
+fetched none), with the URL, arXiv id, edition and the SHA-256 of the copy the explorer read; a lane
+that fetches one with `sources fetch --id <id>` records it as certified. Once the pull requests are
+open, the packages and accepted designs among them are inserted into the merge order on the board's
+main after their last suppliers, in one commit (the outcome column says so).
 
 Files never reach the board by a direct push: each roadmap gets one pull request from your fork,
 after the submission gates have passed on its files, with a marker naming the job. `board intake`

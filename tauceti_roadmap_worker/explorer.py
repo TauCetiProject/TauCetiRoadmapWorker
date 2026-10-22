@@ -25,6 +25,14 @@ changes, and a roadmap the board already has (any job of that name, or an open i
 for it). Every board job records the explorer job and issue it rests
 on (`inputs.explorer`), so a rerun imports nothing twice.
 
+On the way, a README loses its `<a id>` anchor tags (process residue to the package gate; its
+internal links are pointed at the heading slugs), and a roadmap whose `packets/<Name>.json` records
+sources gets a `sources.toml` made from them (`packet_manifest`: each work `uncertified`, since the
+board has fetched none, with the hash of the copy the explorer read). Once the pull requests are
+open, the packages and accepted designs among them enter the merge order on the board's main, each
+after its last supplier as its README names them (a design under review enters when the board's
+review accepts it).
+
 Files reach the board only through a pull request, one per roadmap, from the maintainer's fork,
 after the board's own submission gates (source material, privacy, JSON/TOML). Its body carries a
 marker naming the jobs; `board intake` merges it (author association, files, checks) and only then
@@ -41,7 +49,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import board, gitops
+from . import board, gates, gitops, sources
 from .board import Job, comment_json, make_id, new_job
 from .gh import GHError, transient
 
@@ -112,6 +120,25 @@ class Step:
     outcome: str = ""                # what the run did
     failed: bool = False             # the run could not carry it out (the import goes on with the next)
     extra: list[Job] = field(default_factory=list)          # more jobs of the same step (red-team passes)
+    generated: dict[str, str] = field(default_factory=dict)  # board path -> text made here (the sources manifest)
+    readme: str = ""                 # the README that places it in the merge order, once its pull request is open
+
+    def paths(self) -> list[str]:
+        """Every board path the step's pull request carries."""
+        return sorted({*self.files, *self.generated})
+
+    def generated_count(self) -> str:
+        """`12 sources`: the entries of the manifest the step makes."""
+        n = sum(text.count("\n[[source]]\n") for text in self.generated.values())
+        return f"{n} source" + ("" if n == 1 else "s")
+
+
+
+def enters_order(job: Job) -> bool:
+    """Whether an imported job's roadmap enters the merge order with its import: a package, or a
+    design its review accepted. A design still under review (and a target) enters when the board's
+    design review accepts it."""
+    return not (job.kind == "target" or (job.kind == "review" and board.artefact_of(job.id) == "DESIGN"))
 
 
 def finished(job: dict) -> str:
@@ -129,8 +156,103 @@ def explorer_inputs(ex: Explorer, source: str) -> dict:
     return {"explorer": {"repo": EXPLORER, "job": source, "issue": ex.issue(source)}, "origin": f"explorer:{source}"}
 
 
+# --- the sources manifest an import carries -------------------------------------------------------------
+
+YEAR = re.compile(r"(?<!\d)(1[5-9]\d\d|20\d\d)(?!\d)")
+ARXIV_URL = re.compile(r"arxiv\.org/(?:abs|pdf)/((?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?)",
+                       re.IGNORECASE)
+ARXIV_YEAR = re.compile(r"^(?:[a-z-]+(?:\.[A-Z]{2})?/)?(\d{2})\d{2}", re.IGNORECASE)
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+SCHEME_WORDS = (("tag", r"\bTags?\b"),
+                ("theorem", r"\b(?:Theorem|Thm|Lemma|Proposition|Prop|Corollary|Cor|Definition|Remark|Example)\b"),
+                ("section", r"§|\bSections?\b|\bSect\."),
+                ("chapter", r"\bChapters?\b|\bCh\."),
+                ("page", r"\bpp?\.\s*\d|\bpages?\b"))
+NOTE_LIMIT = 300
+
+
+def _text(value) -> str:
+    if isinstance(value, list):
+        return "; ".join(_text(v) for v in value)
+    if isinstance(value, dict):
+        return "; ".join(_text(v) for v in value.values())
+    return " ".join(str(value or "").split())
+
+
+def source_year(entry: dict, arxiv: str):
+    """The year of an explorer source: the first one its id, edition or title names, else its arXiv
+    id's; `n.d.` when none does."""
+    for key in ("id", "edition", "title"):
+        m = YEAR.search(_text(entry.get(key)))
+        if m:
+            return int(m.group(1))
+    m = ARXIV_YEAR.match(arxiv)
+    if m:
+        yy = int(m.group(1))
+        return 1900 + yy if yy >= 90 else 2000 + yy
+    return "n.d."
+
+
+def locator_scheme(entry: dict, url: str) -> str:
+    """How the roadmap locates statements in the source, read from the explorer's notes on what it read
+    in it (the locator words they use most), `tag` for the Stacks project, `section` when they say
+    nothing."""
+    if sources.host_of(url) == "stacks.math.columbia.edu":
+        return "tag"
+    read = _text({k: v for k, v in entry.items() if k not in ("id", "title", "authors", "url", "sha256", "edition")})
+    counts = [(len(re.findall(rx, read)), -k, scheme) for k, (scheme, rx) in enumerate(SCHEME_WORDS)]
+    best = max(counts)
+    return best[2] if best[0] else "section"
+
+
+def packet_manifest(packet: Path, name: str, deny: tuple[str, ...] = ()) -> str:
+    """The sources manifest (`sources.toml`) of the works an explorer packet records under `sources`,
+    or '' when it records none: each with its id, authors, title, year, a locator scheme, the URL a
+    reader finds it at (unless the deny list refuses its host), its arXiv id and DOI, the SHA-256 of
+    the copy the explorer read, the access date and the edition as the version note. The board has
+    fetched none of them, so each is `uncertified` with licence class `none`; a lane that fetches one
+    (`sources fetch --id <id>`) records its text and hash as certified."""
+    try:
+        data = json.loads(Path(packet).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    found = data.get("sources") if isinstance(data, dict) else None
+    manifest, seen = sources.new_manifest(name), set()
+    for e in found if isinstance(found, list) else []:
+        if not isinstance(e, dict):
+            continue
+        sid, authors, title = _text(e.get("id")), _text(e.get("authors")), _text(e.get("title"))
+        if not (sid and authors and title) or sid.lower() in seen:
+            continue
+        seen.add(sid.lower())
+        url = _text(e.get("url"))
+        if url and (not sources.host_of(url) or sources.classify_url(url, {}, list(deny)) == "denied"):
+            url = ""
+        m = ARXIV_URL.search(url)
+        arxiv = re.sub(r"\.pdf$", "", m.group(1)) if m else ""
+        entry = {"id": sid, "authors": authors, "title": title, "year": source_year(e, arxiv), "arxiv": arxiv,
+                 "locator_scheme": locator_scheme(e, url), "url": url, "licence_class": sources.NO_TEXT,
+                 "status": "uncertified"}
+        doi = _text(e.get("doi"))
+        if sources.DOI_RE.match(doi):
+            entry["doi"] = doi
+        sha = _text(e.get("sha256")).lower()
+        if sources.SHA_RE.match(sha):
+            entry["sha256"] = sha
+        accessed = next((_text(e.get(k)) for k in ("accessed", "accessDate", "readDate")
+                         if ISO_DATE.match(_text(e.get(k)))), "")
+        if accessed:
+            entry["accessed"] = accessed
+        edition = _text(e.get("edition"))
+        if edition:
+            entry["version_note"] = edition if len(edition) <= NOTE_LIMIT else edition[:NOTE_LIMIT - 1] + "…"
+        manifest["source"].append({k: v for k, v in entry.items() if v not in ("", None)})
+    return sources.dump_manifest(manifest) if manifest["source"] else ""
+
+
 def plan_roadmap(ex: Explorer, name: str, packages_dir: str,
-                 redteam: tuple[tuple[str, str], ...] = (("codex", ""), ("claude", ""))) -> Step | None:
+                 redteam: tuple[tuple[str, str], ...] = (("codex", ""), ("claude", "")),
+                 deny: tuple[str, ...] = ()) -> Step | None:
     """What the import does for one roadmap (None: the explorer has nothing for it). Pure."""
     mine = ex.of(name)
     pkg, dest = ex.bp / "packages" / name, board.package_dir(packages_dir, name)
@@ -144,27 +266,44 @@ def plan_roadmap(ex: Explorer, name: str, packages_dir: str,
         return Step(name, stage, source=j["id"], issue=ex.issue(j["id"]),
                     skip=f"in flight in the explorer: {j['id']} is {j['state']}")
     if stage == "package":
-        return plan_package(ex, name, pkg, dest, mine, redteam)
-    if stage == "design":
-        if not (readme.is_file() and packet.is_file()):
-            return Step(name, stage, skip="the explorer's design README or plan packet is missing")
-        files = {f"{dest}/design/README.md": readme, f"{dest}/design/plan.json": packet}
-        last = max((d for d in designs if d.get("state") == "done"), key=finished)
-        reviews = [r for r in mine if r.get("kind") == "review" and r["id"].startswith("REV-DESIGN-")
-                   and r.get("state") == "done" and finished(r) >= finished(last)]
-        if not reviews:
-            job = new_job(make_id("review", name, subject="DESIGN"), inputs=explorer_inputs(ex, last["id"]),
-                          note=f"Imported from the explorer: the design {last['id']} awaits its independent review.")
-            return Step(name, stage, job, files, last["id"], ex.issue(last["id"]))
-        review = max(reviews, key=finished)
-        path = ex.bp / "reviews" / f"{review['id']}.md"
-        verdict = verdict_of(path.read_text(encoding="utf-8", errors="replace")) if path.is_file() else ""
-        if verdict != "accepted":
-            return Step(name, stage, source=review["id"], issue=ex.issue(review["id"]),
-                        skip=f"the explorer's design review {review['id']} says {verdict or 'nothing readable'}")
-        job = new_job(make_id("package", name), inputs=explorer_inputs(ex, review["id"]),
-                      note=f"Imported from the explorer: the design was accepted by {review['id']}.")
-        return Step(name, stage, job, files, review["id"], ex.issue(review["id"]))
+        step = plan_package(ex, name, pkg, dest, mine, redteam)
+    elif stage == "design":
+        step = plan_design(ex, name, dest, designs, mine, readme, packet)
+    else:
+        step = plan_target(ex, name, designs)
+    if step is not None and step.job is not None and not step.skip and step.files:
+        manifest = packet_manifest(packet, name, deny)
+        if manifest:
+            step.generated[board.manifest_path(packages_dir, name)] = manifest
+    return step
+
+
+def plan_design(ex: Explorer, name: str, dest: str, designs: list[dict], mine: list[dict], readme: Path,
+                packet: Path) -> Step:
+    """A design the explorer wrote: its review here (REV-DESIGN), or its package once its review accepted it."""
+    if not (readme.is_file() and packet.is_file()):
+        return Step(name, "design", skip="the explorer's design README or plan packet is missing")
+    files = {f"{dest}/design/README.md": readme, f"{dest}/design/plan.json": packet}
+    last = max((d for d in designs if d.get("state") == "done"), key=finished)
+    reviews = [r for r in mine if r.get("kind") == "review" and r["id"].startswith("REV-DESIGN-")
+               and r.get("state") == "done" and finished(r) >= finished(last)]
+    if not reviews:
+        job = new_job(make_id("review", name, subject="DESIGN"), inputs=explorer_inputs(ex, last["id"]),
+                      note=f"Imported from the explorer: the design {last['id']} awaits its independent review.")
+        return Step(name, "design", job, files, last["id"], ex.issue(last["id"]))
+    review = max(reviews, key=finished)
+    path = ex.bp / "reviews" / f"{review['id']}.md"
+    verdict = verdict_of(path.read_text(encoding="utf-8", errors="replace")) if path.is_file() else ""
+    if verdict != "accepted":
+        return Step(name, "design", source=review["id"], issue=ex.issue(review["id"]),
+                    skip=f"the explorer's design review {review['id']} says {verdict or 'nothing readable'}")
+    job = new_job(make_id("package", name), inputs=explorer_inputs(ex, review["id"]),
+                  note=f"Imported from the explorer: the design was accepted by {review['id']}.")
+    return Step(name, "design", job, files, review["id"], ex.issue(review["id"]))
+
+
+def plan_target(ex: Explorer, name: str, designs: list[dict]) -> Step | None:
+    """A design the explorer only queued: a TARGET job (None when it has not even that)."""
     queued = [d for d in designs if d.get("state") == "pending"]
     if not queued:
         return None
@@ -174,7 +313,7 @@ def plan_roadmap(ex: Explorer, name: str, packages_dir: str,
             "name": name}
     job = new_job(make_id("target", name), inputs={"form": form, **explorer_inputs(ex, d["id"])},
                   note=f"Imported from the explorer's queue ({d['id']}).")
-    return Step(name, stage, job, {}, d["id"], ex.issue(d["id"]))
+    return Step(name, "target", job, {}, d["id"], ex.issue(d["id"]))
 
 
 def plan_package(ex: Explorer, name: str, pkg: Path, dest: str, mine: list[dict],
@@ -208,14 +347,15 @@ def plan_package(ex: Explorer, name: str, pkg: Path, dest: str, mine: list[dict]
 def plan_import(ex: Explorer, packages_dir: str, jobs: list[Job], pending: dict[str, int],
                 kinds: tuple[str, ...] = STAGES, names: tuple[str, ...] = (),
                 ported: dict[str, str] | None = None,
-                redteam: tuple[tuple[str, str], ...] = (("codex", ""), ("claude", ""))) -> list[Step]:
+                redteam: tuple[tuple[str, str], ...] = (("codex", ""), ("claude", "")),
+                deny: tuple[str, ...] = ()) -> list[Step]:
     """Every roadmap's step, filtered by stage and name, with what is already done marked as
     skipped. `pending` maps roadmap names to open import pull requests, `ported` to where the roadmap
     repository has them already. Pure."""
     ported = ported or {}
     steps = []
     for name in names or ex.names():
-        step = plan_roadmap(ex, name, packages_dir, redteam)
+        step = plan_roadmap(ex, name, packages_dir, redteam, deny)
         if step is None:
             if names:
                 steps.append(Step(name, "-", skip="the explorer has nothing for it"))
@@ -237,7 +377,7 @@ def plan_import(ex: Explorer, packages_dir: str, jobs: list[Job], pending: dict[
 
 def encode_import(steps: list[Step]) -> str:
     data = {"source": EXPLORER, "jobs": [j.spec() for s in steps for j in [s.job, *s.extra]],
-            "files": sorted(f for s in steps for f in s.files)}
+            "files": sorted(f for s in steps for f in s.paths())}
     return f"<!-- {IMPORT_MARK} " + comment_json(data) + " -->"
 
 
@@ -291,33 +431,57 @@ def ported_roadmaps(ctx) -> dict[str, str]:
     return out
 
 
+def normalise_readme(path: Path) -> str:
+    """The README's `<a id>` anchor tags removed, its internal links pointed at the heading slugs
+    (`gates.strip_anchors`; nothing else of the text changes). Returns what changed ('' if nothing)."""
+    fixed = gates.strip_anchors(path.read_text(encoding="utf-8"))
+    if not fixed.removed:
+        return ""
+    path.write_text(fixed.text, encoding="utf-8")
+    return fixed.summary(path.name if path.parent.name != "design" else "design/README.md")
+
+
 def open_pull_request(ctx, step: Step) -> str:
-    """Copy the step's files onto a branch of the maintainer's board checkout, run the submission
+    """Copy the step's files onto a branch of the maintainer's board checkout (a README with its
+    anchor tags removed, and the sources manifest made from the explorer's packet), run the submission
     gates on them, push to the fork and open the pull request. Returns what happened."""
     cfg, repo = ctx.cfg, ctx.cfg.repositories.packages_repo()
     checkout = ctx.state / "import" / "board"
     gitops.sync_checkout(repo, checkout, "main", scrub=(board.package_dir(cfg.board.packages_dir, step.name),))
     branch = f"import/explorer-{gitops.kebab(step.name)}"
     gitops.git(checkout, "checkout", "-q", "-B", branch)
-    problems = []
-    for rel, src in step.files.items():
+    problems, notes, paths = [], [], step.paths()
+    readmes = {}
+    for rel in paths:
         (checkout / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, checkout / rel)
+        if rel in step.files:
+            shutil.copyfile(step.files[rel], checkout / rel)
+        else:
+            (checkout / rel).write_text(step.generated[rel], encoding="utf-8")
+        if rel.endswith("/README.md"):
+            notes.append(normalise_readme(checkout / rel))
+            readmes[rel] = (checkout / rel).read_text(encoding="utf-8")
         data = (checkout / rel).read_bytes()
-        problems += board.file_problems(rel, data.decode("utf-8", errors="replace"), set(step.files), data)
+        problems += board.file_problems(rel, data.decode("utf-8", errors="replace"), set(paths), data)
     if problems:
         return "refused by the submission gates: " + "; ".join(problems[:3])
-    gitops.commit_paths(checkout, sorted(step.files), f"Import {step.name} from the explorer ({step.source})", ctx.operator)
+    pkg = board.package_dir(cfg.board.packages_dir, step.name)
+    placing = readmes.get(f"{pkg}/README.md") or readmes.get(f"{pkg}/design/README.md", "")
+    gitops.commit_paths(checkout, paths, f"Import {step.name} from the explorer ({step.source})", ctx.operator)
     fork = retrying(lambda: gitops.ensure_fork(ctx.gh, repo, ctx.operator))
     retrying(lambda: gitops.push(checkout, fork, branch))
     link = f"https://github.com/{EXPLORER}/issues/{step.issue}" if step.issue else EXPLORER
+    made = [n for n in notes if n] + ([f"`sources.toml` made from the explorer's packet ({step.generated_count()})"]
+                                       if step.generated else [])
     body = (f"Imports `{step.name}` from the explorer: {step.source} ({link}). When this merges, `board intake` "
-            f"creates `{step.job.id}`.\n\nFiles: " + ", ".join(f"`{f}`" for f in sorted(step.files)) + "\n\n"
+            f"creates `{step.job.id}`.\n\nFiles: " + ", ".join(f"`{f}`" for f in paths) + "\n\n"
+            + ("Changed on the way: " + "; ".join(made) + ".\n\n" if made else "")
             + encode_import([step]))
     pr = retrying(lambda: gitops.open_pull_request(ctx.gh, repo, f"{ctx.operator}:{branch}", "main",
                                                    f"Import {step.name} from the explorer ({step.job.id})", body,
                                                    draft=False))
-    return f"pull request #{(pr or {}).get('number', '?')}"
+    step.readme = placing
+    return "; ".join([f"pull request #{(pr or {}).get('number', '?')}"] + [n for n in notes if n])
 
 
 RETRIES, BACKOFF = 2, 30         # a refused push or a GitHub 5xx/timeout is tried again twice, 30 s apart
@@ -338,7 +502,8 @@ def import_explorer(ctx, root: Path, kinds: tuple[str, ...] = STAGES, names: tup
                     yes: bool = False) -> list[Step]:
     ex = Explorer.read(root)
     steps = plan_import(ex, ctx.cfg.board.packages_dir, ctx.board.all_jobs(), open_imports(ctx), kinds, names,
-                        ported_roadmaps(ctx), tuple((p.agent, p.model) for p in ctx.cfg.redteam.passes))
+                        ported_roadmaps(ctx), tuple((p.agent, p.model) for p in ctx.cfg.redteam.passes),
+                        tuple(ctx.cfg.sources.deny))
     for step in steps:
         if step.skip:
             step.outcome = "skipped: " + step.skip
@@ -357,14 +522,31 @@ def import_explorer(ctx, root: Path, kinds: tuple[str, ...] = STAGES, names: tup
                     step.outcome = f"created #{number}"
             except (gitops.GitError, GHError, OSError) as exc:
                 step.failed, step.outcome = True, f"failed: {str(exc).splitlines()[0][:200]}"
+    place_in_order(ctx, [s for s in steps if s.readme and not s.failed and enters_order(s.job)])
     return steps
+
+
+def place_in_order(ctx, steps: list[Step]) -> None:
+    """The roadmaps whose import pull request opened enter the merge order on the board's main, each
+    after its last supplier as the imported README names them, in one commit (`board intake` catches
+    up an import this misses). A design still under review enters when the board's review accepts it."""
+    if not steps:
+        return
+    from .intake import insert_roadmaps
+    try:
+        notes = insert_roadmaps(ctx, {s.name: s.readme for s in steps})
+    except GHError as exc:
+        notes = {s.name: f"merge order not updated ({str(exc).splitlines()[0][:200]}; `board intake` places it)"
+                 for s in steps}
+    for s in steps:
+        s.outcome += "; " + notes.get(s.name, "merge order not updated")
 
 
 def summary(steps: list[Step]) -> str:
     rows = [("Roadmap", "Stage", "Explorer job", "Issue", "Board job", "Files", "Outcome")]
     for s in steps:
         rows.append((s.name, s.stage, s.source or "-", f"#{s.issue}" if s.issue else "-", s.job.id if s.job and not s.skip
-                     else "-", str(len(s.files)) if not s.skip else "-", s.outcome or s.skip))
+                     else "-", str(len(s.paths())) if not s.skip else "-", s.outcome or s.skip))
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]) - 1)]
     lines = ["  ".join(c.ljust(w) for c, w in zip(r[:-1], widths, strict=True)) + "  " + r[-1] for r in rows]
     counts = {}

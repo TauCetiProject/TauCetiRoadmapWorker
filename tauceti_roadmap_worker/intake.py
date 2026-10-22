@@ -30,7 +30,7 @@ import socket
 
 from . import board, boardpr, claims, depgraph, explorer, filers, prreviews, replies
 from .board import Job, Outcome
-from .gh import GHError
+from .gh import GHError, transient
 from .lanes.base import open_roadmap_prs
 from .lanes.pr import events_from_api
 from .lanes.port import pr_number_from_report
@@ -206,7 +206,9 @@ def intake_open(ctx, yes: bool, only: int = 0, log=print) -> list[int]:
     GET per pull request), a pull request whose head, labels and update time are as at the last run
     with a stable outcome (left for the maintainer, under review, not a submission) is not read again
     (a cache in the state directory; empty on a fresh runner), and a GitHub error on one is logged and
-    the run goes on. Returns the pull requests skipped by an error."""
+    the run goes on. Then (unless `only`) the open explorer imports the merge order lacks are inserted
+    into it (`backfill_import_order`, from the same listing). Returns the pull requests skipped by an
+    error."""
     repo = ctx.cfg.repositories.packages_repo()
     pulls = ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True) or []
     path = ctx.state / "intake-prs.json"
@@ -241,6 +243,12 @@ def intake_open(ctx, yes: bool, only: int = 0, log=print) -> list[int]:
         path.write_text(json.dumps(seen, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     except OSError:
         pass
+    if not only:
+        try:
+            backfill_import_order(ctx, pulls, yes, log)
+        except GHError as exc:
+            log(f"merge order of open imports: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]}); "
+                "the next run tries again")
     return skipped
 
 
@@ -514,22 +522,82 @@ def absorb(ctx, job: Job, into: str, jobs: list[Job]) -> str:
 DESIGN_README, PACKAGE_README = "design/README.md", "README.md"
 
 
+NOT_KEPT = "merge order not updated (not kept in the packages repository)"
+ORDER_HEADER = "# Merge order: suppliers before consumers, one roadmap per line.\n"
+
+
+def read_merge_order(ctx) -> tuple[str, str | None]:
+    """The merge-order file on the board's main and its blob sha (a new file's header and None when
+    there is none yet)."""
+    cfg = ctx.cfg
+    try:
+        current = ctx.gh.api(f"repos/{cfg.repositories.packages_repo()}/contents/{cfg.roadmap.merge_order_file}")
+        return base64.b64decode(current["content"]).decode("utf-8"), current["sha"]
+    except GHError:
+        return ORDER_HEADER, None
+
+
+def place_roadmaps(text: str, readmes: dict[str, str], main_extended: set[str] = frozenset()) -> tuple[str, list[str]]:
+    """The merge-order file with every roadmap of `readmes` (name -> README) that it lacks inserted
+    right after its last supplier, as its README names them, and the names inserted, in order. Among
+    the new roadmaps a supplier goes in before its consumers (by name where they cite each other)."""
+    pending = {n: r for n, r in readmes.items() if n not in depgraph.read_order(text)}
+    placed = []
+    while pending:
+        known = set(depgraph.read_order(text)) | set(pending)
+        suppliers = {n: set(depgraph.supplier_edges({n: r}, known, main_extended).get(n, {}))
+                     for n, r in pending.items()}
+        ready = [n for n in sorted(pending) if not suppliers[n] & (set(pending) - {n})]
+        name = (ready or sorted(pending))[0]
+        text = depgraph.insert_into_order(text, name, suppliers[name])
+        placed.append(name)
+        del pending[name]
+    return text, placed
+
+
+def write_placed(ctx, text: str, sha: str | None, readmes: dict[str, str], yes: bool = True) -> dict[str, str]:
+    """Insert the roadmaps of `readmes` the merge-order file `text` (blob `sha`) lacks and write it to
+    the board's main in one commit. Returns name -> what happened to it."""
+    cfg = ctx.cfg
+    listed = set(depgraph.read_order(text))
+    notes = {n: f"{n} already in the merge order" for n in readmes if n in listed}
+    new, placed = place_roadmaps(text, readmes, set(cfg.roadmap.main_extended))
+    if not placed:
+        return notes
+    if yes:
+        payload = {"message": (f"Merge order: insert {placed[0]} after its last supplier" if len(placed) == 1 else
+                               f"Merge order: insert {', '.join(placed)} after their last suppliers"),
+                   "content": base64.b64encode(new.encode()).decode()}
+        if sha:
+            payload["sha"] = sha
+        path = f"repos/{cfg.repositories.packages_repo()}/contents/{cfg.roadmap.merge_order_file}"
+        ctx.gh.write("PUT", path, payload)
+    for n in placed:
+        notes[n] = f"{n} inserted into the merge order" + ("" if yes else " (dry run: not written)")
+    return notes
+
+
+def insert_roadmaps(ctx, readmes: dict[str, str], yes: bool = True) -> dict[str, str]:
+    """`write_placed` on the merge order of the board's main: the README texts are in hand (an
+    explorer import), so nothing is read but the order. Returns name -> what happened to it."""
+    if ctx.cfg.roadmap.merge_order_repo != "packages":
+        return {n: NOT_KEPT for n in readmes}
+    if not readmes:
+        return {}
+    text, sha = read_merge_order(ctx)
+    return write_placed(ctx, text, sha, readmes, yes)
+
+
 def add_to_order(ctx, name: str, readmes: tuple[str, ...] = (DESIGN_README, PACKAGE_README)) -> str:
     """Insert a roadmap into the merge order after its last supplier (packages repository), its
     suppliers read from the first of `readmes` (paths in its package folder on main) that exists."""
     cfg = ctx.cfg
     if cfg.roadmap.merge_order_repo != "packages":
-        return "merge order not updated (not kept in the packages repository)"
-    repo, path = cfg.repositories.packages_repo(), cfg.roadmap.merge_order_file
+        return NOT_KEPT
+    repo = cfg.repositories.packages_repo()
     pkg = board.package_dir(cfg.board.packages_dir, name)
-    try:
-        current = ctx.gh.api(f"repos/{repo}/contents/{path}")
-        text = base64.b64decode(current["content"]).decode("utf-8")
-        sha = current["sha"]
-    except GHError:
-        text, sha = "# Merge order: suppliers before consumers, one roadmap per line.\n", None
-    order = depgraph.read_order(text)
-    if name in order:
+    text, sha = read_merge_order(ctx)
+    if name in depgraph.read_order(text):
         return f"{name} already in the merge order"
     readme = None
     for rel in readmes:
@@ -540,16 +608,59 @@ def add_to_order(ctx, name: str, readmes: tuple[str, ...] = (DESIGN_README, PACK
             continue
     if readme is None:
         return f"merge order not updated (no {' or '.join(readmes)} of {name} on main)"
-    edges = depgraph.supplier_edges({name: readme}, set(order), set(cfg.roadmap.main_extended))
-    new = depgraph.insert_into_order(text, name, set(edges.get(name, {})))
-    if new == text:
-        return f"{name} already in the merge order"
-    payload = {"message": f"Merge order: insert {name} after its last supplier",
-               "content": base64.b64encode(new.encode()).decode()}
-    if sha:
-        payload["sha"] = sha
-    ctx.gh.write("PUT", f"repos/{repo}/contents/{path}", payload)
-    return f"{name} inserted into the merge order"
+    return write_placed(ctx, text, sha, {name: readme})[name]
+
+
+IMPORT_TITLE = re.compile(rf"^Import ({board.NAME_RE}) from the explorer \(")
+
+
+def backfill_import_order(ctx, pulls: list[dict], yes: bool, log=print) -> None:
+    """Every open explorer import (`Import <Name> from the explorer (...)`) whose roadmap the merge
+    order on the board's main lacks is inserted after its last supplier, as the README at the pull
+    request's head names them (its package README, else its design README), all in one commit; an
+    import before its design was accepted is left to the design review. One line per insertion.
+    Imports opened before the import placed them (or whose placement failed) are caught up; once
+    they are all placed, a run reads only the merge order."""
+    if ctx.cfg.roadmap.merge_order_repo != "packages":
+        return
+    imports: dict[str, dict] = {}
+    for pr in pulls:
+        m = IMPORT_TITLE.match(pr.get("title") or "")
+        if m:
+            imports.setdefault(m.group(1), pr)
+    if not imports:
+        return
+    text, sha = read_merge_order(ctx)
+    listed = set(depgraph.read_order(text))
+    readmes = {}
+    for name, pr in sorted(imports.items()):
+        found = explorer.decode_import(pr.get("body") or "")
+        if name in listed or (found and not any(explorer.enters_order(j) for j in found["jobs"])):
+            continue
+        readme = head_readme(ctx, pr, name)
+        if readme is None:
+            log(f"#{pr['number']}: {name} is not in the merge order, and the import's head has no README to place "
+                "it by")
+            continue
+        readmes[name] = readme
+    for name, note in write_placed(ctx, text, sha, readmes, yes).items():
+        log(f"#{imports[name]['number']}: {note} (an open explorer import)")
+
+
+def head_readme(ctx, pr: dict, name: str) -> str | None:
+    """The roadmap's package README at the pull request's head, else its design README; None when it
+    has neither (a GitHub error other than a missing file is raised)."""
+    head = pr.get("head") or {}
+    repo, ref = (head.get("repo") or {}).get("full_name", ""), head.get("sha", "")
+    if not repo:
+        return None
+    for rel in (PACKAGE_README, DESIGN_README):
+        try:
+            return ctx.gh.raw_file(repo, f"{board.package_dir(ctx.cfg.board.packages_dir, name)}/{rel}", ref)
+        except GHError as exc:
+            if transient(exc):
+                raise
+    return None
 
 
 def add_to_order_for_port(ctx, name: str) -> str:

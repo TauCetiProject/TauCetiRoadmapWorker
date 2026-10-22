@@ -49,7 +49,8 @@ are the product's contract, not advice:
   only the board and its bot can comment on jobs.
 - A packages repository (or a `packages/` tree in the job board): the intermediate artefacts
   (design, package README and Suggested.lean, review reports, sources manifest). Today this
-  is `research/blueprint/` in the explorer.
+  is `research/blueprint/` in the explorer. An explorer import carries a package with its README's
+  anchor tags removed, a sources manifest made from its packet, and its place in the merge order.
 - Claims: a separate writable namespace as TauCetiTools prescribes (`tauceti-roadmap-claims`),
   so operators without write access coordinate through their forks until admitted.
 

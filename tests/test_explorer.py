@@ -1,12 +1,15 @@
 """`board import-explorer` against a small explorer checkout, with git and GitHub faked."""
 
+import base64
 import json
+import tomllib
 from types import SimpleNamespace
 
 import pytest
 
-from tauceti_roadmap_worker import explorer, gitops, intake
+from tauceti_roadmap_worker import depgraph, explorer, gitops, intake, sources
 from tauceti_roadmap_worker.board import encode_spec, new_job
+from tauceti_roadmap_worker.gh import GHError
 
 from .fakes import FakeBoard, example_config
 
@@ -135,12 +138,28 @@ def fake_git(tmp_path, monkeypatch):
     return calls, opened
 
 
+ORDER = "merge-order/ORDER.txt"
+
+
 class GH:
-    def __init__(self, pulls=()):
-        self.pulls = list(pulls)
+    """The packages and roadmap repositories: open pull requests, folder listings (empty), and the
+    board's files read by the contents API (the merge order; a missing file is a 404), writes kept."""
+
+    def __init__(self, pulls=(), files=None):
+        self.pulls, self.files, self.writes = list(pulls), dict(files or {}), []
 
     def api(self, path, paginate=False):
+        if "/contents/" in path and "?" not in path:
+            name = path.split("/contents/", 1)[1]
+            if name not in self.files:
+                raise GHError(f"GET {path}: 404")
+            return {"content": base64.b64encode(self.files[name].encode()).decode(), "sha": "blob-1"}
         return [] if "/contents/" in path or "/files" in path or "TauCetiRoadmap/pulls" in path else self.pulls
+
+    def write(self, method, path, payload=None):
+        self.writes.append((method, path, payload or {}))
+        if method == "PUT" and "/contents/" in path:
+            self.files[path.split("/contents/", 1)[1]] = base64.b64decode(payload["content"]).decode()
 
 
 def bot(tmp_path, board=None, gh=None):
@@ -155,7 +174,8 @@ def test_the_import_opens_one_pull_request_per_roadmap_and_creates_targets(check
     assert [s.outcome for s in dry] == ["would open an import pull request (dry run)", "would create the job (dry run)"]
     assert opened == [] and ctx.board.created == []
     steps = explorer.import_explorer(ctx, checkout, names=("Alpha", "Eps"), yes=True)
-    assert [s.outcome for s in steps] == ["pull request #61", "created #501"]
+    assert [s.outcome for s in steps] == ["pull request #61; Alpha inserted into the merge order", "created #501"]
+    assert depgraph.read_order(ctx.gh.files[ORDER]) == ["Alpha"]          # a target enters it only with its design
     [(head, title, body)] = opened
     assert head == "maintainer:import/explorer-alpha" and "RT-Alpha~1a" in title
     found = explorer.decode_import(body)
@@ -221,3 +241,163 @@ def test_the_intake_refuses_an_untrusted_or_overreaching_import(tmp_path):
     forged = IntakeGH("<!-- tauceti-roadmap-import {\"jobs\": [{\"id\": \"nope\"}], \"files\": []} -->", {})
     assert "not a submission" in intake.intake(bot(tmp_path, gh=forged), 61, yes=True)
     assert encode_spec(new_job("PORT-Alpha")) not in import_body()          # the marker is its own
+
+
+# --- on the way in: the merge order, the README's anchor tags, the sources manifest -------------------
+
+PACKET_SOURCES = [
+    {"id": "kedlaya-ant-2025", "title": "Notes on analytic number theory", "authors": "Kiran S. Kedlaya",
+     "edition": "Author PDF, last modified 21 December 2025", "url": "https://arxiv.org/abs/2101.00001v2",
+     "sha256": "7a934fce8272cedd36ad609f79bbe79af0056320bb1e0bc690c87af990f305be", "accessed": "2026-10-14",
+     "readSections": ["Theorem 7.1 and Lemma 7.2, printed pp. 43-45", "Theorem 8.3"]},
+    {"id": "stacks", "title": "The Stacks project", "authors": "The Stacks project authors", "edition": "online",
+     "url": "https://stacks.math.columbia.edu/tag/0001", "readSections": ["Tag 0001"]},
+    {"id": "old-preprint", "title": "A preprint", "authors": "A. Author", "edition": "preprint",
+     "url": "https://arxiv.org/pdf/math/0304085v2.pdf", "readSections": "§§2-3"},
+    {"id": "mirror", "title": "Mirrored", "authors": "B. Author", "edition": "1999 edition",
+     "url": "https://libgen.is/book/1", "doi": "10.1234/x.5"},
+    {"id": "KEDLAYA-ANT-2025", "title": "A second key for the same id", "authors": "K", "edition": "x"},
+    {"id": "no-title", "authors": "C. Author", "edition": "2001"},
+    {"id": "undated", "title": "Lecture notes", "authors": "D. Author", "edition": "author page",
+     "url": "https://example.org/notes.pdf"},
+]
+
+
+def test_a_packet_becomes_a_sources_manifest_the_gate_accepts(tmp_path):
+    packet = tmp_path / "packet.json"
+    packet.write_text(json.dumps({"sources": PACKET_SOURCES}), encoding="utf-8")
+    cfg = example_config()
+    text = explorer.packet_manifest(packet, "Alpha", tuple(cfg.sources.deny))
+    data = tomllib.loads(text)
+    assert data["roadmap"] == "Alpha" and [e["id"] for e in data["source"]] == [
+        "kedlaya-ant-2025", "stacks", "old-preprint", "mirror", "undated"]
+    assert sources.validate_manifest(data, cfg.sources.allow, cfg.sources.deny, cfg.sources.uncertified_ok) == []
+    k, stacks, old, mirror, undated = data["source"]
+    assert k == {"id": "kedlaya-ant-2025", "authors": "Kiran S. Kedlaya", "title": "Notes on analytic number theory",
+                 "year": 2025, "arxiv": "2101.00001v2", "locator_scheme": "theorem",
+                 "url": "https://arxiv.org/abs/2101.00001v2", "sha256": PACKET_SOURCES[0]["sha256"],
+                 "licence_class": "none", "status": "uncertified", "accessed": "2026-10-14",
+                 "version_note": "Author PDF, last modified 21 December 2025"}
+    assert stacks["locator_scheme"] == "tag" and stacks["year"] == "n.d."
+    assert (old["arxiv"], old["year"], old["locator_scheme"]) == ("math/0304085v2", 2003, "section")
+    assert "url" not in mirror and mirror["doi"] == "10.1234/x.5" and mirror["year"] == 1999   # a denied host goes
+    assert undated["year"] == "n.d." and undated["locator_scheme"] == "section"
+    # Nothing usable: no manifest.
+    packet.write_text(json.dumps({"sources": [{"id": "x"}]}), encoding="utf-8")
+    assert explorer.packet_manifest(packet, "Alpha") == "" and explorer.packet_manifest(tmp_path / "none", "A") == ""
+
+
+def test_the_import_strips_anchor_tags_carries_the_manifest_and_places_roadmaps_in_order(checkout, tmp_path, fake_git):
+    """Alpha (a package) cites Gamma (an accepted design) and Base; Gamma cites Other. Gamma goes in
+    first, so that Alpha, its consumer, comes after it. Delta (a design under review) and Eps (a
+    target) stay out until the board accepts their designs."""
+    calls, opened = fake_git
+    bp = checkout / "research" / "blueprint"
+    write(bp / "packages" / "Alpha" / "README.md",
+          '# Alpha\n\nSee [§1.1](#legacy-1).\n\n<a id="legacy-1"></a>\n\n### 1.1 The θ-function\n\n'
+          "*Needs:* Gamma §2 and Base §1.\n")
+    write(bp / "readmes" / "Gamma.md", "# Gamma: design\n\n*Needs:* Other §3.\n")
+    write(bp / "packets" / "Alpha.json", json.dumps({"sources": PACKET_SOURCES[:1]}))
+    gh = GH(files={ORDER: "# Merge order\nBase\nOther\n"})
+    ctx = bot(tmp_path, gh=gh)
+    dry = explorer.import_explorer(ctx, checkout, names=("Alpha", "Gamma", "Delta", "Eps"))
+    assert gh.writes == [] and all("merge order" not in s.outcome for s in dry)
+    steps = {s.name: s for s in explorer.import_explorer(ctx, checkout, names=("Alpha", "Gamma", "Delta", "Eps"),
+                                                         yes=True)}
+    assert steps["Alpha"].outcome == ("pull request #61; 1 anchor tag removed from README.md, 1 internal link pointed "
+                                      "at heading slugs; Alpha inserted into the merge order")
+    assert steps["Gamma"].outcome == "pull request #61; Gamma inserted into the merge order"
+    assert steps["Delta"].outcome == "pull request #61" and steps["Eps"].outcome == "created #501"
+    assert depgraph.read_order(gh.files[ORDER]) == ["Base", "Other", "Gamma", "Alpha"]
+    [(method, path, payload)] = gh.writes                                   # one commit for the whole run
+    assert method == "PUT" and path.endswith(f"/contents/{ORDER}") and payload["sha"] == "blob-1"
+    assert payload["message"] == "Merge order: insert Gamma, Alpha after their last suppliers"
+    # Alpha's pull request carries the README without its tag and the manifest made from the packet.
+    alpha = next(body for head, title, body in opened if "RT-Alpha~1a" in title)
+    assert "packages/Alpha/sources.toml" in explorer.decode_import(alpha)["files"]
+    assert "`sources.toml` made from the explorer's packet (1 source)" in alpha
+    assert ("commit", "packages/Alpha/README.md", "packages/Alpha/Suggested.lean", "packages/Alpha/metadata.toml",
+            "packages/Alpha/review.json", "packages/Alpha/sources.toml") in calls
+    # The checkout was reused for the later roadmaps; the README went out as normalised (it was read back).
+    assert steps["Alpha"].readme.startswith("# Alpha\n\nSee [§1.1](#11-the-θ-function).\n\n### 1.1 The θ-function")
+    # Again, with the order already holding them: nothing is written.
+    gh.writes.clear()
+    explorer.place_in_order(ctx, [steps["Alpha"], steps["Gamma"]])
+    assert gh.writes == [] and steps["Alpha"].outcome.endswith("; Alpha already in the merge order")
+
+
+# --- the intake's backfill: open imports the merge order lacks ------------------------------------------
+
+class BackfillGH(GH):
+    """The board's main (the merge order) and the heads of open import pull requests (raw reads)."""
+
+    def __init__(self, files, heads):
+        super().__init__(files=files)
+        self.heads, self.raw = heads, []
+
+    def raw_file(self, repo, path, ref=""):
+        self.raw.append((repo, path, ref))
+        if (ref, path) not in self.heads:
+            raise GHError(f"GET {path}: 404")
+        return self.heads[(ref, path)]
+
+
+def import_pr(number, name, job_id, sha, marker=True):
+    step = explorer.Step(name, "package", new_job(job_id), {f"packages/{name}/README.md": None})
+    return {"number": number, "title": f"Import {name} from the explorer ({job_id})",
+            "body": "Imported." + ("\n\n" + explorer.encode_import([step]) if marker else ""),
+            "head": {"sha": sha, "repo": {"full_name": "maintainer/jobs"}}}
+
+
+def test_the_intake_places_open_imports_the_merge_order_lacks(tmp_path):
+    pulls = [import_pr(70, "Alpha", "RT-Alpha~1a", "a1"), import_pr(71, "Beta", "REV-PKG-Beta", "b1"),
+             import_pr(72, "Delta", "REV-DESIGN-Delta", "d1"),
+             import_pr(73, "Gamma", "REV-PKG-Gamma", "g1", marker=False),
+             import_pr(74, "Zeta", "PKG-Zeta", "z1"),
+             {"number": 75, "title": "Fix the board's workflow", "body": "", "head": {"sha": "f1"}}]
+    heads = {("a1", "packages/Alpha/README.md"): "# Alpha\n\n*Needs:* Zeta §2 and Base §1.\n",
+             ("d1", "packages/Delta/design/README.md"): "# Delta\n",
+             ("z1", "packages/Zeta/design/README.md"): "# Zeta: design\n\n*Needs:* Other §1.\n"}
+    gh = BackfillGH({ORDER: "Base\nBeta\nOther\n"}, heads)
+    ctx = bot(tmp_path, gh=gh)
+    lines = []
+    intake.backfill_import_order(ctx, pulls, yes=False, log=lines.append)
+    assert gh.writes == []
+    assert "#74: Zeta inserted into the merge order (dry run: not written) (an open explorer import)" in lines
+    lines.clear()
+    intake.backfill_import_order(ctx, pulls, yes=True, log=lines.append)
+    assert lines == ["#73: Gamma is not in the merge order, and the import's head has no README to place it by",
+                     "#74: Zeta inserted into the merge order (an open explorer import)",       # Alpha's supplier first
+                     "#70: Alpha inserted into the merge order (an open explorer import)"]
+    assert depgraph.read_order(gh.files[ORDER]) == ["Base", "Beta", "Other", "Zeta", "Alpha"]
+    assert len(gh.writes) == 1
+    # Beta is listed and Delta's design is still under review: neither head was read.
+    assert {p for _r, p, _ref in gh.raw} == {"packages/Alpha/README.md", "packages/Gamma/README.md",
+                                            "packages/Gamma/design/README.md", "packages/Zeta/README.md",
+                                            "packages/Zeta/design/README.md"}
+    # Idempotent: a second run reads the merge order and writes nothing.
+    lines.clear()
+    gh.raw.clear()
+    intake.backfill_import_order(ctx, pulls, yes=True, log=lines.append)
+    assert lines == ["#73: Gamma is not in the merge order, and the import's head has no README to place it by"]
+    assert len(gh.writes) == 1 and {p for _r, p, _ref in gh.raw} == {"packages/Gamma/README.md",
+                                                                     "packages/Gamma/design/README.md"}
+
+
+def test_the_intake_run_backfills_from_its_own_listing(tmp_path):
+    pulls = [import_pr(70, "Alpha", "RT-Alpha~1a", "a1", marker=False)]
+
+    class ListingGH(BackfillGH):
+        def api(self, path, paginate=False):
+            if "/pulls?state=open" in path:
+                return list(pulls)
+            return super().api(path, paginate)
+    gh = ListingGH({ORDER: "Base\n"}, {("a1", "packages/Alpha/README.md"): "*Needs:* Base §1.\n"})
+    lines = []
+    assert intake.intake_open(bot(tmp_path, gh=gh), yes=True, log=lines.append) == []
+    assert lines == ["#70: Alpha inserted into the merge order (an open explorer import)"]
+    assert depgraph.read_order(gh.files[ORDER]) == ["Base", "Alpha"]
+    gh.files[ORDER] = "Base\n"
+    lines.clear()
+    intake.intake_open(bot(tmp_path, gh=gh), yes=True, only=70, log=lines.append)    # one pull request: no backfill
+    assert lines == [] and gh.files[ORDER] == "Base\n"

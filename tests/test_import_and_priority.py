@@ -62,7 +62,8 @@ def test_the_import_goes_on_past_a_failure_and_retries_a_rejected_push(checkout,
             raise gitops.PushError("! [remote rejected] HEAD -> import/explorer-alpha (failed)")
     monkeypatch.setattr(gitops, "push", push)
     steps = explorer.import_explorer(bot(tmp_path), checkout, names=("Alpha", "Eps"), yes=True)
-    assert [s.outcome for s in steps] == ["pull request #61", "created #501"] and sleeps == [30, 30]
+    assert [s.outcome for s in steps] == ["pull request #61; Alpha inserted into the merge order", "created #501"]
+    assert sleeps == [30, 30]
 
     monkeypatch.setattr(gitops, "push", lambda wt, fork, branch: (_ for _ in ()).throw(
         gitops.PushError("! [remote rejected] HEAD -> import/explorer-alpha (failed)")))
