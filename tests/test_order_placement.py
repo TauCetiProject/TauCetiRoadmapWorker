@@ -120,16 +120,38 @@ def test_repair_upward_moves_every_roadmap_it_can_and_says_why_not_for_the_rest(
                "Motives": "*Needs:* RankinSelberg §4.\n",            # consumed by Shimura, which comes first
                "Shimura": "*Needs:* Motives §1.\n"}
     text, notes = depgraph.repair_upward(PS_ORDER, readmes)
-    assert depgraph.read_order(text) == ["SchemeAndStackFoundations", "Motives", "SelmerIwasawaCohomologyPartII",
-                                         "Shimura", "GanGrossPrasadUnitaryGroups", "PeriodsAndSpecialValues",
-                                         "RankinSelberg"]
+    # Motives sits above RankinSelberg, and Shimura (its consumer) above both: Shimura rides along.
+    assert depgraph.read_order(text) == ["SchemeAndStackFoundations", "SelmerIwasawaCohomologyPartII",
+                                         "GanGrossPrasadUnitaryGroups", "PeriodsAndSpecialValues", "RankinSelberg",
+                                         "Motives", "Shimura"]
     assert notes["PeriodsAndSpecialValues"].startswith("PeriodsAndSpecialValues moved in the merge order from #2 to #6")
-    assert notes["Motives"].startswith("Motives not moved in the merge order: Motives consumes RankinSelberg (#7) "
-                                       "and is consumed by Shimura (#4)")
+    assert notes["Motives"] == ("Motives moved in the merge order from #2 to #7, right after its last supplier "
+                                "RankinSelberg; its consumer Shimura moved with it")
     assert set(notes) == {"PeriodsAndSpecialValues", "Motives"}
+    assert depgraph.repair_upward(text, readmes) == (text, {})
     assert depgraph.repair_upward(text, {"PeriodsAndSpecialValues": readmes["PeriodsAndSpecialValues"]}) == (text, {})
     # `only` limits the moves to the named roadmaps.
     assert depgraph.repair_upward(PS_ORDER, readmes, only={"RankinSelberg"}) == (PS_ORDER, {})
+
+
+def test_repair_upward_refuses_a_real_cycle_and_a_rider_it_did_not_read():
+    readmes = {"PeriodsAndSpecialValues": "*Needs:* SelmerIwasawaCohomologyPartII §2; GanGrossPrasadUnitaryGroups §3.\n",
+               "RankinSelberg": "*Needs:* PeriodsAndSpecialValues §1; Shimura §2.\n",
+               "Motives": "*Needs:* RankinSelberg §4.\n",
+               "Shimura": "*Needs:* Motives §1.\n"}          # Motives -> RankinSelberg -> Shimura -> Motives
+    text, notes = depgraph.repair_upward(PS_ORDER, readmes)
+    assert depgraph.read_order(text) == ["SchemeAndStackFoundations", "Motives", "SelmerIwasawaCohomologyPartII",
+                                         "Shimura", "GanGrossPrasadUnitaryGroups", "PeriodsAndSpecialValues",
+                                         "RankinSelberg"]
+    assert notes["Motives"] == ("Motives not moved in the merge order: Motives consumes RankinSelberg (#7) and is "
+                                "consumed by Shimura (#4), which comes first; Motives lies on a dependency cycle with "
+                                "Shimura, RankinSelberg, so no move repairs the order: a cycle through Motives")
+    # A consumer whose README was not read cannot ride along: the move is refused and says so.
+    with pytest.raises(depgraph.OrderCycle, match="consumed by Shimura \\(#5\\), which comes first and whose README "
+                       "was not read"):
+        depgraph.move_after_suppliers(PS_ORDER, "PeriodsAndSpecialValues", {"GanGrossPrasadUnitaryGroups"},
+                                      {"Shimura"}, consumer_closure={"PeriodsAndSpecialValues": {"Shimura"}},
+                                      supplier_closure={}, movable={"PeriodsAndSpecialValues"})
 
 
 def test_the_port_lane_moves_a_listed_roadmap_after_its_last_supplier(ctx):  # noqa: F811

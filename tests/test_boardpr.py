@@ -359,12 +359,20 @@ def test_a_package_listed_above_its_supplier_moves_after_it_when_its_port_is_cre
     assert out[0].endswith("Foo already in the merge order; Foo moved in the merge order from #2 to #3, right after "
                            "its last supplier Beta")
     assert gh.files[ORDER] == "# Merge order\nAlpha\nBeta\nFoo  # imported\nGamma\n" and len(read) == 1
-    # A move that would put a consumer (Gamma reads Foo) before it is not made, and the line says why.
+    # A consumer that comes first (Beta reads Foo) rides along, so Foo still lands after its supplier.
     ctx, _board, gh = last_red_team_fix({ORDER: order, "packages/Foo/README.md": "# Foo\n\n*Needs:* Gamma §2.\n"})
     monkeypatch.setattr(intake, "board_readmes", lambda ctx, pulls: {"Beta": "*Needs:* Foo §1.\n"})
     out = boardpr.scan(ctx, yes=True)
+    assert out[0].endswith("Foo already in the merge order; Foo moved in the merge order from #2 to #4, right after "
+                           "its last supplier Gamma; its consumer Beta moved with it")
+    assert gh.files[ORDER] == "# Merge order\nAlpha\nGamma\nFoo  # imported\nBeta\n"
+    # A real cycle (Gamma reads Foo too) is not moved, and the line says why.
+    ctx, _board, gh = last_red_team_fix({ORDER: order, "packages/Foo/README.md": "# Foo\n\n*Needs:* Gamma §2.\n"})
+    monkeypatch.setattr(intake, "board_readmes", lambda ctx, pulls: {"Beta": "*Needs:* Foo §1.\n",
+                                                                     "Gamma": "*Needs:* Beta §1.\n"})
+    out = boardpr.scan(ctx, yes=True)
     assert "Foo already in the merge order; Foo not moved in the merge order: Foo consumes Gamma (#4) and is " \
-           "consumed by Beta (#3), which comes first" in out[0]
+           "consumed by Beta (#3), which comes first; Foo lies on a dependency cycle with Beta, Gamma" in out[0]
     assert gh.files[ORDER] == order
 
 

@@ -399,13 +399,40 @@ def insert_into_order(text: str, name: str, suppliers: set[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def closure(adj: dict[str, set[str]]) -> dict[str, set[str]]:
+    """Transitive closure of `adj` (name -> names reachable through it, the name itself excluded
+    unless it lies on a cycle)."""
+    out: dict[str, set[str]] = {}
+    for n, direct in adj.items():
+        seen: set[str] = set()
+        stack = list(direct)
+        while stack:
+            x = stack.pop()
+            if x in seen:
+                continue
+            seen.add(x)
+            stack.extend(adj.get(x, ()))
+        out[n] = seen
+    return out
+
+
 def move_after_suppliers(text: str, name: str, suppliers: set[str],
-                         consumers: set[str] = frozenset()) -> tuple[str, str]:
+                         consumers: set[str] = frozenset(), *,
+                         consumer_closure: dict[str, set[str]] | None = None,
+                         supplier_closure: dict[str, set[str]] | None = None,
+                         movable: set[str] | frozenset = frozenset()) -> tuple[str, str]:
     """The repair of an UPWARD edge of `name`: the merge-order file with `name`, listed above one of
     its listed `suppliers`, moved to right after the last of them (its line and comment kept, a
     duplicate line of it dropped), and a note saying so. Unchanged with no note when `name` is not
-    listed or no listed supplier comes after it. Raises OrderCycle when a listed consumer of `name`
-    comes no later than that last supplier: the move would put a supplier after a consumer."""
+    listed or no listed supplier comes after it.
+
+    A listed consumer of `name` that comes no later than that last supplier would end up before its
+    supplier. Without the closures the move is refused (OrderCycle). With them (`consumer_closure`:
+    name -> its transitive consumers, `supplier_closure`: name -> its transitive suppliers, `movable`:
+    the roadmaps whose README the caller read, the only ones it may move) every such consumer of
+    `name`, direct or transitive, rides along: the block keeps its relative order and lands right after
+    the last supplier. The move is still refused when a block member is a transitive supplier of that
+    last supplier (a real cycle) or when a rider is not movable (a roadmap whose README was not read)."""
     order = read_order(text)
     if name not in order:
         return text, ""
@@ -415,21 +442,45 @@ def move_after_suppliers(text: str, name: str, suppliers: set[str],
         return text, ""
     last = max(below, key=pos.get)
     early = [c for c in consumers if c in pos and c != name and pos[c] <= pos[last]]
+    block = [name]
     if early:
         c = min(early, key=pos.get)
-        raise OrderCycle(f"{name} consumes {last} (#{pos[last] + 1}) and is consumed by {c} (#{pos[c] + 1}), which "
-                         f"comes first: moving {name} after {last} would put a supplier after a consumer, a cycle "
-                         f"through {name}")
+        if consumer_closure is None or supplier_closure is None:
+            raise OrderCycle(f"{name} consumes {last} (#{pos[last] + 1}) and is consumed by {c} (#{pos[c] + 1}), "
+                             f"which comes first: moving {name} after {last} would put a supplier after a consumer, "
+                             f"a cycle through {name}")
+        loop = sorted((supplier_closure.get(name, set()) & consumer_closure.get(name, set())) - {name}, key=pos.get)
+        if loop:
+            raise OrderCycle(f"{name} consumes {last} (#{pos[last] + 1}) and is consumed by {c} (#{pos[c] + 1}), which "
+                             f"comes first; {name} lies on a dependency cycle with {', '.join(loop)}, so no move "
+                             f"repairs the order: a cycle through {name}")
+        riders = sorted({r for r in consumer_closure.get(name, set()) if r in pos and r != name and pos[r] <= pos[last]},
+                        key=pos.get)
+        on_cycle = [r for r in [name] + riders if r in supplier_closure.get(last, set())]
+        if on_cycle:
+            raise OrderCycle(f"{name} consumes {last} (#{pos[last] + 1}), which consumes {on_cycle[0]} "
+                             f"(#{pos[on_cycle[0]] + 1}), which consumes {name}: a cycle through {name}")
+        stuck = [r for r in riders if r not in movable]
+        if stuck:
+            raise OrderCycle(f"{name} consumes {last} (#{pos[last] + 1}) and is consumed by {stuck[0]} "
+                             f"(#{pos[stuck[0]] + 1}), which comes first and whose README was not read, so it "
+                             f"cannot be moved along: a cycle through {name} unless {stuck[0]} moves too")
+        block = [name] + riders
     lines = text.splitlines()
     names = [line.split("#", 1)[0].strip() for line in lines]
-    mine = [i for i, n in enumerate(names) if n == name]
-    line = lines[mine[0]]
-    kept = [(ln, n) for i, (ln, n) in enumerate(zip(lines, names, strict=True)) if i not in mine]
+    first_line = {}
+    for i, n in enumerate(names):
+        if n in block and n not in first_line:
+            first_line[n] = lines[i]
+    kept = [(ln, n) for ln, n in zip(lines, names, strict=True) if n not in block]
     at = next(i for i, (_ln, n) in enumerate(kept) if n == last)
-    kept.insert(at + 1, (line, name))
+    for k, n in enumerate(block):
+        kept.insert(at + 1 + k, (first_line[n], n))
     others = sorted(set(below) - {last}, key=pos.get)
+    riders = block[1:]
     note = (f"{name} moved in the merge order from #{pos[name] + 1} to #{pos[last] + 1}, right after its last supplier "
-            f"{last}" + (f" ({', '.join(others)} also came after it)" if others else ""))
+            f"{last}" + (f" ({', '.join(others)} also came after it)" if others else "")
+            + (f"; its consumer{'s' if len(riders) > 1 else ''} {', '.join(riders)} moved with it" if riders else ""))
     return "\n".join(ln for ln, _n in kept) + "\n", note
 
 
@@ -446,12 +497,17 @@ def repair_upward(text: str, readmes: dict[str, str], main_extended: set[str] | 
     for c, sups in edges.items():
         for s in sups:
             consumers[s].add(c)
+    consumer_closure = closure(dict(consumers))
+    supplier_closure = closure({c: set(sups) for c, sups in edges.items()})
+    movable = set(edges)
     notes: dict[str, str] = {}
     for _ in range(len(order) + 1):
         moved = False
         for name in [n for n in read_order(text) if n in edges and (only is None or n in only)]:
             try:
-                new, note = move_after_suppliers(text, name, set(edges[name]), consumers[name])
+                new, note = move_after_suppliers(text, name, set(edges[name]), consumers[name],
+                                                 consumer_closure=consumer_closure,
+                                                 supplier_closure=supplier_closure, movable=movable)
             except OrderCycle as exc:
                 notes[name] = f"{name} not moved in the merge order: {exc}"
                 continue

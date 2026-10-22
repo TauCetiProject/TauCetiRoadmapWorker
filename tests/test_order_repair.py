@@ -65,15 +65,28 @@ def test_the_intake_moves_a_roadmap_listed_above_its_suppliers_once(tmp_path, mo
     assert intake.replace_upward_roadmaps(ctx, yes=True) == [] and len(gh.writes) == 1
 
 
-def test_a_move_that_would_put_a_consumer_first_is_logged_and_not_made(tmp_path, monkeypatch):
+def test_a_consumer_that_comes_first_moves_along(tmp_path, monkeypatch):
     gh = OrderGH(LIVE)
     monkeypatch.setattr(intake, "board_readmes", lambda ctx, pulls: {
         "PeriodsAndSpecialValues": PS, "ShimuraData": "*Needs:* PeriodsAndSpecialValues PS.1.\n"})
     lines = intake.replace_upward_roadmaps(bot(tmp_path, gh), yes=True)
-    assert lines == [("merge order: PeriodsAndSpecialValues not moved in the merge order: PeriodsAndSpecialValues "
-                      "consumes GanGrossPrasadUnitaryGroups (#6) and is consumed by ShimuraData (#5), which comes "
-                      "first: moving PeriodsAndSpecialValues after GanGrossPrasadUnitaryGroups would put a supplier "
-                      "after a consumer, a cycle through PeriodsAndSpecialValues")]
+    assert lines == [("merge order: PeriodsAndSpecialValues moved in the merge order from #2 to #6, right after its "
+                      "last supplier GanGrossPrasadUnitaryGroups (MotivesAndAlgebraicCycles, "
+                      "SelmerIwasawaCohomologyPartII also came after it); its consumer ShimuraData moved with it")]
+    assert depgraph.read_order(gh.files[ORDER])[-3:] == ["GanGrossPrasadUnitaryGroups", "PeriodsAndSpecialValues",
+                                                        "ShimuraData"]
+    assert len(gh.writes) == 1
+
+
+def test_a_real_cycle_is_logged_and_not_moved(tmp_path, monkeypatch):
+    gh = OrderGH(LIVE)
+    monkeypatch.setattr(intake, "board_readmes", lambda ctx, pulls: {
+        "PeriodsAndSpecialValues": PS, "ShimuraData": "*Needs:* PeriodsAndSpecialValues PS.1.\n",
+        "MotivesAndAlgebraicCycles": "*Needs:* ShimuraData SD.2.\n"})   # PSV -> MC -> SD -> PSV
+    lines = intake.replace_upward_roadmaps(bot(tmp_path, gh), yes=True)
+    assert sorted(ln.split(":")[1].strip() for ln in lines) == [
+        "MotivesAndAlgebraicCycles not moved in the merge order", "PeriodsAndSpecialValues not moved in the merge order"]
+    assert all("lies on a dependency cycle with" in ln for ln in lines)
     assert gh.writes == []
 
 
