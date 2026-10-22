@@ -1,6 +1,9 @@
 """A job asks for references once per run, never again for a settled citation, and at most three
 times (regression: RT-ArithmeticDynamics~1a parked three times on board #27, the third time for a
-key the maintainer had waived after the second)."""
+key the maintainer had waived after the second). A source is known by its identity, not its key
+(regression: RT-SieveMethodsAndPrimePatterns~1a parked three times on jobs #284, each time
+re-requesting a waived text under a new key: HR-SIEVE then HR-1974, KM-16RANK-published then
+KM-KERNEL-PUBLISHED)."""
 
 import dataclasses
 
@@ -51,7 +54,7 @@ def test_a_waived_key_is_never_requested_again(ctx):  # noqa: F811
     (ws.scratch / "needs-references.toml").write_text(renamed)
     assert [m.key for m in lane.missing_references(job, run_ctx, ws)] == ["ms95"]
     manifest(ws, run_ctx, {**WAIVED, "status": "uncertified", "doi": "10.1007/978-1-4612-5961-9"},
-             {"id": "ms95", "title": "Periodic points", "status": "waived", "authors": "M", "year": 1995,
+             {"id": "ms95", "title": "Periodic points", "status": "waived", "authors": "P. Morton", "year": 1995,
               "licence_class": "none", "locator_scheme": "page"})
     assert lane.missing_references(job, run_ctx, ws) == []                  # nothing left: no park at all
 
@@ -102,3 +105,68 @@ def test_a_run_whose_request_was_all_settled_goes_on(ctx, monkeypatch):  # noqa:
     result = lane.run(job, run_ctx)
     assert result.status != "needs-references" and board.posted == []
     assert "dropped from the request, settled in the manifest: forster-riemann-surfaces (waived)" in result.detail
+
+
+# --- identity, not key (jobs #284) -------------------------------------------------------------------
+
+HR = {"id": "HR-SIEVE", "authors": "H. Halberstam and H.-E. Richert", "title": "Sieve Methods", "year": 1974,
+      "status": "waived", "licence_class": "none", "resolution": "https://github.com/o/jobs/issues/284#issuecomment-1"}
+KM = {"id": "KM-16RANK-published", "authors": "Peter Koymans, Djordjo Milovic", "year": 2018, "status": "waived",
+      "title": "On the 16-Rank of Class Groups of ℚ(√-2p) for Primes p ≡ 1 mod 4", "doi": "10.1093/imrn/rny010",
+      "licence_class": "none", "resolution": "https://github.com/o/jobs/issues/284#issuecomment-1"}
+RENAMED = ('[[missing]]\nid = "HR-1974"\nauthors = "H. Halberstam, H.-E. Richert"\n'
+           'title = "H. Halberstam and H.-E. Richert, Sieve methods, Academic Press, 1974"\nyear = 1974\n'
+           'needed_for = "README §1.1"\ntried = ["title search"]\n\n'
+           '[[missing]]\nid = "KM-KERNEL-PUBLISHED"\nauthors = "Peter Koymans and Djordjo Milovic"\n'
+           'title = "On the 16-rank of class groups of Q(sqrt(-2p)) for primes p congruent to 1 modulo 4"\n'
+           'year = 2019\nneeded_for = "README §5.6"\ntried = ["OUP: 403"]\n\n'
+           '[[missing]]\nid = "KM-DOI"\nauthors = "P. Koymans"\ntitle = "Joint spin paper"\nyear = 2019\n'
+           'doi = "https://doi.org/10.1093/IMRN/RNY010"\nneeded_for = "README §5.6"\ntried = ["OUP: 403"]\n\n'
+           '[[missing]]\nid = "IW-SIEVE"\nauthors = "H. Iwaniec"\ntitle = "Sieve methods"\nyear = 1974\n'
+           'needed_for = "README §1.1"\ntried = ["none"]\n')
+
+
+def test_same_source_by_doi_arxiv_title_and_bibliographic_line():
+    same = references.same_source
+    assert same(references.MissingReference("X", "Other words", "2018", "x", doi="doi:10.1093/IMRN/rny010"), KM)
+    assert same(references.MissingReference("X", "Other", "2018", "x", url="https://arxiv.org/abs/1705.05505v2"),
+                {"id": "KM-2018", "arxiv": "1705.05505v1"})
+    assert same(references.MissingReference("Halberstam, H. and Richert, H.-E.", "Sieve methods.", "1974", "x"), HR)
+    assert same(references.MissingReference("Koymans, P.", "On the 16-rank of class groups of Q(sqrt(-2p)) for primes "
+                                            "p congruent to 1 modulo 4", "2019", "x"), KM)
+    assert not same(references.MissingReference("H. Iwaniec", "Sieve methods", "1974", "x"), HR)   # another author
+    assert not same(references.MissingReference("P. Koymans", "On the 8-rank of class groups", "2019", "x"), KM)
+    assert references.normalise_title("Groupes de Brauer et ℚ(√−2p) — ﬁnis") == "groupes de brauer et q sqrt 2p finis"
+
+
+def test_a_settled_work_is_dropped_under_any_key_and_a_new_work_is_requested(ctx):  # noqa: F811
+    run_ctx, job, lane, ws = setup(ctx)
+    manifest(ws, run_ctx, HR, KM)
+    (ws.scratch / "needs-references.toml").write_text(RENAMED)
+    missing = lane.missing_references(job, run_ctx, ws)
+    assert [m.key for m in missing] == ["IW-SIEVE"]                                    # genuinely new: requested
+    assert ws.extra["notes"] == ["dropped from the request, settled in the manifest as HR-SIEVE: HR-1974 (waived); "
+                                 "as KM-16RANK-published: KM-KERNEL-PUBLISHED (waived); "
+                                 "as KM-16RANK-published: KM-DOI (waived)"]
+    assert "as HR-SIEVE: HR-1974 (waived)" in (ws.job_dir / "requests.log").read_text()
+
+
+def test_an_answered_text_is_asked_for_at_most_once_more(ctx):  # noqa: F811
+    board = FakeBoard()
+    run_ctx, job, lane, ws = setup(ctx, board)
+    answered = {**HR, "id": "HR-SIEVE", "status": "certified", "licence_class": "answered-by:alice", "sha256": "a" * 64,
+                "fetched_from": "https://example.org/hr.pdf"}
+    manifest(ws, run_ctx, answered)
+    again = ('[[missing]]\nid = "HR-1974"\nauthors = "H. Halberstam and H.-E. Richert"\ntitle = "Sieve methods"\n'
+             'year = 1974\nneeded_for = "README §1.1"\ntried = ["unreadable here"]\n')
+    item = references.MissingReference("H. Halberstam and H.-E. Richert", "Sieve Methods", "1974", "x", key="HR-SIEVE")
+    lane.park(job, run_ctx, [item])                                       # the first request, answered by a human
+    (ws.scratch / "needs-references.toml").write_text(again)
+    assert [m.key for m in lane.missing_references(job, run_ctx, ws)] == ["HR-1974"]      # once more: requested
+    lane_for(job).park(job, run_ctx, [references.MissingReference("H. Halberstam", "Sieve methods", "1974", "x",
+                                                                   key="HR-1974")])
+    (ws.scratch / "needs-references.toml").write_text(again.replace("HR-1974", "HALBERSTAM-RICHERT"))
+    assert lane.missing_references(job, run_ctx, ws) == []                               # a third time: not posted
+    assert ws.extra["notes"] == ["not requested again, answered in the manifest as HR-SIEVE: HALBERSTAM-RICHERT "
+                                 "(certified); settled with the earlier answer"]
+    assert len(board.posted) == 2

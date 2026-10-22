@@ -215,7 +215,12 @@ the worker adds it. A citation the manifest settled (`waived`, or `uncertified` 
 accepts uncertified citations) is never requested again, by the same job or any later lane of the
 roadmap, until a human answers it with `source:` or `local:`: the worker drops it from the request
 with a line in the round log (and the job folder's `requests.log`), and a request left with nothing
-does not park the job. A job that has posted three requests is set to `state:blocked`, with a
+does not park the job. A source is known by its identity, not its key: a request that names a
+settled work under a new key (the same DOI or arXiv id, the same normalised title and first author,
+or the same author and year with a title the other contains or starts with) is dropped as `settled
+in the manifest as <old key>: <new key>`, a text a human already answered is asked for at most once
+more before the next request is settled with the earlier answer, and the intake applies the earlier
+answer to a renamed key it still receives. A job that has posted three requests is set to `state:blocked`, with a
 comment for a human, instead of posting a fourth.
 
 **Human side.** A human answers in a comment on the job, one line per key:

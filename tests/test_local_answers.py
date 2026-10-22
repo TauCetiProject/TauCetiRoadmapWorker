@@ -50,7 +50,7 @@ def test_a_local_answer_is_settled():
                                        ["author page: image-only"], key="WM")
     entry = {"id": "WM", "status": "certified", "licence_class": "operator-local", "local_name": "wm.txt"}
     kept, dropped = references.drop_settled([item], [{"source": [entry]}], True)
-    assert kept == [] and dropped == [("WM", "local")]
+    assert kept == [] and dropped == [("WM", "local", "WM")]
 
 
 def test_answers_on_the_boards_main_reach_a_job_on_a_pull_request(ctx, monkeypatch, tmp_path):  # noqa: F811

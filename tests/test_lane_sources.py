@@ -46,7 +46,10 @@ def test_prepare_sources_fetches_and_requests_what_is_gone(ctx):  # noqa: F811
     lane.prepare_sources(job, run_ctx, ws)
     listing = ws.extra["source_texts"]
     assert f"`AB21` (A. Author, An example paper, 2021): `{run_ctx.state / 'sources' / (SHA + '.txt')}`" in listing
-    assert "`Gon99` (G. One, A vanished preprint, 1999): unavailable: " in listing and "Pay20" not in listing
+    assert "`Gon99` (G. One, A vanished preprint, 1999): unavailable: " in listing
+    # A settled citation is no text, but the agent is told its key, so it never gives the work another one.
+    assert ("`Pay20` (P. Wall, Paywalled, 2020): settled as uncertified: cite it by its locator under this key; "
+            "never request it again") in listing
     assert (ws.scratch / "needs-references.previous.toml").read_text().startswith("[[missing]]\ntitle = 'old'")
     [missing] = references.read_missing(ws.scratch / "needs-references.toml")
     assert missing.key == "Gon99" and missing.sha256 == GONE and missing.needed_for == "Layer 2"

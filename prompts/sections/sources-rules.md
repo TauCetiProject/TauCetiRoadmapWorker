@@ -45,6 +45,13 @@
 - A citation the manifest records as `waived`, or as `uncertified` (paywalled, cited by its locator
   alone), is settled: cite it by its locator and never list it in `needs-references.toml` (the
   worker drops it). Only a human's new answer reopens it.
+- Every source has exactly one manifest key for its lifetime. Before you add a key or list a text
+  in `needs-references.toml`, look for the work in `sources.toml` (by DOI, arXiv id, title and
+  first author) and reuse its key, whatever the key's name; never give a work a second key. A
+  published and a preprint version of the same paper are one entry with both locators (`doi` and
+  `arxiv`, and a `version_note` on the numbering), not two keys. A request that renames a work the
+  manifest already settled is dropped by the worker, and a text a human already answered is asked
+  for at most once more; so a renamed key never brings a text, it only delays the job.
 - Sources stay on the operator's machine: never copy a source file or its extracted text into the
   repository you work in (not into the package folder, not into a report), and never paste a
   passage. Quote locators (`<source id> line N`, a theorem or page number); a fenced block of more

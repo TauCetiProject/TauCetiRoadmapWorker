@@ -509,3 +509,24 @@ def test_the_intake_takes_an_answerers_source_and_ignores_a_drive_by(tmp_path):
     [entry] = tomllib.loads(gh.files["packages/Foo/sources.toml"])["source"]
     assert entry["licence_class"] == "answered-by:maintainer" and entry["fetched_from"] == url
     assert "drive-by" not in board.posted[-1][1]          # an untrusted comment is not read at all
+
+
+def test_the_intake_applies_an_earlier_answer_to_a_renamed_key(tmp_path):
+    settled = sources.dump_manifest({"schema": "tauceti-roadmap-sources/v1", "roadmap": "Foo", "source": [
+        {"id": "HR-SIEVE", "authors": "H. Halberstam and H.-E. Richert", "title": "Sieve Methods", "year": 1974,
+         "status": "waived", "licence_class": "none", "resolution": "https://c/1", "cited_for": ["1.1"]}]})
+    renamed = parse_missing({"missing": [
+        {"id": "HR-1974", "authors": "H. Halberstam, H.-E. Richert", "year": 1974, "needed_for": "1.1",
+         "title": "H. Halberstam and H.-E. Richert, Sieve methods, Academic Press, 1974", "locator_scheme": "theorem",
+         "locator": "Lemmas 5.3-5.4"}]})
+    gh = FakeGH({"packages/Foo/sources.toml": settled})
+    board = FakeBoard({7: [comment(1, request_comment("DESIGN-Foo", "Foo", renamed), "CONTRIBUTOR", "operator")]})
+    line = resume_job(bot_context(gh=gh, board=board), parked_job(), make_fetcher(tmp_path, FakeTransport()), yes=True)
+    assert line == "DESIGN-Foo: references resolved; available again"      # no human answer was needed
+    data = tomllib.loads(gh.files["packages/Foo/sources.toml"])
+    copied = sources.find_source(data, id="HR-1974")
+    assert copied["status"] == "waived" and copied["resolution"] == "https://c/1" and copied["locator"] == "Lemmas 5.3-5.4"
+    assert "cited_for" not in copied and sources.find_source(data, id="HR-SIEVE")["cited_for"] == ["1.1"]
+    assert ("- `HR-1974`: the same work as `HR-SIEVE`, settled earlier (waived): the earlier answer applies; "
+            "one key per source: cite it as `HR-SIEVE`") in board.posted[-1][1]
+    assert board.states == [("DESIGN-Foo", "available")]

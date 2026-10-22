@@ -513,6 +513,12 @@ class Lane:
                 lines.append(f"- `{a.id}` ({a.label}): `{a.text}`")
             else:
                 lines.append(f"- `{a.id}` ({a.label}): unavailable: {a.problem}")
+        for s in manifest.get("source", []):
+            status = references.settled_status(s, ctx.cfg.sources.uncertified_ok) if isinstance(s, dict) else ""
+            if status and status != "local":
+                label = f"{s.get('authors', '')}, {s.get('title', '')}, {s.get('year', '')}".strip(", ")
+                lines.append(f"- `{s.get('id', '?')}` ({label}): settled as {status}: cite it by its locator under "
+                             "this key; never request it again")
         ws.extra["source_texts"] = "\n" + "\n".join(lines) if lines else "none recorded yet"
         for a in available:
             if a.text or not a.permanent:
@@ -607,18 +613,35 @@ class Lane:
         request, completed by every manifest text the worker found unreadable here, so one request
         lists them all."""
         items = references.read_missing(ws.scratch / "needs-references.toml")
-        kept, dropped = references.drop_settled(items, self.manifests(job, ctx, ws), ctx.cfg.sources.uncertified_ok)
+        manifests = self.manifests(job, ctx, ws)
+        kept, dropped = references.drop_settled(items, manifests, ctx.cfg.sources.uncertified_ok)
         if dropped:
-            self.note(ws, "dropped from the request, settled in the manifest: "
-                      + ", ".join(f"{k} ({status})" for k, status in dropped))
+            self.note(ws, "dropped from the request, settled in the manifest" + references.settle_line(dropped))
         if kept:
             have = {m.key.lower() for m in kept}
             extra = [m for m in ws.extra.get("auto_missing", []) if m.key.lower() not in have]
-            extra, _ = references.drop_settled(extra, self.manifests(job, ctx, ws), ctx.cfg.sources.uncertified_ok)
+            extra, _ = references.drop_settled(extra, manifests, ctx.cfg.sources.uncertified_ok)
             if extra:
                 self.note(ws, "added to the request, unreadable here: " + ", ".join(m.key for m in extra))
                 kept += extra
+        if kept:
+            # A text a human already answered is asked for again at most once more: the next request
+            # for it (under whatever key) is settled with the earlier answer instead of being posted.
+            kept, capped = references.drop_capped(kept, manifests, self.earlier_requests(job, ctx))
+            if capped:
+                self.note(ws, "not requested again, answered in the manifest" + references.settle_line(capped)
+                          + "; settled with the earlier answer")
         return kept
+
+    def earlier_requests(self, job: Job, ctx: Context) -> list[list[references.MissingReference]]:
+        """The items of the needs-references requests this job posted on its issue (none when the
+        issue cannot be read)."""
+        try:
+            return references.earlier_requests(ctx.board.comments(job.number), job.id,
+                                               ctx.cfg.sources.request_associations,
+                                               ctx.cfg.board.bot_logins + [ctx.operator])
+        except (GHError, AttributeError):
+            return []
 
     def note(self, ws: Workspace, line: str) -> None:
         """A line for the round's log (printed, kept in the job folder's requests.log and in the result)."""

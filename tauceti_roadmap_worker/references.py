@@ -49,6 +49,7 @@ import datetime as dt
 import json
 import re
 import tomllib
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -149,42 +150,196 @@ def settled_status(entry: dict, uncertified_ok: bool) -> str:
     return "local" if status == "local" or entry.get("licence_class") == "operator-local" else ""
 
 
-def _same_work(item: MissingReference, entry: dict) -> bool:
-    def norm(t) -> str:
-        return re.sub(r"[^a-z0-9]+", " ", str(t or "").lower()).strip()
-    if item.key and item.key.lower() == str(entry.get("id", "")).lower():
+# --- the identity of a source ----------------------------------------------------------------------
+#
+# A source's identity is not its manifest key: an agent that renames a settled work (`HR-SIEVE`,
+# then `HR-1974`; `KM-16RANK-published`, then `KM-KERNEL-PUBLISHED`) must not cost a further human
+# answer. Two citations name the same work when they share a DOI, an arXiv id, a normalised title
+# together with the first author's surname, or (the first author, the year within one, and a title
+# the other contains or starts with) - a bibliographic line as a title, a preprint and its published
+# version.
+
+_MATH_FOLD = str.maketrans({"√": " sqrt ", "≡": " congruent ", "∞": " infinity ", "∑": " sum ", "∏": " prod ",
+                            "π": " pi ", "ζ": " zeta ", "ℓ": " l ", "′": "", "ʹ": ""})
+_PREFIX_WORDS = 6      # a shared leading run of this many title words, with author and year, is the same work
+
+
+def normalise_title(title) -> str:
+    """Lowercase ASCII words: diacritics and punctuation stripped, Unicode math folded (ℚ -> q,
+    √ -> sqrt, ≡ -> congruent), so that 'ℚ(√-2p)' and 'Q(sqrt(-2p))' read the same."""
+    text = unicodedata.normalize("NFKD", str(title or "").translate(_MATH_FOLD))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def normalise_doi(doi) -> str:
+    text = str(doi or "").strip().lower()
+    text = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", text)
+    return text.rstrip("/.") if text.startswith("10.") else ""
+
+
+def arxiv_of(*values) -> str:
+    """The arXiv id (without its version) in the first of `values` that carries one."""
+    for raw in values:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        m = fetcher.ARXIV_URL.match(text) or fetcher.ARXIV_DOI.match(text)
+        found = m.group(1) if m else text.removeprefix("arXiv:").removeprefix("arxiv:").strip()
+        if fetcher.ARXIV_ID.match(found):
+            return re.sub(r"v\d+$", "", found).lower()
+    return ""
+
+
+def first_surname(authors) -> str:
+    names = sources._surnames(str(authors or ""))
+    return normalise_title(names[0]).replace(" ", "") if names else ""
+
+
+def _year(value) -> int | None:
+    found = re.findall(r"\d{4}", str(value or ""))
+    return int(found[-1]) if found else None
+
+
+def _fields(x) -> dict:
+    """The identifying fields of a request item or a manifest entry."""
+    if isinstance(x, MissingReference):
+        return {"id": x.key, "doi": x.doi, "arxiv": arxiv_of(x.url, x.doi), "title": x.title, "authors": x.authors,
+                "year": x.year}
+    return {"id": str(x.get("id", "")), "doi": str(x.get("doi", "")),
+            "arxiv": arxiv_of(x.get("arxiv"), x.get("url"), x.get("doi")), "title": str(x.get("title", "")),
+            "authors": str(x.get("authors", "")), "year": x.get("year", "")}
+
+
+def _title_overlap(a: str, b: str) -> bool:
+    """`a` and `b` normalised: one contains the other (two words or more) as a run of words, or they
+    share their first `_PREFIX_WORDS` words."""
+    wa, wb = a.split(), b.split()
+    if not wa or not wb:
+        return False
+    short, long_ = (wa, wb) if len(wa) <= len(wb) else (wb, wa)
+    if len(short) >= 2 and any(long_[i:i + len(short)] == short for i in range(len(long_) - len(short) + 1)):
         return True
-    if item.doi and item.doi.lower() == str(entry.get("doi", "")).lower():
+    return len(short) >= _PREFIX_WORDS and wa[:_PREFIX_WORDS] == wb[:_PREFIX_WORDS]
+
+
+def same_source(a, b) -> bool:
+    """Whether a request item and a manifest entry (or two of either) cite the same work: by key,
+    by DOI, by arXiv id, by normalised title with the first author's surname, or by the first
+    author, the year (within one: a preprint and its published version) and a title the other
+    contains or starts with."""
+    x, y = _fields(a), _fields(b)
+    if x["id"] and x["id"].lower() == y["id"].lower():
         return True
-    return bool(norm(item.title)) and norm(item.title) == norm(entry.get("title"))
+    if normalise_doi(x["doi"]) and normalise_doi(x["doi"]) == normalise_doi(y["doi"]):
+        return True
+    if x["arxiv"] and x["arxiv"] == y["arxiv"]:
+        return True
+    ta, tb = normalise_title(x["title"]), normalise_title(y["title"])
+    sa, sb = first_surname(x["authors"]), first_surname(y["authors"])
+    same_author = sa == sb if sa and sb else True
+    if ta and ta == tb and same_author:
+        return True
+    ya, yb = _year(x["year"]), _year(y["year"])
+    if sa and sb and sa == sb and ya is not None and yb is not None and abs(ya - yb) <= 1:
+        return _title_overlap(ta, tb)
+    return False
 
 
 def drop_settled(items: list[MissingReference], manifests: list[dict], uncertified_ok: bool
-                 ) -> tuple[list[MissingReference], list[tuple[str, str]]]:
-    """The request items to keep, and (key, status) of those a manifest already settled (waived, or
-    uncertified when the project accepts it): a settled citation is never requested again."""
+                 ) -> tuple[list[MissingReference], list[tuple[str, str, str]]]:
+    """The request items to keep, and (key, status, manifest key) of those a manifest already settled
+    (waived, local, or uncertified when the project accepts it): a settled citation is never requested
+    again, under its key or any other (`same_source`)."""
     entries = [e for m in manifests for e in m.get("source", []) if isinstance(e, dict)]
     kept, dropped = [], []
     for item in items:
-        hit = next((st for e in entries if _same_work(item, e) and (st := settled_status(e, uncertified_ok))), "")
+        hit = next(((st, str(e.get("id", ""))) for e in entries
+                    if same_source(item, e) and (st := settled_status(e, uncertified_ok))), None)
         if hit:
-            dropped.append((item.key, hit))
+            dropped.append((item.key, hit[0], hit[1]))
         else:
             kept.append(item)
     return kept, dropped
 
 
-def request_count(comments: list[dict], job_id: str, trusted: list[str], bot_logins: list[str]) -> int:
-    """How many needs-references requests this job has posted on its issue (by the board's bots, an
-    operator or an allowed author association). A request the intake raised again after a failed
-    answer is the same request, not a further one."""
-    n = 0
+REREQUESTS = 1    # a text a human answered may be asked for again this many times; the next is auto-settled
+
+
+def answered_entry(item: MissingReference, manifests: list[dict]) -> dict | None:
+    """The manifest entry a human answered (it carries a `resolution`) for the work `item` cites."""
+    for m in manifests:
+        for e in m.get("source", []):
+            if isinstance(e, dict) and e.get("resolution") and same_source(item, e):
+                return e
+    return None
+
+
+def settled_entry(item: MissingReference, manifest: dict, uncertified_ok: bool) -> dict | None:
+    """A settled manifest entry (waived, local, or uncertified when accepted) for the work `item`
+    cites, under its key or another, or None."""
+    for e in manifest.get("source", []):
+        if isinstance(e, dict) and same_source(item, e) and settled_status(e, uncertified_ok):
+            return e
+    return None
+
+
+def apply_settled(item: MissingReference, entry: dict) -> Resolution:
+    """The earlier answer for `entry` applied to the requested key as well, so the citation under
+    the new key keeps working while the roadmap converges on one key per source."""
+    old = str(entry.get("id", ""))
+    copied = {k: v for k, v in entry.items() if k != "cited_for"}
+    copied["id"] = item.key
+    for k in ("locator_scheme", "locator"):
+        if getattr(item, k) and not copied.get(k):
+            copied[k] = getattr(item, k)
+    status = str(entry.get("status", ""))
+    return Resolution(item.key, True, f"the same work as `{old}`, settled earlier ({status}): the earlier answer "
+                                      f"applies; one key per source: cite it as `{old}`", copied)
+
+
+def drop_capped(items: list[MissingReference], manifests: list[dict], earlier: list[list[MissingReference]]
+                ) -> tuple[list[MissingReference], list[tuple[str, str, str]]]:
+    """The items to keep, and (key, status, manifest key) of those not requested again: a text a human
+    already answered that this job's earlier requests listed more than `REREQUESTS` times (by
+    identity, whatever the key) is settled with the earlier answer instead of a further request."""
+    kept, dropped = [], []
+    for item in items:
+        entry = answered_entry(item, manifests)
+        asked = sum(any(same_source(item, m) for m in request) for request in earlier)
+        if entry is not None and asked > REREQUESTS:
+            dropped.append((item.key, str(entry.get("status", "")), str(entry.get("id", ""))))
+        else:
+            kept.append(item)
+    return kept, dropped
+
+
+def settle_line(dropped: list[tuple[str, str, str]]) -> str:
+    """The round-log words for keys settled without a request, after 'settled in the manifest':
+    `: key (status)` for keys the manifest has, `as <manifest key>: <key> (status)` for renamed ones."""
+    plain = [f"{k} ({st})" for k, st, old in dropped if k.lower() == old.lower()]
+    renamed = [f" as {old}: {k} ({st})" for k, st, old in dropped if k.lower() != old.lower()]
+    return ";".join(([": " + ", ".join(plain)] if plain else []) + renamed)
+
+
+def earlier_requests(comments: list[dict], job_id: str, trusted: list[str], bot_logins: list[str]
+                     ) -> list[list[MissingReference]]:
+    """The items of every needs-references request this job posted on its issue (by the board's
+    bots, an operator or an allowed author association), oldest first. A request the intake raised
+    again after a failed answer is the same request, not a further one."""
+    out = []
     for c in comments:
         if (c.get("user") or {}).get("login") not in bot_logins and c.get("author_association") not in trusted:
             continue
         request = decode_request(c.get("body") or "")
-        n += bool(request and request["job"] == job_id and not request["again"])
-    return n
+        if request and request["job"] == job_id and not request["again"]:
+            out.append(list(request["items"]))
+    return out
+
+
+def request_count(comments: list[dict], job_id: str, trusted: list[str], bot_logins: list[str]) -> int:
+    """How many needs-references requests this job has posted on its issue (see `earlier_requests`)."""
+    return len(earlier_requests(comments, job_id, trusted, bot_logins))
 
 
 def read_missing(path: Path) -> list[MissingReference]:
@@ -575,7 +730,12 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
     retries = pending_retries(job, items, answers, done)
     due = {k for k, r in retries.items() if retry_due(r, now) <= now}
     fresh = {k: a for k, a in answers.items() if a.comment not in handled or k in due}
-    if not fresh and not (read - handled):
+    manifest, blob = board_manifest(ctx, job.name)
+    # A requested key that names a work the manifest already settled under another key (the same
+    # DOI, arXiv id or title: a rename) needs no human answer: the earlier answer is applied to it.
+    settled = {k: e for k, m in items.items() if k not in done and k not in fresh
+               and (e := settled_entry(m, manifest, s.uncertified_ok)) is not None}
+    if not fresh and not (read - handled) and not settled:
         waiting = [k for k in items if k not in done]
         if waiting:
             later = [f"`{k}` at {retry_due(r, now).strftime(STAMP)} (attempt {r['failed'] + 1} of {attempts})"
@@ -587,8 +747,10 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
             return f"{job.id}: every key answered; would release the job (dry run; pass --yes)"
         ctx.board.set_state(job, board.transition("needs-references", "references-resolved"))
         return f"{job.id}: references resolved earlier; available again"
-    manifest, blob = board_manifest(ctx, job.name)
-    results = []
+    results = [apply_settled(items[key], entry) for key, entry in settled.items()]
+    for res in results:
+        sources.upsert_source(manifest, res.entry, replace=True)
+        done[res.key] = res.detail
     for key, answer in fresh.items():
         res = resolve(answer, items[key], sources.find_source(manifest, id=key), fet, s.uncertified_ok)
         results.append(res)
