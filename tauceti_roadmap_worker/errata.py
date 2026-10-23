@@ -146,7 +146,12 @@ def sync_errata(ctx) -> list[str]:
         known.add(k)
         data["issues"].append(issue)
         added.append(issue)
-    if not added and newest == since:
+    exists = True
+    try:
+        ctx.gh.api(f"repos/{repo}/contents/{REGISTER}")
+    except GHError:
+        exists = False
+    if not added and newest == since and exists:
         return ["errata: nothing new"]
     data["scanned_to"] = newest or since
     data["updated"] = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
