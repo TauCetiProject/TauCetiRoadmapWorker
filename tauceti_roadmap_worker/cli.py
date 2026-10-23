@@ -43,6 +43,7 @@ from . import (
     claims,
     config,
     depgraph,
+    errata,
     explorer,
     fetcher,
     filers,
@@ -784,7 +785,8 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
                  ("leases", lambda: intake.sync_leases(ctx, shared)), ("pull requests", lambda: intake.sync_pull_requests(ctx)),
                  ("max rounds", lambda: intake.repark_capped(ctx)), ("origins", lambda: intake.sync_origins(ctx)),
                  ("gap registry", lambda: intake.note_gap_registry_blocks(ctx)),
-                 ("review queue", lambda: boardpr.review_queue(ctx, yes=write))]
+                 ("review queue", lambda: boardpr.review_queue(ctx, yes=write)),
+                 ("errata", lambda: errata.sync_errata(ctx))]
         failed = []
         for name, step in steps:      # one step's GitHub trouble never stops the others
             try:

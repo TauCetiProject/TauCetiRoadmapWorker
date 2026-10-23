@@ -92,6 +92,14 @@ overclaim or missing hypothesis, P3 locator, Check or policy. Then `## Verified 
 checked and found correct, with counts: declarations read, targets read, locators verified, Checks
 tested, sibling citations checked) and `## Not verifiable` (each item and why). No praise, no style
 remarks, no restating of the roadmap.
+Then `## Source issues`: every mistake you found in a source while checking locators, one bullet
+each, in this exact shape (it is collected into the project's errata register, as the explorer's
+was): `- **Misprint** | **Error** | **Gap** in <source id> at <locator: theorem or section, printed
+page>: the source says <at most 30 words, in your own words>; it should be <at most 30 words>;
+affects <nothing | a stated result | the proof>.` A misprint is a slip whose intended meaning is
+clear, an error a false statement or proof step, a gap a step the source does not justify. Add
+`; corrected in print at <locator>` when you know of a published correction. Write `- none` when
+you found none. Never copy a passage: describe it.
 
 <!-- include: sections/defect-classes.md -->
 

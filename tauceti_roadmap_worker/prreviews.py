@@ -164,6 +164,47 @@ def reraised(title: str, body: str) -> set[str]:
     return {fid for m in RERAISED.findall(title + "\n" + body) for fid in re.findall(r"\b[RSF]\d+\b", m)}
 
 
+SOURCE_ISSUE = re.compile(r"^\s*[-*]\s*\*\*(Misprint|Error|Gap)\*\*\s+in\s+(.+?)\s+at\s+(.+?):\s*the source says\s+(.+?);\s*"
+                          r"it should be\s+(.+?);\s*affects\s+(nothing|a stated result|the proof)\b\.?(.*)$", re.I | re.S)
+
+
+def source_issues(body: str) -> list[dict]:
+    """The `## Source issues` bullets of a report or comment (mistakes found in published sources):
+    [{kind, source, locator, says, should, affects, note}], the shape the prompts require. Bullets
+    the regex does not match are kept with kind `unparsed` and the line as `says`, so a reviewer's
+    finding is never dropped silently."""
+    out, inside, current = [], False, []
+    for line in (body or "").split("\n"):
+        if line.startswith("## "):
+            inside = line.strip().lower().startswith("## source issues")
+            continue
+        if not inside:
+            continue
+        if re.match(r"^\s*[-*]\s", line):
+            if current:
+                out.append("\n".join(current))
+            current = [line]
+        elif current and line.strip():
+            current.append(line)
+    if current:
+        out.append("\n".join(current))
+    issues = []
+    for text in out:
+        flat = " ".join(text.split())
+        if re.match(r"^[-*]\s*none\b", flat, re.I):
+            continue
+        m = SOURCE_ISSUE.match(flat)
+        if m:
+            note = m.group(7).strip(" ;.")
+            issues.append({"kind": m.group(1).lower(), "source": m.group(2).strip("` "), "locator": m.group(3).strip(),
+                           "says": m.group(4).strip(), "should": m.group(5).strip(), "affects": m.group(6).lower(),
+                           "note": note})
+        else:
+            issues.append({"kind": "unparsed", "source": "", "locator": "", "says": flat.lstrip("-* ").strip(),
+                           "should": "", "affects": "", "note": ""})
+    return issues
+
+
 def report_findings(report: str) -> tuple[list[tuple[str, str, list[str]]], list[str]]:
     """A worker report's `## R01 (P1) — title` blocks as (severity, title, body lines), and the
     rest (other sections), outside code fences."""
