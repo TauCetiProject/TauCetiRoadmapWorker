@@ -145,6 +145,38 @@ def open_roadmap_prs(ctx: Context) -> list[dict]:
     return out
 
 
+def board_package_index(ctx: Context, ws: "Workspace") -> Path:
+    """A file in the job's scratch directory listing every package under review on the board (name,
+    board pull request, branch, head) with the command that fetches its README. The board checkout
+    sits on ONE pull request's branch, forked from the board's main when that package was imported,
+    so packages imported later are not under its `packages/`; a reviewer that looked only there
+    reported a real package as existing nowhere (2026-10-23)."""
+    path = ws.scratch / "board-packages-index.txt"
+    repo = ctx.cfg.repositories.packages_repo()
+    rows: list[str] = []
+    try:
+        pulls = ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True) if ctx.gh else []
+    except GHError:
+        pulls = None
+    for pr in pulls or []:
+        head = pr.get("head") or {}
+        m = re.match(r"Import ([A-Za-z0-9]+)", pr.get("title") or "")
+        name = m.group(1) if m else ""
+        if name and (head.get("ref") or "").startswith("import/"):
+            rows.append(f"{name}\t#{pr['number']}\t{head.get('ref', '')}\t{(head.get('sha') or '')[:7]}")
+    lines = ["# Packages under review on the board: name, board pull request, branch, head.",
+             "# Such a package's README lives at packages/<Name>/README.md on ITS pull request's head, not in the",
+             "# board checkout of another pull request's branch. Read one with:",
+             f"#   gh api repos/{repo}/contents/packages/<Name>/README.md?ref=<head> --jq .content | base64 -d",
+             "# Before claiming that a roadmap or package exists nowhere, check this list, the merge order,",
+             "# the roadmap repository's main and the open roadmap pull requests."]
+    if pulls is None:
+        lines.append("# (the board could not be read when this brief was written: check the board's open pull requests yourself)")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines + sorted(rows)) + "\n", encoding="utf-8")
+    return path
+
+
 def cached_prs(state: Path) -> list[dict]:
     try:
         return json.loads((state / "prs.json").read_text(encoding="utf-8"))
@@ -588,6 +620,7 @@ class Lane:
             "SCRATCH": str(ws.scratch), "REPORT": str(ws.report), "CONTENT_REPO": cfg.repositories.content,
             "CONTENT": str(ws.content), "ACTIVE_DIR": cfg.roadmap.active_dir, "COMPLETED_DIR": cfg.roadmap.completed_dir,
             "PACKAGES": str(ws.board / cfg.board.packages_dir), "PACKAGE": str(ws.package(cfg, job.name)),
+            "PACKAGE_INDEX": str(board_package_index(ctx, ws)),
             "ORDER": str(order_file), "SUPPLIERS": ", ".join(earlier) or "none yet",
             "DROPPED": ", ".join(dropped) or "none",
             "DEPCHECK": self.depcheck_command(job, ctx, ws, order_file),

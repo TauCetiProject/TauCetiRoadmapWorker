@@ -45,7 +45,9 @@ Every other target and design the board has open, with its triage or design file
 - The roadmap repository at its main branch: `__CONTENT__` (active roadmaps under
   `__ACTIVE_DIR__/`, completed ones under `__COMPLETED_DIR__/`).
 - Open roadmap pull requests at their heads: __SIBLINGS__.
-- Designs and packages in progress on the board: `__PACKAGES__`.
+- Designs and packages in progress on the board: `__PACKAGES__`; every package under review, with the
+  pull request and head where its README lives, is listed in `__PACKAGE_INDEX__` (the checkout holds one
+  branch; read the list before saying a roadmap or package exists nowhere).
 - The merge order: `__ORDER__`.
 - The pinned libraries: __LIBRARY__.
 

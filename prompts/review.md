@@ -42,8 +42,10 @@ earlier round's adversarial table only where its rows carry computed values; any
 earlier review summarised without them is reviewed in full now, as are the sampled targets below.
 
 Context, read-only: the roadmap repository at its main branch `__CONTENT__`; open roadmap pull
-requests at their heads: __SIBLINGS__; the board's packages `__PACKAGES__`; the merge order
-`__ORDER__`; the pinned libraries: __LIBRARY__.
+requests at their heads: __SIBLINGS__; the board's packages `__PACKAGES__` (that checkout holds one
+pull request's branch: every package under review, with the pull request and head where its README
+lives, is listed in `__PACKAGE_INDEX__`; read that list before saying a roadmap or package exists
+nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
 
 ## The review, in this order
 
