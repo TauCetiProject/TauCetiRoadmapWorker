@@ -584,10 +584,12 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
     if fix.state != "done":
         finish_job(ctx, fix, f"Intake: fix pushed to #{number} at `{head[:7]}`.")
     if any(j.kind == "port" for j in nxt):
+        from .intake import add_to_order_for_port, order_ports_after_suppliers
+        deferred = order_ports_after_suppliers(ctx, nxt, jobs)
         existing = {j.id for j in ctx.board.all_jobs()}
         created = [board.made_note(ctx.board, j, ctx.board.create(j)) for j in nxt if j.id not in existing]
-        from .intake import add_to_order_for_port
         return (f"#{number}: {fix.id} done; merged; created " + (", ".join(created) or "nothing")
+                + ("; " + "; ".join(deferred) if deferred else "")
                 + "; " + add_to_order_for_port(ctx, fix.name))
     for j in nxt:
         j.inputs["board_pr"] = number

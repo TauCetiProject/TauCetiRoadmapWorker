@@ -35,8 +35,8 @@ from . import board, boardpr, claims, depgraph, explorer, filers, gitops, prrevi
 from .board import Job, Outcome
 from .gh import GHError, transient
 from .lanes.base import open_roadmap_prs
-from .lanes.pr import events_from_api
 from .lanes.port import pr_number_from_report
+from .lanes.pr import events_from_api
 from .lanes.target import parse_triage
 
 PENDING = ("queued", "in_progress", "waiting", "requested", "pending")
@@ -493,6 +493,68 @@ def announce_gaps(ctx, job: Job, jobs: list[Job], plan: dict | None = None) -> s
             ctx.board.comment(job.number, f"Intake: a supplier contract is missing, and `{supplier}` has no open job on "
                                           f"the board to carry it. {what}.")
     return f"{len(gaps)} supplier gap(s) announced" if gaps else "no supplier gaps"
+
+
+def supplier_name(raw: str) -> str:
+    """The roadmap name a gap's `supplier` field means: `SelmerIwasawaCohomology:L1` and
+    `tauceti:TauCetiRoadmap/ProfiniteArithmetic#layer-0` both name a roadmap with a locator glued on."""
+    head = str(raw).split("#", 1)[0]
+    tokens = [t for t in re.findall(r"[A-Z][A-Za-z0-9]{2,}", head) if t != "TauCetiRoadmap"]
+    return max(tokens, key=len) if tokens else str(raw).strip()
+
+
+def order_ports_after_suppliers(ctx, nxt: list[Job], jobs: list[Job]) -> list[str]:
+    """Ports in supplier order (maintainer rule, 2026-10-23): every port job in `nxt` is made to
+    follow the port of each gap supplier of its plan that is neither a roadmap on main nor in an open
+    roadmap pull request, and a target is filed for a supplier that exists nowhere (no roadmap, no
+    pull request, no job on the board), so the supplier is built first and the consumer's pull
+    request can list it in its merge order. Returns the notes (what was deferred or filed)."""
+    from . import openroadmaps, targets
+    from .lanes.design import supplier_gaps
+    ports = [j for j in nxt if j.kind == "port"]
+    if not ports:
+        return []
+    try:
+        index = openroadmaps.refresh(ctx.gh, ctx.cfg)
+    except Exception:          # noqa: BLE001 - a stale index is better than none here
+        try:
+            index = openroadmaps.load(ctx.cfg.state_dir())
+        except Exception:      # noqa: BLE001
+            index = {}
+    if not index.get("main_roadmaps") and not index.get("prs"):
+        return []              # no view of main and the open pull requests: impose nothing rather than block every port
+    on_main = set(index.get("main_roadmaps", []))
+    in_prs = {n for p in index.get("prs", []) for n in p.get("roadmaps", [])}
+    on_board = {j.name for j in jobs}
+    notes = []
+    for port in ports:
+        plan = read_plan(ctx, port.name) or {}
+        for gap in supplier_gaps(plan):
+            supplier = supplier_name(gap["supplier"])
+            if supplier in on_main or supplier in in_prs or supplier == port.name:
+                continue
+            dep = board.make_id("port", supplier)
+            if dep not in port.after:
+                port.after.append(dep)
+            if supplier not in on_board:
+                slug = str(gap.get("slug") or gap.get("id"))
+                fields = {"name": supplier, "title": f"{supplier}: supplier of {port.name} ({slug})",
+                          "statement": board.neutralise(str(gap.get("needs", ""))).strip()
+                                       or f"The roadmap {supplier}, which {port.name} names as a supplier.",
+                          "why": (f"{port.name} declares the supplier gap `{slug}` against {supplier}, which exists "
+                                  "nowhere: not on main, not in an open pull request, not on the board. Its port "
+                                  "waits for this roadmap to be ported first."),
+                          "sources": "see the consumer's README", "licence": "Unknown"}
+                try:
+                    made = ctx.gh.write("POST", f"repos/{ctx.cfg.repositories.board_repo()}/issues",
+                                        targets.issue_payload(ctx.cfg, fields)) or {}
+                    on_board.add(supplier)
+                    notes.append(f"target #{made.get('number', '?')} filed for {supplier} (a supplier of {port.name} "
+                                 f"that exists nowhere)")
+                except GHError as exc:
+                    notes.append(f"target for {supplier} not filed ({exc})")
+            notes.append(f"{port.id} follows {dep}: {supplier} is not on main or in an open pull request")
+    return notes
 
 
 MERGED_LABEL = "merged-into"

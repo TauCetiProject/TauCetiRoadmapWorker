@@ -2,6 +2,7 @@
 driven by comments (from a browser model's listed login and from workers), with GitHub faked."""
 
 import base64
+import json
 
 from tauceti_roadmap_worker import boardpr, depgraph, intake, prreviews
 from tauceti_roadmap_worker.board import encode_submission, new_job
@@ -337,6 +338,24 @@ def test_an_imported_package_enters_the_merge_order_after_its_last_supplier_when
     assert depgraph.read_order(gh.files[ORDER]) == ["Alpha", "Beta", "Foo", "Gamma"]
     paths = [path for _m, path, _p in gh.writes]
     assert paths.index(f"repos/{REPO}/pulls/12/merge") < paths.index(f"repos/{REPO}/contents/{ORDER}")   # merged first
+
+
+def test_a_port_waits_for_the_port_of_a_gap_supplier_that_exists_nowhere_and_files_its_target(monkeypatch):
+    from tauceti_roadmap_worker import intake, openroadmaps
+    plan = json.dumps({"gaps": [{"slug": "light-solid", "supplier": "SolidRings", "needs": "the solid tensor product"},
+                                {"slug": "fine", "supplier": "Alpha", "needs": "already on main"}]})
+    ctx, board, gh = last_red_team_fix({ORDER: "# Merge order\nAlpha\nBeta\n",
+                                        "packages/Foo/README.md": "# Foo\n\n*Needs:* Alpha §1.\n",
+                                        "packages/Foo/design/plan.json": plan})
+    monkeypatch.setattr(openroadmaps, "refresh", lambda gh, cfg, **kw: {"main_roadmaps": ["Alpha", "Beta"], "prs": []})
+    out = boardpr.scan(ctx, yes=True)
+    port = board.find("PORT-Foo")
+    assert "PORT-SolidRings" in port.after and not intake.board.ready(port, {"FIX-RT-Foo~1"})
+    assert "target #" in out[0] and "filed for SolidRings" in out[0] and "PORT-Foo follows PORT-SolidRings" in out[0]
+    filed = [p for m, path, p in gh.writes if m == "POST" and path.endswith("/issues")]
+    assert filed and filed[0]["title"].startswith("[Target] SolidRings") and "kind:target" in filed[0]["labels"]
+    # A supplier that is on main or in an open pull request imposes nothing.
+    assert "PORT-Alpha" not in port.after
 
 
 def test_a_package_already_in_the_merge_order_is_left_alone_when_its_port_is_created():
