@@ -38,9 +38,17 @@ def key(issue: dict) -> str:
 
 
 def _read_json(ctx, repo: str, path: str) -> tuple[dict, str | None]:
+    """The JSON file at `path` and its blob sha; ({}, None) when absent or unreadable. The contents
+    endpoint returns no content for a file over 1 MB (the register's data passed that size on
+    2026-10-23), so the blob is then fetched by its sha: without this every issue read as new and the
+    write, lacking the sha, was refused."""
     try:
         current = ctx.gh.api(f"repos/{repo}/contents/{path}")
-        return json.loads(base64.b64decode(current["content"]).decode("utf-8")), current["sha"]
+        sha = current["sha"]
+        raw = base64.b64decode(current["content"]) if current.get("content") else b""
+        if not raw and sha:
+            raw = base64.b64decode(ctx.gh.api(f"repos/{repo}/git/blobs/{sha}")["content"])
+        return json.loads(raw.decode("utf-8")), sha
     except (GHError, KeyError, ValueError):
         return {}, None
 

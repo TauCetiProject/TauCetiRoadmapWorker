@@ -78,3 +78,20 @@ def test_sync_errata_records_new_issues_once_and_renders_the_register():
     assert "1 unparsed bullets" in register
     # A second run adds nothing and writes nothing.
     assert errata.sync_errata(ctx) == ["errata: nothing new"] and len(gh.writes) == 2
+
+
+def test_read_json_fetches_the_blob_when_the_contents_endpoint_returns_no_content():
+    # The contents endpoint answers a file over 1 MB with its sha and an empty content; the blob is then read by sha.
+    from .fakes import bot_context, example_config
+
+    class LargeGH(ErrataGH):
+        def api(self, path, paginate=False):
+            if "/contents/" in path:
+                return {"content": "", "encoding": "none", "size": 1102135, "sha": "big"}
+            if path.endswith("/git/blobs/big"):
+                return {"content": base64.b64encode(json.dumps({"issues": [{"job": "J"}]}).encode()).decode()}
+            return super().api(path, paginate)
+
+    ctx = bot_context(cfg=example_config(), gh=LargeGH())
+    data, sha = errata._read_json(ctx, "o/r", errata.DATA)
+    assert data == {"issues": [{"job": "J"}]} and sha == "big"
