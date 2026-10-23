@@ -171,8 +171,11 @@ def reraised(title: str, body: str) -> set[str]:
     return {fid for m in RERAISED.findall(title + "\n" + body) for fid in re.findall(r"\b[RSF]\d+\b", m)}
 
 
-SOURCE_ISSUE = re.compile(r"^\s*[-*]\s*\*\*(Misprint|Error|Gap)\*\*\s+in\s+(.+?)\s+at\s+(.+?):\s*the source says\s+(.+?);\s*"
-                          r"it should be\s+(.+?);\s*affects\s+(nothing|a stated result|the proof)\b\.?(.*)$", re.I | re.S)
+SOURCE_ISSUE = re.compile(r"^\s*[-*]\s*\*\*(Misprint|Error|Gap)\*\*\s+in\s+(.+?)\s+at\s+(.+?):\s*(.+?);\s*"
+                          r"it should\s+(?:be|read|say|state)?\s*(.+?);\s*affects\s+(nothing|a stated result|the proof)\b\.?(.*)$",
+                          re.I | re.S)
+SAYS_PREFIX = re.compile(r"^the source\s+(?:says|states|gives|writes|prints|claims|reads|asserts|has|defines|takes|places|uses)"
+                         r"\s+(?:that\s+)?", re.I)
 
 
 def source_issues(body: str) -> list[dict]:
@@ -204,7 +207,8 @@ def source_issues(body: str) -> list[dict]:
         if m:
             note = m.group(7).strip(" ;.")
             issues.append({"kind": m.group(1).lower(), "source": m.group(2).strip("` "), "locator": m.group(3).strip(),
-                           "says": m.group(4).strip(), "should": m.group(5).strip(), "affects": m.group(6).lower(),
+                           "says": SAYS_PREFIX.sub("", m.group(4).strip()), "should": m.group(5).strip(),
+                           "affects": m.group(6).lower(),
                            "note": note})
         else:
             issues.append({"kind": "unparsed", "source": "", "locator": "", "says": flat.lstrip("-* ").strip(),
