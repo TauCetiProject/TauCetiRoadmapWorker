@@ -17,6 +17,9 @@ maintainer drives, and the fix lanes push to its branch. A review comment reads
     ...
 
 and a red-team pass the same, with the first line `Red team round <N> pass <x> (<agent>) of <sha7>`.
+The errata of a roadmap's sources are a comment on the errata job's own issue, first line
+`Errata (<agent>) of <sha7>`, then `Verdict: recorded`, then its `## Source issues`, `## Checked`
+and `## Not verifiable` sections.
 A comment whose first line is `reviewing` (optionally `reviewing (<agent>)`) claims the open review.
 Only the shapes are read; everything else in a comment is data. This module is the pure part:
 parsing, and rendering a worker's report into the shape.
@@ -33,9 +36,11 @@ MARK_RE = re.compile(r"<!--\s*" + MARK + r"\s*(\{.*?\})\s*-->", re.DOTALL)
 REVIEW_HEAD = re.compile(r"^Review \(([^)\n]{1,40})\) of ([0-9a-f]{7,40})\s*$", re.IGNORECASE)
 REDTEAM_HEAD = re.compile(r"^Red team round (\d+) pass ([a-z]) \(([^)\n]{1,40})\) of ([0-9a-f]{7,40})\s*$",
                           re.IGNORECASE)
+ERRATA_HEAD = re.compile(r"^Errata \((?P<agent>[^)]+)\) of (?P<sha>[0-9a-f]{7,40})")
 CLAIM_HEAD = re.compile(r"^reviewing(?:\s*\(([^)\n]{1,40})\))?\s*$", re.IGNORECASE)
 VERDICT = re.compile(r"^\W*verdict\W*(accepted|needs[_ ]changes|changes needed|rejected)\b",
                      re.IGNORECASE | re.MULTILINE)
+ERRATA_VERDICT = re.compile(r"^\W*verdict\W*(recorded)\b", re.IGNORECASE | re.MULTILINE)
 FINDING = re.compile(r"^\s*\d+\.\s+\*\*(F\d+)\*\*\s*(?:\((P[123])\))?", re.MULTILINE)
 REPORT_FINDING = re.compile(r"^## ([RS])(\d+)\s*[(\[](P[123])[)\]]\s*[:—–-]*\s*(.*)$")
 CONDITIONAL = re.compile(r"^\W*conditional on the (?:announced|declared) gaps\W*(.+)$", re.IGNORECASE | re.MULTILINE)
@@ -46,10 +51,10 @@ RERAISED = re.compile(r"\bre-?rais(?:ed|es)\b[^:\n]*:\s*([^\n]+)", re.IGNORECASE
 
 @dataclass
 class Parsed:
-    kind: str                       # review | redteam | claim
+    kind: str                       # review | redteam | errata | claim
     agent: str = ""
     sha: str = ""
-    verdict: str = ""               # accepted | needs_changes | rejected
+    verdict: str = ""               # accepted | needs_changes | rejected; errata: recorded
     findings: list[tuple[str, str]] = field(default_factory=list)   # (F01, P1)
     round: int = 0
     pass_: str = ""
@@ -67,7 +72,7 @@ def normal_verdict(text: str) -> str:
 
 
 def parse(body: str) -> Parsed | None:
-    """The review, red-team pass or claim a comment states, or None (anything else, or a review
+    """The review, red-team pass, errata or claim a comment states, or None (anything else, or a review
     without a verdict, or one that asks for changes without a numbered finding)."""
     lines = (body or "").strip().splitlines()
     if not lines:
@@ -87,9 +92,11 @@ def parse(body: str) -> Parsed | None:
     elif m := REDTEAM_HEAD.match(first):
         parsed = Parsed("redteam", agent=m.group(3).strip(), sha=m.group(4).lower(), round=int(m.group(1)),
                         pass_=m.group(2).lower())
+    elif m := ERRATA_HEAD.match(first):
+        parsed = Parsed("errata", agent=m["agent"].strip(), sha=m["sha"].lower())
     else:
         return None
-    verdict = VERDICT.search(body)
+    verdict = (ERRATA_VERDICT if parsed.kind == "errata" else VERDICT).search(body)
     if not verdict:
         return None
     parsed.verdict = normal_verdict(verdict.group(1))
@@ -247,3 +254,7 @@ def review_head(agent: str, sha: str) -> str:
 
 def redteam_head(round_: int, pass_: str, agent: str, sha: str) -> str:
     return f"Red team round {round_} pass {pass_} ({agent}) of {sha[:7]}"
+
+
+def errata_head(agent: str, sha: str) -> str:
+    return f"Errata ({agent}) of {sha[:7]}"

@@ -16,7 +16,7 @@ from .paths import PROMPTS
 
 INCLUDE = re.compile(r"^<!-- include: (sections/[A-Za-z0-9_.-]+\.md) -->$", re.M)
 PLACEHOLDER = re.compile(r"__([A-Z][A-Z0-9_]*)__")
-LANES = ("target", "design", "package", "review", "fix", "port", "redteam", "gate")
+LANES = ("target", "design", "package", "review", "fix", "port", "redteam", "gate", "errata")
 # Every brief: one per lane, the red-team lane's section pass ([redteam] sharded), and the brief the
 # board pins on a pull request under review for a browser model.
 BRIEFS = LANES + ("redteam-section", "review-web")

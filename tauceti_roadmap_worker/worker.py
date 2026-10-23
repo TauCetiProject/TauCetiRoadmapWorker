@@ -77,14 +77,17 @@ def rank(jobs: list[Job], order: list[str] | None = None, priority: list[str] | 
          human_first: bool = True, known: dict[str, str] | None = None) -> list[Job]:
     """The jobs in the order a worker takes them: those whose roadmap descends from a target a human
     filed first (`human_first`), then imported ones (an unknown origin counts as imported); within
-    each, by stage in `priority` (closest to delivery first, unlisted stages after), then oldest first.
-    `order` (the merge order) is no longer a key; it is accepted for callers that pass it."""
+    each, by stage in `priority` (closest to delivery first, unlisted stages after), then the errata
+    of a roadmap in a pull request before those of one on main (the former can still be repaired),
+    then oldest first. `order` (the merge order) is no longer a key; it is accepted for callers that
+    pass it."""
     known = known if known is not None else board.origins(jobs)
     stage = {s: i for i, s in enumerate(priority)}
 
     def key(j: Job):
         human = board.origin_of(j, known).startswith("target:")
-        return (0 if human or not human_first else 1, stage.get(board.stage_of(j.id), len(stage)), j.number)
+        on_main = j.kind == "errata" and not j.inputs.get("pr")
+        return (0 if human or not human_first else 1, stage.get(board.stage_of(j.id), len(stage)), on_main, j.number)
     return sorted(jobs, key=key)
 
 

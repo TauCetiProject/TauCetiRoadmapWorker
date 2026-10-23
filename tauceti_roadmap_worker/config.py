@@ -25,9 +25,13 @@ from pathlib import Path
 from . import paths
 
 AGENTS = ("codex", "claude")
-# Job stages, closest to delivery first: what `[board] priority` orders.
+# Job stages, closest to delivery first: what `[board] priority` orders. The errata of a roadmap's
+# sources deliver nothing to its pull request: they come last.
 STAGE_ORDER = ("GATE", "PORT", "FIX-RT", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN", "DESIGN",
-               "TARGET")
+               "TARGET", "ERRATA")
+# A lane with no `[agents.lanes.<kind>]` table of its own runs on the models of this one: the errata of
+# a roadmap's sources are read by the review models.
+LANE_FALLBACK = {"errata": "review"}
 SANDBOX_PROFILES = ("off", "proxy", "netjail")
 LICENCE_CLASSES = ("open-repository", "publisher-open", "author-page", "institutional", "operator-local")
 # GitHub's author_association values: who may answer a `needs-references` request.
@@ -262,15 +266,20 @@ class Config:
     def state_dir(self) -> Path:
         return paths.state_root(self.project.name)
 
+    def lane_settings(self, kind: str) -> LaneAgent | None:
+        """The lane's `[agents.lanes.<kind>]` table; for a lane without one, the table of the lane it
+        falls back to (`LANE_FALLBACK`: errata jobs run on the review models), else None."""
+        return self.agents.lanes.get(kind) or self.agents.lanes.get(LANE_FALLBACK.get(kind, ""))
+
     def lane_agent(self, kind: str) -> tuple[str, str]:
         """(agent, model) for a lane: the lane override, else the default agent and its model."""
-        lane = self.agents.lanes.get(kind)
+        lane = self.lane_settings(kind)
         agent = (lane.agent if lane and lane.agent else self.agents.default)
         return agent, self.lane_model(kind, agent) or self.model_for(agent)
 
     def lane_model(self, kind: str, agent: str) -> str:
         """The model a lane pins for an agent family, or '' when it pins none for that family."""
-        lane = self.agents.lanes.get(kind)
+        lane = self.lane_settings(kind)
         if not lane:
             return ""
         if lane.model and (not lane.agent or lane.agent == agent):

@@ -144,6 +144,12 @@ class FakeBoard:
     def all_jobs(self):
         return list(self.jobs)
 
+    def kind_jobs(self, kind: str, issue_state: str = "all"):
+        return [j for j in self.jobs if j.kind == kind]
+
+    def labelled_by(self, job, label: str) -> str:
+        return ""
+
     def create(self, job, state: str = "available", preamble: str = "") -> int:
         self.created.append((job, state, preamble))
         return 500 + len(self.created)       # like GitHub's listing, all_jobs() may not show it yet

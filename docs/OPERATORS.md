@@ -517,7 +517,8 @@ tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; on
                                                    # PR labels;
                                                    # GATE jobs when humans await a reply;
                                                    # the pinned "Review queue" issue;
-                                                   # held PRs back to draft
+                                                   # held PRs back to draft;
+                                                   # the errata register (submitted ERRATA jobs → done)
 tauceti-roadmap --conf $CONF board intake --yes    # take in submissions (designs and packages stay open
                                                    # for review), answer needs-references jobs, then read
                                                    # the reviews and passes on the board's open PRs
@@ -526,6 +527,8 @@ tauceti-roadmap --conf $CONF board stale --release --yes   # release lapsed clai
 tauceti-roadmap --conf $CONF merge-order           # refresh the chain paragraph on open roadmap PRs
 tauceti-roadmap --conf $CONF targets import-intentions --yes   # intentions → TARGET jobs (10 per run)
 tauceti-roadmap --conf $CONF board import-explorer --from ~/tauceti-explorer --yes   # see below
+tauceti-roadmap --conf $CONF board errata seed [--limit N] --yes   # an ERRATA-<Name> job per roadmap on main or
+                                                   # in an open roadmap PR whose sources no errata cover yet
 ```
 
 When a package's port is created, the intake inserts the roadmap into the merge order on the board's

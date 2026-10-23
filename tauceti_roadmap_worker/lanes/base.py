@@ -769,6 +769,10 @@ class Lane:
                 args.append("--add-only")
         return ctx.cli(*args, "--missing-out", str(ws.scratch / "needs-references.toml"))
 
+    def manifest_file(self, job: Job, ctx: Context, ws: Workspace) -> Path:
+        """The roadmap's sources manifest the run reads: its package's on the board."""
+        return ws.package(ctx.cfg, job.name) / "sources.toml"
+
     def prepare_sources(self, job: Job, ctx: Context, ws: Workspace) -> None:
         """Bring every text the roadmap's manifest records into the sources cache, list them for the
         brief, and turn texts that are gone for good into a needs-references request. A request left
@@ -776,7 +780,7 @@ class Lane:
         request = ws.scratch / "needs-references.toml"
         if request.is_file():
             request.replace(ws.scratch / "needs-references.previous.toml")
-        manifest_path = ws.package(ctx.cfg, job.name) / "sources.toml"
+        manifest_path = self.manifest_file(job, ctx, ws)
         try:
             own = tomllib.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else None
         except tomllib.TOMLDecodeError as exc:

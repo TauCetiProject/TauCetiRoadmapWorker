@@ -16,6 +16,7 @@
     tauceti-roadmap sources fetch <DOI | arXiv id | URL | "Authors, Title, Year"> [--manifest sources.toml] [--id KEY]
     tauceti-roadmap sources cache <sources.toml> | ocr <file.pdf>
     tauceti-roadmap board intake [--pr N] | references | sync | stale [--release]   (board bot / maintainer; --yes to write)
+    tauceti-roadmap board errata seed [--limit N] [--yes]
     tauceti-roadmap board import-explorer --from <explorer checkout> [--kinds package,design,target] [--names A,B] [--yes]
     tauceti-roadmap targets file-many --from <targets.toml | targets.jsonl> [--yes]
 
@@ -703,6 +704,8 @@ def api_budget(gh, repo: str) -> list[str]:
 
 def board_cmd(args) -> int:
     """A board maintenance run, ending with the REST requests it made and the token's budget."""
+    if args.step and args.action != "errata":
+        raise SystemExit(f"board {args.action}: unexpected argument {args.step!r}")
     cfg = _load(args)
     ctx = _bot_context(args, cfg, dry=args.dry_run or not args.yes)
     try:
@@ -779,6 +782,13 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
         steps = explorer.import_explorer(ctx, Path(args.source).expanduser(), kinds or explorer.STAGES, names, yes=write)
         print(explorer.summary(steps))
         return 1 if any(s.failed for s in steps) else 0
+    if args.action == "errata":
+        # The errata of the roadmaps' sources: `seed` creates one job per roadmap not yet covered.
+        if args.step != "seed":
+            raise SystemExit("board errata: give the step: `board errata seed [--limit N] [--yes]`")
+        for line in errata.seed(ctx, yes=write, limit=args.limit):
+            print(line)
+        return 0
     if args.action == "sync":
         steps = [("filers", lambda: filers.refresh(ctx)), ("targets", lambda: intake.sync_targets(ctx)),
                  ("states", lambda: intake.sync_states(ctx, shared)), ("expired", lambda: intake.sync_expired(ctx, shared)),
@@ -786,7 +796,7 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
                  ("max rounds", lambda: intake.repark_capped(ctx)), ("origins", lambda: intake.sync_origins(ctx)),
                  ("gap registry", lambda: intake.note_gap_registry_blocks(ctx)),
                  ("review queue", lambda: boardpr.review_queue(ctx, yes=write)),
-                 ("errata", lambda: errata.sync_errata(ctx))]
+                 ("errata", lambda: errata.sync_errata(ctx, shared))]
         failed = []
         for name, step in steps:      # one step's GitHub trouble never stops the others
             try:
@@ -912,11 +922,13 @@ def parser() -> argparse.ArgumentParser:
     u.add_argument("--json", action="store_true")
 
     b = sub.add_parser("board", help="board maintenance for the bot or a maintainer (dry run unless --yes)")
-    b.add_argument("action", choices=["intake", "references", "sync", "stale", "import-explorer"])
+    b.add_argument("action", choices=["intake", "references", "sync", "stale", "import-explorer", "errata"])
+    b.add_argument("step", nargs="?", default="", help="errata: seed (an errata job per roadmap not yet covered)")
     b.add_argument("--pr", type=int, default=0)
     b.add_argument("--from", dest="source", default="", help="import-explorer: a checkout of CBirkbeck/tauceti-explorer")
     b.add_argument("--kinds", default="", help="import-explorer: package,design,target (default: all)")
     b.add_argument("--names", default="", help="import-explorer: only these roadmaps (comma list)")
+    b.add_argument("--limit", type=int, default=0, help="errata seed: at most this many jobs per run (0: all)")
     b.add_argument("--yes", action="store_true")
     b.add_argument("--release", action="store_true")
     return ap

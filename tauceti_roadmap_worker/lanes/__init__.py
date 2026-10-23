@@ -6,6 +6,7 @@ from __future__ import annotations
 from ..board import Job, parse_job_id
 from .base import Context, Lane, LaneError, LaneResult
 from .design import DesignLane
+from .errata import ErrataLane
 from .fix import ArtefactFixLane, RedTeamFixLane
 from .gate import GateLane
 from .package import PackageLane
@@ -15,7 +16,7 @@ from .review import ReviewLane
 from .target import TargetLane
 
 LANES = {"target": TargetLane, "design": DesignLane, "package": PackageLane, "review": ReviewLane,
-         "port": PortLane, "redteam": RedTeamLane, "gate": GateLane}
+         "port": PortLane, "redteam": RedTeamLane, "gate": GateLane, "errata": ErrataLane}
 
 
 def lane_for(job: Job) -> Lane:

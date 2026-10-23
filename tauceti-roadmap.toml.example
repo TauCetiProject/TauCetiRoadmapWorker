@@ -68,14 +68,16 @@ reference_answerers = []
 # The order in which workers take jobs. First the jobs whose roadmap descends from a target a human
 # filed (`origin = "target:<issue>"`), then imported ones (`origin = "explorer:<job>"`), when
 # human_first is true; within each, by stage in the order below (closest to delivery first), then the
-# oldest first. Stages left out come after the listed ones.
+# oldest first (errata of roadmaps in pull requests before those of roadmaps on main). Stages left
+# out come after the listed ones.
 # After every round that submitted, parked, blocked or released a job, a worker asks GitHub to run
 # the board workflow now (`gh workflow run board.yml -R <board repository>`; failures are ignored and
 # the workflow's schedule stays the fallback). GitHub's cron is unreliable; false turns this off.
 dispatch = true
 dispatch_workflow = "board.yml"
 human_first = true
-priority = ["GATE", "PORT", "FIX-RT", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN", "DESIGN", "TARGET"]
+priority = ["GATE", "PORT", "FIX-RT", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN", "DESIGN", "TARGET",
+            "ERRATA"]
 
 [roadmap]
 # Active roadmap folders in the content repository, and where completed ones live.
@@ -159,7 +161,9 @@ timeout_minutes = 360
 # Per-lane overrides: `agent` pins the family, `model` its model; `codex_model` and `claude_model` pin
 # the model per family and leave the family to the worker. Reviews run only on the review models,
 # whichever family a worker runs; a worker pinned with --model to another model skips them (one
-# pinned with --agent only picks the family). Authoring lanes keep the family defaults above.
+# pinned with --agent only picks the family). Authoring lanes keep the family defaults above. Errata
+# jobs (the mistakes in a roadmap's sources) run on the review models unless [agents.lanes.errata]
+# names others.
 [agents.lanes.review]
 codex_model = "gpt-6-astra"
 claude_model = "fable"
