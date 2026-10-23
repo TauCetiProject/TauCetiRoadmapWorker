@@ -40,16 +40,25 @@ from .lanes.port import pr_number_from_report
 from .lanes.target import parse_triage
 
 PENDING = ("queued", "in_progress", "waiting", "requested", "pending")
+# The board workflow's own job: its `pull_request_target` run on a submission IS the intake (it never
+# runs the submission's code), so its outcome says nothing about the submission. It is cancelled
+# whenever a newer run joins the `board` concurrency group while it waits for a runner, and it fails
+# whenever some unrelated step of that intake hits a GitHub error, so it is not a check on the pull request.
+OWN_CHECKS = frozenset({"board"})
+# A cancelled run never judged the commit.
+NOT_A_VERDICT = (None, "success", "skipped", "neutral", "cancelled")
 
 
 def _checks(ctx, repo: str, sha: str) -> tuple[list[str], bool]:
-    """(failed check names, any still running) for a commit."""
+    """(failed check names, any still running) for a commit, the board's own workflow job left out."""
     runs = (ctx.gh.api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100") or {}).get("check_runs", [])
     latest = {}
     for run in runs:
+        if run["name"] in OWN_CHECKS:
+            continue
         if run["name"] not in latest or (run.get("started_at") or "") >= (latest[run["name"]].get("started_at") or ""):
             latest[run["name"]] = run
-    failed = [n for n, r in latest.items() if r.get("conclusion") not in (None, "success", "skipped", "neutral")]
+    failed = [n for n, r in latest.items() if r.get("conclusion") not in NOT_A_VERDICT]
     running = any(r.get("status") in PENDING for r in latest.values())
     return failed, running
 

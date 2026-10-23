@@ -77,6 +77,21 @@ def test_a_merge_waits_for_the_checks_and_refuses_strange_files():
     assert fix.state == "submitted"
 
 
+def test_the_boards_own_workflow_run_and_cancelled_runs_are_not_checks_on_a_submission():
+    from tauceti_roadmap_worker.intake import _checks
+    c, gh, _b, _pkg, _fix = flow()
+    api = gh.api
+    runs = [{"name": "board", "status": "completed", "conclusion": "failure", "started_at": "2026-10-23T00:21:53Z"},
+            {"name": "board", "status": "completed", "conclusion": "cancelled", "started_at": "2026-10-23T00:31:00Z"},
+            {"name": "lint", "status": "completed", "conclusion": "cancelled", "started_at": "2026-10-23T00:21:53Z"}]
+    gh.api = lambda path, paginate=False: {"check_runs": runs} if "/check-runs" in path else api(path, paginate)
+    assert _checks(c, "TauCetiProject/TauCetiRoadmapJobs", "d" * 40) == ([], False)
+    runs.append({"name": "lint", "status": "completed", "conclusion": "failure", "started_at": "2026-10-23T00:40:00Z"})
+    assert _checks(c, "TauCetiProject/TauCetiRoadmapJobs", "d" * 40) == (["lint"], False)
+    runs.append({"name": "lint", "status": "queued", "conclusion": None, "started_at": "2026-10-23T00:50:00Z"})
+    assert _checks(c, "TauCetiProject/TauCetiRoadmapJobs", "d" * 40) == ([], True)
+
+
 def test_a_fix_that_did_not_move_the_head_is_released():
     c, gh, _b, _pkg, fix = flow()
     gh.pr["head"]["sha"] = "c" * 40
