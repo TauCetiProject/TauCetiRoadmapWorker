@@ -119,6 +119,16 @@ def test_the_reset_time_is_read_from_the_limit_message_not_from_the_sources_quot
     assert result.reset_at.replace(tzinfo=None) == dt.datetime(2026, 10, 27, 6, 34)
 
 
+def test_a_momentary_service_limit_pauses_briefly_and_a_quota_limit_without_a_reset_does_not():
+    before = dt.datetime.now(dt.UTC)
+    result = agents.classify(1, "", CODEX_CAPACITY + "\n", seconds=900.0)
+    assert result.limited and result.reset_at is not None
+    assert dt.timedelta(seconds=agents.MOMENTARY_PAUSE - 5) <= result.reset_at - before \
+        <= dt.timedelta(seconds=agents.MOMENTARY_PAUSE + 5)
+    quota = agents.classify(1, "", "You've hit your usage limit.\n", seconds=900.0)
+    assert quota.limited and quota.reset_at is None
+
+
 def test_run_agent_reads_the_whole_log_files(tmp_path):
     out, err = tmp_path / "run-1.out", tmp_path / "run-1.err"
     # The CLI's stream: text events of work, then the limit as the error result of the run.

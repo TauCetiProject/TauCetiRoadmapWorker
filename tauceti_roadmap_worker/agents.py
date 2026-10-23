@@ -83,6 +83,12 @@ LIMIT_ON_FAILURE = re.compile("|".join(p for _, p, _ in LIMIT_PATTERNS), re.I)
 LIMIT = LIMIT_ON_FAILURE     # every pattern, for callers that already know the run failed
 TRANSIENT = re.compile(r"Request timed out|ECONNRESET|socket hang up|fetch failed|Connection error", re.I)
 MESSAGE_WIDTH = 240          # characters of the limit message's line kept for the log
+# Service-side, momentary limits: the model is busy right now, not this account's quota. With no reset
+# time in the message these pause the family MOMENTARY_PAUSE seconds, not the usage-limit default.
+MOMENTARY = re.compile(r"model (?:is )?at capacity|overloaded_error|too many requests|"
+                       r"(?:http|status|error|code)\W{0,3}429\b|\b429\W{0,3}(?:too many|rate)|"
+                       r"API Error: (?:429|5\d\d)|rate.?limit", re.I)
+MOMENTARY_PAUSE = 300        # seconds
 
 # Reset-time hints, read from the limit message's line and the text after it. Absolute: "resets 3pm
 # (Europe/Paris)", "resets Oct 21, 9am", "resets at 3:30pm", "try again at Oct 27th, 2026 6:34 AM",
@@ -423,8 +429,11 @@ def classify(code: int, out: str, err: str, seconds: float = 0.0, timed_out: boo
     found = limit_message(out, err, code)
     if found:
         line, context = found
+        reset_at = reset_time(context)
+        if reset_at is None and MOMENTARY.search(line):
+            reset_at = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=MOMENTARY_PAUSE)
         return AgentResult(exit_code=code, seconds=seconds, limited=True, timed_out=timed_out,
-                           reset_at=reset_time(context), message=line)
+                           reset_at=reset_at, message=line)
     tail = out[-6000:] + err[-6000:]
     return AgentResult(exit_code=code, seconds=seconds, timed_out=timed_out,
                        transient=code != 0 and bool(TRANSIENT.search(tail)))
