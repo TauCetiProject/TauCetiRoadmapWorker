@@ -470,6 +470,34 @@ def scan_layer_ids(readme: str) -> list[Hit]:
 TARGET_HEADING = re.compile(r"^\*\*([A-Z][^*\n]{2,150})\*\*", re.MULTILINE)
 NOT_TARGETS = ("Checks", "Summary", "Dependencies", "Examples", "Verdict", "Needs", "Merge order")
 LAYER_SUBSECTION = re.compile(r"^###\s+(\d+\.\d+[a-z]?\b.*)$")
+_PREFIXED_SUBSECTION = re.compile(r"^###\s+((?:[A-Z][A-Za-z]*\d*\.?)+\d+(?:\.\d+)*[a-z]?)\b")   # `### PA.0.12`, `### NR0.1`, `### R07.3.1`
+
+
+def scan_target_ids(readme: str) -> list[Hit]:
+    """A layered README whose target subsections are not `### k.n Title`. Two packages were submitted on
+    2026-10-24 with "0 targets" because their subsections were numbered `### PA.k.n` and `### NRk.n`: the
+    board's target reader, the review sample and every progress report then see no targets at all. Each
+    prefixed heading inside a layer is reported; a layered README with no target heading at all gets one
+    report on its first layer line."""
+    lines = (readme or "").splitlines()
+    if not any(line.startswith("## Layer") for line in lines):
+        return []
+    if readme_targets(readme):
+        return []
+    out, inside, first_layer = [], False, 0
+    for i, line in enumerate(lines, 1):
+        if line.startswith("## "):
+            inside = line.startswith("## Layer")
+            if inside and not first_layer:
+                first_layer = i
+            continue
+        if not inside:
+            continue
+        if (m := _PREFIXED_SUBSECTION.match(line)) and not m.group(1).startswith(NOT_TARGETS):
+            out.append(Hit(i, f"target id {m.group(1)[:40]!r}; write `### k.n Title` (digits only, no prefix)"))
+    if not out:
+        out.append(Hit(first_layer or 1, "layered README states no targets (`### k.n` subsections or bold target names)"))
+    return out
 
 
 def readme_targets(readme: str) -> list[str]:
@@ -717,6 +745,7 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
     r.add("round-labels", round_labels(readme + "\n" + lean))
     r.add("long-fences", scan_long_fences(readme))
     r.add("layer-ids", scan_layer_ids(readme))
+    r.add("target-ids", scan_target_ids(readme))
     if opts.order is not None:
         readmes = dict(opts.sibling_readmes)
         readmes[name] = readme

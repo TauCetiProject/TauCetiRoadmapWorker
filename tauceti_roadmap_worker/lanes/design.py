@@ -203,7 +203,7 @@ class DesignLane(Lane):
         text = readme.read_text(encoding="utf-8")
         for key, hits in (("residue", gates.scan_process_residue(text)), ("latex", gates.scan_latex(text)),
                           ("prnum", gates.scan_pr_numbers(text)), ("private-paths", gates.scan_private_paths(text)),
-                          ("layer-ids", gates.scan_layer_ids(text))):
+                          ("layer-ids", gates.scan_layer_ids(text)), ("target-ids", gates.scan_target_ids(text))):
             problems += [f"design README {key}: line {h.line}: {h.text}" for h in hits[:5]]
         order = load_order(order_path(ctx.cfg, ws.board, ws.content))
         if order and ctx.cfg.gates.require_depcheck:
