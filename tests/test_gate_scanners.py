@@ -390,3 +390,22 @@ def test_strip_anchors_leaves_a_readme_without_tags_alone():
     assert fixed.text == text and fixed.removed == 0 and fixed.rewritten == 0
     wrapped = gates.strip_anchors('A <a id="t">Theorem</a> named.\n')
     assert wrapped.text == "A Theorem named.\n" and wrapped.removed == 1
+
+
+def test_target_ids():
+    # Prefixed subsection ids (`### PA.0.12`, `### NR0.1`) make the target reader see nothing: each heading is reported.
+    bad = ("# Roadmap\n\n## Layer PA.0: Foundations\n\n### PA.0.1 Resolvability\n\nText.\n\n### PA.0.2 Covers\n\n"
+           "## Layer NR1: Hecke images\n\n### NR1.1 Selected images\n\n### Examples\n\n- one\n")
+    hits = gates.scan_target_ids(bad)
+    assert [h.line for h in hits] == [5, 9, 13], hits
+    assert "'PA.0.1'" in hits[0].text and "### k.n Title" in hits[0].text
+    # A layered README with no target heading at all is reported once, on its first layer line.
+    empty = "# Roadmap\n\n## Scope\n\ntext\n\n## Layer 1: orders\n\nProse only.\n"
+    hits = gates.scan_target_ids(empty)
+    assert [h.line for h in hits] == [7] and "states no targets" in hits[0].text, hits
+    # The required form passes, bold target names pass, and a README without layers is not checked.
+    assert gates.scan_target_ids(CLEAN_README) == []
+    assert gates.scan_target_ids("## Layer 1: x\n\n**The order.** Define it.\n") == []
+    assert gates.scan_target_ids("# Roadmap\n\nNo layers here.\n") == []
+    r = scan_folder("Toy", CLEAN_README.replace("### 1.1", "### T1.1"), CLEAN_LEAN, opts())
+    assert r.counts["target-ids"] >= 1 and not r.ok, r.details
