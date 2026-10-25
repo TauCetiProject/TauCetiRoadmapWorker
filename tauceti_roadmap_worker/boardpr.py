@@ -562,6 +562,15 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
         return f"#{number}: {fix.id} pushed; the next round follows (dry run)"
     head = pr["head"]["sha"]
     if fix.inputs.get("base_head") and head == fix.inputs["base_head"]:
+        # `pr` is the listing's entry, read before the comments: a push made during this pass is
+        # not in it. Read the head again before calling the fix unpushed.
+        try:
+            fresh = ctx.gh.api(f"repos/{repo(ctx)}/pulls/{number}") or {}
+        except GHError:
+            fresh = {}
+        if (fresh.get("head") or {}).get("sha"):
+            pr, head = fresh, fresh["head"]["sha"]
+    if fix.inputs.get("base_head") and head == fix.inputs["base_head"]:
         ctx.board.set_state(fix, "available", f"Released by the board: #{number} is still at `{head[:7]}`; the fix "
                                               "was not pushed.")
         return f"#{number}: {fix.id} did not move the head; available again"

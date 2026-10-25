@@ -99,6 +99,21 @@ def test_a_fix_that_did_not_move_the_head_is_released():
     assert fix.state == "available" and not gh.merged
 
 
+def test_a_fix_pushed_during_the_pass_is_not_released_on_the_stale_listing():
+    """The listing read at the start of the pass still shows the base head; the single pull-request
+    read shows the pushed head, so the fix is done, not released (2026-10-25: round 6 of a package
+    was released as unpushed and re-run while its commit was already on the branch)."""
+    c, gh, _b, _pkg, fix = flow()
+    import copy
+    api = gh.api
+    stale = copy.deepcopy(gh.pr)
+    stale["head"]["sha"] = "c" * 40
+    gh.api = lambda path, paginate=False: ([stale] if "/pulls?state=open" in path else api(path, paginate))
+    out = boardpr.scan(c, yes=True)
+    assert out and "did not move the head" not in out[0]
+    assert fix.state == "done"
+
+
 def test_a_stale_worker_review_releases_its_job():
     rev = new_job("REV-PKG-Foo", inputs={"board_pr": 12})
     rev.number, rev.state = 5, "submitted"
