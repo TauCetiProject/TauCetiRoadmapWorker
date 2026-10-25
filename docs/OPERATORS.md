@@ -661,6 +661,14 @@ into the merge-order file after its last supplier. With `[redteam] ready_after =
 red-team fix marks the pull request ready for review; otherwise it stays a draft for a human to mark
 ready.
 
+A transition the intake starts finishes even when a GitHub write fails on the way: the job is set
+`submitted` before its pull request is merged and `done` only once its successors exist, and every
+`board intake` finishes a merged submission whose job is still `submitted` (from the most recently
+closed pull requests: a run that stopped after the merge, or a maintainer who merged it by hand);
+a board pull request is labelled `needs-review` only once its review jobs exist; and a package's last
+red-team fix becomes done only once its port exists, a fix left submitted on a merged pull request
+being finished by the next scan. The board creates no job twice, so a repeated step is harmless.
+
 Pull requests listed in `hold-draft.txt` in the state directory stay drafts: `board sync` converts
 them back if anything marks them ready.
 

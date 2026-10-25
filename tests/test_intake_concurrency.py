@@ -107,11 +107,12 @@ def test_a_free_lock_is_taken_for_the_run_and_released_after_it(monkeypatch, cap
     monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: lock)
     monkeypatch.setattr(intake, "repair_duplicates", lambda ctx, shared, yes=False: ran.append("repair") or [])
     monkeypatch.setattr(intake, "intake_open", lambda ctx, write, only=0, shared=None: ran.append("intake") or [])
+    monkeypatch.setattr(intake, "reconcile_merged", lambda ctx, yes=False: ran.append("reconcile") or [])
     monkeypatch.setattr(cli.references, "resume_all", lambda ctx, fetcher, yes=False: ran.append("references") or [])
     monkeypatch.setattr(cli.boardpr, "scan", lambda ctx, shared, yes=False: ran.append("scan") or [])
     monkeypatch.setattr(intake, "replace_upward_roadmaps", lambda ctx, yes=False: ran.append("order") or [])
     assert cli.board_run(board_args("intake", "--yes"), cfg, run_context(cfg)) == 0
-    assert ran == ["repair", "intake", "references", "scan", "order"]
+    assert ran == ["repair", "intake", "reconcile", "references", "scan", "order"]
     assert lock.released == [intake.lock_key(cfg.project.name)]
     # A lock that cannot be written never stops a run (fail-open, said so); a dry run takes none.
     monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: Lock(claims.ERROR))

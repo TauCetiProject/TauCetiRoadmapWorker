@@ -750,6 +750,12 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
             except GHError as exc:
                 print(f"duplicates: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]})")
             skipped += [f"#{n}" for n in intake.intake_open(ctx, write, only=args.pr or 0, shared=shared)]
+            if not args.pr:
+                try:
+                    for line in intake.reconcile_merged(ctx, yes=write):
+                        print(line)
+                except GHError as exc:
+                    print(f"merged submissions: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]})")
         if not args.pr:
             for line in references.resume_all(ctx, ctx.sources_fetcher(), yes=write):
                 print(line)

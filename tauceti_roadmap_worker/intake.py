@@ -300,14 +300,66 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None, shared=N
         return boardpr.submission_under_review(ctx, number, pr, sub, job, jobs, yes)
     if not yes:
         return f"#{number}: would merge {job.id} (dry run; pass --yes)"
+    if job.state != "submitted":
+        # `submitted` before the merge is what `reconcile_merged` finishes from.
+        ctx.board.set_state(job, "submitted", f"Submitted: #{number} is being merged (this issue said `state:{job.state}`).")
     ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash", "sha": pr["head"]["sha"]})
-    ctx.board.comment(job.number, f"Intake: merged #{number} from @{author} ({sub.get('agent') or '?'}, "
-                                  f"{sub.get('model') or '?'}).")
-    job.state = "done"
-    outcome = outcome_for(ctx, job, pr, jobs)
+    ctx.board.comment(job.number, merged_note(number, author, sub))
+    return f"#{number}: merged {job.id}; " + complete_merged(ctx, job, pr, jobs)
+
+
+def merged_note(number: int, author: str, sub: dict) -> str:
+    """The authorship record of a merged submission (board.INTAKE_NOTE reads it)."""
+    return f"Intake: merged #{number} from @{author} ({sub.get('agent') or '?'}, {sub.get('model') or '?'})."
+
+
+def complete_merged(ctx, job: Job, pr: dict, jobs: list[Job]) -> str:
+    """What follows a submission's merge: its successors, then the job done and its issue closed. The
+    job becomes done last, so a run stopped on the way leaves it unfinished with its pull request
+    merged, and `reconcile_merged` finishes it (the board creates no job twice)."""
+    note = advance(ctx, job, outcome_for(ctx, job, pr, jobs), jobs)
     ctx.board.set_state(job, "done")
-    ctx.gh.write("PATCH", f"repos/{cfg.repositories.board_repo()}/issues/{job.number}", {"state": "closed"})
-    return f"#{number}: merged {job.id}; " + advance(ctx, job, outcome, jobs)
+    ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}", {"state": "closed"})
+    return note
+
+
+RECONCILE_WINDOW = 50   # the most recently closed pull requests a run looks through
+
+
+def reconcile_merged(ctx, yes: bool) -> list[str]:
+    """Merged submissions whose job is still `submitted`, finished as the intake would have: a run
+    stopped between a merge and the end of its transition (`complete_merged`), or a maintainer who
+    merged a submission by hand. A job in any other state is left alone (a human may have reopened
+    it). Their authorship record is written when the job's issue lacks it. A design or package (whose
+    review followed its submission) is only marked done. One listing of the most recently closed
+    pull requests; a job the board already finished costs nothing more."""
+    repo = ctx.cfg.repositories.packages_repo()
+    pulls = ctx.gh.api(f"repos/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page={RECONCILE_WINDOW}") or []
+    out, jobs = [], None
+    for pr in pulls:
+        sub = board.decode_submission(pr.get("body") or "") if pr.get("merged_at") else None
+        if not sub:
+            continue
+        jobs = jobs if jobs is not None else ctx.board.all_jobs()
+        named = board.submission_issue(pr.get("body") or "")
+        job = next((j for j in jobs if j.id == sub["job"] and (not named or j.number == named)), None) \
+            or ctx.board.find(sub["job"], jobs)
+        if not job or job.state != "submitted":
+            continue
+        number, author = int(pr["number"]), pr["user"]["login"]
+        if not yes:
+            out.append(f"#{number}: merged, but {job.id} is {job.state}; would finish it (dry run)")
+            continue
+        if not any(m and int(m.group(1)) == number for m in (board.INTAKE_NOTE.match(c.get("body") or "")
+                                                               for c in ctx.board.comments(job.number))):
+            ctx.board.comment(job.number, merged_note(number, author, sub))
+        if board.artefact_of(job.id) and job.kind != "review":
+            boardpr.finish_job(ctx, job, f"Intake: #{number} was merged.")
+            out.append(f"#{number}: merged; {job.id} done")
+            continue
+        out.append(f"#{number}: merged; finished {job.id}; " + complete_merged(ctx, job, pr, jobs))
+        jobs = ctx.board.all_jobs()
+    return out
 
 
 _norm = board.title_key
