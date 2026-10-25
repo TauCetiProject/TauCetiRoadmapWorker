@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import textwrap
 from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -44,16 +45,33 @@ def transient(url: str) -> FetchError:
     return FetchError(f"{url}: connection reset", permanent=False)
 
 
-def make_pdf(pages: list[str]) -> bytes:
-    """A valid PDF with one line of Helvetica text per page ('' gives a page with no text layer)."""
+PDF_LINE = 60          # characters of 12 pt Helvetica that fit between the margins of a Letter page
+
+
+def make_pdf(pages: list[str | None]) -> bytes:
+    """A valid Letter-size PDF with each page's text set in 12 pt Helvetica, wrapped into lines that
+    stay inside the page: text past the right edge is not on the page, and `pdftotext` drops it.
+    '' gives a blank page and None a scanned page (an image, no text layer)."""
     objects = ["<< /Type /Catalog /Pages 2 0 R >>", None, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
     kids = []
     for text in pages:
-        stream = (f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET" if text else "").encode("latin-1")
-        objects.append(f"<< /Length {len(stream)} >>\nstream\n{stream.decode('latin-1')}\nendstream")
+        resources = "/Font << /F1 3 0 R >>"
+        if text is None:
+            pixels = bytes(range(0, 256, 4))
+            objects.append(f"<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray "
+                           f"/BitsPerComponent 8 /Length {len(pixels)} >>\nstream\n{pixels.decode('latin-1')}\nendstream")
+            resources = f"/XObject << /Im1 {len(objects)} 0 R >>"
+            stream = "q 468 0 0 648 72 72 cm /Im1 Do Q"
+        elif text:
+            lines = [line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+                     for line in textwrap.wrap(text, PDF_LINE)]
+            stream = "BT /F1 12 Tf 14 TL 72 720 Td " + " T* ".join(f"({line}) Tj" for line in lines) + " ET"
+        else:
+            stream = ""
+        objects.append(f"<< /Length {len(stream.encode('latin-1'))} >>\nstream\n{stream}\nendstream")
         content = len(objects)
         objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {content} 0 R "
-                       "/Resources << /Font << /F1 3 0 R >> >> >>")
+                       f"/Resources << {resources} >> >>")
         kids.append(f"{len(objects)} 0 R")
     objects[1] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {len(kids)} >>"
     out, offsets = bytearray(b"%PDF-1.4\n"), []
