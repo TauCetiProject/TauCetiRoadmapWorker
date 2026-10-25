@@ -1112,9 +1112,9 @@ def sync_expired(ctx, shared: claims.Claims | None) -> list[str]:
     """Claimed jobs nobody holds any more, back to `state:available` now rather than after
     `stale_hours`: a lease that expired (the worker stopped renewing it: killed, or off the network),
     and a claim with no lease at all whose "Claimed for" comment is older than the job lease's
-    lifetime (a worker that died before, or without, registering one: a full disk). A claim made by
-    a `reviewing` comment holds for its own four hours. Only with a namespace that can be read now:
-    an unreadable one never looks like one without leases."""
+    lifetime, `[claims] job_ttl_seconds` (a worker that died before, or without, registering one: a
+    full disk). A claim made by a `reviewing` comment holds for its own four hours. Only with a
+    namespace that can be read now: an unreadable one never looks like one without leases."""
     if not shared:
         return []
     from .boardpr import COMMENT_CLAIM_TTL
@@ -1138,7 +1138,7 @@ def sync_expired(ctx, shared: claims.Claims | None) -> list[str]:
         except GHError:
             continue
         age = claim_age(claim, dt.datetime.fromtimestamp(now, dt.UTC)) if claim else None
-        if age is None or age <= (COMMENT_CLAIM_TTL if claim["comment"] else claims.JOB_TTL):
+        if age is None or age <= (COMMENT_CLAIM_TTL if claim["comment"] else ctx.cfg.claims.job_ttl_seconds):
             continue
         current = ctx.board.current_state(job)
         if current != "claimed":

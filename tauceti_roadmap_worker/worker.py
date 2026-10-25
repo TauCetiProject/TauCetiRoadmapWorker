@@ -30,7 +30,6 @@ from .gh import GHError
 from .lanes import Context, LaneResult, lane_for
 from .lanes.base import LaneBlocked
 
-HEARTBEAT = 300
 MAX_ATTEMPTS = 3
 
 
@@ -207,7 +206,8 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
             log(f"skip {job.id}: {reason}")
             continue
         key = claims.job_key(ctx.cfg.project.name, job.id)
-        status = ctx.claims.acquire(key) if ctx.claims and not ctx.dry_run else claims.ERROR
+        ttl = ctx.cfg.claims.job_ttl_seconds
+        status = ctx.claims.acquire(key, ttl) if ctx.claims and not ctx.dry_run else claims.ERROR
         if status == claims.HELD:
             log(f"skip {job.id}: another worker holds it")
             continue
@@ -239,8 +239,8 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print, held: bool = True
             except GHError:
                 pass  # no write access to the board: the lease is the claim; `board sync` mirrors it
         log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
-        with claims.Heartbeat(None if ctx.dry_run else ctx.claims, key, claims.JOB_TTL, HEARTBEAT, held=held,
-                              gh=ctx.gh, log=log):
+        ttl, every = ctx.cfg.claims.job_ttl_seconds, ctx.cfg.claims.renew_seconds
+        with claims.Heartbeat(None if ctx.dry_run else ctx.claims, key, ttl, every, held=held, gh=ctx.gh, log=log):
             result = lane.run(job, ctx)
         result.agent = result.agent or ctx.agent
     except LaneBlocked as exc:

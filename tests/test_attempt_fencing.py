@@ -15,7 +15,7 @@ import subprocess
 
 import pytest
 
-from tauceti_roadmap_worker import claims, cli, intake, worker
+from tauceti_roadmap_worker import claims, cli, config, intake, worker
 from tauceti_roadmap_worker.board import Board
 from tauceti_roadmap_worker.gh import GH
 from tauceti_roadmap_worker.lanes import Context, LaneResult
@@ -25,6 +25,7 @@ from .test_checkout import needs_git
 
 JOB = "TARGET-QSeries"
 KEY = claims.job_key(example_config().project.name, JOB)
+TTL, RENEW = example_config().claims.job_ttl_seconds, example_config().claims.renew_seconds
 FAR = 4_102_444_800
 
 
@@ -81,14 +82,14 @@ def test_a_renewal_that_finds_another_owner_loses_the_lease_for_good():
     now, ns = namespace()
     alice, bob = ns.owner("alice/w1"), ns.owner("bob/w2")
     gh, lines = FakeIssuesGH([job_issue(1, JOB, "claimed")]), []
-    assert alice.acquire(KEY) == claims.ACQUIRED
-    with claims.Heartbeat(alice, KEY, claims.JOB_TTL, 300, gh=gh, log=lines.append, clock=lambda: now[0]) as beat:
-        now[0] += 300
+    assert alice.acquire(KEY, TTL) == claims.ACQUIRED
+    with claims.Heartbeat(alice, KEY, TTL, RENEW, gh=gh, log=lines.append, clock=lambda: now[0]) as beat:
+        now[0] += RENEW
         beat.beat()
         beat.check()                                          # renewed: still ours
         alice.release(KEY, force=True)                        # the board closed the job; bob takes it up
         assert bob.acquire(KEY) == claims.ACQUIRED
-        now[0] += 300
+        now[0] += RENEW
         beat.beat()
         with pytest.raises(claims.LeaseLost, match="it is gone or another owner holds it"):
             beat.check()
@@ -106,14 +107,15 @@ def test_a_renewal_that_finds_another_owner_loses_the_lease_for_good():
 def test_renewal_errors_lose_the_lease_only_when_it_expires():
     now, ns = namespace()
     alice = ns.owner("alice/w1")
-    alice.acquire(KEY)
-    beat = claims.Heartbeat(alice, KEY, claims.JOB_TTL, 300, clock=lambda: now[0])
+    alice.acquire(KEY, TTL)
+    start = now[0]
+    beat = claims.Heartbeat(alice, KEY, TTL, RENEW, clock=lambda: now[0])
     ns.down.add("alice/w1")                                   # the namespace cannot be reached
-    for _ in range(4):                                        # 4 x 300 s < the lease's 1500 s
-        now[0] += 300
+    for _ in range(TTL // RENEW - 1):                         # every renewal before the expiry fails
+        now[0] += RENEW
         beat.beat()
         beat.check()
-    now[0] += 299
+    now[0] = start + TTL - 1
     beat.check()
     now[0] += 1                                               # the lease's expiry, between two beats
     with pytest.raises(claims.LeaseLost, match="no renewal succeeded before it expired"):
@@ -126,15 +128,15 @@ def test_renewal_errors_lose_the_lease_only_when_it_expires():
 def test_a_transient_renewal_error_keeps_the_lease():
     now, ns = namespace()
     alice = ns.owner("alice/w1")
-    alice.acquire(KEY)
-    beat = claims.Heartbeat(alice, KEY, claims.JOB_TTL, 300, clock=lambda: now[0])
+    alice.acquire(KEY, TTL)
+    beat = claims.Heartbeat(alice, KEY, TTL, RENEW, clock=lambda: now[0])
     ns.down.add("alice/w1")
-    now[0] += 600
+    now[0] += RENEW
     beat.beat()
     ns.down.clear()
-    now[0] += 300
-    beat.beat()                                               # renewed at 900 s: good until 2400 s
-    now[0] += 1200
+    now[0] += RENEW
+    beat.beat()                                               # renewed: good for TTL from here
+    now[0] += TTL - 1                                         # past the first expiry
     beat.check()
     assert not beat.lost
 
@@ -144,14 +146,14 @@ def test_an_unclaimed_attempt_takes_its_lease_at_a_beat_or_yields_to_its_holder(
     alice, bob = ns.owner("alice/w1"), ns.owner("bob/w2")
     ns.down.add("alice/w1")
     assert alice.acquire(KEY) == claims.ERROR                 # fail-open: the round runs unclaimed
-    beat = claims.Heartbeat(alice, KEY, claims.JOB_TTL, 300, held=False, clock=lambda: now[0])
-    now[0] += 3000
+    beat = claims.Heartbeat(alice, KEY, TTL, RENEW, held=False, clock=lambda: now[0])
+    now[0] += 2 * TTL
     beat.beat()
     beat.check()                                              # no lease to lose
     ns.down.clear()
     beat.beat()
     assert beat.held and alice.read(KEY)["owner"] == "alice/w1"
-    other = claims.Heartbeat(bob, KEY, claims.JOB_TTL, 300, held=False, clock=lambda: now[0])
+    other = claims.Heartbeat(bob, KEY, TTL, RENEW, held=False, clock=lambda: now[0])
     other.beat()
     with pytest.raises(claims.LeaseLost, match="another owner holds it"):
         other.check()
@@ -159,7 +161,7 @@ def test_an_unclaimed_attempt_takes_its_lease_at_a_beat_or_yields_to_its_holder(
 
 def test_without_claims_nothing_is_guarded():
     gh = FakeIssuesGH([job_issue(1, JOB, "claimed")])
-    with claims.Heartbeat(None, KEY, claims.JOB_TTL, 0.01, gh=gh) as beat:
+    with claims.Heartbeat(None, KEY, TTL, 0.01, gh=gh) as beat:
         beat.beat()
         beat.check()
         gh.write("POST", "repos/o/board/issues/1/comments", {"body": "a dry run's write"})
@@ -180,6 +182,16 @@ def test_a_fenced_write_never_reaches_gh(monkeypatch):
     assert ran == []
     gh.api("repos/o/b")                                       # reads are never fenced
     assert len(ran) == 1
+
+
+def test_the_lease_lifetime_and_renewal_come_from_the_configuration():
+    assert (TTL, RENEW) == (3600, 1200)                       # TauCetiWorker's measured values
+    assert config.parse('[project]\nname = "P"\n').claims == config.Claims(3600, 1200)     # the defaults
+    cfg = config.parse('[project]\nname = "P"\n[claims]\njob_ttl_seconds = 900\nrenew_seconds = 300\n')
+    assert (cfg.claims.job_ttl_seconds, cfg.claims.renew_seconds) == (900, 300) and cfg.warnings == []
+    for bad in ("renew_seconds = 3600", "renew_seconds = 10"):
+        with pytest.raises(config.ConfigError, match="claims.renew_seconds must be at least 30 and below"):
+            config.parse(f'[project]\nname = "P"\n[claims]\n{bad}\n')
 
 
 # --- renewals against a real namespace ------------------------------------------------------------
@@ -325,6 +337,26 @@ def test_a_round_still_holding_its_claim_is_released_as_before(stale_round, monk
     monkeypatch.setattr(worker, "lane_for", lambda job: Fails())
     worker.work_once(ctx, None, log=lambda line: None)
     assert gh.states(1) == ["available"] and gh.comments[1][-1].startswith("Released by worker `chris-1`: failed")
+
+
+def test_a_round_leases_and_renews_its_job_as_configured(stale_round, monkeypatch):
+    ctx, _gh, ns = stale_round
+    ctx.cfg.claims.job_ttl_seconds, ctx.cfg.claims.renew_seconds = 900, 300
+    seen = {}
+
+    class Looks:
+        agent_started = True
+
+        def eligible(self, job, ctx_):
+            return ""
+
+        def run(self, job, ctx_):
+            beat, lease = ctx_.gh.fence.__self__, ns.leases[KEY]
+            seen.update(lease=lease["expires_at"] - lease["acquired_at"], beat=(beat.ttl, beat.every))
+            return LaneResult(job.id, "failed", "the checks failed")
+    monkeypatch.setattr(worker, "lane_for", lambda job: Looks())
+    worker.work_once(ctx, None, log=lambda line: None)
+    assert seen == {"lease": 900, "beat": (900, 300)}
 
 
 # --- the board lock -------------------------------------------------------------------------------

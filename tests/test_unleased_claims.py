@@ -11,6 +11,7 @@ from tauceti_roadmap_worker.board import last_claim, new_job
 from .fakes import FakeBoard, FakeClaims, example_config
 
 NOW = dt.datetime.now(dt.UTC)
+LEASE_MINUTES = example_config().claims.job_ttl_seconds / 60
 
 
 def at(minutes_ago: float) -> str:
@@ -44,14 +45,15 @@ def test_the_claim_comment_is_read():
 
 
 def test_board_sync_releases_a_claim_with_no_live_lease():
-    rows = [claimed(525, "PORT-Coleman", "Claimed for `PORT-Coleman` by worker `chris-2` (@CBirkbeck, codex).", 45),
+    rows = [claimed(525, "PORT-Coleman", "Claimed for `PORT-Coleman` by worker `chris-2` (@CBirkbeck, codex).",
+                    LEASE_MINUTES + 20),
             claimed(526, "RT-Fresh~1a", "Claimed for `RT-Fresh~1a` by worker `chris-3` (@CBirkbeck, claude).", 10),
             claimed(527, "REV-PKG-Browser", "Claimed for `REV-PKG-Browser` by @roed-math (chatgpt), by a comment on #12.", 90)]
     board = board_with(*rows)
     ctx = SimpleNamespace(cfg=example_config(), board=board)
     out = intake.sync_expired(ctx, FakeClaims())
     assert out == ["PORT-Coleman: released (claimed by worker `chris-2` (@CBirkbeck, codex), no lease)"]
-    assert board.states == [("PORT-Coleman", "available")]                      # 10 min: within the lease's 25
+    assert board.states == [("PORT-Coleman", "available")]                      # 10 min: within the lease
     [(number, note)] = board.notes
     assert number == 525 and note.startswith("Released: claimed by worker `chris-2` (@CBirkbeck, codex) at ")
     assert note.endswith("with no live lease.")
@@ -66,7 +68,8 @@ def test_a_claim_submitted_since_the_listing_is_not_released():
     """Board 2026-10-21: PKG-SelmerIwasawaCohomologyPartII (#582) submitted #589 at 14:44:51Z (its
     28-minute lane outlived the 25-minute lease, released at its end); the sync's listing still
     read `claimed`, it released the job at 14:45:00Z, and a worker rebuilt the package."""
-    rows = [claimed(582, "PKG-Selmer", "Claimed for `PKG-Selmer` by worker `chris-1` (@CBirkbeck, codex).", 28)]
+    rows = [claimed(582, "PKG-Selmer", "Claimed for `PKG-Selmer` by worker `chris-1` (@CBirkbeck, codex).",
+                    LEASE_MINUTES + 3)]
     board = board_with(*rows)
     board.current_state = lambda job: "submitted"          # what the issue carries now
     out = intake.sync_expired(SimpleNamespace(cfg=example_config(), board=board), FakeClaims())

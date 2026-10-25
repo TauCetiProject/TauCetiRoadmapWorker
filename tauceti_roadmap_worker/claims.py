@@ -38,7 +38,7 @@ from pathlib import Path
 
 NS = "refs/tauceti-claims"
 SCHEMA = "tauceti-claim/v1"
-JOB_TTL = 1500
+JOB_TTL = 3600         # the default `[claims] job_ttl_seconds`
 AUTHOR_TTL = 10 * 365 * 24 * 3600
 GIT_ID = {"GIT_AUTHOR_NAME": "tauceti-claim", "GIT_AUTHOR_EMAIL": "claim@tauceti.invalid",
           "GIT_COMMITTER_NAME": "tauceti-claim", "GIT_COMMITTER_EMAIL": "claim@tauceti.invalid"}

@@ -244,6 +244,15 @@ class Worker:
 
 
 @dataclass
+class Claims:
+    # Seconds a job lease lasts after its last renewal: a worker that dies holds its job this long,
+    # and `board sync` releases a claim with no lease once its "Claimed for" comment is this old.
+    job_ttl_seconds: int = 3600
+    # Seconds between a running worker's renewals of its lease (each a push to the claims namespace).
+    renew_seconds: int = 1200
+
+
+@dataclass
 class Config:
     schema_version: int = 1
     project: Project = field(default_factory=Project)
@@ -259,6 +268,7 @@ class Config:
     replies: Replies = field(default_factory=Replies)
     prompts: Prompts = field(default_factory=Prompts)
     worker: Worker = field(default_factory=Worker)
+    claims: Claims = field(default_factory=Claims)
     review: Review = field(default_factory=Review)
     path: str = ""
     warnings: list[str] = field(default_factory=list)
@@ -370,6 +380,8 @@ def validate(cfg: Config) -> None:
         problems.append("review.separation must be operator, agent or family")
     if cfg.worker.idle_seconds < 30:
         problems.append("worker.idle_seconds must be at least 30")
+    if not 30 <= cfg.claims.renew_seconds < cfg.claims.job_ttl_seconds:
+        problems.append("claims.renew_seconds must be at least 30 and below claims.job_ttl_seconds")
     if cfg.roadmap.merge_order_repo not in ("packages", "content", "local"):
         problems.append("roadmap.merge_order_repo must be packages, content or local")
     for cls in cfg.sources.allow:

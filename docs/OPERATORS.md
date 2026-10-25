@@ -492,24 +492,25 @@ job, and the board's intake alone decides which submission is taken in.
 
 Taking a lease is fail-open: a lease that cannot be registered is logged and the round proceeds
 unclaimed, trying to take the lease at every renewal; once another owner holds it, the round has
-lost it. Holding a lease is not: the worker renews it every five minutes while the round runs, and
-the lease is lost when a renewal finds it gone or another owner's, or when every renewal fails until
-its 25 minutes run out (an unreachable namespace: anyone may take an expired lease). The round's
-work goes on, but it writes nothing more to GitHub: the first write it attempts (or its submission,
-which checks before its first push) ends the round as `lease-lost: the lease ... was lost: <why>`,
-a checked run is kept in `pending-push/` as a run whose push failed is (the next attempt on this
-worker pushes it without the agent), and the job is released only while it is still this worker's
-claim.
+lost it. Holding a lease is not: a job lease lasts an hour from its last renewal (`[claims]
+job_ttl_seconds`, default 3600), the worker renews it every 20 minutes while the round runs
+(`[claims] renew_seconds`, default 1200), and the lease is lost when a renewal finds it gone or
+another owner's, or when every renewal fails until it expires (an unreachable namespace: anyone may
+take an expired lease). The round's work goes on, but it writes nothing more to GitHub: the first
+write it attempts (or its submission, which checks before its first push) ends the round as
+`lease-lost: the lease ... was lost: <why>`, a checked run is kept in `pending-push/` as a run whose
+push failed is (the next attempt on this worker pushes it without the agent), and the job is
+released only while it is still this worker's claim.
 
 A worker id runs one process at a time (`workers/<id>/worker.lock`): at its start a worker releases
 any lease its previous process left behind (killed before it could release, or crashed), and any
 claimed job whose last "Claimed for" comment names this worker id and operator even with no lease (a
 process that died before it wrote one), and puts those jobs back to `state:available` while their
-issues still say `state:claimed`. `board sync` puts back every claimed job whose
-lease has expired (the worker stopped renewing it), and every claimed job with no lease at all whose
-"Claimed for" comment is older than the job lease's 25 minutes ("Released: claimed by <worker> at
-<time> with no live lease"; a claim made by a `reviewing` comment holds for its four hours), without
-waiting for `board stale`; a claims namespace that cannot be read at that moment releases nothing.
+issues still say `state:claimed`. `board sync` puts back every claimed job whose lease has expired
+(the worker stopped renewing it), and every claimed job with no lease at all whose "Claimed for"
+comment is older than a job lease lasts ("Released: claimed by <worker> at <time> with no live
+lease"; a claim made by a `reviewing` comment holds for its four hours), without waiting for `board
+stale`; a claims namespace that cannot be read at that moment releases nothing.
 
 When a design, package or fix is submitted, the worker also records an author lease
 (`roadmap/<project>/author/<JOB>`, with the operator login, agent and model inside). A review job
