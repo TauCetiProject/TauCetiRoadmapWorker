@@ -40,8 +40,12 @@ port, red-team fix and gate lanes run the targeted build (`[gates] build`, defau
 PATH (elan installs the pinned toolchain on first use) and the machine's shared Lake packages for
 the checkout's pin, `<state>/lake/<pin>/packages`, which every checkout and worktree links as its
 `.lake/packages` and which the first lane to need them fills with `lake exe cache get` once, under
-`<state>/lake/<pin>/.lock`, marking `.ready`; that first fetch does not start below 20 GB free on
-the state directory's disk (the disk guard), while a ready pin costs nothing. When elaboration still
+`<state>/lake/<pin>/.lock`, marking `.ready` with the pin; that first fetch does not start below
+20 GB free on the state directory's disk (the disk guard), while a ready pin costs nothing. The pin
+is the hash of the manifest, toolchain and lakefile, computed again on every setup: a checkout whose
+pin moved (main bumped, a pull request branch or a kept commit checked out) is relinked to its new
+pin's packages (the old link is unlinked, never followed), and a `.ready` written for another pin
+does not count. When elaboration still
 cannot run (no `lake`, the fetch failed, the guard tripped) the lane never skips it silently: the
 brief's `Elaborate` line says why, the worker's check adds the problem
 `Suggested.lean: not elaborated — <reason>`, the package lane's repair pass receives it and the
@@ -67,7 +71,11 @@ always among them. An operator who already holds a built `.lake/packages` may st
 export TAUCETI_ROADMAP_LAKE_PACKAGES=/path/to/TauCetiRoadmap/.lake/packages
 ```
 
-Workers symlink it into their checkouts and worktrees instead of the shared copy.
+Workers symlink it into their checkouts and worktrees instead of the shared copy when it was built
+for their pin: it must be the `.lake/packages` of a Lake checkout whose manifest, toolchain and
+lakefile are the worker checkout's. Otherwise (the operator's checkout is at other pins, or the
+directory is not inside a checkout, so its pin cannot be verified) the workers use the shared copy
+of their pin, and the round log says why the exported one was not used.
 
 ## Running a fleet
 
@@ -708,7 +716,7 @@ machine are here:
 | --- | --- |
 | `workers/<id>/board`, `content` | the worker's checkouts of the packages and content repositories |
 | `workers/<id>/port/<Name>`, `pr/<Name>` | worktrees for the port lane and for work on a pull request branch; their `.lake/packages` is a link to `lake/<pin>/packages`; removed after the lane submits, and at worker start when the roadmap has no open job (only git worktrees of the content checkout under `pr/` and `port/`; `build/` holds the worker's snapshot of the briefs and is never swept) |
-| `lake/<pin>/packages` | the machine's one copy of the Lake packages (Mathlib and Tau Ceti oleans, about 16 GB) per pin of the content repository's manifest, toolchain and lakefile, shared by every worktree of every worker; `lake exe cache get` fills it once (`.ready` marks it) |
+| `lake/<pin>/packages` | the machine's one copy of the Lake packages (Mathlib and Tau Ceti oleans, about 16 GB) per pin of the content repository's manifest, toolchain and lakefile, shared by every worktree of every worker; `lake exe cache get` fills it once (`.ready` marks it, with the pin) |
 | `workers/<id>/jobs/<JOB>/` | brief, agent logs (`run-N.out` with START/USAGE/EXIT lines, `run-N.err`, the raw events `run-N.jsonl`), scratch (with the worker's `citations.md` and `signatures.md`), problems, gate result, `usage.jsonl` |
 | `workers/<id>/usage.jsonl` | the tokens of every agent run of this worker (`tauceti-roadmap usage`) |
 | `open-roadmaps/mirror.git`, `open-roadmaps/index.json` | the bare mirror of the roadmap repository with the head of every open roadmap pull request (`refs/open/<n>`), and their index; shared by the host's workers, rebuilt at most every half hour |

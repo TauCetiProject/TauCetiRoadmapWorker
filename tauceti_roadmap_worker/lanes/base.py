@@ -15,7 +15,6 @@ import copy
 import dataclasses
 import datetime as dt
 import json
-import os
 import re
 import shlex
 import shutil
@@ -31,7 +30,8 @@ from ..config import Config
 from ..depgraph import read_order
 from ..gh import GH, GHError, transient
 from ..paths import sanitize_worker_id
-from .lake import MIN_FREE_GB_BUILD, MIN_FREE_GB_WARN, LakeSetup, free_gb, prepare_lake  # noqa: F401 (re-exports)
+from .lake import (MIN_FREE_GB_BUILD, MIN_FREE_GB_WARN, LakeSetup, free_gb, prepare_lake,  # noqa: F401 (re-exports)
+                   wire_packages)
 
 PR_MARKER = "tauceti-roadmap-pr"
 
@@ -583,11 +583,6 @@ class Lane:
         gitops.sync_checkout(cfg.repositories.content, content_dir, cfg.project.branch)
         for checkout in (board_dir, content_dir):      # worktrees of the content checkout share its identity
             gitops.set_identity(checkout, ctx.operator)
-        shared = os.environ.get("TAUCETI_ROADMAP_LAKE_PACKAGES")
-        if shared and Path(shared).is_dir() and not (content_dir / ".lake" / "packages").exists():
-            # One built Mathlib/Tau Ceti for every worker of the host (never build it per worker).
-            (content_dir / ".lake").mkdir(parents=True, exist_ok=True)
-            os.symlink(Path(shared).resolve(), content_dir / ".lake" / "packages")
         branch = f"{worker}/{claims.ref_safe(job.id)}"
         gitops.git(board_dir, "checkout", "-q", "-B", branch)
         if self.resumes_checkpoint and kept == job_dir / UNSUBMITTED and (kept / pkg).is_dir():
@@ -600,6 +595,12 @@ class Lane:
             # The content checkout elaborates with the machine's shared Lake packages for its pin (fetched
             # once per pin, under the lock and the disk guard), exactly as a port worktree builds with them.
             ws.extra["lake"] = prepare_lake(content_dir, ctx.state, fetch=not ctx.dry_run, free=free_gb)
+            warning = ws.extra["lake"].warning
+        else:
+            # Relinked for its pin even when nothing is built: the briefs point agents at the pinned sources there.
+            warning = wire_packages(content_dir, ctx.state)[1]
+        if warning:
+            note_line(ws, warning)
         return ws
 
     def common_values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
@@ -1449,6 +1450,9 @@ def restore_pending(ctx: Context, job: Job, ws: Workspace, pending: dict) -> Non
             gitops.git(ws.workdir, "checkout", "-q", "-B", branch, pending["sha"])
         else:
             gitops.git(ws.workdir, "checkout", "-q", "--detach", pending["sha"])
+        if "lake" in ws.extra:          # the kept commit may pin other packages than the main it is restored onto
+            fetch = bool(ctx.cfg.gates.build or ctx.cfg.gates.elaborate) and not ctx.dry_run
+            ws.extra["lake"] = prepare_lake(ws.workdir, ctx.state, content=ws.content, fetch=fetch, free=free_gb)
     if pending.get("base"):
         ws.extra["push_base"] = pending["base"]
 

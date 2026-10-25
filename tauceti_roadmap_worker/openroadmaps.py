@@ -348,13 +348,16 @@ def citation_problems(state: Path, index: dict, readme: str, own: str = "") -> l
 
 
 def packages_dir(content: Path | None = None) -> Path | None:
-    """The pinned Lake packages to resolve Lean names against: the content checkout's, else the
-    host's shared ones (`TAUCETI_ROADMAP_LAKE_PACKAGES`)."""
-    for candidate in ([Path(content) / ".lake" / "packages"] if content else []) + \
-            ([Path(os.environ["TAUCETI_ROADMAP_LAKE_PACKAGES"])] if os.environ.get("TAUCETI_ROADMAP_LAKE_PACKAGES") else []):
-        if (candidate / "mathlib").is_dir():
-            return candidate
-    return None
+    """The pinned Lake packages to resolve Lean names against: the content checkout's (wired to its
+    pin every round, so never another pin's), else, without a checkout, the host's shared ones
+    (`TAUCETI_ROADMAP_LAKE_PACKAGES`)."""
+    if content:
+        candidate = Path(content) / ".lake" / "packages"
+    elif os.environ.get("TAUCETI_ROADMAP_LAKE_PACKAGES"):
+        candidate = Path(os.environ["TAUCETI_ROADMAP_LAKE_PACKAGES"])
+    else:
+        return None
+    return candidate if (candidate / "mathlib").is_dir() else None
 
 
 def library_tokens(state: Path, packages: Path) -> set[str]:

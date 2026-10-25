@@ -14,17 +14,28 @@ from .lake import (CACHE_GET, CACHE_GET_TIMEOUT, PIN_FILES, LakeSetup, ensure_la
 
 def fresh_worktree(ctx: Context, content: Path, name: str, kind: str, ws: Workspace | None = None) -> Path:
     """A detached worktree of the content checkout at its current HEAD (origin/<branch>), with its
-    Lake packages linked to the machine's shared copy for its pin (fetched once). With a workspace,
-    what the wiring delivered is kept in `ws.extra["lake"]` for the lane's checks and briefs."""
-    wt = ctx.wdir / kind / name
+    Lake packages linked to the machine's shared copy for its pin (`wire_worktree`)."""
+    wt = _add_worktree(content, ctx.wdir / kind / name)
+    wire_worktree(ctx, content, wt, ws)
+    return wt
+
+
+def _add_worktree(content: Path, wt: Path) -> Path:
     remove_worktree(content, wt)
     wt.parent.mkdir(parents=True, exist_ok=True)
     gitops.git(content, "worktree", "add", "-q", "--detach", str(wt), "HEAD")
+    return wt
+
+
+def wire_worktree(ctx: Context, content: Path, wt: Path, ws: Workspace | None = None) -> LakeSetup:
+    """Link the worktree's Lake packages to the machine's shared copy for the pin it has checked out
+    now (fetched once). With a workspace, what the wiring delivered is kept in `ws.extra["lake"]` for
+    the lane's checks and briefs."""
     fetch = bool(ctx.cfg.gates.build or ctx.cfg.gates.elaborate) and not ctx.dry_run
     setup = prepare_lake(wt, ctx.state, content=content, fetch=fetch, free=free_gb)
     if ws is not None:
         ws.extra["lake"] = setup
-    return wt
+    return setup
 
 
 def remove_worktree(content: Path, wt: Path) -> None:
@@ -98,11 +109,13 @@ def release_branch(content: Path, branch: str, keep: Path | None = None) -> list
 
 def pr_branch_worktree(ctx: Context, content: Path, name: str, pr: int, branch: str,
                        ws: Workspace | None = None) -> tuple[Path, str]:
-    """A worktree on the pull request's branch at its current head. Returns (worktree, head sha)."""
-    wt = fresh_worktree(ctx, content, name, "pr", ws)
+    """A worktree on the pull request's branch at its current head, wired for the branch's own pin.
+    Returns (worktree, head sha)."""
+    wt = _add_worktree(content, ctx.wdir / "pr" / name)
     gitops.git(wt, "fetch", "-q", "origin", f"pull/{pr}/head")
     release_branch(content, branch, keep=wt)      # an earlier lane's worktree may still hold the branch
     gitops.git(wt, "checkout", "-q", "-B", branch, "FETCH_HEAD")
+    wire_worktree(ctx, content, wt, ws)
     return wt, gitops.git(wt, "rev-parse", "HEAD").strip()
 
 

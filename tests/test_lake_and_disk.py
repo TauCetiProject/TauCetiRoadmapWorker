@@ -36,9 +36,14 @@ def test_worktrees_of_one_pin_share_one_package_directory(tmp_path):
     (b / ".lake" / "packages" / "mathlib").mkdir(parents=True)
     pr.link_lake_packages(content, b, state)
     assert (b / ".lake" / "packages").is_symlink()
-    # The content checkout's own packages (TAUCETI_ROADMAP_LAKE_PACKAGES) still win.
+    # The content checkout's own build is shared by the worktrees of its pin, and only by them.
     (content / ".lake" / "packages").mkdir(parents=True)
+    assert pr.link_lake_packages(content, a, state) == sa
+    for name in pr.PIN_FILES:
+        if (a / name).is_file():
+            (content / name).write_text((a / name).read_text())
     assert pr.link_lake_packages(content, a, state) == content / ".lake" / "packages"
+    assert pr.link_lake_packages(content, other, state) == sg
 
 
 def test_the_cache_is_fetched_once_per_pin(tmp_path):
