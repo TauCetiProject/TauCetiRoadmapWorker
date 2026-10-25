@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import fcntl
+import os
 import shutil
+import socket
 import time
 
 import json
@@ -89,6 +92,31 @@ def rank(jobs: list[Job], order: list[str] | None = None, priority: list[str] | 
         on_main = j.kind == "errata" and not j.inputs.get("pr")
         return (0 if human or not human_first else 1, stage.get(board.stage_of(j.id), len(stage)), on_main, j.number)
     return sorted(jobs, key=key)
+
+
+class WorkerBusy(Exception):
+    """Another process holds this worker id's state directory."""
+
+
+def hold_worker_dir(wdir: Path):
+    """An exclusive lock on `workers/<id>/worker.lock`, held as long as the returned file stays
+    open (a worker process's lifetime): two processes with one worker id would reset each other's
+    checkouts and release each other's jobs. Raises WorkerBusy, naming the holder, when it is held."""
+    wdir.mkdir(parents=True, exist_ok=True)
+    handle = open(wdir / "worker.lock", "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        holder = handle.read().strip() or "another process"
+        handle.close()
+        raise WorkerBusy(f"worker {wdir.name} is already running here ({holder}; lock {wdir / 'worker.lock'}): "
+                         "stop it, or start this one with another --worker-id") from None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid {os.getpid()} on {socket.gethostname()}\n")
+    handle.flush()
+    return handle
 
 
 PAUSED = "paused by a usage limit"
@@ -312,8 +340,8 @@ def release_leftovers(ctx: Context, log=print) -> list[str]:
     """Jobs this worker id still holds from a process that ended without releasing them (killed
     before it could, or crashed): its leases, and the claimed jobs whose last "Claimed for" comment
     names this worker id and operator, lease or not (a process that died before it wrote one). A
-    worker id runs one process at a time, so at startup they go back to `state:available`, each
-    while its issue still reads `state:claimed`. Returns the jobs released."""
+    worker id runs one process at a time (`hold_worker_dir`), so at startup they go back to
+    `state:available`, each while its issue still reads `state:claimed`. Returns the jobs released."""
     if ctx.dry_run:
         return []
     prefix = f"roadmap/{ctx.cfg.project.name}/job/"

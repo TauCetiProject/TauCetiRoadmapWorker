@@ -303,7 +303,7 @@ def _stop(signum, frame):
 def work(args) -> int:
     from .lanes import Context
     from .mergeorder import _order
-    from .worker import release_leftovers, sweep_worktrees, work_loop, work_once
+    from .worker import WorkerBusy, hold_worker_dir, release_leftovers, sweep_worktrees, work_loop, work_once
     cfg = _load(args)
     gh = GH(dry_run=args.dry_run)
     operator, last = "", None
@@ -329,24 +329,29 @@ def work(args) -> int:
     ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=cl, worker_id=paths.sanitize_worker_id(args.worker_id),
                   operator=operator, agent=agent, model=model, conf=_local_conf(args, cfg), dry_run=args.dry_run,
                   agent_fixed=bool(args.agent), model_fixed=bool(args.model))
-    log = watch.round_logger(ctx.wdir)
-    started = build.build_id()
-    build.snapshot(ctx.wdir, started)
-    log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}, "
-        f"build {started}")
-    release_leftovers(ctx, log)
-    sweep_worktrees(ctx, log)
-    # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
-    signal.signal(signal.SIGTERM, _stop)
-    if args.loop:
-        try:
-            work_loop(ctx, only, lambda: _order(ctx), log=log, build=started)
-        except KeyboardInterrupt:
-            return 130
-        return 0
-    result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx), log=log)
-    print(f"{result.job or '-'} {result.describe()}" + (f" {result.url}" if result.url else ""))
-    return 0 if result.status in ("submitted", "idle", "dry-run", "needs-references") else 1
+    try:
+        held = hold_worker_dir(ctx.wdir)
+    except WorkerBusy as exc:
+        raise SystemExit(str(exc)) from None
+    with held:
+        log = watch.round_logger(ctx.wdir)
+        started = build.build_id()
+        build.snapshot(ctx.wdir, started)
+        log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}, "
+            f"build {started}")
+        release_leftovers(ctx, log)
+        sweep_worktrees(ctx, log)
+        # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
+        signal.signal(signal.SIGTERM, _stop)
+        if args.loop:
+            try:
+                work_loop(ctx, only, lambda: _order(ctx), log=log, build=started)
+            except KeyboardInterrupt:
+                return 130
+            return 0
+        result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx), log=log)
+        print(f"{result.job or '-'} {result.describe()}" + (f" {result.url}" if result.url else ""))
+        return 0 if result.status in ("submitted", "idle", "dry-run", "needs-references") else 1
 
 
 # --- gate -----------------------------------------------------------------------------------------

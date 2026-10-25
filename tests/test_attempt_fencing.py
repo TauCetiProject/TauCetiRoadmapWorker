@@ -1,24 +1,26 @@
 """Attempts are fenced: a worker whose lease is lost writes nothing more for its job and never resets
-a state a newer attempt set; a board run holds its lock for as long as it writes.
+a state a newer attempt set; a board run holds its lock for as long as it writes; one worker id runs
+one process at a time.
 
 - `claims.Heartbeat` renews a lease and records its loss (a renewal that finds the lease gone or
   another owner's, or an expiry passed with every renewal failing); from then on every write through
   the fenced `gh` raises `LeaseLost`;
 - a renewal that cannot read the namespace is an error, never a loss;
 - a stale round keeps its run (`pending-push/`) and leaves the board as the newer attempt left it;
-- a board lock renewed by its heartbeat outlives its 15 minutes, so no second writer takes it."""
+- a board lock renewed by its heartbeat outlives its 15 minutes, so no second writer takes it;
+- a second process started with a worker id already running exits at once."""
 
 import dataclasses
 import subprocess
 
 import pytest
 
-from tauceti_roadmap_worker import claims, intake, worker
+from tauceti_roadmap_worker import claims, cli, intake, worker
 from tauceti_roadmap_worker.board import Board
 from tauceti_roadmap_worker.gh import GH
 from tauceti_roadmap_worker.lanes import Context, LaneResult
 
-from .fakes import FakeIssuesGH, example_config, job_issue
+from .fakes import FakeClaims, FakeIssuesGH, example_config, job_issue
 from .test_checkout import needs_git
 
 JOB = "TARGET-QSeries"
@@ -340,3 +342,26 @@ def test_a_renewed_board_lock_outlives_its_ttl_and_keeps_the_other_writer_out():
         beat.check()
     now[0] += intake.LOCK_TTL                                 # an unrenewed lock is free after its 15 minutes
     assert shell.acquire(key, intake.LOCK_TTL) == claims.ACQUIRED
+
+
+# --- one process per worker id --------------------------------------------------------------------
+
+def test_one_worker_id_runs_one_process(tmp_path):
+    wdir = tmp_path / "workers" / "alice-1"
+    held = worker.hold_worker_dir(wdir)
+    with pytest.raises(worker.WorkerBusy, match=r"worker alice-1 is already running here \(pid \d+ on "):
+        worker.hold_worker_dir(wdir)
+    held.close()
+    worker.hold_worker_dir(wdir).close()                      # free again once the process lets go
+
+
+def test_a_second_worker_process_exits_before_it_touches_the_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    monkeypatch.setattr(cli.GH, "login", lambda self: "alice")
+    monkeypatch.setattr(cli.claims, "open_claims", lambda *a, **k: FakeClaims(owner="alice/alice-1"))
+    wdir = example_config().state_dir() / "workers" / "alice-1"
+    held = worker.hold_worker_dir(wdir)
+    with pytest.raises(SystemExit, match="worker alice-1 is already running here"):
+        cli.main(["--conf", str(cli.paths.HERE / "tauceti-roadmap.toml.example"), "work", "--worker-id", "alice-1"])
+    held.close()
+    assert sorted(p.name for p in wdir.iterdir()) == ["worker.lock"]        # no build snapshot, no round log

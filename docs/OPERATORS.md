@@ -82,7 +82,10 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   age, when every try fails (a worker fails only when there is no copy at all). The `gh` login at
   startup is retried the same way.
 * `--worker-id` names the worker: its directory, its branch prefix and its lease owner
-  (`<login>/<worker-id>`). Use distinct ids for concurrent workers.
+  (`<login>/<worker-id>`). Use distinct ids for concurrent workers. A process holds
+  `workers/<id>/worker.lock` for its lifetime, so a second one started with the same id on the same
+  machine (a `--dry-run` too, which resets the same checkouts) exits at once with `worker <id> is
+  already running here (pid N on <host>; ...)`.
 * `--only` pins a worker to some kinds (`target, design, package, review, fix, port, redteam, gate`);
   without it the worker takes whatever is most useful: first the jobs whose roadmap descends from a
   target a human filed (origin `target:<issue>`), then imported ones (`explorer:<job>`; an unknown
@@ -498,7 +501,7 @@ a checked run is kept in `pending-push/` as a run whose push failed is (the next
 worker pushes it without the agent), and the job is released only while it is still this worker's
 claim.
 
-A worker id runs one process at a time: at its start a worker releases
+A worker id runs one process at a time (`workers/<id>/worker.lock`): at its start a worker releases
 any lease its previous process left behind (killed before it could release, or crashed), and any
 claimed job whose last "Claimed for" comment names this worker id and operator even with no lease (a
 process that died before it wrote one), and puts those jobs back to `state:available` while their
@@ -741,6 +744,7 @@ machine are here:
 | `workers/<id>/attempts.json` | failures per job on this worker |
 | `workers/<id>/pending-push.json`, `workers/<id>/jobs/<JOB>/pending-push/` | runs kept after their push failed or their lease was lost (the job's deliverables, and the commit as a bundle and a `refs/tauceti-pending/` ref): the next attempt on this worker pushes them without running the agent |
 | `workers/<id>/rounds.log` | every line the worker printed, timestamped (what `tail` follows) |
+| `workers/<id>/worker.lock` | locked by the worker's running process (its pid and host inside): a second process with the same id exits |
 | `workers/<id>/jobs/<JOB>/unsubmitted/` | what the job's last round that left anything left in the board checkout beyond the board's main, set aside before the next round reset it |
 | `rev/<pr>/` | read-only checkouts of open roadmap pull requests at their heads (was `/tmp/rev/<pr>`) |
 | `prs.json` | open roadmap pull requests: number, roadmap, head, branch, owner (was `/tmp/rev-list.txt` and `/tmp/watch-prs`) |
