@@ -127,15 +127,15 @@ def test_a_package_through_review_fix_review_red_team_and_port():
     assert rev.inputs == {"board_pr": 12, "operator": "alice", "after_comment": 0} and not gh.merged
     assert {"name": "needs-review"} in gh.pr["labels"] and boardpr.BRIEF_MARK in gh.comments[0]["body"]
     assert "Review (<agent>) of aaaaaaa" in gh.comments[0]["body"] and "/home/" not in gh.comments[0]["body"]
-    assert board.posted[0] == (3, "Intake: authored by @alice (codex, gpt-6.1-sol) in #12.")
+    assert board.posted[0] == (3, "Intake: authored by `alice` (codex, gpt-6.1-sol) in #12.")
 
     # A listed browser reviewer claims it, reviews an old head (not counted), then the head.
     gh.say("roed-math", "reviewing (chatgpt)")
     gh.say("roed-math", review("chatgpt", "b" * 40, "accepted"))
     gh.say("mallory", review("chatgpt", "a" * 40, "accepted"))            # not a listed login: ignored
     out = boardpr.scan(ctx, yes=True)
-    assert out == ["REV-PKG-Foo claimed by @roed-math"] and rev.state == "claimed"
-    assert "Not counted: @roed-math's review is of `bbbbbbb`" in gh.comments[-1]["body"]
+    assert out == ["REV-PKG-Foo claimed by roed-math"] and rev.state == "claimed"
+    assert "Not counted: `roed-math`'s review is of `bbbbbbb`" in gh.comments[-1]["body"]
     gh.say("roed-math", review("chatgpt", "a" * 40, "needs_changes", findings=2))
     out = boardpr.scan(ctx, yes=True)
     assert out[0].startswith("#12: REV-PKG-Foo needs_changes; created FIX-PKG-Foo~2")

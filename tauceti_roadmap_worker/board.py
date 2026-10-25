@@ -649,9 +649,9 @@ def decode_submission(body: str) -> dict | None:
     return data if isinstance(data, dict) and "job" in data else None
 
 
-INTAKE_NOTE = re.compile(r"^Intake: merged #(\d+) from @([A-Za-z0-9-]+)(?: \(([^,)]*)(?:, ([^)]*))?\))?")
+INTAKE_NOTE = re.compile(r"^Intake: merged #(\d+) from `?@?([A-Za-z0-9-]+)`?(?: \(([^,)]*)(?:, ([^)]*))?\))?")
 # Written when a design or package goes under review, and for every fix pushed to its pull request.
-AUTHOR_NOTE = re.compile(r"^Intake: authored by @([A-Za-z0-9-]+) \(([^,)]*), ([^)]*)\) in #(\d+)")
+AUTHOR_NOTE = re.compile(r"^Intake: authored by `?@?([A-Za-z0-9-]+)`? \(([^,)]*), ([^)]*)\) in #(\d+)")
 
 
 def authorship_from_comments(comments: list[dict], bot_logins: list[str]) -> list[dict]:
@@ -693,7 +693,7 @@ def issue_body(job: Job, packages_repo: str, packages_dir: str, preamble: str = 
         lines.append(f"Agent: `{job.requires_agent}`" + (f", model `{job.requires_model}`" if job.requires_model else "")
                      + " (a different agent family does the other pass).")
     if job.requires_operator:
-        lines.append(f"Operator: @{job.requires_operator} (owns the pull request branch).")
+        lines.append(f"Operator: `{job.requires_operator}` (owns the pull request branch).")
     if job.inputs.get("pr"):
         lines.append(f"Pull request: #{job.inputs['pr']} on the content repository.")
     delivers = ("posts its result as a comment on this issue" if job.kind == "errata"

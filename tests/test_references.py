@@ -447,7 +447,7 @@ def test_only_allowed_answerers_name_sources():
     answers, notes, read = collect_answers(comments, keys, ["MEMBER"], [], answerer=lambda login: login == "roed-math")
     assert answers["Ket67"].login == "roed-math" and answers["Ket67"].value == "https://www.mathnet.ru/k.pdf"
     assert answers["BLR90"].action == "waive" and read == {1, 2, 3}
-    ignored = ("`source: Ket67` from @member-only is ignored: sources are named by the project's target filers "
+    ignored = ("`source: Ket67` from `member-only` is ignored: sources are named by the project's target filers "
                "and operators (or the logins `[board] reference_answerers` lists)")
     assert notes == [ignored]
 

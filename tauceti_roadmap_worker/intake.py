@@ -152,7 +152,7 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None) -> str:
     if not yes:
         return f"#{number}: would merge {job.id} (dry run; pass --yes)"
     ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash"})
-    ctx.board.comment(job.number, f"Intake: merged #{number} from @{author} ({sub.get('agent') or '?'}, "
+    ctx.board.comment(job.number, f"Intake: merged #{number} from `{author}` ({sub.get('agent') or '?'}, "
                                   f"{sub.get('model') or '?'}).")
     job.state = "done"
     outcome = outcome_for(ctx, job, pr, jobs)

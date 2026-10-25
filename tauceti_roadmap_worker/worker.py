@@ -223,7 +223,7 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
         if not ctx.dry_run:
             try:
                 ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by worker `{ctx.worker_id}` "
-                                                    f"(@{ctx.operator}, {ctx.agent}).")
+                                                    f"(`{ctx.operator}`, {ctx.agent}).")
             except GHError:
                 pass  # no write access to the board: the lease is the claim; `board sync` mirrors it
         log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")

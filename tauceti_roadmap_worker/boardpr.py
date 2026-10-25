@@ -42,7 +42,7 @@ from .gh import GHError
 
 NEEDS_REVIEW = "needs-review"
 BRIEF_MARK = "tauceti-roadmap-review-brief"
-AUTHOR_NOTE = "Intake: authored by @{login} ({agent}, {model}) in #{pr}."   # board.AUTHOR_NOTE reads it
+AUTHOR_NOTE = "Intake: authored by `{login}` ({agent}, {model}) in #{pr}."   # board.AUTHOR_NOTE reads it
 COMMENT_CLAIM_TTL = 4 * 3600   # a `reviewing` comment holds the review this long (a browser review takes hours)
 
 
@@ -210,9 +210,9 @@ def claim(ctx, job: Job, login: str, agent: str, shared) -> str:
         if holder.acquire(claims.job_key(ctx.cfg.project.name, job.id), COMMENT_CLAIM_TTL,
                           extra={"agent": agent or "browser"}) == claims.HELD:
             return ""
-    ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by @{login} ({agent or 'browser'}), by a comment on "
+    ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by `{login}` ({agent or 'browser'}), by a comment on "
                                         f"#{job.inputs.get('board_pr')}.")
-    return f"{job.id} claimed by @{login}"
+    return f"{job.id} claimed by {login}"
 
 
 def worker_pending(ctx, job: Job, reviews: list, shared) -> bool:
@@ -259,10 +259,10 @@ def reviews_for(ctx, job: Job, comments: list[dict], head: str, jobs: list[Job],
             continue
         refused = ""
         if not head.startswith(parsed.sha):
-            refused = (f"Not counted: @{login}'s {parsed.kind} is of `{parsed.sha[:7]}`, but the head is `{head[:7]}`. "
+            refused = (f"Not counted: `{login}`'s {parsed.kind} is of `{parsed.sha[:7]}`, but the head is `{head[:7]}`. "
                        "Review the current head.")
         elif not independent(ctx, login, parsed, job, jobs, shared):
-            refused = (f"Not counted for `{job.id}`: @{login} ({parsed.agent}) is not independent of its authors "
+            refused = (f"Not counted for `{job.id}`: `{login}` ({parsed.agent}) is not independent of its authors "
                        f"(separation by {ctx.cfg.review.separation}).")
         if refused:
             if cid not in handled:
@@ -281,7 +281,7 @@ def reviews_for(ctx, job: Job, comments: list[dict], head: str, jobs: list[Job],
 # --- advancing -----------------------------------------------------------------------------------------
 
 def report_text(reviews: list[tuple[dict, prreviews.Parsed]]) -> str:
-    return "\n\n---\n\n".join(f"<!-- from @{(c.get('user') or {}).get('login', '?')}, {c.get('html_url', '')} -->\n"
+    return "\n\n---\n\n".join(f"<!-- from {(c.get('user') or {}).get('login', '?')}, {c.get('html_url', '')} -->\n"
                               + (c.get("body") or "").strip() for c, _p in reviews) + "\n"
 
 
@@ -351,7 +351,7 @@ def merge(ctx, number: int, pr: dict, jobs: list[Job], verdict: dict | None, blo
     sub = board.decode_submission(pr.get("body") or "") or {}
     for j in authors_of(number, sub.get("job", ""), jobs):
         if j.state != "done":
-            finish_job(ctx, j, f"Intake: merged #{number} from @{pr['user']['login']} ({sub.get('agent') or '?'}, "
+            finish_job(ctx, j, f"Intake: merged #{number} from `{pr['user']['login']}` ({sub.get('agent') or '?'}, "
                                f"{sub.get('model') or '?'}).")
     if verdict:
         put_file(ctx, verdict["path"], json.dumps({"review": verdict["review"]}, indent=1) + "\n",
@@ -474,7 +474,7 @@ def after_verdict(ctx, job: Job, verdict: str, reviews, number: int, pr: dict, j
     pkg = board.package_dir(ctx.cfg.board.packages_dir, job.name)
     j = board.parse_job_id(job.id)
     put_file(ctx, f"{pkg}/reports/{job.id}.md", report_text(reviews), f"Board: {job.id} ({verdict})")
-    who = ", ".join(f"@{(c.get('user') or {}).get('login', '?')} ({p.agent})" for c, p in reviews)
+    who = ", ".join(f"`{(c.get('user') or {}).get('login', '?')}` ({p.agent})" for c, p in reviews)
     job.inputs.pop("merge_pending", None)
     finish_job(ctx, job, f"Intake: {verdict} on #{number} by {who}.")
     outcome = Outcome(verdict=verdict, pr=number if open_pr else 0, operator=pr["user"]["login"],
@@ -497,7 +497,7 @@ def verdict_record(job: Job, reviews, status: str) -> dict:
     record = {"status": status, "reviewer": f"independent-review-{job.id}", "date": now().date().isoformat(),
               "findings": sum(len(p.findings) for _c, p in reviews), "blocking": sum(p.blocking for _c, p in reviews),
               "notes": "comment review on the board pull request by " + ", ".join(
-                  f"@{(c.get('user') or {}).get('login', '?')} ({p.agent}) of {p.sha[:7]}" for c, p in reviews)}
+                  f"`{(c.get('user') or {}).get('login', '?')}` ({p.agent}) of {p.sha[:7]}" for c, p in reviews)}
     conditional = sorted({g for _c, p in reviews for g in p.conditional})
     if conditional and status == "accepted":
         record["conditional_gaps"] = conditional
@@ -510,7 +510,7 @@ def conclude_pass(ctx, job: Job, reviews, number: int, pr: dict, jobs: list[Job]
         return f"#{number}: {job.id} done (dry run)"
     pkg = board.package_dir(ctx.cfg.board.packages_dir, job.name)
     put_file(ctx, f"{pkg}/reports/{job.id}.md", report_text([(c, p)]), f"Board: {job.id}")
-    finish_job(ctx, job, f"Intake: red-team pass on #{number} by @{(c.get('user') or {}).get('login', '?')} "
+    finish_job(ctx, job, f"Intake: red-team pass on #{number} by `{(c.get('user') or {}).get('login', '?')}` "
                          f"({p.agent}), {len(p.findings)} finding(s).")
     j = board.parse_job_id(job.id)
     done = {x.id for x in jobs if x.state == "done"} | {job.id}

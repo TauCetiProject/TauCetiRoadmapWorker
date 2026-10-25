@@ -1063,7 +1063,7 @@ class Lane:
         self.await_pr_head(ctx, ctx.cfg.repositories.packages_repo(), self.board_pr(job), head,
                            then="not commenting")
         marker = {**self.marker(job, ctx, ws), "head": head}
-        url = self.comment_on_board_pr(job, ctx, ws, f"Fix `{job.id}` pushed `{head[:7]}` by @{ctx.operator} "
+        url = self.comment_on_board_pr(job, ctx, ws, f"Fix `{job.id}` pushed `{head[:7]}` by `{ctx.operator}` "
                                                      f"({ctx.agent}, {ctx.model}): {summary}\n\n"
                                                      f"<!-- tauceti-roadmap-review {json.dumps(marker, sort_keys=True)} -->\n")
         self.after_board_submission(job, ctx)
@@ -1112,7 +1112,7 @@ class Lane:
         repo = cfg.repositories.packages_repo()
         fork = self.push(lambda: gitops.ensure_fork(ctx.gh, repo, ctx.operator))
         self.push(lambda: gitops.push(ws.board, fork, ws.branch))
-        body = (f"Refs #{job.number}\n\n{summary}\n\nAgent: {ctx.agent} ({ctx.model}); operator @{ctx.operator}; "
+        body = (f"Refs #{job.number}\n\n{summary}\n\nAgent: {ctx.agent} ({ctx.model}); operator `{ctx.operator}`; "
                 f"worker `{ctx.worker_id}`. Files: " + ", ".join(f"`{p}`" for p in changed) + "\n\n"
                 + board.encode_submission(job.id, ctx.worker_id, ctx.operator, ctx.agent, ctx.model))
         pr = self.push(lambda: gitops.open_pull_request(ctx.gh, repo, f"{ctx.operator}:{ws.branch}", "main",

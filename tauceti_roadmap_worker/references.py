@@ -538,7 +538,7 @@ def collect_answers(comments: list[dict], keys: list[str], trusted: list[str], s
             read.add(int(c.get("id") or 0))
         for a in answers:
             if a.action == "source" and answerer is not None and not answerer(login):
-                notes.append(f"`source: {a.key}` from @{login} is ignored: sources are named by the project's target "
+                notes.append(f"`source: {a.key}` from `{login}` is ignored: sources are named by the project's target "
                              "filers and operators (or the logins `[board] reference_answerers` lists)")
                 continue
             a.comment, a.url, a.login = int(c.get("id") or 0), c.get("html_url", ""), login

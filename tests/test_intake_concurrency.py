@@ -289,7 +289,7 @@ def test_a_review_created_from_the_closed_twins_pull_request_still_advances():
     ctx = SimpleNamespace(cfg=cfg, gh=gh, board=Board(cfg, gh), operator="board-bot", dry_run=False)
     # The intake took the submission before the repair: the review names the pull request.
     assert intake.intake(ctx, 89, yes=True).startswith("#89: open for review; created REV-PKG-Foo (#12)")
-    assert gh.comments[11] == ["Intake: authored by @CBirkbeck (codex, gpt) in #89."]    # the twin it names
+    assert gh.comments[11] == ["Intake: authored by `CBirkbeck` (codex, gpt) in #89."]    # the twin it names
     assert intake.repair_duplicates(ctx, None, yes=True) == [
         "PKG-Foo: closed #10 as a duplicate of #11 (it carries the submission #89)"]
     jobs = ctx.board.all_jobs()
