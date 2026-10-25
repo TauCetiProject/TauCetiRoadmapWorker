@@ -53,7 +53,7 @@ import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import board, fetcher, sources
+from . import board, claims, fetcher, sources
 from .config import LICENCE_CLASSES
 from .gh import GHError
 from .paths import ISSUE_TEMPLATES
@@ -855,11 +855,14 @@ def record_local_needs(ctx, job: board.Job, results: list[Resolution], retries: 
 
 
 def resume_all(ctx, fet: fetcher.Fetcher, yes: bool = False) -> list[str]:
-    """Every parked job, each on its own: one job's trouble never stops the others."""
+    """Every parked job, each on its own: one job's trouble never stops the others (a lost board lock
+    stops them all)."""
     out = []
     for job in ctx.board.list_jobs(("needs-references",)):
         try:
             out.append(resume_job(ctx, job, fet, yes))
+        except claims.LeaseLost:
+            raise
         except Exception as exc:  # noqa: BLE001 - reported per job; the intake goes on with the rest
             out.append(f"{job.id}: {type(exc).__name__}: {exc}")
     return out

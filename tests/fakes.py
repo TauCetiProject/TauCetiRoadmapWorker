@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from tauceti_roadmap_worker import board, claims, config
 from tauceti_roadmap_worker.fetcher import Client, FetchError, Fetcher, Response
-from tauceti_roadmap_worker.gh import GHError
+from tauceti_roadmap_worker.gh import GHError, check_fence
 from tauceti_roadmap_worker.paths import HERE
 
 
@@ -88,6 +88,7 @@ class FakeGH:
         self.files = dict(files or {})       # path in the packages repository -> text
         self.writes: list[tuple[str, str, dict]] = []
         self.dry_run = False
+        self.fence = None
 
     def api(self, path: str, paginate: bool = False):
         if "/contents/" in path:
@@ -98,6 +99,7 @@ class FakeGH:
         raise GHError(f"GET {path}: not faked")
 
     def write(self, method: str, path: str, payload: dict | None = None):
+        check_fence(self)
         self.writes.append((method, path, payload or {}))
         if method == "PUT" and "/contents/" in path:
             self.files[path.split("/contents/", 1)[1]] = base64.b64decode(payload["content"]).decode()
@@ -122,9 +124,12 @@ class FakeBoard:
         self.threads.setdefault(number, []).append({"id": 10_000 + len(self.posted), "body": body,
                                                     "user": {"login": "board-bot"}, "author_association": "MEMBER"})
 
-    def set_state(self, job, state: str, comment: str = "") -> None:
+    def set_state(self, job, state: str, comment: str = "", expect: str = "") -> bool:
+        if expect and job.state != expect:
+            return False
         self.states.append((job.id, state))
         job.state = state
+        return True
 
     def current_state(self, job) -> str:
         return job.state
@@ -170,6 +175,7 @@ class FakeIssuesGH:
         self.pulls: list[dict] = []                  # the open pull requests of the packages repository
         self.fail_removals = False
         self.dry_run = False
+        self.fence = None
 
     def labels(self, number: int) -> list[str]:
         return [label["name"] for label in self.issues[number]["labels"]]
@@ -208,6 +214,7 @@ class FakeIssuesGH:
         self.events[number].append({"event": "labeled", "label": {"name": name}})
 
     def write(self, method: str, path: str, payload: dict | None = None):
+        check_fence(self)
         self.writes.append((method, path, payload or {}))
         parts = path.split("/")
         if parts[3:] == ["issues"] and method == "POST":       # a new issue, numbered after the last

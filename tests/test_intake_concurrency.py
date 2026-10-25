@@ -7,6 +7,8 @@ twins are repaired."""
 import datetime as dt
 from types import SimpleNamespace
 
+import pytest
+
 from tauceti_roadmap_worker import board as board_mod
 from tauceti_roadmap_worker import boardpr, claims, cli, intake, prreviews
 from tauceti_roadmap_worker.board import Board, Outcome, new_job, title_key
@@ -60,12 +62,15 @@ def test_an_issue_this_run_created_counts_before_the_listing_shows_it():
 
 
 class Lock:
-    def __init__(self, status, lease=None):
-        self.status, self.lease, self.acquired, self.released = status, lease, [], []
+    def __init__(self, status, lease=None, renewal=claims.ACQUIRED):
+        self.status, self.lease, self.renewal, self.acquired, self.released = status, lease, renewal, [], []
 
     def acquire(self, key, ttl=claims.JOB_TTL, extra=None):
         self.acquired.append((key, ttl))
         return self.status
+
+    def renew(self, key, ttl=claims.JOB_TTL):
+        return self.renewal
 
     def read(self, key):
         return self.lease
@@ -113,13 +118,63 @@ def test_a_free_lock_is_taken_for_the_run_and_released_after_it(monkeypatch, cap
     assert cli.board_run(board_args("intake", "--yes"), cfg, run_context(cfg)) == 0
     assert ran == ["repair", "intake", "references", "scan", "order"]
     assert lock.released == [intake.lock_key(cfg.project.name)]
-    # A lock that cannot be written never stops a run (fail-open, said so); a dry run takes none.
-    monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: Lock(claims.ERROR))
-    assert cli.board_run(board_args("intake", "--yes"), cfg, run_context(cfg)) == 0
-    assert capsys.readouterr().out.startswith("board lock not taken")
+    # A lock that cannot be written stops the run before any write (exit 1); a dry run takes none.
+    ran.clear()
+    unwritable = Lock(claims.ERROR)
+    monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: unwritable)
+    assert cli.board_run(board_args("intake", "--yes"), cfg, run_context(cfg)) == 1
+    assert capsys.readouterr().out.strip() == "board lock not taken (the lock ref could not be written); nothing done"
+    assert ran == [] and unwritable.released == []
     monkeypatch.setattr(intake, "board_lock",
                         lambda cfg, ctx: (_ for _ in ()).throw(AssertionError("locked a dry run")))
     assert cli.board_run(board_args("intake"), cfg, run_context(cfg)) == 0
+    assert ran == ["repair", "intake", "references", "scan", "order"]
+
+
+@pytest.mark.parametrize("argv", [["references", "--yes"], ["stale", "--release", "--yes"],
+                                  ["errata", "seed", "--yes"], ["import-explorer", "--from", "x", "--yes"]])
+def test_every_board_run_that_writes_takes_the_lock(monkeypatch, capsys, argv):
+    cfg = example_config()
+    lock = Lock(claims.HELD, {"owner": "intake:run-1", "acquired_at": 0})
+    monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: lock)
+    monkeypatch.setattr(cli, "_board_steps", lambda *a: pytest.fail(f"board {argv[0]} ran without the lock"))
+    assert cli.board_run(board_args(*argv), cfg, run_context(cfg)) == 0
+    assert capsys.readouterr().out.startswith("intake already running (intake:run-1") and len(lock.acquired) == 1
+
+
+def test_a_board_run_that_only_reads_takes_no_lock(monkeypatch):
+    cfg = example_config()
+    monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: pytest.fail("locked a run that writes nothing"))
+    monkeypatch.setattr(cli, "_board_steps", lambda args, cfg, ctx, intake, write: 0)
+    for argv in (["board", "stale", "--yes"], ["board", "stale", "--release"], ["board", "sync"],
+                 ["--dry-run", "board", "intake", "--yes"]):
+        assert cli.board_run(cli.parser().parse_args(argv), cfg, run_context(cfg)) == 0
+
+
+def test_a_board_run_that_loses_its_lock_stops_at_its_next_write(monkeypatch, capsys):
+    """The lock outlived by a long run (another writer took it over): the run's next write raises,
+    the steps after it never run, and the run exits 1."""
+    cfg = example_config()
+    lock = Lock(claims.ACQUIRED, renewal=claims.HELD)
+    ctx = run_context(cfg)
+    ran = []
+    monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: lock)
+
+    def sync_targets(ctx_):
+        ctx_.gh.fence.__self__.beat()                         # the run's heartbeat: its next renewal
+        ran.append("targets")
+        ctx_.gh.write("POST", "repos/o/board/issues", {"title": "a target's job"})
+        return ["unreachable"]
+    monkeypatch.setattr(cli.filers, "refresh", lambda ctx_: [])
+    monkeypatch.setattr(intake, "sync_targets", sync_targets)
+    monkeypatch.setattr(intake, "sync_states", lambda ctx_, shared: pytest.fail("a step ran after the loss"))
+    assert cli.board_run(board_args("sync", "--yes"), cfg, ctx) == 1
+    out = capsys.readouterr().out
+    key = intake.lock_key(cfg.project.name)
+    assert f"lease {key} lost: it is gone or another owner holds it" in out
+    assert out.strip().endswith(f"stopped: the lease {key} was lost: it is gone or another owner holds it; "
+                                "the next run carries on")
+    assert ran == ["targets"] and ctx.gh.writes == [] and lock.released == [key] and ctx.gh.fence is None
 
 
 def test_the_lock_lives_in_the_board_repository_under_the_run_or_host(monkeypatch, tmp_path):

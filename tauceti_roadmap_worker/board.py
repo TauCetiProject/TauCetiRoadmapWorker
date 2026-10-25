@@ -854,15 +854,21 @@ class Board:
                 groups.setdefault(title_key(job.title), []).append(job)
         return [sorted(g, key=lambda j: j.number) for g in groups.values() if len(g) > 1]
 
-    def set_state(self, job: Job, state: str, comment: str = "") -> None:
+    def set_state(self, job: Job, state: str, comment: str = "", expect: str = "") -> bool:
         """Make `state:<state>` the issue's only state label, whatever it carried before. The new
         label goes on first, so a failure part-way never leaves a job without a state (and out of
         every listing). Then every other `state:` label is removed: those on the issue now, as the
         add reports them (or a fresh read), not only those of the job's listing, which may be stale
         (another worker, `board sync` or a human may have added one since). A removal that fails
-        leaves two labels, which `board sync` repairs."""
+        leaves two labels, which `board sync` repairs. With `expect`, the move is conditional: the
+        issue's labels are read again just before the write, and nothing is written unless
+        `state:<expect>` is the only state label they carry. Returns whether the state was written."""
         if state not in STATES:
             raise ValueError(state)
+        if expect:
+            labels = label_names(self.gh.api(f"repos/{self.repo}/issues/{job.number}/labels")) or []
+            if state_labels(labels) != [expect]:
+                return False
         new = f"state:{state}"
         current = label_names(self.gh.write("POST", f"repos/{self.repo}/issues/{job.number}/labels",
                                             {"labels": [new]}))
@@ -881,6 +887,7 @@ class Board:
         if comment:
             self.comment(job.number, comment)
         job.state = state
+        return True
 
     def labelled_by(self, job: Job, label: str) -> str:
         """The login that last added `label` to the job's issue (adding labels needs write access to

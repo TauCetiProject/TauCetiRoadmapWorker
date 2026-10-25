@@ -716,22 +716,29 @@ def board_cmd(args) -> int:
 
 
 def board_run(args, cfg, ctx) -> int:
-    """`board intake` and `board sync` that write hold the board lock (one run at a time, hosted or
-    local); a run that finds it held says so and exits 0 having done nothing."""
+    """Every `board` run that writes (`--yes`; `stale` only with `--release`) holds the board lock for
+    its whole length, one run at a time, hosted or local: a heartbeat renews it, and once it is lost
+    (another run took it over, or no renewal succeeded before it expired) every further GitHub write
+    raises and the run stops, exit 1. A run that finds the lock held says so and exits 0 having done
+    nothing; one that cannot take it (no push access, no network) does nothing either, exit 1."""
     from . import intake
     write = args.yes and not args.dry_run
-    lock = intake.board_lock(cfg, ctx) if write and args.action in ("intake", "sync") else None
-    if lock is not None:
-        proceed, line = intake.take_lock(lock, cfg.project.name)
-        if line:
-            print(line)
-        if not proceed:
-            return 0
-    try:
+    if not write or (args.action == "stale" and not args.release):
         return _board_steps(args, cfg, ctx, intake, write)
+    lock, key = intake.board_lock(cfg, ctx), intake.lock_key(cfg.project.name)
+    status, line = intake.take_lock(lock, cfg.project.name)
+    if line:
+        print(line)
+    if status != claims.ACQUIRED:
+        return 0 if status == claims.HELD else 1
+    try:
+        with claims.Heartbeat(lock, key, intake.LOCK_TTL, intake.LOCK_RENEW, gh=ctx.gh, log=print):
+            return _board_steps(args, cfg, ctx, intake, write)
+    except claims.LeaseLost as exc:
+        print(f"stopped: {exc}; the next run carries on")
+        return 1
     finally:
-        if lock is not None:
-            lock.release(intake.lock_key(cfg.project.name))
+        lock.release(key)
 
 
 def _board_steps(args, cfg, ctx, intake, write: bool) -> int:

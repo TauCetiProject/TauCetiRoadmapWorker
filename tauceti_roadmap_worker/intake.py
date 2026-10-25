@@ -16,10 +16,11 @@
   idempotent), as the merge of a package whose port follows does for that package.
 * `stale(release)`: claims whose lease lapsed and whose issue shows nothing for `stale_hours`, and
   submissions whose pull request was closed unmerged, go back to `state:available`.
-* `board_lock` / `take_lock`: one intake or sync at a time, whoever runs it (the hosted workflow and
-  a maintainer's shell share no filesystem): a lease ref in the board repository, which both can
-  push; `repair_duplicates`: a job created twice (both open) keeps the twin that got furthest
-  (its submission, a worker's claim, else the older issue) and the other takes nothing with it.
+* `board_lock` / `take_lock`: one writing board run at a time, whoever runs it (the hosted workflow
+  and a maintainer's shell share no filesystem): a lease ref in the board repository, which both can
+  push, renewed while the run lasts; `repair_duplicates`: a job created twice (both open) keeps
+  the twin that got furthest (its submission, a worker's claim, else the older issue) and the other
+  takes nothing with it.
 """
 
 from __future__ import annotations
@@ -887,6 +888,7 @@ def _held(ctx, pr: int) -> bool:
 # --- one run at a time ------------------------------------------------------------------------------
 
 LOCK_TTL = 15 * 60     # seconds a board run holds the board; a run that dies leaves it for this long
+LOCK_RENEW = 3 * 60    # seconds between the renewals of a running board run's lock
 
 
 def lock_key(project: str) -> str:
@@ -908,19 +910,21 @@ def board_lock(cfg, ctx) -> claims.Claims:
                          owner=lock_owner(), operator=ctx.operator, project=cfg.project.name, dry_run=ctx.dry_run)
 
 
-def take_lock(lock, project: str) -> tuple[bool, str]:
-    """(may run, line to log). Held by another run: (False, "intake already running (owner, since
-    ...)"). A lock that cannot be written (no push access, no network) never stops a run: it is
-    taken as the leases are, fail-open, and said so."""
+def take_lock(lock, project: str) -> tuple[int, str]:
+    """(the acquisition's `claims` status, line to log). ACQUIRED: ''. HELD by another run: "intake
+    already running (owner, since ...)". ERROR, a lock that cannot be written (no push access, no
+    network): the run does nothing, since a board write without the lock could interleave with
+    another run's."""
     key = lock_key(project)
     status = lock.acquire(key, LOCK_TTL)
     if status == claims.HELD:
         lease = lock.read(key) or {}
         since = dt.datetime.fromtimestamp(int(lease.get("acquired_at", 0) or 0), dt.UTC)
-        return False, f"intake already running ({lease.get('owner', '?')}, since {since:%Y-%m-%d %H:%M:%SZ}); nothing done"
+        return status, (f"intake already running ({lease.get('owner', '?')}, since {since:%Y-%m-%d %H:%M:%SZ}); "
+                        "nothing done")
     if status == claims.ERROR:
-        return True, "board lock not taken (the lock ref could not be written); running unlocked"
-    return True, ""
+        return status, "board lock not taken (the lock ref could not be written); nothing done"
+    return status, ""
 
 
 # --- duplicate jobs ---------------------------------------------------------------------------------

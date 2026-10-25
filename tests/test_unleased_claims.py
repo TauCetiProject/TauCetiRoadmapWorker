@@ -24,9 +24,10 @@ def claimed(number, job_id, body, minutes_ago):
 
 
 class Board(FakeBoard):
-    def set_state(self, job, state, comment=""):
-        super().set_state(job, state, comment)
+    def set_state(self, job, state, comment="", expect=""):
+        written = super().set_state(job, state, comment, expect)
         self.notes = [*getattr(self, "notes", []), (job.number, comment)]
+        return written
 
 
 def board_with(*rows):

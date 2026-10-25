@@ -4,9 +4,10 @@ Order (`rank`, configurable under `[board]`): jobs whose roadmap descends from a
 before imported ones (`human_first`), then by stage closest to delivery first (`priority`: GATE, PORT,
 FIX-RT, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET), then the oldest issue. A
 lease is renewed by a heartbeat while the agent runs, so a long run is not mistaken for a dead one;
-it is released when the round ends, whatever the outcome (a submitted job is then held by its pull
-request, a parked one by its request). A round that stops before either puts the job back to
-`state:available`.
+once the heartbeat loses it, the round writes nothing more to GitHub and keeps its run for the next
+attempt. The lease is released when the round ends, whatever the outcome (a submitted job is then
+held by its pull request, a parked one by its request). A round that stops before either puts the
+job back to `state:available`, unless the board has moved it on from this worker's claim meanwhile.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import shutil
-import threading
 import time
 
 import json
@@ -89,24 +89,6 @@ def rank(jobs: list[Job], order: list[str] | None = None, priority: list[str] | 
         on_main = j.kind == "errata" and not j.inputs.get("pr")
         return (0 if human or not human_first else 1, stage.get(board.stage_of(j.id), len(stage)), on_main, j.number)
     return sorted(jobs, key=key)
-
-
-class Heartbeat:
-    def __init__(self, ctx: Context, key: str):
-        self.ctx, self.key, self.stop = ctx, key, threading.Event()
-        self.thread = threading.Thread(target=self._beat, daemon=True)
-
-    def _beat(self):
-        while not self.stop.wait(HEARTBEAT):
-            if self.ctx.claims:
-                self.ctx.claims.renew(self.key)
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def __exit__(self, *exc):
-        self.stop.set()
 
 
 PAUSED = "paused by a usage limit"
@@ -203,7 +185,7 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
             continue
         if status == claims.ERROR and ctx.claims and not ctx.dry_run:
             log(f"{job.id}: the lease could not be registered; proceeding unclaimed (fail-open)")
-        return run_job(ctx, job, lane, key, log)
+        return run_job(ctx, job, lane, key, log, held=status == claims.ACQUIRED)
     return LaneResult("", "idle", "no eligible job")
 
 
@@ -211,13 +193,15 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
 # or parked the job (a submission holds it as `submitted`, a request as `needs-references`).
 # `setup-failed` is an exception before any agent ran (a brief that does not render, a checkout):
 # the operator's side, so it is not counted against the job, and this process leaves the job alone.
-RELEASED = ("failed", "setup-failed", "limited", "skipped", "interrupted")
+RELEASED = ("failed", "setup-failed", "limited", "skipped", "interrupted", "lease-lost")
 
 
-def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
+def run_job(ctx: Context, job: Job, lane, key: str, log=print, held: bool = True) -> LaneResult:
     """Claim, run the lane, and end the round in one place: the lease is always released, and every
     way a lane can stop before it submits (a failure it reports, an exception from git, GitHub or
-    anything else, a usage limit, an interrupt) goes through `release`."""
+    anything else, a usage limit, an interrupt, the lease lost) goes through `release`. While the
+    lane runs, a heartbeat renews the lease (`held`: it was acquired; otherwise it tries to take it)
+    and fences `ctx.gh`: after the lease is lost, every GitHub write the lane attempts raises."""
     interrupt = None
     try:
         if not ctx.dry_run:
@@ -227,11 +211,14 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
             except GHError:
                 pass  # no write access to the board: the lease is the claim; `board sync` mirrors it
         log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
-        with Heartbeat(ctx, key):
+        with claims.Heartbeat(None if ctx.dry_run else ctx.claims, key, claims.JOB_TTL, HEARTBEAT, held=held,
+                              gh=ctx.gh, log=log):
             result = lane.run(job, ctx)
         result.agent = result.agent or ctx.agent
     except LaneBlocked as exc:
         result = LaneResult(job.id, "blocked", str(exc))
+    except claims.LeaseLost as exc:
+        result = LaneResult(job.id, "lease-lost", str(exc))
     except Exception as exc:  # noqa: BLE001 - git, GitHub, the lane's own errors or a bug: all release the job
         status = "failed" if getattr(lane, "agent_started", True) else "setup-failed"
         result = LaneResult(job.id, status, f"{type(exc).__name__}: {exc}")
@@ -240,7 +227,7 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
     finally:
         if ctx.claims and not ctx.dry_run:
             ctx.claims.release(key)
-    release(ctx, job, result)
+    release(ctx, job, result, log)
     request_board_run(ctx, result, log)
     if interrupt is not None:
         raise interrupt
@@ -269,25 +256,49 @@ def request_board_run(ctx: Context, result: LaneResult, log=print, clock=time.mo
     return True
 
 
-def release(ctx: Context, job: Job, result: LaneResult) -> None:
+def release(ctx: Context, job: Job, result: LaneResult, log=print) -> None:
     """End a round that did not submit or park the job: count a failure, and put the job back to
-    `state:available` (the only state label it keeps); a job that needs a human is blocked."""
-    if not ctx.dry_run and result.status == "blocked":
-        try:
-            ctx.board.set_state(job, "blocked", f"Blocked by worker `{ctx.worker_id}`: {result.detail[:600]} "
-                                                "A human decides how to continue.")
-        except GHError:
-            pass
+    `state:available` (the only state label it keeps), or to `state:blocked` when it needs a human.
+    Either move is made only while the job is as this round left it, `claimed` by this worker
+    (`claim_problem`, then its labels read again just before the write): a job another worker or the
+    board has moved on since (taken over, submitted, done) is left as it is, so a stale round never
+    overwrites a newer state."""
+    if ctx.dry_run:
         return
-    if ctx.dry_run or result.status not in RELEASED:
+    if result.status == "blocked":
+        state = "blocked"
+        note = f"Blocked by worker `{ctx.worker_id}`: {result.detail[:600]} A human decides how to continue."
+    elif result.status in RELEASED:
+        state, note = "available", f"Released by worker `{ctx.worker_id}`: {result.status} ({result.detail[:300]})."
+    else:
         return
     if result.status == "failed":
         record_failure(ctx, job.id)
+    why = claim_problem(ctx, job)
     try:
-        ctx.board.set_state(job, "available", f"Released by worker `{ctx.worker_id}`: {result.status}"
-                                              f" ({result.detail[:300]}).")
+        if not why and not ctx.board.set_state(job, state, note, expect="claimed"):
+            why = "its issue is no longer `state:claimed`"
     except GHError:
-        pass  # no write access to the board: `board stale --release` frees the claim later
+        return  # no write access to the board: `board stale --release` frees the claim later
+    if why:
+        log(f"{job.id}: left as it is, not set to {state}: {why}")
+
+
+def claim_problem(ctx: Context, job: Job) -> str:
+    """'' when the job's issue still carries this worker's claim: its newest "Claimed for" comment
+    names this worker id and operator, and no other owner holds a live lease on it; else why not."""
+    try:
+        claim = board.last_claim(ctx.board.comments(job.number), job.id)
+    except (GHError, AttributeError):
+        return "its comments could not be read"
+    if not claim:
+        return "its issue carries no claim"
+    if claim["worker"] != ctx.worker_id or claim["operator"].lower() != (ctx.operator or "").lower():
+        return f"its last claim is by {claim['who']}"
+    lease = ctx.claims.read(claims.job_key(ctx.cfg.project.name, job.id)) if ctx.claims else None
+    if claims.lease_live(lease, int(time.time())) and lease.get("owner") != getattr(ctx.claims, "owner", ""):
+        return f"{lease.get('owner')} holds its lease"
+    return ""
 
 
 QUICK_POLL = 60     # seconds: the latest first poll after a failure or after a parked job is answered
@@ -301,8 +312,8 @@ def release_leftovers(ctx: Context, log=print) -> list[str]:
     """Jobs this worker id still holds from a process that ended without releasing them (killed
     before it could, or crashed): its leases, and the claimed jobs whose last "Claimed for" comment
     names this worker id and operator, lease or not (a process that died before it wrote one). A
-    worker id runs one process at a time, so at startup they go back to `state:available`. Returns
-    the jobs released."""
+    worker id runs one process at a time, so at startup they go back to `state:available`, each
+    while its issue still reads `state:claimed`. Returns the jobs released."""
     if ctx.dry_run:
         return []
     prefix = f"roadmap/{ctx.cfg.project.name}/job/"
@@ -324,7 +335,7 @@ def release_leftovers(ctx: Context, log=print) -> list[str]:
         if job:
             try:
                 ctx.board.set_state(job, "available", f"Released by worker `{ctx.worker_id}` at its start: its previous "
-                                                      "process ended without releasing the job.")
+                                                      "process ended without releasing the job.", expect="claimed")
             except GHError:
                 pass
         out.append(job.id if job else key[len(prefix):])
@@ -336,22 +347,15 @@ def released_by_comment(ctx: Context, claimed: dict, leased: set[str], log=print
     """The claimed jobs whose claim comment names this worker id and operator but that hold no lease
     of this worker (those `release_leftovers` releases by their lease), unless another owner holds a
     live lease on them."""
-    out, now = [], int(time.time())
+    out = []
     for key, job in claimed.items():
-        if key in leased:
+        if key in leased or claim_problem(ctx, job):
             continue
         try:
-            claim = board.last_claim(ctx.board.comments(job.number), job.id)
-        except (GHError, AttributeError):
-            continue
-        if not claim or claim["worker"] != ctx.worker_id or claim["operator"].lower() != (ctx.operator or "").lower():
-            continue
-        lease = ctx.claims.read(key) if ctx.claims else None
-        if claims.lease_live(lease, now) and lease.get("owner") != getattr(ctx.claims, "owner", ""):
-            continue
-        try:
-            ctx.board.set_state(job, "available", f"Released by worker `{ctx.worker_id}` at its start: its previous "
-                                                  "process claimed the job and ended without a release (no lease).")
+            if not ctx.board.set_state(job, "available", f"Released by worker `{ctx.worker_id}` at its start: its "
+                                       "previous process claimed the job and ended without a release (no lease).",
+                                       expect="claimed"):
+                continue
         except GHError:
             continue
         out.append(job.id)
