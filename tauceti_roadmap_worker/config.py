@@ -33,6 +33,10 @@ STAGE_ORDER = ("GATE", "PORT", "FIX-RT", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX
 # a roadmap's sources are read by the review models.
 LANE_FALLBACK = {"errata": "review"}
 SANDBOX_PROFILES = ("off", "proxy", "netjail")
+# What an operator's overlay (`--overlay`, `$TAUCETI_ROADMAP_OVERLAY`) may set over the project file:
+# settings of the host or the operator, never the board's rules. None: every key of the table.
+OVERLAY_KEYS = {"sandbox": None, "worker": None, "board": ("dispatch",), "sources": ("local_dirs",),
+                "agents": ("timeout_minutes",)}
 LICENCE_CLASSES = ("open-repository", "publisher-open", "author-page", "institutional", "operator-local")
 # GitHub's author_association values: who may answer a `needs-references` request.
 ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE")
@@ -262,6 +266,8 @@ class Config:
     review: Review = field(default_factory=Review)
     path: str = ""
     warnings: list[str] = field(default_factory=list)
+    overlay_path: str = ""
+    overlaid: list[str] = field(default_factory=list)
 
     def state_dir(self) -> Path:
         return paths.state_root(self.project.name)
@@ -305,7 +311,7 @@ def _build(cls, data, where: str, warnings: list[str]):
     kwargs = {}
     hints = {f.name: f for f in dataclasses.fields(cls)}
     for key, value in data.items():
-        if key not in hints or key in ("path", "warnings"):
+        if key not in hints or key in ("path", "warnings", "overlay_path", "overlaid"):
             warnings.append(f"unknown key {where}.{key}" if where else f"unknown key {key}")
             continue
         default = getattr(cls(), key)
@@ -323,14 +329,20 @@ def _build(cls, data, where: str, warnings: list[str]):
     return cls(**kwargs)
 
 
-def parse(text: str, path: str = "<string>") -> Config:
+def parse(text: str, path: str = "<string>", overlay: dict | None = None, overlay_path: str = "") -> Config:
+    """The configuration in `text`, with an operator's overlay (see `read_overlay`) merged over it
+    table by table."""
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: {exc}") from exc
+    for table, values in (overlay or {}).items():
+        data[table] = {**data.get(table, {}), **values}
     warnings: list[str] = []
     cfg = _build(Config, data, "", warnings)
     cfg.path, cfg.warnings = path, warnings
+    cfg.overlay_path = overlay_path
+    cfg.overlaid = sorted(f"{table}.{key}" for table, values in (overlay or {}).items() for key in values)
     validate(cfg)
     return cfg
 
@@ -443,8 +455,34 @@ def fetch(url: str, opener=None, sleep=time.sleep, delays: tuple[int, ...] = RET
     raise last if last else OSError(f"{url}: not read")
 
 
-def load(conf: str | None = None, opener=None, sleep=time.sleep) -> Config:
+def read_overlay(overlay: str | None = None) -> tuple[dict, str]:
+    """(the operator's overlay as tables, its path): `--overlay`, else `$TAUCETI_ROADMAP_OVERLAY`, else none.
+    Only keys in `OVERLAY_KEYS` are accepted."""
+    where = overlay or os.environ.get("TAUCETI_ROADMAP_OVERLAY", "")
+    if not where:
+        return {}, ""
+    path = Path(where).expanduser()
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ConfigError(f"overlay {path}: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"overlay {path}: {exc}") from exc
+    refused = []
+    for table, values in data.items():
+        if table not in OVERLAY_KEYS or not isinstance(values, dict):
+            refused.append(table)
+        elif OVERLAY_KEYS[table] is not None:
+            refused += [f"{table}.{key}" for key in values if key not in OVERLAY_KEYS[table]]
+    if refused:
+        raise ConfigError(f"overlay {path}: only host and operator settings may be overlaid; refused "
+                          + ", ".join(refused))
+    return data, str(path.resolve())
+
+
+def load(conf: str | None = None, opener=None, sleep=time.sleep, overlay: str | None = None) -> Config:
     where = discover(conf)
+    extra, extra_path = read_overlay(overlay)
     if where.startswith("https://"):
         cache = url_cache(where)
         try:
@@ -453,10 +491,10 @@ def load(conf: str | None = None, opener=None, sleep=time.sleep) -> Config:
             if not cache.is_file():
                 raise ConfigError(f"{where}: {exc} (after {1 + len(RETRY_DELAYS)} tries, and no cached copy)") from exc
             age = time.time() - cache.stat().st_mtime
-            cfg = parse(cache.read_text(encoding="utf-8"), where)
+            cfg = parse(cache.read_text(encoding="utf-8"), where, extra, extra_path)
             cfg.warnings.append(f"{where} could not be read ({exc}); using the copy cached {age / 3600:.1f} h ago")
             return cfg
-        cfg = parse(text, where)
+        cfg = parse(text, where, extra, extra_path)
         for saved in (cache, cfg.state_dir() / "tauceti-roadmap.toml"):
             saved.parent.mkdir(parents=True, exist_ok=True)
             saved.write_text(text, encoding="utf-8")
@@ -466,4 +504,4 @@ def load(conf: str | None = None, opener=None, sleep=time.sleep) -> Config:
     path = Path(where).expanduser()
     if not path.is_file():
         raise ConfigError(f"configuration not found: {path}")
-    return parse(path.read_text(encoding="utf-8"), str(path))
+    return parse(path.read_text(encoding="utf-8"), str(path), extra, extra_path)

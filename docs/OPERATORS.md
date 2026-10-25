@@ -69,6 +69,29 @@ export TAUCETI_ROADMAP_LAKE_PACKAGES=/path/to/TauCetiRoadmap/.lake/packages
 
 Workers symlink it into their checkouts and worktrees instead of the shared copy.
 
+**Host settings: the overlay.** A few keys describe your host or your account, not the project:
+
+- the whole `[sandbox]` table;
+- the whole `[worker]` table;
+- `[board] dispatch`, which a login that cannot dispatch the board workflow turns off;
+- `[sources] local_dirs`;
+- `[agents] timeout_minutes`.
+
+Set them in your own TOML file, passed as `--overlay FILE` or `$TAUCETI_ROADMAP_OVERLAY`. It is merged
+over the project file table by table, so the rest of each table stays the project's. Any other key is
+refused by name, so an overlay can never change the board's rules (separation, gates, models,
+repositories). `doctor` prints what the overlay set. The commands a brief gives agents carry the same
+`--overlay`. The saved copy of a URL configuration stays the project's file alone.
+
+```toml
+# ~/.config/tauceti/roadmap-overlay.toml
+[sandbox]
+profile = "netjail"
+netjail = "/home/alice/bin/agent-container"
+[board]
+dispatch = false
+```
+
 ## Running a fleet
 
 ```bash

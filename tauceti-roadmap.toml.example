@@ -5,6 +5,8 @@
 #     tauceti-roadmap --conf <path or raw https URL> doctor
 # A URL is fetched once per start and saved in the project state directory
 # (~/.local/state/tauceti/projects/<project.name>/tauceti-roadmap.toml).
+# Settings of one host or operator ([sandbox], [worker], [board] dispatch, [sources] local_dirs,
+# [agents] timeout_minutes) belong in that operator's overlay file instead (`--overlay`), not here.
 schema_version = 1
 
 [project]
