@@ -291,6 +291,17 @@ def namespace_for(cfg, gh, operator: str) -> str:
     return f"{operator}/{cfg.repositories.packages_repo().split('/', 1)[1]}"
 
 
+def fallback_problem(cfg, ns: str) -> str:
+    """'' unless `ns` is the operator's fork standing in for a configured shared namespace this account
+    cannot push to: then why that fails. Leases there are invisible to every other operator's workers
+    and to `board sync`, so two operators run the same job. `CLAIM_REPO` names a namespace on purpose."""
+    shared = cfg.repositories.claims
+    if not shared or ns == shared or os.environ.get("CLAIM_REPO"):
+        return ""
+    return (f"this account cannot push to the claims namespace {shared}, so its leases would go to {ns}, where "
+            "no other operator's workers and no `board sync` see them")
+
+
 def open_claims(cfg, gh, operator: str, worker_id: str, dry_run: bool = False) -> Claims:
     repo = namespace_for(cfg, gh, operator)
     gitdir = cfg.state_dir() / "claims" / (repo.replace("/", "__") + ".git")
