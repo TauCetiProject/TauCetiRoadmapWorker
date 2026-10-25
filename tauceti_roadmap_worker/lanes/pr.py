@@ -120,21 +120,31 @@ def timeline(ctx: Context, pr: int) -> list[replies.Event]:
 
 def inline_comments(ctx: Context, pr: int) -> list[replies.Event]:
     repo = ctx.cfg.repositories.content
-    items = ctx.gh.api(f"repos/{repo}/pulls/{pr}/comments?per_page=100", paginate=True)
+    return inline_events(ctx.gh.api(f"repos/{repo}/pulls/{pr}/comments?per_page=100", paginate=True))
+
+
+def _ref(kind: str, item: dict) -> str:
+    return f"{kind}-{item['id']}" if item.get("id") else ""
+
+
+def inline_events(items: list[dict]) -> list[replies.Event]:
     return [replies.Event(c.get("created_at", ""), (c.get("user") or {}).get("login", ""),
                           f"(on `{c.get('path')}` line {c.get('line') or c.get('original_line')}) "
-                          f"{c.get('body') or ''}", review_id=c.get("pull_request_review_id") or 0)
+                          f"{c.get('body') or ''}", review_id=c.get("pull_request_review_id") or 0,
+                          ref=_ref("inline", c), version=replies.text_version(c.get("body") or ""))
             for c in items]
 
 
-def events_from_api(reviews: list[dict], comments: list[dict]) -> list[replies.Event]:
+def events_from_api(reviews: list[dict], comments: list[dict], inline: list[dict] = ()) -> list[replies.Event]:
     out = [replies.Event(r.get("submitted_at") or "", (r.get("user") or {}).get("login", ""), r.get("body") or "",
                          approved=r.get("state") == "APPROVED", commit=r.get("commit_id") or "",
-                         review_id=r.get("id") or 0)
+                         review_id=r.get("id") or 0, ref=_ref("review", r),
+                         version=replies.text_version(r.get("body") or ""))
            for r in reviews if r.get("submitted_at")]
-    out += [replies.Event(c.get("created_at", ""), (c.get("user") or {}).get("login", ""), c.get("body") or "")
+    out += [replies.Event(c.get("created_at", ""), (c.get("user") or {}).get("login", ""), c.get("body") or "",
+                          ref=_ref("comment", c), version=replies.text_version(c.get("body") or ""))
             for c in comments]
-    return sorted(out, key=lambda e: e.t)
+    return sorted(out + inline_events(inline), key=lambda e: e.t)
 
 
 def flip_labels(ctx: Context, pr: int, events: list[replies.Event], head_sha: str, owner: str) -> str:

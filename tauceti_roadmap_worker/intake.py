@@ -1181,7 +1181,8 @@ def sync_pull_requests(ctx) -> list[str]:
                 out.append(f"#{number}: held, but not converted back to draft ({exc})")
         reviews = ctx.gh.api(f"repos/{repo}/pulls/{number}/reviews?per_page=100", paginate=True)
         comments = ctx.gh.api(f"repos/{repo}/issues/{number}/comments?per_page=100", paginate=True)
-        events = events_from_api(reviews, comments)
+        inline = ctx.gh.api(f"repos/{repo}/pulls/{number}/comments?per_page=100", paginate=True)
+        events = events_from_api(reviews, comments, inline)
         want, drop = replies.wanted_label(events, {p["owner"]}, p["head"], markers=r.review_markers,
                                           housekeeping=r.housekeeping_prefixes, approvers=r.approvers,
                                           ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,

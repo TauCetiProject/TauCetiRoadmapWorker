@@ -1,6 +1,6 @@
 from tauceti_roadmap_worker.gates import GateResult
 from tauceti_roadmap_worker.replies import (REPLY_PREFIX, Event, build_reply, classify, guard_reply,
-                                            is_maintainer_review, parse_findings, reply_is_safe, reviews_since_reply,
+                                            is_maintainer_review, parse_findings, reply_is_safe, unanswered,
                                             validation_sentence, wanted_label)
 
 MARKERS = ["ChatGPT", "GPT-", "Astra", "\U0001f916", ":robot:", "AI-assisted", "Deep re-review", "Deep review"]
@@ -72,7 +72,7 @@ def test_every_review_since_the_last_reply_is_ingested():
               Event("2026-10-20T09:00:00Z", "r1", "Changes needed: first new review."),
               Event("2026-10-20T10:00:00Z", "r2", "Request changes: second new review."),
               Event("2026-10-20T10:30:00Z", "r2", "Thanks, the other finding is addressed.")]
-    got = reviews_since_reply(events, US, MARKERS, HOUSE)
+    got = unanswered(events, US, MARKERS, HOUSE)
     assert [e.body.split(":")[0] for e in got] == ["Changes needed", "Request changes"]
     assert classify(events, US, MARKERS, HOUSE)[1] == "2026-10-19T12:00:00Z"
 
@@ -92,7 +92,7 @@ def test_maintainer_review_from_the_owner_login_is_awaiting_author():
     events = [Event("2026-10-22T09:00:00Z", "author", "Fixed in `abc1234` (reply to the review): R01 applied."),
               Event("2026-10-22T12:58:00Z", "author", M_REVIEW)]
     assert m_label(events) == ("awaiting-author", ["awaiting-review"])
-    assert [e.body for e in reviews_since_reply(events, US, MARKERS, HOUSE, maintainers=MAINTAINER)] == [M_REVIEW]
+    assert [e.body for e in unanswered(events, US, MARKERS, HOUSE, maintainers=MAINTAINER)] == [M_REVIEW]
     # Without the login configured it stays the author's own reply, as before.
     assert m_label(events, maintainers=set())[0] == "awaiting-review"
 
@@ -103,7 +103,7 @@ def test_the_gate_lanes_reply_from_the_same_login_is_not_a_maintainer_review():
     events = [Event("2026-10-22T12:58:00Z", "author", M_REVIEW), Event("2026-10-22T14:00:00Z", "author", reply)]
     assert not is_maintainer_review(events[1], MAINTAINER)
     assert m_label(events) == ("awaiting-review", ["awaiting-author"])
-    assert reviews_since_reply(events, US, MARKERS, HOUSE, maintainers=MAINTAINER) == []
+    assert unanswered(events, US, MARKERS, HOUSE, maintainers=MAINTAINER) == []
 
 
 def test_an_owner_comment_without_the_prefix_stays_a_reply():

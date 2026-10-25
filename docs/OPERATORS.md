@@ -301,7 +301,7 @@ read as an instruction.
 | redteam | the board PR's head (read-only) | a comment on the board PR in the red-team shape | the agent and model the pass requires | report header, checkout untouched, a pass with no finding has its adversarial table with computed values |
 | fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
-| gate | every review since the last reply | commits on the PR branch, a reply, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
+| gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
 headline theorems the finished roadmap will prove, stated now against the pinned Mathlib and Tau
@@ -779,6 +779,9 @@ alternative for operators who already use it.
   `targets import-intentions`; there is nothing else to do.
 * **A draft pull request**: review it on GitHub. Your comments feed the gate lane; the reply answers
   every point, and the labels flip between awaiting-author and awaiting-review. Merging is yours.
+  The reply records the exact reviews and comments it answers (an HTML comment at its end), so a
+  review posted or edited while the gate works stays awaiting-author and gets its own round; a
+  comment of the branch owner's acknowledges nothing once the pull request has such a reply.
   A maintainer whose login is also the one the workers act as is the author of every worker-ported
   draft, so on those drafts their comments would read as the author's own replies. List that login
   in `[replies] maintainer_logins` and open each review with `[replies] maintainer_review_prefix`

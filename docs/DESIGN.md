@@ -112,8 +112,10 @@ checkout, submits a PR to the board, and the intake advances the state.
    description, and opens the roadmap pull request (a draft, or ready with
    `[redteam] ready_after`), which receives human reviews only.
 8. `gate` — reacts to the human reviewers' comments on the roadmap PR: ingest every review
-   since the last reply (not only the latest), run a fix lane, push, reply finding by
-   finding, and flip the labels. The final merge is a human action.
+   and comment no reply has acknowledged (not only the latest), run a fix lane, push, reply finding
+   by finding, and flip the labels. The reply records the version of every review, review comment
+   and issue comment the agent read, and acknowledges those only, so feedback posted or edited
+   during the run stays pending. The final merge is a human action.
 
 Lanes are TauCetiWorker `only=` kinds, so an operator can pin a worker to reviewing, to
 porting, or let `--loop` pick.

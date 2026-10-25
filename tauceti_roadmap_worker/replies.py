@@ -11,10 +11,15 @@ Ported from the maintainer's label-sync.sh, review-batch.sh and mk-reply.py:
   by a configured maintainer login that opens with the maintainer-review prefix is read as another
   reviewer's comment; every other comment of the owner stays ours.
 * `wanted_label` is the label state machine: an approval by a configured approver at the current
-  head clears both labels; a review newer than our last reply means `awaiting-author`; otherwise
+  head clears both labels; an unanswered review means `awaiting-author`; otherwise
   `awaiting-review`.
-* `reviews_since_reply` returns EVERY review newer than our last reply. review-batch.sh took only
-  the newest one, so a second reviewer's comments posted in between were never answered.
+* `unanswered` returns EVERY review and comment no reply acknowledges. review-batch.sh took only
+  the newest one, so a second reviewer's comments posted in between were never answered. A gate
+  reply records the exact version of every review, comment and inline comment its agent read
+  (`answered_marker`), and acknowledges those only: feedback that arrives or is edited while the
+  agent works stays unanswered. A reply without the record (posted before it existed) acknowledges
+  everything older than itself, as every reply used to; once a pull request has a recorded reply,
+  later replies without one acknowledge nothing.
 * `guard_reply` keeps the first 40 characters of our reply free of review-tool names: otherwise
   `classify` would read our reply as a review and flip the pull request back to awaiting-author.
 * `build_reply` turns a fix report into one bullet per finding. The closing validation sentence
@@ -24,6 +29,8 @@ Ported from the maintainer's label-sync.sh, review-batch.sh and mk-reply.py:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -54,6 +61,14 @@ class Event:
     approved: bool = False   # a PR review in state APPROVED
     commit: str = ""         # the head a PR review was submitted on
     review_id: int = 0       # the PR review this is (a review) or belongs to (an inline comment)
+    ref: str = ""            # the record on GitHub: review-<id>, comment-<id> or inline-<id>
+    version: str = ""        # `text_version` of its text as GitHub holds it
+
+
+def text_version(body: str) -> str:
+    """A short digest of a review's or comment's text: a new version exactly when the text is edited
+    (the REST API gives reviews no update time, and an inline comment's line moves with every push)."""
+    return hashlib.sha256((body or "").encode("utf-8")).hexdigest()[:12]
 
 
 def _markers_re(markers: list[str]) -> re.Pattern:
@@ -131,21 +146,75 @@ def wanted_label(events: list[Event], ours: set[str], head: str, *, markers: lis
     """(label to add or '', labels to remove)."""
     if approved_at_head(events, approvers, head):
         return "", [awaiting_author, awaiting_review]
-    last_review, last_reply = classify(events, ours, markers, housekeeping, ignore, maintainers, maintainer_prefix)
-    if last_review and last_review > last_reply:
+    if unanswered(events, ours, markers, housekeeping, ignore, maintainers, maintainer_prefix):
         return awaiting_author, [awaiting_review]
     return awaiting_review, [awaiting_author]
 
 
-def reviews_since_reply(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
-                        ignore: set[str] = frozenset(), maintainers: set[str] = frozenset(),
-                        maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> list[Event]:
-    """Every review newer than our last reply, oldest first (not only the latest), a maintainer's
-    review under the owner's login included."""
+ANSWERED_MARK = "tauceti-roadmap-answered"
+ANSWERED_RE = re.compile(r"<!--\s*" + ANSWERED_MARK + r"\b(.*?)-->", re.DOTALL)
+
+
+def versions(events: list[Event]) -> dict[str, str]:
+    """ref -> version of the events that have a record on GitHub."""
+    return {e.ref: e.version for e in events if e.ref}
+
+
+def answered_marker(job: str, answered: dict[str, str]) -> str:
+    """The record a reply carries of the exact reviews and comments it answers (`versions`)."""
+    return f"<!-- {ANSWERED_MARK} {json.dumps({'job': job, 'answered': answered}, sort_keys=True)} -->"
+
+
+def answered_by(body: str) -> dict[str, str] | None:
+    """ref -> version from a reply's record (the last one: the worker appends it after the agent's text),
+    {} for a record that does not parse, None for a reply without one."""
+    found = ANSWERED_RE.findall(body or "")
+    if not found:
+        return None
+    try:
+        answered = json.loads(found[-1].strip()).get("answered")
+    except (ValueError, AttributeError):
+        return {}
+    return {str(k): str(v) for k, v in answered.items()} if isinstance(answered, dict) else {}
+
+
+def acknowledged(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
+                 maintainers: set[str] = frozenset(),
+                 maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> tuple[set[tuple[str, str]], str]:
+    """What our replies acknowledge: the (ref, version) pairs their records name, and the time up to
+    which the replies without a record acknowledge everything older. Only those older than the first
+    recorded reply count so, since they were posted before the records existed. An inline comment is
+    never a reply."""
+    ours = {o.lower() for o in ours}
+    seen: set[tuple[str, str]] = set()
+    before, recorded = "", False
+    for e in sorted(events, key=lambda e: e.t):
+        if e.ref.startswith("inline-") or not is_reply(e, ours, markers, housekeeping, maintainers, maintainer_prefix):
+            continue
+        answered = answered_by(e.body)
+        if answered is not None:
+            recorded = True
+            seen |= set(answered.items())
+        elif not recorded:
+            before = e.t
+    return seen, before
+
+
+def unanswered(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
+               ignore: set[str] = frozenset(), maintainers: set[str] = frozenset(),
+               maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> list[Event]:
+    """Every review and comment no reply acknowledges, oldest first (not only the latest), a
+    maintainer's review under the owner's login included. An inline comment counts when the review
+    it belongs to does, or on its own terms. An acknowledged review edited since is unanswered again."""
     ours_l = {o.lower() for o in ours}
-    _, last_reply = classify(events, ours_l, markers, housekeeping, ignore, maintainers, maintainer_prefix)
+    seen, before = acknowledged(events, ours_l, markers, housekeeping, maintainers, maintainer_prefix)
+
+    def review(e: Event) -> bool:
+        return is_review(e, ours_l, markers, ignore, maintainers, maintainer_prefix)
+    reviewing = {e.review_id for e in events if e.ref.startswith("review-") and review(e)}
     return [e for e in sorted(events, key=lambda e: e.t)
-            if e.t > last_reply and is_review(e, ours_l, markers, ignore, maintainers, maintainer_prefix)]
+            if (review(e) or (e.ref.startswith("inline-") and e.review_id in reviewing))
+            and (e.ref, e.version) not in seen and e.t > before]
 
 
 REPLY_PREFIX = "Reply to the review comments above, finding by finding:\n\n"

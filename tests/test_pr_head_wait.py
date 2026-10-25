@@ -27,6 +27,8 @@ class HeadGH:
         self.heads, self.reads, self.writes = list(heads), [], []
 
     def api(self, path, paginate=False):
+        if path.split("?")[0].endswith("/comments"):
+            return []
         if "/pulls/" in path:
             self.reads.append(path)
             head = self.heads.pop(0) if len(self.heads) > 1 else self.heads[0]
@@ -98,7 +100,8 @@ def gate_finish(tmp_path, monkeypatch, gh):
     ws = Workspace(job_dir=tmp_path, scratch=tmp_path, board=tmp_path, content=tmp_path, workdir=tmp_path,
                    report=report, branch="w1/GATE", extra={
                        "pr": 1404, "head": OLD, "branch": "roadmap/ggp-unitary", "owner": "alice",
-                       "gate": SimpleNamespace(counts={"build": 0, "depcheck": 0, "readme-ids-missing": 0}, ok=True)})
+                       "gate": SimpleNamespace(counts={"build": 0, "depcheck": 0, "readme-ids-missing": 0}, ok=True),
+                       "answered": {"review-1": "0" * 12}})
     return lane, ctx, ws, pushed, sleeps
 
 
