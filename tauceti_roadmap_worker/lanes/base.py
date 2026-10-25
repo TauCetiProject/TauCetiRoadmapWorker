@@ -1077,13 +1077,17 @@ class Lane:
         except GHError:
             pass
 
-    def comment_problems(self, body: str) -> list[str]:
+    def comment_problems(self, body: str, job: Job | None = None, declared: set[str] | None = None) -> list[str]:
         """A comment the board would not read (no verdict, or changes asked for without a numbered
-        finding) is caught before it is posted."""
-        if prreviews.parse(body) is None:
+        finding), or would read and not count for `job` (`prreviews.contract_problems`, against the
+        gap slugs `declared` at the head), is caught before it is posted."""
+        parsed = prreviews.parse(body)
+        if parsed is None:
             return [("report: the board cannot read it as a review: give the verdict, and write every finding as "
                      "`## R01 (P1) — <short title>`")]
-        return []
+        if job is None:
+            return []
+        return [f"comment: the board would not count it: {p}" for p in prreviews.contract_problems(parsed, job, declared)]
 
     def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
         """Commit the job's own files on the worker's board branch, push it to the operator's fork

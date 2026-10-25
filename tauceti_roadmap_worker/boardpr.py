@@ -23,10 +23,13 @@ explorer's review.json, which no board job writes), each through the same checks
 
 A comment counts only from a login of `[review] comment_reviewers`, the board's bots, or the
 worker that claimed the job (its claim note on the job's issue names the login); it must review
-the current head (an older one is answered once as stale) and be independent of the authors in
-the configured separation mode. `reviewing` from a listed login claims an open review; a worker
-that holds one is never preempted, and both reviews count. Reports and the verdict are copied to
-the board's main when a round ends, so they outlive the pull request.
+the current head (an older one is answered once as stale), be independent of the authors in the
+configured separation mode, and keep the contract the review and red-team lanes keep
+(`prreviews.contract_problems`: no acceptance with a P1 or P2 finding, the adversarial table, only
+declared gaps, a pass by its job's family of models), else it is answered once as not counted.
+`reviewing` from a listed login claims an open review; a worker that holds one is never preempted,
+and both reviews count. Reports and the verdict are copied to the board's main when a round ends,
+so they outlive the pull request.
 """
 
 from __future__ import annotations
@@ -101,8 +104,21 @@ def brief(ctx, job: Job, pr: dict) -> str:
               else f"`{cfg.roadmap.merge_order_file}` in {cfg.repositories.content}",
               "CONTENT_REPO": cfg.repositories.content, "ACTIVE_DIR": cfg.roadmap.active_dir,
               "COMPLETED_DIR": cfg.roadmap.completed_dir, "MAX_LEAN_LINES": str(cfg.gates.max_lean_lines),
-              "KIND": "red-team pass" if job.kind == "redteam" else "review", "GAPS": web_gaps(ctx, pkg, head)}
+              "KIND": "red-team pass" if job.kind == "redteam" else "review", "GAPS": web_gaps(ctx, pkg, head),
+              "SIGN": web_signing(ctx, job)}
     return prompts.render("review-web", values) + f"\n<!-- {BRIEF_MARK} {json.dumps({'job': job.id})} -->\n"
+
+
+def web_signing(ctx, job: Job) -> str:
+    """Which agent names a browser model signs with, for the brief: any for a review; for a red-team
+    pass, a name of the family of models each pass of the round is for (`prreviews.contract_problems`)."""
+    if job.kind != "redteam":
+        return "with your agent's name in the brackets, for example `chatgpt`"
+    passes = [f"pass {chr(ord('a') + k)} is for the family of `{p.agent}` (sign "
+              + " or ".join(f"`{n}`" for n in claims.family_names(p.agent)) + ")"
+              for k, p in enumerate(ctx.cfg.redteam.passes)]
+    return ("with your agent's name in the brackets and the letter of the pass you take; each pass is for one family "
+            "of models, and a pass signed with a name of another family is not counted: " + "; ".join(passes))
 
 
 def web_gaps(ctx, pkg: str, head: str) -> str:
@@ -113,6 +129,20 @@ def web_gaps(ctx, pkg: str, head: str) -> str:
     except (GHError, ValueError):
         return "none declared (no readable design/plan.json at this head)"
     return gaps_listing(plan if isinstance(plan, dict) else {})
+
+
+def declared_gaps(ctx, name: str, head: str) -> set[str] | None:
+    """The gap slugs the plan at the head declares (none when there is no plan, or it is not JSON), or
+    None when GitHub did not serve it (anything but a 404): the next scan reads it again."""
+    from .lanes.review import plan_slugs
+    try:
+        text = ctx.gh.raw_file(repo(ctx), f"{board.package_dir(ctx.cfg.board.packages_dir, name)}/design/plan.json", head)
+    except GHError as exc:
+        return set() if "404" in str(exc) else None
+    try:
+        return plan_slugs(json.loads(text))
+    except ValueError:
+        return set()
 
 
 def pin_brief(ctx, number: int, job: Job, pr: dict, comments: list[dict] | None = None) -> None:
@@ -190,8 +220,7 @@ def independent(ctx, login: str, parsed: prreviews.Parsed, job: Job, jobs: list[
     if not job.independent_of:
         return True
     mode = ctx.cfg.review.separation
-    reviewer = (login, parsed.agent if not parsed.worker else parsed.worker.get("agent", parsed.agent),
-                parsed.worker.get("model", ""))
+    reviewer = (login, *parsed.provenance)
     records = ctx.board.authors(job.independent_of, jobs)
     if shared:
         for jid, rec in shared.recorded_authors(job.independent_of).items():
@@ -264,6 +293,13 @@ def reviews_for(ctx, job: Job, comments: list[dict], head: str, jobs: list[Job],
         elif not independent(ctx, login, parsed, job, jobs, shared):
             refused = (f"Not counted for `{job.id}`: @{login} ({parsed.agent}) is not independent of its authors "
                        f"(separation by {ctx.cfg.review.separation}).")
+        else:
+            declared = declared_gaps(ctx, job.name, head) if parsed.conditional else set()
+            if declared is None:
+                continue
+            problems = prreviews.contract_problems(parsed, job, declared)
+            if problems:
+                refused = f"Not counted for `{job.id}`: @{login}'s {parsed.kind}: " + "; ".join(problems) + "."
         if refused:
             if cid not in handled:
                 note(ctx, number, refused)

@@ -95,12 +95,15 @@ checkout, submits a PR to the board, and the intake advances the state.
    reviewers as its first comment, and every review is a comment on it (first line
    `Review (<agent>) of <sha7>`, a `Verdict:` line, numbered `1. **F01** (P1)` findings), posted by
    a review worker or by a browser model such as ChatGPT Pro that a listed maintainer login drives.
-   A fix pushes to the same branch and a fresh review of the new head follows.
+   Either route counts only under the contract the review lane checks locally: no acceptance with a
+   P1 or P2 finding, the adversarial table on an acceptance, only declared gaps in a conditional
+   acceptance. A fix pushes to the same branch and a fresh review of the new head follows.
 6. `redteam` — after the package review accepts, two independent whole-document passes (two
    different agents) on the package's still-open board pull request, each round followed by a
    `fix` lane that pushes to its branch (with the targeted Lean build of the module in a checkout
    of the roadmap repository); a second round of the same. A pass is a comment whose first line is
-   `Red team round <N> pass <x> (<agent>) of <sha7>`, from a worker or a browser model. The
+   `Red team round <N> pass <x> (<agent>) of <sha7>`, from a worker or a browser model, signed by
+   the family of models its pass requires (a worker's marker also names the pass's model). The
    maintainer may add section-sharded passes: today's evidence is that a section-level pass
    instantiating every statement on small examples catches pinning gaps that whole-document
    passes miss. After the last round's fix the board pull request is merged.

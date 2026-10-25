@@ -176,7 +176,9 @@ Claude, Astra on Codex), whichever family a worker runs. A browser model such as
 review too: the pinned "Review queue" issue on the board lists what is open, each pull request's
 first comment is the brief, and the review is one comment in the shape the brief gives (a first
 line `Review (<agent>) of <sha7>`, a `Verdict:` line and numbered findings), which the board reads
-like a worker's when it comes from a login the project lists.
+like a worker's when it comes from a login the project lists, and holds to the same contract (no
+acceptance with a P1 or P2 finding, the adversarial table, only declared gaps, each red-team pass by
+its family of models).
 
 ## Development
 

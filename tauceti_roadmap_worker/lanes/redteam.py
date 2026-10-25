@@ -305,7 +305,7 @@ class RedTeamLane(Lane):
         if any(p not in mine for p in gitops.changed_files(ws.workdir)):
             problems.append("the red-team pass changed the read-only checkout")
         if self.board_pr(job) and not problems and ws.report.is_file():
-            problems += self.comment_problems(self.comment_body(job, ctx, ws))
+            problems += self.comment_problems(self.comment_body(job, ctx, ws), job)
         return problems
 
     def comment_body(self, job: Job, ctx: Context, ws: Workspace) -> str:
