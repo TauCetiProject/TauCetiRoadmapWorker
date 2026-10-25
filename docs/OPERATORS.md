@@ -321,6 +321,13 @@ pointed at the heading slugs) and lists every other failure in the brief's manda
 failures to clear": the round log's line, the gate's rule and every hit (logged `before the agent: ...`).
 The gate after the agent is unchanged.
 
+Every review, and every comment of one, numbers its findings from F01. When a fix answers several
+(the passes of a red-team round, or a review the intake concluded from several comments), its brief
+lists the findings by qualified id, `RT-Foo~2a/F01` (and `REV-PKG-Foo~2/c<comment id>/F01` for a
+comment), and the coverage check counts a section only for the one finding its id names: a bare `F01`
+settles nothing when two reports have one. A section may settle several findings by naming each
+(`## RT-Foo~2a/F01, RT-Foo~2b/F03 (P1) — applied`); `Re-raised:` takes the id as the repair wrote it.
+
 Every lane writes its report to `packages/<Name>/reports/<JOB>.md` on the board, so the next lane
 (often another operator) can read it. The roadmap's `sources.toml` is a deliverable of every job that
 works on its sources (target, design, package, review, and the design and package fixes); the lanes

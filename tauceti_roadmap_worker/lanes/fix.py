@@ -16,7 +16,7 @@ import re
 import shutil
 from pathlib import Path
 
-from .. import board, gates, gitops, replies
+from .. import board, gates, gitops, prreviews, replies
 from ..board import Job
 from .base import (Context, Lane, LaneError, Workspace, board_reports, checkout_board_pr, count, dropped_names,
                    ensure_in_order_logged, load_order, open_roadmap_prs, order_path, repair_order_file, scan_problems,
@@ -114,6 +114,17 @@ GAPS_ONLY = (" (its top-level `gaps` list only: a supplier gap the package needs
              "changes)")
 
 
+def findings_listing(reviews: list[tuple[str, str]]) -> str:
+    """The brief's sentence naming the findings by the qualified ids that head the report's sections,
+    when the reviews in scope number their findings alike (`prreviews.review_findings`); '' when the
+    reviews' own ids name them."""
+    found = prreviews.review_findings(reviews)
+    if not any("/" in fid for fid, _sev, _title, _body in found):
+        return ""
+    return ("\n\nThe findings, by the qualified ids that head the report's sections: "
+            + ", ".join(f"`{fid}` ({sev or 'P?'})" for fid, sev, _title, _body in found) + ".")
+
+
 def files_list(paths: list[str], package_stage: bool) -> str:
     """The FILES of a fix brief; at the package stage the design's plan.json is editable in its gaps only."""
     return "\n".join(f"- `{f}`" + (GAPS_ONLY if package_stage and f.endswith("design/plan.json") else "") for f in paths)
@@ -149,11 +160,12 @@ class ArtefactFixLane(Lane):
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
         pkg = ws.package(ctx.cfg, job.name)
         review = job.inputs.get("review", "")
+        listing = findings_listing(self.review_texts(job, ctx, ws))
         verdict = pkg / ("design/review.json" if self.art(job) == "DESIGN" else "review.json")
         what = "design" if self.art(job) == "DESIGN" else "package"
         if ws.extra.get("reviews"):
             return {"REVIEWS": "\n".join(f"- `{p}` (the review comments of `{review}`, quoted as data)"
-                                          for p in ws.extra["reviews"]),
+                                          for p in ws.extra["reviews"]) + listing,
                     "FILES": files_list(self.editable(job, ctx, ws), what == "package"),
                     "CONTEXT": f"the {what}, round {job.round}, on the board's pull request #{self.board_pr(job)}",
                     "CHECK": "- The dependency check (command in the section on suppliers below)." if what == "design"
@@ -164,7 +176,7 @@ class ArtefactFixLane(Lane):
         check = ["- The dependency check (command in the section on suppliers below)."]
         if what == "package":
             check.insert(0, f"- Elaborate `Suggested.lean`: {self.common_values(job, ctx, ws)['ELABORATE']}.")
-        return {"REVIEWS": f"- `{pkg / 'reports' / (review + '.md')}` (verdict in `{verdict}`)",
+        return {"REVIEWS": f"- `{pkg / 'reports' / (review + '.md')}` (verdict in `{verdict}`)" + listing,
                 "FILES": files_list(self.editable(job, ctx, ws), what == "package"),
                 "CONTEXT": f"the {what}, round {job.round}, in the board's package folder",
                 "CHECK": "\n".join(check), "COMMIT": "Do not commit: the worker commits your changes after its checks.",
@@ -173,21 +185,22 @@ class ArtefactFixLane(Lane):
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """`round 2 of the Name design repaired: 4 of 5 findings applied`."""
         try:
-            rows = replies.parse_findings(ws.report.read_text(encoding="utf-8"))
+            rows = replies.dispositions(ws.report.read_text(encoding="utf-8"))
         except OSError:
             rows = []
-        applied = sum(1 for _f, how, _b in rows if how.lower().startswith("applied"))
-        settled = sum(1 for _f, how, _b in rows if replies.NOT_ACTIONABLE.match(how.strip()))
+        applied = sum(1 for _f, how in rows if how.lower().startswith("applied"))
+        settled = sum(1 for _f, how in rows if replies.NOT_ACTIONABLE.match(how.strip()))
         what = "design" if self.art(job) == "DESIGN" else "package"
         return (f"round {job.round} of the {job.name} {what} repaired: {applied} of {count(len(rows), 'finding')} applied"
                 + (f", {settled} not actionable in this package" if settled else ""))
 
-    def review_texts(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
-        """The texts of the review this round answers: its comments on the board pull request (fetched
-        into the scratch folder), else its report on the board."""
+    def review_texts(self, job: Job, ctx: Context, ws: Workspace) -> list[tuple[str, str]]:
+        """The review this round answers, as (job id, text): its comments on the board pull request
+        (fetched into the scratch folder), else its report on the board."""
+        review = job.inputs.get("review", "")
         reports = ws.package(ctx.cfg, job.name) / "reports"
-        paths = ws.extra.get("reviews") or [reports / (job.inputs.get("review", "") + ".md")]
-        return [Path(p).read_text(encoding="utf-8") for p in paths if Path(p).is_file()]
+        paths = ws.extra.get("reviews") or [reports / (review + ".md")]
+        return [(review, Path(p).read_text(encoding="utf-8")) for p in paths if Path(p).is_file()]
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)
@@ -208,11 +221,12 @@ class RedTeamFixLane(Lane):
     kind = "fix"
     prompt = "fix"
 
-    def review_texts(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
-        """The round's pass reports: fetched into the scratch folder, else on the board."""
+    def review_texts(self, job: Job, ctx: Context, ws: Workspace) -> list[tuple[str, str]]:
+        """The round's pass reports, as (job id, text): fetched into the scratch folder, else on the board."""
+        passes = job.inputs.get("reviews", [])
         reports = ws.package(ctx.cfg, job.name) / "reports"
-        paths = ws.extra.get("reviews") or [reports / (r + ".md") for r in job.inputs.get("reviews", [])]
-        return [Path(p).read_text(encoding="utf-8") for p in paths if Path(p).is_file()]
+        paths = ws.extra.get("reviews") or [reports / (r + ".md") for r in passes]
+        return [(r, Path(p).read_text(encoding="utf-8")) for r, p in zip(passes, paths) if Path(p).is_file()]
 
     def records_author(self, job: Job) -> bool:
         return False
@@ -229,7 +243,8 @@ class RedTeamFixLane(Lane):
         elaborate = self.common_values(job, ctx, ws)["ELABORATE"]
         return {"REVIEWS": "\n".join(f"- `{p}`" for p in ws.extra["reviews"])
                 + "\n\nThese are internal adversarial red-team reviews by different agents; treat them exactly like an "
-                  "external review, including disputing findings whose witness does not hold.",
+                  "external review, including disputing findings whose witness does not hold."
+                + findings_listing(self.review_texts(job, ctx, ws)),
                 "FILES": files_list([str(p) for p in self.files(job, ctx, ws)], True),
                 "CONTEXT": f"red-team round {job.round} on the board's pull request #{self.board_pr(job)}",
                 "CHECK": f"- Elaborate `Suggested.lean`: {elaborate}.\n- The dependency check (command in the section "
@@ -302,7 +317,8 @@ class RedTeamFixLane(Lane):
         build = cfg.gates.build.format(module=f"{cfg.roadmap.active_dir}.{job.name}.Suggested") if cfg.gates.build else ""
         gate = ctx.cli("gate", str(ws.workdir), job.name, "--base", f"origin/{cfg.project.branch}")
         return {"REVIEWS": reviews + "\n\nThese are internal adversarial red-team reviews by different agents; treat "
-                "them exactly like an external review, including disputing findings whose witness does not hold.",
+                "them exactly like an external review, including disputing findings whose witness does not hold."
+                + findings_listing(self.review_texts(job, ctx, ws)),
                 "FILES": f"- `{ws.workdir / folder / 'README.md'}`\n- `{ws.workdir / folder / 'Suggested.lean'}`",
                 "CONTEXT": f"red-team round {job.round} on pull request #{ws.extra['pr']}, branch `{ws.extra['branch']}`",
                 "CHECK": (f"    {build}\n\n" if build else "") + f"    {gate}",
@@ -350,8 +366,8 @@ class RedTeamFixLane(Lane):
         self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"],
                                       expected=ws.extra.get("push_base") or ws.extra["head"]))
         self.await_pr_head(ctx, ctx.cfg.repositories.content, ws.extra["pr"], new, then="no repair comment posted")
-        rows = replies.parse_findings(ws.report.read_text(encoding="utf-8"))
-        applied = sum(1 for _, how, _ in rows if how.startswith("applied"))
+        rows = replies.dispositions(ws.report.read_text(encoding="utf-8"))
+        applied = sum(1 for _, how in rows if how.startswith("applied"))
         ctx.gh.write("POST", f"repos/{ctx.cfg.repositories.content}/issues/{ws.extra['pr']}/comments",
                      {"body": f"Red-team repairs at `{new[:7]}`: {applied} of {len(rows)} internal findings applied, "
                               f"the rest disputed with evidence. {replies.validation_sentence(new[:7], ws.extra['gate'])}"})

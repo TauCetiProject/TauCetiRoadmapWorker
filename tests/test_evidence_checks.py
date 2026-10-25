@@ -46,15 +46,16 @@ FIX = "## F01 (P1) — applied\n\nold → new\n\n## F03 (P3) — disputed\n\nthe
 
 
 def test_a_repair_report_answers_every_finding():
-    assert replies.coverage_problems([REVIEW_COMMENT], FIX) == [
+    comment, report = ("REV-PKG-Foo", REVIEW_COMMENT), ("RT-Foo~1b", REVIEW_REPORT)
+    assert replies.coverage_problems([comment], FIX) == [
         "report: no section for the review's finding F02: write one section per finding, headed `## <finding id> "
         "(<severity>) — <applied | applied differently | disputed | not actionable in this package: <reason>>`"]
-    assert replies.coverage_problems([REVIEW_COMMENT], FIX + "\n## F02 (P2) — applied differently\n\nwhy\n") == []
-    assert "R01, R02" in replies.coverage_problems([REVIEW_REPORT], FIX)[0]
-    # two passes of a red-team round: their ids together
-    assert replies.coverage_problems([REVIEW_COMMENT, REVIEW_REPORT], FIX + "## F02 (P2) — applied\n\n"
+    assert replies.coverage_problems([comment], FIX + "\n## F02 (P2) — applied differently\n\nwhy\n") == []
+    assert "R01, R02" in replies.coverage_problems([report], FIX)[0]
+    # two passes of a red-team round: an id no other pass has names its finding unqualified
+    assert replies.coverage_problems([comment, report], FIX + "## F02 (P2) — applied\n\n"
                                      "## R01 (P1) — applied\n\n## R02 (P3) — applied\n") == []
-    assert replies.coverage_problems(["(no report of REV-PKG-Foo on the board yet)\n"], FIX) == []
+    assert replies.coverage_problems([("REV-PKG-Foo", "(no report of REV-PKG-Foo on the board yet)\n")], FIX) == []
 
 
 @pytest.fixture

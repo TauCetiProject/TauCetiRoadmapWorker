@@ -35,6 +35,8 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from . import prreviews
+
 CHANGES = re.compile(
     r"CHANGES NEEDED|[Cc]hanges needed|correction is needed|needed before approval|substantive (?:change|addition|correction)|"
     r"changes are needed|would not approve|[Rr]equest changes")
@@ -230,18 +232,28 @@ def guard_reply(text: str, markers: list[str]) -> str:
     return text if reply_is_safe(text, markers) else REPLY_PREFIX + text
 
 
+def _ids(bare: str) -> str:
+    """A section heading's finding ids: one, or several joined by `,` or `and`, each possibly qualified."""
+    one = prreviews.QUALIFIER + f"(?:{bare})"
+    return rf"({one}(?:(?:[ \t]*,[ \t]*|[ \t]+and[ \t]+){one})*)"
+
+
 _FINDING_STYLES = (
-    re.compile(r"^## (Finding \d+|F\d+|R\d+|S\d+|[A-Z]?\d+)[^\n]*?— ([^\n]*)\n(.*?)(?=\n## |\Z)", re.S | re.M),
-    re.compile(r"^\d+\. \*\*(F\d+|R\d+|S\d+|\d+) — ([^*]*?)\.\*\*\s*(.*?)(?=\n\d+\. \*\*|\n\n|\Z)", re.S | re.M),
-    re.compile(r"^- \*\*([A-Z]\d+)[^*]*?— ([^*]*?)\.\*\*\s*(.*?)(?=\n- \*\*|\n\n|\Z)", re.S | re.M),
-    re.compile(r"^\*\*([A-Z]\d+) — ([^*]*?)\.\*\*\s*(.*?)(?=\n\*\*|\n\n|\Z)", re.S | re.M),
+    re.compile(r"^## " + _ids(r"Finding \d+|F\d+|R\d+|S\d+|[A-Z]?\d+") + r"[^\n]*?— ([^\n]*)\n(.*?)(?=\n## |\Z)",
+               re.S | re.M),
+    re.compile(r"^\d+\. \*\*" + _ids(r"F\d+|R\d+|S\d+|\d+") + r" — ([^*]*?)\.\*\*\s*(.*?)(?=\n\d+\. \*\*|\n\n|\Z)",
+               re.S | re.M),
+    re.compile(r"^- \*\*" + _ids(r"[A-Z]\d+") + r"[^*]*?— ([^*]*?)\.\*\*\s*(.*?)(?=\n- \*\*|\n\n|\Z)", re.S | re.M),
+    re.compile(r"^\*\*" + _ids(r"[A-Z]\d+") + r" — ([^*]*?)\.\*\*\s*(.*?)(?=\n\*\*|\n\n|\Z)", re.S | re.M),
 )
+FINDING_REF = re.compile(prreviews.QUALIFIER + r"(?:Finding \d+|[A-Z]?\d+)")
 
 
 def parse_findings(report: str) -> list[tuple[str, str, str]]:
     """(finding id, disposition, explanation) from a fix report, trying the heading styles the fix
     briefs ask for: `## R01 ... — applied`, `1. **R01 — applied.**`, `- **R01 — applied.**`,
-    `**R01 — applied.**`."""
+    `**R01 — applied.**`. The id is the heading's, qualified (`RT-Foo~2a/F01`) or naming several
+    findings (`RT-Foo~2a/F01, RT-Foo~2b/F03`) as written: `finding_ids` splits it."""
     for style in _FINDING_STYLES:
         rows = [(m.group(1), m.group(2).strip().rstrip("."), m.group(3).strip()) for m in style.finditer(report)]
         if rows:
@@ -249,23 +261,53 @@ def parse_findings(report: str) -> list[tuple[str, str, str]]:
     return []
 
 
-def coverage_problems(reviews: list[str], report: str) -> list[str]:
-    """The review's findings that the repair report has no section for: one section per finding, every
-    finding settled (applied, applied differently, disputed, or not actionable with the reason). Several
-    reviews (a red-team round's passes) are covered by their ids together."""
-    from .prreviews import findings_with_bodies
-    wanted: list[str] = []
-    for text in reviews:
-        for fid, _sev, _title, _body in findings_with_bodies(text):
-            if fid not in wanted:
-                wanted.append(fid)
-    covered = {fid for fid, _how, _body in parse_findings(report)}
+def finding_ids(heading: str) -> list[str]:
+    """The finding ids a section's heading names (`parse_findings`)."""
+    return FINDING_REF.findall(heading)
+
+
+def dispositions(report: str) -> list[tuple[str, str]]:
+    """(finding id, disposition) for every finding a repair report's sections name; a section that
+    settles several findings counts for each."""
+    return [(one, how) for fid, how, _body in parse_findings(report) for one in finding_ids(fid)]
+
+
+def _within(part: list[str], whole: list[str]) -> bool:
+    rest = iter(whole)
+    return all(p in rest for p in part)
+
+
+def names(written: str, ids: list[str]) -> list[str]:
+    """The ids among `ids` that a written finding id names: the same finding, the qualification of one
+    within the other's (`F01` and `RT-Foo~2a/c7/F01` both name `RT-Foo~2a/F01`; `RT-Foo~2b/F01` does not)."""
+    w = written.split("/")
+    return [i for i in ids if (p := i.split("/"))[-1] == w[-1] and (_within(w[:-1], p[:-1]) or _within(p[:-1], w[:-1]))]
+
+
+def coverage_problems(reviews: list[tuple[str, str]], report: str) -> list[str]:
+    """The findings of the reviews in scope, each review given as (job id, text), that no section of the
+    repair report settles: one section per finding, every finding settled (applied, applied differently,
+    disputed, or not actionable with the reason). A section that settles several findings names each.
+    An id settles the one finding it names, so where several reviews or comments number their findings
+    alike (a red-team round's passes, a review of several comments), only the qualified id
+    (`prreviews.review_findings`) does: a bare `F01` names none of them."""
+    wanted = list(dict.fromkeys(fid for fid, _sev, _title, _body in prreviews.review_findings(reviews)))
+    covered, ambiguous = set(), {}
+    for written, _how in dispositions(report):
+        named = names(written, wanted)
+        if len(named) == 1:
+            covered.add(named[0])
+        elif named:
+            ambiguous[written] = named
     missing = [fid for fid in wanted if fid not in covered]
     if not missing:
         return []
-    return [f"report: no section for the review's finding{'s' if len(missing) > 1 else ''} {', '.join(missing)}: "
-            "write one section per finding, headed `## <finding id> (<severity>) — <applied | applied differently | "
-            "disputed | not actionable in this package: <reason>>`"]
+    out = [f"report: no section for the review's finding{'s' if len(missing) > 1 else ''} {', '.join(missing)}: "
+           "write one section per finding, headed `## <finding id> (<severity>) — <applied | applied differently | "
+           "disputed | not actionable in this package: <reason>>`"]
+    return out + [f"report: `{written}` names {len(named)} findings ({', '.join(named)}): head the section with the "
+                  "qualified id of each finding it settles" for written, named in ambiguous.items()
+                  if set(named) & set(missing)]
 
 
 NOT_ACTIONABLE = re.compile(r"^not[ -]actionable\b", re.IGNORECASE)
@@ -273,7 +315,8 @@ NOT_ACTIONABLE = re.compile(r"^not[ -]actionable\b", re.IGNORECASE)
 
 def not_actionable(report: str) -> dict[str, tuple[str, str]]:
     """Finding id -> (title, reason) for the findings a repair report marked `not actionable in this
-    package`, with the reason after the disposition (else the first line of the section)."""
+    package`, with the reason after the disposition (else the first line of the section); a section
+    naming several findings gives each the same entry."""
     out = {}
     for fid, how, body in parse_findings(report):
         if not NOT_ACTIONABLE.match(how.strip()):
@@ -281,7 +324,8 @@ def not_actionable(report: str) -> dict[str, tuple[str, str]]:
         reason = re.sub(r"^not[ -]actionable(?: in this package)?\s*[:.—-]*\s*", "", how.strip(), flags=re.IGNORECASE)
         m = re.search(rf"^(?:##\s+|\d+\.\s+\*\*|-\s+\*\*|\*\*){re.escape(fid)}\b\**\s*(?:[(\[]P[123][)\]])?\s*(.*?)\s*—",
                       report, re.MULTILINE)
-        out[fid] = ((m.group(1).strip(" *") if m else ""), (reason or body.split("\n", 1)[0]).strip())
+        for one in finding_ids(fid):
+            out[one] = ((m.group(1).strip(" *") if m else ""), (reason or body.split("\n", 1)[0]).strip())
     return out
 
 
