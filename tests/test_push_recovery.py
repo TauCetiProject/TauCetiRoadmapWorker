@@ -173,7 +173,7 @@ def test_the_kept_commit_comes_back_onto_its_branch(repos, tmp_path):
     ws.job_dir.mkdir(parents=True)
     assert lane_base.save_pending(run_ctx, job, ws, "push rejected") == 1
     entry = lane_base.read_pending(run_ctx, job)
-    assert (entry["sha"], entry["base"], entry["branch"]) == (sha, base, "roadmap/foo")
+    assert entry["content"] == {"sha": sha, "base": base, "branch": "roadmap/foo"}
     assert (ws.job_dir / lane_base.PENDING_DIR / "commit.bundle").is_file()
     # A fresh worktree at the pull request's head, then the restore.
     sh(work, "checkout", "-q", "--detach", base)

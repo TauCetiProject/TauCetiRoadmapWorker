@@ -71,6 +71,16 @@ def normal_verdict(text: str) -> str:
     return "needs_changes" if text in ("needs_changes", "changes_needed") else text
 
 
+def worker_marker(body: str) -> dict:
+    """The worker's marker a comment carries ({job, worker, agent, model, head}), or {}."""
+    found = MARK_RE.findall(body or "")
+    try:
+        marker = json.loads(found[-1]) if found else {}
+    except ValueError:
+        return {}
+    return marker if isinstance(marker, dict) else {}
+
+
 def parse(body: str) -> Parsed | None:
     """The review, red-team pass, errata or claim a comment states, or None (anything else, or a review
     without a verdict, or one that asks for changes without a numbered finding)."""
@@ -78,13 +88,7 @@ def parse(body: str) -> Parsed | None:
     if not lines:
         return None
     first = lines[0].strip().strip("*").strip()
-    worker = {}
-    found = MARK_RE.findall(body or "")
-    if found:
-        try:
-            worker = json.loads(found[-1])
-        except ValueError:
-            worker = {}
+    worker = worker_marker(body)
     if (m := CLAIM_HEAD.match(first)) and len(lines) <= 3:
         return Parsed("claim", agent=(m.group(1) or "").strip())
     if m := REVIEW_HEAD.match(first):
@@ -103,7 +107,7 @@ def parse(body: str) -> Parsed | None:
     parsed.findings = FINDING.findall(body)
     if m := CONDITIONAL.search(body):
         parsed.conditional = gap_slugs(m.group(1))
-    parsed.worker = worker if isinstance(worker, dict) else {}
+    parsed.worker = worker
     if parsed.verdict == "needs_changes" and not parsed.findings:
         return None
     return parsed
