@@ -231,7 +231,10 @@ target ──triage──▶ DESIGN-Name ═══ board PR (needs-review) ═�
 A design or package submission is not merged right away: its board pull request stays open, labelled
 `needs-review`, through its reviews, their fix rounds (pushed to its branch by its owner) and, for a
 package, the red-team rounds; every review or pass is a comment on it (see "Reviewing from a browser
-model" below for the shape). After the last red-team fix the intake merges it and creates the port.
+model" below for the shape). A round's fix follows only when every pass of the round reviewed the
+same package: a pass done at a head whose package files changed since (`sources.toml` aside, as after
+a rebase onto main) goes back to `state:available`, its issue reopened, with a note on the pull
+request. After the last red-team fix the intake merges it and creates the port.
 The merge carries the deliverables of the jobs that wrote the pull request and, for an explorer
 import, the files its import marker declares under the roadmap's folder (the explorer's
 `review.json`), each through the submission checks (source material, local paths, JSON/TOML). A merge

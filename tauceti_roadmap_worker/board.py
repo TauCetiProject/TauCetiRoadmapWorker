@@ -495,6 +495,7 @@ TRANSITIONS = {
     ("available", "block"): "blocked",
     ("claimed", "block"): "blocked",
     ("blocked", "unblock"): "available",
+    ("done", "reopen"): "available",
 }
 
 

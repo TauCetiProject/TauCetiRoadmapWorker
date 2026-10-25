@@ -103,10 +103,12 @@ checkout, submits a PR to the board, and the intake advances the state.
    `fix` lane that pushes to its branch (with the targeted Lean build of the module in a checkout
    of the roadmap repository); a second round of the same. A pass is a comment whose first line is
    `Red team round <N> pass <x> (<agent>) of <sha7>`, from a worker or a browser model, signed by
-   the family of models its pass requires (a worker's marker also names the pass's model). The
-   maintainer may add section-sharded passes: today's evidence is that a section-level pass
-   instantiating every statement on small examples catches pinning gaps that whole-document
-   passes miss. After the last round's fix the board pull request is merged.
+   the family of models its pass requires (a worker's marker also names the pass's model). Every
+   pass records the head it reviewed, and a round is complete only when all its passes reviewed one
+   package: a pass done at a head whose package files changed since (`sources.toml` aside) is
+   reopened for the current head. The maintainer may add section-sharded passes: today's evidence
+   is that a section-level pass instantiating every statement on small examples catches pinning
+   gaps that whole-document passes miss. After the last round's fix the board pull request is merged.
 7. `port` — copies the red-teamed package into the content repository on a fork branch, places
    the roadmap in the merge order if it is not there yet (or moves it after its last supplier when
    the order lists it above one), runs the gates (build of the module,
