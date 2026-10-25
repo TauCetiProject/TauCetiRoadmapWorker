@@ -739,19 +739,51 @@ machine are here:
 
 The bundled files are in the installed package's `sandbox/` folder.
 
+* **off** (the default): the agent runs directly on the host as the operator, with the operator's
+  home directory and permissions. It can read and write everything that account can (other
+  workers' state, the `gh`, git and SSH credentials in the home directory) and reach any host; it
+  runs with every permission check of its CLI turned off. What it does not get is a GitHub token
+  in its environment, and a Claude agent's shell commands pass the hook below. Run workers in
+  `off` only under an account that holds nothing an agent must not read.
 * **proxy**: run `python3 -I sandbox/allowproxy.py` (127.0.0.1:3128 and a unix socket). It allows
   and logs every host except the deny lists (exfiltration channels and pirate mirrors, plus your own
-  `deny.txt` in `~/.local/state/tauceti/allowproxy/`). Set `[sandbox] profile = "proxy"`.
+  `deny.txt` in `~/.local/state/tauceti/allowproxy/`). Set `[sandbox] profile = "proxy"`. The agent
+  gets the proxy variables; a program that ignores them still goes direct.
 * **netjail**: build `cc -O2 -Wall -o netjail sandbox/netjail.c`, grant it user namespaces with
   `sandbox/netjail.apparmor` on Ubuntu, set `profile = "netjail"` and `netjail = "<path>"`. The agent
-  then runs in a private network namespace whose only route out is the proxy. If the jail cannot
-  start, the worker falls back to the proxy profile.
+  then runs in a private network namespace whose only route out is the proxy.
 * **Claude hook**: with `claude_hook = true`, Claude agents get a PreToolUse hook (`url-guard.py`)
-  that refuses to execute fetched content, raw network tools, proxy changes and credential reads.
+  that refuses to execute fetched content, raw network tools, proxy changes and credential reads in
+  shell commands; the CLI's own file tools do not pass through it.
+
+`proxy` and `netjail` confine the network only: neither isolates the filesystem or credentials.
+
+A requested profile fails closed. When the jail cannot start or nothing listens at `proxy_url`,
+`work` refuses to start, and a worker whose sandbox breaks while it runs releases the job at hand
+(not counted against it) and exits with status 1, the reason on stderr and in the round log; it
+never runs an agent without the sandbox and never goes on to the next job. `doctor` reports both
+as failures.
+
+**Another launcher.** `netjail` may name any program that keeps the bundled jail's contract, a
+container launcher for instance. The worker runs `<netjail> <agent argv...>` with:
+
+* the brief on stdin, and the agent's JSON events read from stdout (stderr goes to the run's
+  `.err` log);
+* the job's workspace as the working directory;
+* the agent's trimmed environment (home, path, locale, the agent's config directory and API key,
+  never a GitHub token), plus `NETJAIL_FORWARDER`, the path of the bundled `nsforward.py`, which the
+  bundled jail runs inside the namespace and another launcher may ignore;
+* the launcher in its own process group, killed as a group (SIGKILL) on the wall-clock timeout or
+  a stop: a launcher whose agent outlives it (a container a daemon runs) must stop it some other way.
+
+The launcher runs the agent in that directory with that environment and exits with the agent's
+exit status. The worker calls `<netjail> /usr/bin/true` (exit 0) to decide that it is usable.
 
 Agents always run with a minimal environment: no GitHub token is passed to them; the worker makes
 every GitHub write itself after checking the result. TauCetiWorker's `--bubble` sandbox is the
-alternative for operators who already use it.
+alternative for operators who already use it. Isolating the agents' filesystem and credentials at
+the operating-system level (only the job's workspace writable, the sources read-only, the
+harness's credentials and other workers' state out of reach) is not built yet.
 
 ## What a human does when
 

@@ -30,12 +30,10 @@ import argparse
 import json
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlparse
 
 from . import (
     __version__,
@@ -225,20 +223,26 @@ def review_model_rows(cfg: config.Config, installed: list[str]) -> list[tuple[st
     return rows
 
 
+SANDBOX_GUARANTEES = {
+    "off": "agents run unconfined, as this user with its home directory, files and credentials",
+    "proxy": "agents' HTTP(S) goes through the logging proxy (a program that ignores the proxy variables goes "
+             "direct); no filesystem or credential isolation",
+    "netjail": "agents reach the network only through the logging proxy; no filesystem or credential isolation",
+}
+
+
 def _sandbox_rows(cfg: config.Config) -> list[tuple[str, str, str]]:
-    from .agents import netjail_usable
+    from .agents import netjail_usable, proxy_listening
     s = cfg.sandbox
-    rows = [(OK, "sandbox", s.profile)]
+    rows = [(OK, "sandbox", f"{s.profile}: {SANDBOX_GUARANTEES[s.profile]}")]
     if s.profile in ("proxy", "netjail"):
-        u = urlparse(s.proxy_url)
-        try:
-            with socket.create_connection((u.hostname or "127.0.0.1", u.port or 3128), timeout=3):
-                rows.append((OK, "proxy", s.proxy_url))
-        except OSError:
-            rows.append((FAIL, "proxy", f"{s.proxy_url} is not listening (start sandbox/allowproxy.py)"))
+        rows.append((OK, "proxy", s.proxy_url) if proxy_listening(s.proxy_url) else
+                    (FAIL, "proxy", f"{s.proxy_url} is not listening (start sandbox/allowproxy.py); workers will "
+                                    "not start an agent"))
     if s.profile == "netjail":
-        rows.append((OK, "netjail", s.netjail) if netjail_usable(s.netjail)
-                    else (WARN, "netjail", f"{s.netjail or 'not set'} unusable; agents fall back to the proxy profile"))
+        rows.append((OK, "netjail", s.netjail) if netjail_usable(s.netjail) else
+                    (FAIL, "netjail", (f"{s.netjail} cannot start a jail here" if s.netjail else
+                                       "[sandbox] netjail is not set") + "; workers will not start an agent"))
     return rows
 
 
@@ -301,10 +305,14 @@ def _stop(signum, frame):
 
 
 def work(args) -> int:
+    from .agents import SandboxUnavailable, sandbox_problem
     from .lanes import Context
     from .mergeorder import _order
     from .worker import release_leftovers, sweep_worktrees, work_loop, work_once
     cfg = _load(args)
+    sandbox = "" if args.dry_run else sandbox_problem(cfg.sandbox.profile, cfg.sandbox.proxy_url, cfg.sandbox.netjail)
+    if sandbox:
+        raise SystemExit(f"sandbox: {sandbox}; no agent runs without it (`tauceti-roadmap doctor` checks it)")
     gh = GH(dry_run=args.dry_run)
     operator, last = "", None
     for delay in (0, *config.RETRY_DELAYS):        # a network blip at startup must not stop a worker
@@ -343,6 +351,9 @@ def work(args) -> int:
             work_loop(ctx, only, lambda: _order(ctx), log=log, build=started)
         except KeyboardInterrupt:
             return 130
+        except SandboxUnavailable as exc:
+            log(f"{exc}: the worker stops")
+            raise
         return 0
     result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx), log=log)
     print(f"{result.job or '-'} {result.describe()}" + (f" {result.url}" if result.url else ""))

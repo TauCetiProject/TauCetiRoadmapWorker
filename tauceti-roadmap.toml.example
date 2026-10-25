@@ -246,15 +246,26 @@ author-page = []
 institutional = []
 
 [sandbox]
-# "off" (default): agents run directly on the host.
+# "off" (default): agents run directly on the host, as the operator: they can read and write
+#          everything the operator's account can (the home directory, other workers' state, the
+#          gh, git and SSH credentials) and reach any host. Only the agent's environment is trimmed
+#          (no GitHub token in it) and, for Claude, the hook below screens shell commands.
 # "proxy": agents get HTTP(S)_PROXY pointing at proxy_url (run the bundled allowproxy.py there:
-#          everything allowed and logged, exfiltration hosts and pirate mirrors refused).
-# "netjail": agents run in a private network namespace whose only route out is that proxy
-#          (needs the bundled netjail compiled and permitted; falls back to "proxy" otherwise).
+#          everything allowed and logged, exfiltration hosts and pirate mirrors refused). A program
+#          that ignores the proxy variables still goes direct.
+# "netjail": agents run in a private network namespace whose only route out is that proxy.
+# Neither "proxy" nor "netjail" isolates the filesystem or credentials. A requested profile that
+# cannot run (nothing listening at proxy_url, a netjail that cannot start a jail) stops the worker
+# before it launches an agent; `doctor` reports it as a failure.
 # TauCetiWorker's --bubble sandbox is the alternative for operators who already use it.
 profile = "off"
 proxy_url = "http://127.0.0.1:3128"
-# Path of the compiled netjail binary (profile "netjail").
+# The launcher of profile "netjail": the bundled netjail, or any program that keeps its contract
+# (a container launcher, say). The worker runs `<netjail> <agent argv...>` with the brief on stdin,
+# the agent's JSON events expected on stdout, the job's workspace as the working directory and the
+# agent's trimmed environment (plus NETJAIL_FORWARDER); the launcher runs the agent in that
+# directory with that environment and exits with the agent's exit status. `<netjail> /usr/bin/true`
+# exiting 0 is how the worker decides that the launcher is usable.
 netjail = ""
 # Give Claude agents the bundled PreToolUse hook that blocks executing fetched content, raw network
 # tools, proxy tampering and credential access.

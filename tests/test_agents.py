@@ -1,6 +1,9 @@
 import datetime as dt
 import importlib.util
+import socket
 from pathlib import Path
+
+import pytest
 
 from tauceti_roadmap_worker import agents
 from tauceti_roadmap_worker.agents import AgentRun, agent_env, command_for, reset_time
@@ -37,9 +40,49 @@ def test_claude_command_with_hook_and_proxy(tmp_path):
     assert env["HTTPS_PROXY"] == "http://127.0.0.1:9" and env["NO_PROXY"] == "127.0.0.1,localhost"
 
 
-def test_netjail_falls_back_to_proxy(tmp_path):
-    argv, env, _ = command_for(run("codex", tmp_path, sandbox_profile="netjail", netjail=str(tmp_path / "missing")), BASE_ENV)
-    assert argv[0] == "codex" and env["HTTP_PROXY"] == "http://127.0.0.1:3128"
+def test_the_netjail_launches_the_agent_and_never_hands_it_to_the_proxy_instead(tmp_path):
+    jail = str(tmp_path / "netjail")
+    argv, env, cwd = command_for(run("codex", tmp_path, sandbox_profile="netjail", netjail=jail), BASE_ENV)
+    assert argv[:3] == [jail, "codex", "exec"] and cwd == tmp_path and "HTTP_PROXY" not in env
+    assert env["NETJAIL_FORWARDER"] == str(SANDBOX / "nsforward.py") and "GH_TOKEN" not in env
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_a_requested_sandbox_that_cannot_run_prevents_the_launch(tmp_path):
+    launched = []
+
+    def launch(*a, **k):
+        launched.append(a)
+        raise AssertionError("an agent was launched")
+    true_jail = tmp_path / "jail-ok"
+    true_jail.write_text("#!/bin/sh\nexec \"$@\"\n")
+    true_jail.chmod(0o755)
+    broken_jail = tmp_path / "jail-broken"
+    broken_jail.write_text("#!/bin/sh\nexit 111\n")
+    broken_jail.chmod(0o755)
+    with socket.socket() as listening:
+        listening.bind(("127.0.0.1", 0))
+        listening.listen()
+        proxy = f"http://127.0.0.1:{listening.getsockname()[1]}"
+        dead = f"http://127.0.0.1:{free_port()}"
+        cases = [(dict(sandbox_profile="netjail", proxy_url=proxy), "names no jail binary"),
+                 (dict(sandbox_profile="netjail", proxy_url=proxy, netjail=str(tmp_path / "missing")),
+                  "cannot start a jail here"),
+                 (dict(sandbox_profile="netjail", proxy_url=proxy, netjail=str(broken_jail)), "cannot start a jail here"),
+                 (dict(sandbox_profile="netjail", proxy_url=dead, netjail=str(true_jail)), f"nothing listens at {dead}"),
+                 (dict(sandbox_profile="proxy", proxy_url=dead), f"nothing listens at {dead}")]
+        for kw, why in cases:
+            with pytest.raises(agents.SandboxUnavailable, match=why) as stopped:
+                agents.run_agent(run("codex", tmp_path, **kw), launch=launch)
+            assert isinstance(stopped.value, SystemExit) and "no agent runs without it" in str(stopped.value)
+        assert launched == [] and not (tmp_path / "o").exists()
+        assert agents.sandbox_problem("netjail", proxy, str(true_jail)) == ""
+        assert agents.sandbox_problem("proxy", proxy, "") == "" == agents.sandbox_problem("off", dead, "")
 
 
 def test_limit_detection_and_reset_time():
