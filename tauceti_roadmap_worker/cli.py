@@ -27,6 +27,7 @@ through a pipe that would hide its exit status (use --out to keep a copy of the 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import shutil
 import signal
@@ -39,6 +40,7 @@ from urllib.parse import urlparse
 
 from . import (
     __version__,
+    board,
     boardpr,
     build,
     claims,
@@ -345,15 +347,18 @@ def work(args) -> int:
     build.snapshot(ctx.wdir, started)
     log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}, "
         f"build {started}")
+    if args.loop and args.status_file:
+        raise SystemExit("--status-file describes one round; it does not go with --loop")
+    began = dt.datetime.now(dt.UTC)
     if halt := halt_record(ctx):
         print(f"halted at {halt.get('at', '')}: {halt.get('detail', '')}; look at the account, then delete "
               f"{halt_path(ctx)}", file=sys.stderr)
-        return EX_HALTED
+        return round_end(args, ctx, LaneResult("", "halted", halt.get("detail", "")), began)
     try:
         release_leftovers(ctx, log)
     except GHHalt as exc:
         record_halt(ctx, str(exc))
-        return EX_HALTED
+        return round_end(args, ctx, LaneResult("", "halted", str(exc)), began)
     sweep_worktrees(ctx, log)
     # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
     signal.signal(signal.SIGTERM, _stop)
@@ -367,12 +372,47 @@ def work(args) -> int:
         result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx), log=log)
     except GHHalt as exc:
         result = LaneResult("", "halted", str(exc))
+    except GHRateLimited as exc:
+        result = LaneResult("", "github-limited", str(exc), retry_at=dt.datetime.fromtimestamp(exc.until, dt.UTC))
+    except KeyboardInterrupt:
+        result = LaneResult("", "interrupted", "KeyboardInterrupt")
     if result.status == "halted":
         record_halt(ctx, result.detail)
-        print(f"- halted: {result.detail}")
-        return EX_HALTED
     print(f"{result.job or '-'} {result.describe()}" + (f" {result.url}" if result.url else ""))
-    return 0 if result.status in ("submitted", "idle", "dry-run", "needs-references") else 1
+    return round_end(args, ctx, result, began)
+
+
+# The exit status of a one-shot `work` round, by outcome; anything else (failed, setup-failed) is 1. A
+# supervisor that starts one round at a time tells waiting from failing without reading the log.
+# 75-78 are TauCetiWorker's codes for no progress, an admission wait, a GitHub wait and a halt.
+ROUND_EXIT = {"submitted": 0, "needs-references": 0, "blocked": 0, "dry-run": 0, "idle": 75, "skipped": 75,
+              "limited": 76, "github-limited": 77, "halted": 78, "interrupted": 130}
+
+
+def round_end(args, ctx, result, began: dt.datetime) -> int:
+    """The round's exit status; with `--status-file`, also its outcome as JSON, replaced atomically."""
+    code = ROUND_EXIT.get(result.status, 1)
+    if getattr(args, "status_file", ""):
+        write_round_status(Path(args.status_file), ctx, result, began, code)
+    return code
+
+
+def write_round_status(path: Path, ctx, result, began: dt.datetime, code: int) -> None:
+    rows = usage_mod.summarize(usage_mod.load(ctx.state, ctx.worker_id), by="worker",
+                               since=f"{began:%Y-%m-%dT%H:%M:%SZ}")
+    spent = {k: v for k, v in rows[0].items() if k != "worker"} if rows else {}
+    data = {"job": result.job, "stage": board.stage_of(result.job) if result.job else "", "status": result.status,
+            "detail": result.detail, "url": result.url, "agent": result.agent, "exit": code,
+            "retry_at": f"{result.retry_at:%Y-%m-%dT%H:%M:%SZ}" if result.retry_at else None,
+            "worked_seconds": round(result.worked), "started_at": f"{began:%Y-%m-%dT%H:%M:%SZ}",
+            "ended_at": f"{dt.datetime.now(dt.UTC):%Y-%m-%dT%H:%M:%SZ}", "usage": spent}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        print(f"warning: --status-file {path}: {exc}", file=sys.stderr)
 
 
 # --- gate -----------------------------------------------------------------------------------------
@@ -871,6 +911,8 @@ def parser() -> argparse.ArgumentParser:
     w.add_argument("--model", default="")
     w.add_argument("--job", default="", help="take only this job id")
     w.add_argument("--loop", action="store_true")
+    w.add_argument("--status-file", default="", metavar="PATH",
+                   help="one round only: write its outcome, exit status and token usage to PATH as JSON")
 
     g = sub.add_parser("gate", help="run the push gates on a roadmap folder (exit 1 on any failure)")
     g.add_argument("worktree", nargs="?")
