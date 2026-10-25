@@ -47,7 +47,12 @@ JOB_ID_RE = re.compile(
 DUPLICATE_LABEL = "duplicate"     # a job issue closed as the twin of an older one: no longer a job
 SPEC_RE = re.compile(r"<!--\s*tauceti-roadmap-job\s*(\{.*?\})\s*-->", re.S)
 SUBMISSION_RE = re.compile(r"<!--\s*tauceti-roadmap-submission\s*(\{.*?\})\s*-->", re.S)
-PRIVATE_PATH = re.compile(r"/Users/[^\s/]+|/home/[^\s/]+/|/private/(?:tmp|var)/|[A-Za-z]:\\Users\\")
+# Machine paths that never enter a published file: home directories (macOS, Linux, the root user's,
+# Windows), container workspaces and temporary directories. The names that also occur inside
+# repository paths and URLs (`packages/Foo/tmp/x`, `https://host/root/x`) count only where a path starts.
+TEMP_ROOT = r"(?<![\w.~<>/-])/(?:private/(?:tmp|var)|tmp|var/(?:tmp|folders))/(?=[^\s/])"
+PRIVATE_PATH = re.compile(r"/Users/[^\s/]+|/home/[^\s/]+/|/private/(?:tmp|var)/|[A-Za-z]:\\Users\\|"
+                          rf"(?<![\w.~<>/-])/(?:root|workspaces?)/(?=[^\s/])|{TEMP_ROOT}")
 
 
 class JobIdError(ValueError):
