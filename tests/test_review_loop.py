@@ -93,7 +93,8 @@ def test_the_intake_parks_the_next_repair_round_for_a_human():
     worker_review = (REVIEW.replace("1. **F01** (P1)", "## R01 (P1) —").replace("2. **F02** (P2)", "## R02 (P2) —")
                      .replace("3. **F03** (P3)", "## R03 (P3) —"))
     gh = LoopGH({f"{pkg}/reports/{rev.id}.md": worker_review, f"{pkg}/reports/FIX-DESIGN-QWittVectors~2.md": REPAIR,
-                 f"{pkg}/design/review.json": json.dumps({"review": {"status": "needs_changes"}})})
+                 f"{pkg}/design/review.json": json.dumps({"review": {"status": "needs_changes",
+                                                                     "reviewer": f"independent-review-{rev.id}"}})})
     board = Board([rev])
     line = intake.intake(bot_context(cfg=cfg, gh=gh, board=board, operator="board-bot"), 12, yes=True)
     assert "created FIX-DESIGN-QWittVectors~3 (blocked)" in line and "blocked: the review re-raises only" in line

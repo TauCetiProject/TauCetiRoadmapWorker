@@ -106,7 +106,7 @@ def test_a_free_lock_is_taken_for_the_run_and_released_after_it(monkeypatch, cap
     ran = []
     monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: lock)
     monkeypatch.setattr(intake, "repair_duplicates", lambda ctx, shared, yes=False: ran.append("repair") or [])
-    monkeypatch.setattr(intake, "intake_open", lambda ctx, write, only=0: ran.append("intake") or [])
+    monkeypatch.setattr(intake, "intake_open", lambda ctx, write, only=0, shared=None: ran.append("intake") or [])
     monkeypatch.setattr(cli.references, "resume_all", lambda ctx, fetcher, yes=False: ran.append("references") or [])
     monkeypatch.setattr(cli.boardpr, "scan", lambda ctx, shared, yes=False: ran.append("scan") or [])
     monkeypatch.setattr(intake, "replace_upward_roadmaps", lambda ctx, yes=False: ran.append("order") or [])
@@ -145,6 +145,7 @@ def repair_context(issues, leases=None, pulls=()):
 
 def submission(number: int, job_id: str, refs: int, state: str = "open") -> dict:
     return {"number": number, "state": state, "draft": False, "user": {"login": "CBirkbeck"},
+            "author_association": "COLLABORATOR",
             "body": f"Refs #{refs}\n\npackage\n\n"
             + board_mod.encode_submission(job_id, "chris-1", "CBirkbeck", "codex", "gpt"),
             "labels": [], "head": {"sha": "a" * 40, "ref": f"chris-1/{job_id}",

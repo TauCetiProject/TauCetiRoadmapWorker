@@ -568,6 +568,35 @@ def allowed_paths(job: Job, packages_dir: str, order_file: str = "") -> set[str]
     return report
 
 
+def required_paths(job: Job, packages_dir: str) -> set[str]:
+    """The files a job's submission must leave at its head: its report, and what its kind delivers
+    the first time (a triage, a design, a package, a verdict)."""
+    p = package_dir(packages_dir, job.name)
+    report = {f"{p}/reports/{job.id}.md"}
+    if job.kind == "target":
+        return report | {f"{p}/target.md"}
+    if job.kind == "design":
+        return report | {f"{p}/design/README.md", f"{p}/design/plan.json"}
+    if job.kind == "package":
+        return report | {f"{p}/README.md", f"{p}/Suggested.lean", f"{p}/metadata.toml"}
+    if job.kind == "review":
+        return report | {f"{p}/design/review.json" if artefact_of(job.id) == "DESIGN" else f"{p}/review.json"}
+    return report
+
+
+def order_change_problems(path: str, before: str, after: str, own: set[str]) -> list[str]:
+    """A submission may place the roadmaps it carries (`own`) in the merge order and move others
+    with them, but removes no roadmap the order lists and adds no other one."""
+    from .depgraph import read_order
+    old, new = set(read_order(before)), set(read_order(after))
+    out = []
+    if old - new:
+        out.append(f"{path}: removes {', '.join(sorted(old - new))} from the merge order")
+    if new - old - own:
+        out.append(f"{path}: adds {', '.join(sorted(new - old - own))}, which this submission does not carry")
+    return out
+
+
 def gaps_only(job: Job) -> bool:
     """Whether the job may change the design's plan.json only in its top-level `gaps` list: every job
     at the package stage (the package, its fixes, a red-team fix on its board pull request)."""
@@ -594,6 +623,16 @@ def plan_change_problems(path: str, before: str, after: str) -> list[str]:
     gaps = new.get("gaps", [])
     if not isinstance(gaps, list) or not all(isinstance(g, dict) and (g.get("slug") or g.get("id")) for g in gaps):
         return [f"{path}: `gaps` is a list of entries with a `slug`"]
+
+    def slugs(plan: dict) -> set[str]:
+        return {str(g.get("slug") or g.get("id")) for g in plan.get("gaps", []) if isinstance(g, dict)} \
+            if isinstance(plan.get("gaps"), list) else set()
+    named = {str(p)[4:] for layer in new.get("layers", []) if isinstance(layer, dict)
+             for t in layer.get("targets", []) if isinstance(t, dict)
+             for p in t.get("prerequisites", []) if str(p).startswith("gap:")} if isinstance(new.get("layers"), list) else set()
+    dropped = sorted(named & (slugs(old) - slugs(new)))
+    if dropped:
+        return [f"{path}: removes the gaps {', '.join(dropped)}, which targets of the plan still name"]
     return []
 
 

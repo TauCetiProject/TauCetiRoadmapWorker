@@ -58,6 +58,7 @@ class GH:
 
     def __init__(self, head):
         self.pr = {"number": 12, "state": "open", "draft": False, "user": {"login": "alice"}, "labels": [],
+                   "author_association": "COLLABORATOR",
                    "body": "Refs #3\n\n" + encode_submission("PKG-Foo", "w1", "alice", "codex", "gpt-6.1-sol"),
                    "head": {"sha": head, "ref": "w1/PKG-Foo", "repo": {"full_name": "alice/TauCetiRoadmapJobs"}}}
         self.comments, self.files, self.writes, self.merged = [], {}, [], False

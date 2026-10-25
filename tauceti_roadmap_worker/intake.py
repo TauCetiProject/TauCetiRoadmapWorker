@@ -2,7 +2,8 @@
 
 * `intake(pr)`: take in one submission pull request on the packages repository (or an explorer
   import pull request: see explorer.py). It is merged only
-  when it names an open job, adds or changes only that job's deliverables as regular files
+  when its author and the job admit it (`admission_problems`), it delivers what its kind must, with
+  an outcome its successors can follow (`deliverable_problems`), it names an open job, adds or changes only that job's deliverables as regular files
   (`submission_files`), contains no local path, has valid JSON/TOML, its checks passed, and (for a
   job with `independent_of`) its author did none of the listed jobs; the merge names the head checked. After the merge the job is done, the board records "Intake: merged #N from
   @login" (the authorship record the separation check reads), and the job's successors are created.
@@ -30,6 +31,7 @@ import json
 import os
 import re
 import socket
+import subprocess
 
 from . import board, boardpr, claims, depgraph, explorer, filers, gitops, prreviews, replies
 from .board import Job, Outcome
@@ -122,9 +124,122 @@ def outcome_for(ctx, job: Job, pr: dict, all_jobs: list[Job]) -> Outcome:
     return Outcome()
 
 
-def intake(ctx, number: int, yes: bool = False, pr: dict | None = None) -> str:
+WRITE_ACCESS = ("OWNER", "MEMBER", "COLLABORATOR")
+
+
+def admitted(ctx, job: Job, login: str, pr: dict, shared=None) -> bool:
+    """Whether `login` may submit `job`: a login `[board] operators` (default: the running login) or
+    `[board] bot_logins` lists, one with write access to the board, the login that labelled the job
+    claimed (adding a label needs write access), or the operator of the job's lease or author record
+    in the claims namespace (`shared`; writing there needs write access to it). An operator who works
+    through a fork with none of these is admitted by listing the login in `[board] operators`."""
+    cfg, who = ctx.cfg, login.lower()
+    listed = {x.lower() for x in [*(cfg.board.operators or [getattr(ctx, "operator", "")]), *cfg.board.bot_logins] if x}
+    if who in listed or pr.get("author_association") in WRITE_ACCESS:
+        return True
+    if ctx.board.labelled_by(job, "state:claimed").lower() == who:
+        return True
+    if not shared:
+        return False
+    try:
+        lease = shared.read(claims.job_key(cfg.project.name, job.id)) or {}
+        record = shared.recorded_authors([job.id]).get(job.id) or {}
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return who in {str(lease.get("operator", "")).lower(), str(record.get("operator", "")).lower()} - {""}
+
+
+def admission_problems(ctx, job: Job, pr: dict, sub: dict, jobs: list[Job], shared=None) -> list[str]:
+    """Why `pr` may not submit `job`, whatever its files hold: it is not against the board's main, its
+    author is not admitted (`admitted`), its marker names another operator, the job is another
+    operator's or needs another agent or model than the marker records, or the job follows a job
+    that is not done."""
+    login, out = pr["user"]["login"], []
+    base = (pr.get("base") or {}).get("ref", "main")
+    if base != "main":
+        out.append(f"the pull request is against `{base}`, not `main`")
+    if not admitted(ctx, job, login, pr, shared):
+        out.append(f"@{login} is not an operator of this board (not in `[board] operators`, no write access, "
+                   f"no claim of {job.id})")
+    if sub.get("operator") and sub["operator"].lower() != login.lower():
+        out.append(f"the submission names operator @{sub['operator']}, but @{login} opened it")
+    if job.requires_operator and job.requires_operator.lower() != login.lower():
+        out.append(f"{job.id} is @{job.requires_operator}'s (it owns the pull request branch)")
+    for field, need in (("agent", job.requires_agent), ("model", job.requires_model)):
+        if need and sub.get(field) != need:
+            out.append(f"{job.id} needs {field} {need}, the submission records {sub.get(field) or 'none'}")
+    done = {j.id for j in jobs if j.state == "done"}
+    waiting = [a for a in job.after if a not in done]
+    if waiting:
+        out.append(f"{job.id} follows {', '.join(waiting)}, not done yet")
+    return out
+
+
+def deliverable_problems(ctx, job: Job, pr: dict, texts: dict[str, str], jobs: list[Job]) -> list[str]:
+    """What a submission must deliver, read at its head: its report among the files it changes, the
+    rest of its kind's deliverables (`board.required_paths`) there or already at the head, and an
+    outcome the job's successors can follow: a triage `lanes.target` accepts (a merge-into naming a
+    job on the board), a review verdict `lanes.review` accepts, a port report naming the roadmap
+    pull request its author opened."""
+    from .lanes.review import verdict_problems
+    from .lanes.target import triage_problems
+    pkg = board.package_dir(ctx.cfg.board.packages_dir, job.name)
+    report, out = f"{pkg}/reports/{job.id}.md", []
+    if report not in texts:
+        out.append(f"no report ({report})")
+
+    def read(path: str) -> str | None:
+        if path in texts:
+            return texts[path]
+        try:
+            return ctx.gh.raw_file(pr["head"]["repo"]["full_name"], path, pr["head"]["sha"])
+        except GHError:
+            return None
+    found = {path: read(path) for path in sorted(board.required_paths(job, ctx.cfg.board.packages_dir) - {report})}
+    out += [f"{path} is missing" for path, text in found.items() if text is None]
+    if job.kind == "target" and found.get(f"{pkg}/target.md") is not None:
+        text = found[f"{pkg}/target.md"]
+        out += triage_problems(text)
+        into = parse_triage(text)["into"]
+        if parse_triage(text)["verdict"] == "merge-into" and into and not ctx.board.find(into, jobs):
+            out.append(f"target.md: merge-into names {into}, which is not on the board")
+    if job.kind == "review" and (verdict := next((t for p, t in found.items() if p.endswith("review.json")), None)):
+        try:
+            out += verdict_problems(json.loads(verdict), job.id)
+        except ValueError:
+            pass      # file_problems reports the invalid JSON
+    if job.kind == "port" and report in texts:
+        number = pr_number_from_report(texts[report])
+        if not number:
+            out.append(f"{report} names no roadmap pull request (`Pull request: #N`)")
+        else:
+            try:
+                opener = ((ctx.gh.api(f"repos/{ctx.cfg.repositories.content}/pulls/{number}") or {}).get("user") or {})
+            except GHError:
+                opener = None
+            if opener is None or opener.get("login", "").lower() != pr["user"]["login"].lower():
+                out.append(f"{report} names #{number} on {ctx.cfg.repositories.content}, which @{pr['user']['login']} "
+                           "did not open")
+    return out
+
+
+def merge_base_text(ctx, repo: str, path: str, pr: dict) -> str:
+    """A file as the pull request's merge base has it ('' when it has none): what the pull request
+    changed it from, unlike main or the recorded base, which may hold later commits of others."""
+    compared = ctx.gh.api(f"repos/{repo}/compare/{(pr.get('base') or {}).get('sha') or 'main'}...{pr['head']['sha']}") or {}
+    sha = (compared.get("merge_base_commit") or {}).get("sha", "")
+    if not sha:
+        raise GHError(f"#{pr.get('number')}: no merge base with main")
+    try:
+        return ctx.gh.raw_file(repo, path, sha)
+    except GHError:
+        return ""
+
+
+def intake(ctx, number: int, yes: bool = False, pr: dict | None = None, shared=None) -> str:
     """Take in one submission pull request. `pr`: its object from the open pull requests' listing
-    (the same fields as a GET of it), so the intake reads it once for all of them."""
+    (the same fields as a GET of it), so the intake reads it once for all of them; `shared`: the
+    claims namespace, read when the author's admission rests on a claim (`admitted`)."""
     cfg, repo = ctx.cfg, ctx.cfg.repositories.packages_repo()
     pr = pr or ctx.gh.api(f"repos/{repo}/pulls/{number}")
     if boardpr.NEEDS_REVIEW in {label["name"] for label in pr.get("labels", [])}:
@@ -147,17 +262,24 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None) -> str:
         return f"#{number}: a draft; the intake waits until it is ready"
     if pr.get("state") != "open":
         return f"#{number}: not open"
-    if job.state in ("done", "blocked"):
+    if job.state in ("done", "blocked", "needs-references"):
         problems.append(f"{job.id} is {job.state}")
+    problems += admission_problems(ctx, job, pr, sub, jobs, shared)
     files, listed = submission_files(ctx, repo, number, pr)
     problems += listed
-    allowed = board.allowed_paths(job, cfg.board.packages_dir, board.order_file(cfg))
+    order = board.order_file(cfg)
+    allowed, texts = board.allowed_paths(job, cfg.board.packages_dir, order), {}
     for f in files:
         text = ctx.gh.raw_file(pr["head"]["repo"]["full_name"], f["filename"], pr["head"]["sha"]) \
             if f["filename"] in allowed else ""
         problems += board.file_problems(f["filename"], text, allowed)
+        if f["filename"] in allowed:
+            texts[f["filename"]] = text
         if f["filename"].endswith("/design/plan.json") and board.gaps_only(job):
             problems += board.plan_change_problems(f["filename"], base_text(ctx, repo, f["filename"], pr), text)
+        if order and f["filename"] == order:
+            problems += board.order_change_problems(order, merge_base_text(ctx, repo, order, pr), text, {job.name})
+    problems += deliverable_problems(ctx, job, pr, texts, jobs)
     author = pr["user"]["login"]
     if job.independent_of:
         problems += board.separation_problems(job, author, ctx.board.authors(job.independent_of, jobs),
@@ -240,7 +362,7 @@ def pr_key(pr: dict) -> list:
             pr.get("updated_at", "")]
 
 
-def intake_open(ctx, yes: bool, only: int = 0, log=print) -> list[int]:
+def intake_open(ctx, yes: bool, only: int = 0, log=print, shared=None) -> list[int]:
     """Every open submission or import pull request, each on its own: one listing for all of them (no
     GET per pull request), a pull request whose head, labels and update time are as at the last run
     with a stable outcome (left for the maintainer, under review, not a submission) is not read again
@@ -269,7 +391,7 @@ def intake_open(ctx, yes: bool, only: int = 0, log=print) -> list[int]:
             seen[str(n)] = cached
             continue
         try:
-            outcome = intake(ctx, n, yes=yes, pr=pr)
+            outcome = intake(ctx, n, yes=yes, pr=pr, shared=shared)
         except GHError as exc:
             skipped.append(n)
             log(f"#{n}: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]}); the next run tries again")

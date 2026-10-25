@@ -12,6 +12,7 @@ import pytest
 
 from tauceti_roadmap_worker import board, cli, gates, intake, references, sources, worker
 from tauceti_roadmap_worker.board import Board, allowed_paths, file_problems, new_job
+from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes import Context, lane_for
 from tauceti_roadmap_worker.paths import HERE
 
@@ -158,6 +159,7 @@ class IntakeGH:
     def api(self, path, paginate=False):
         if path.endswith("/pulls/12"):
             return {"number": 12, "state": "open", "draft": False, "user": {"login": "alice"},
+                    "author_association": "COLLABORATOR",
                     "body": board.encode_submission("PKG-Foo", "w1", "alice", "codex"),
                     "head": {"sha": "abc", "repo": {"full_name": "alice/jobs"}}}
         if "/pulls/12/files" in path:
@@ -169,6 +171,8 @@ class IntakeGH:
         raise AssertionError(path)
 
     def raw_file(self, repo, path, ref=""):
+        if path not in self.files:
+            raise GHError(f"{path}: 404")
         return self.files[path]
 
     def write(self, method, path, payload=None):

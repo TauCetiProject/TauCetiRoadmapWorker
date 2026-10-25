@@ -26,6 +26,7 @@ class ListingGH(GH):
     def __init__(self, files=None, modes=None, head_after=HEAD, changed_files=None):
         super().__init__(HEAD)
         self.pr["body"] = "Refs #7\n\n" + encode_submission("REV-PKG-Foo", "w2", "bob", "claude", "fable")
+        self.pr["user"] = {"login": "bob"}
         self.listing = files or [{"filename": REPORT, "status": "added"}]
         self.modes, self.head_after, self.changed_files = modes or {}, head_after, changed_files
 
