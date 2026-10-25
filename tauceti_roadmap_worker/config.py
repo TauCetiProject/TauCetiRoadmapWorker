@@ -37,6 +37,7 @@ LICENCE_CLASSES = ("open-repository", "publisher-open", "author-page", "institut
 # GitHub's author_association values: who may answer a `needs-references` request.
 ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+SCHEMA_VERSIONS = (1,)      # the `schema_version` values this worker reads
 
 
 class ConfigError(Exception):
@@ -328,6 +329,12 @@ def parse(text: str, path: str = "<string>") -> Config:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path}: {exc}") from exc
+    version = data.get("schema_version", 1)
+    if isinstance(version, bool) or version not in SCHEMA_VERSIONS:
+        # Before the tables are read: a newer schema may change what they mean, not only add keys.
+        raise ConfigError(f"{path}: schema_version {version!r} is not supported by this worker (it reads "
+                          f"{', '.join(map(str, SCHEMA_VERSIONS))}): upgrade tauceti-roadmap-worker, or run "
+                          "against a configuration of a supported version")
     warnings: list[str] = []
     cfg = _build(Config, data, "", warnings)
     cfg.path, cfg.warnings = path, warnings
