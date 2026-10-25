@@ -23,12 +23,40 @@ from pathlib import Path
 from . import board, claims
 from .board import Job
 from .config import AGENTS, STAGE_ORDER
-from .gh import GHError
+from .gh import GHError, GHHalt, GHRateLimited
 from .lanes import Context, LaneResult, lane_for
 from .lanes.base import LaneBlocked
 
 HEARTBEAT = 300
 MAX_ATTEMPTS = 3
+EX_HALTED = 78     # TauCetiWorker's code for a worker that GitHub's answers about the account stopped
+
+
+def halt_path(ctx) -> Path | None:
+    """`<state>/halt.json`: written when GitHub refuses the account, read by every worker of the host
+    before each round. A human deletes it after looking at the account."""
+    state = getattr(ctx, "state", None)
+    return Path(state) / "halt.json" if state else None
+
+
+def halt_record(ctx) -> dict | None:
+    path = halt_path(ctx)
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path else None
+    except (OSError, ValueError):
+        return None
+
+
+def record_halt(ctx, detail: str) -> None:
+    path = halt_path(ctx)
+    if not path:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"at": f"{now():%Y-%m-%dT%H:%MZ}", "worker": getattr(ctx, "worker_id", ""),
+                                    "detail": detail[:600]}, indent=1) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def attempts_path(ctx: Context) -> Path:
@@ -232,6 +260,10 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
         result.agent = result.agent or ctx.agent
     except LaneBlocked as exc:
         result = LaneResult(job.id, "blocked", str(exc))
+    except GHHalt as exc:
+        result = LaneResult(job.id, "halted", str(exc))
+    except GHRateLimited as exc:
+        result = LaneResult(job.id, "github-limited", str(exc), retry_at=dt.datetime.fromtimestamp(exc.until, dt.UTC))
     except Exception as exc:  # noqa: BLE001 - git, GitHub, the lane's own errors or a bug: all release the job
         status = "failed" if getattr(lane, "agent_started", True) else "setup-failed"
         result = LaneResult(job.id, status, f"{type(exc).__name__}: {exc}")
@@ -240,6 +272,9 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print) -> LaneResult:
     finally:
         if ctx.claims and not ctx.dry_run:
             ctx.claims.release(key)
+    if result.status in ("halted", "github-limited"):
+        # Nothing more is sent: `board sync` puts the job back once its lease is gone.
+        return result
     release(ctx, job, result)
     request_board_run(ctx, result, log)
     if interrupt is not None:
@@ -382,7 +417,7 @@ def pause_until(result: LaneResult) -> dt.datetime:
 
 
 def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=print, sleep=time.sleep,
-              build: str = "") -> None:
+              build: str = "") -> str:
     """Rounds until interrupted: sleep through idle periods and usage limits. A usage limit pauses
     only the family that hit it (until its reset plus five minutes): the worker goes on with jobs
     of its other families and leaves that family's jobs alone until then; a worker whose every
@@ -392,7 +427,9 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
     worker parked for references (looked up every QUICK_POLL seconds of idle time, for at most
     PARKED_WATCH seconds per job). A board that cannot be read counts as an idle round. With `build`
     (the build it started on), every round boundary compares it with the installed build and
-    returns, for a restart, when they differ."""
+    returns "restart" when they differ. GitHub's refusal of the account (`GHHalt`), here or on another
+    worker of the host (`halt.json`), returns "halted"; a spent primary rate limit sleeps until it
+    resets."""
     idle = idle_sleep or ctx.cfg.worker.idle_seconds
     parked: dict[str, float] = {}   # jobs this worker parked -> idle seconds left to watch for the answer
     quick = False                    # the next idle wait is short
@@ -410,14 +447,29 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
                 log(f"{now():%Y-%m-%dT%H:%MZ} the installed build cannot be read (being replaced?); going on with {build}")
             elif installed != build:
                 log(f"{now():%Y-%m-%dT%H:%MZ} installed build changed ({build} → {installed}); exiting for restart")
-                return
+                return "restart"
+        if halt := halt_record(ctx):
+            log(f"{now():%Y-%m-%dT%H:%MZ} halted: {halt.get('detail', '')} ({halt_path(ctx)}, {halt.get('at', '')})")
+            return "halted"
         try:
             result = work_once(ctx, only, order=order_fn(), log=log, avoid=avoid, paused=paused, noted=noted)
+        except GHHalt as exc:
+            result = LaneResult("", "halted", str(exc))
+        except GHRateLimited as exc:
+            result = LaneResult("", "github-limited", str(exc), retry_at=dt.datetime.fromtimestamp(exc.until, dt.UTC))
         except GHError as exc:
             result = LaneResult("", "idle", f"the board could not be read: {exc}")
         except OSError as exc:     # a full disk (ENOSPC) and the like: wait, never crash-loop
             result = LaneResult("", "idle", f"the host failed the round ({exc}); waiting before the next one")
         log(f"{now():%Y-%m-%dT%H:%MZ} {result.job or '-'} {result.describe()}")
+        if result.status == "halted":
+            record_halt(ctx, result.detail)
+            log(f"{now():%Y-%m-%dT%H:%MZ} GitHub refused the account: no more rounds on this host until a human "
+                f"looks at it and deletes {halt_path(ctx)}")
+            return "halted"
+        if result.status == "github-limited":
+            sleep(max(QUICK_POLL, (result.retry_at - now()).total_seconds()))
+            continue
         if result.status == "needs-references":
             parked[result.job] = PARKED_WATCH
         else:
