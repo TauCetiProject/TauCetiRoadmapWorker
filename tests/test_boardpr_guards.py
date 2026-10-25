@@ -134,3 +134,11 @@ def test_an_unreadable_review_is_caught_before_it_is_posted():
     bad = prreviews.render(prreviews.review_head("codex", "a" * 40), "needs_changes", "Some prose, no findings.", {})
     assert lane.comment_problems(bad)[0].startswith("report: the board cannot read it as a review")
     assert boardpr.COMMENT_CLAIM_TTL == 4 * 3600
+
+
+def test_a_review_longer_than_a_comment_is_caught_before_it_is_posted():
+    lane = lane_for(new_job("REV-PKG-Foo"))
+    report = "# Review of Foo (package, round 2)\n\n**Verdict:** needs changes\n\n## R01 (P1) — x\n\n" + ("| a | b |\n" * 20_000)
+    body = prreviews.render(prreviews.review_head("codex", "a" * 40), "needs_changes", report, {})
+    assert len(body) > 65_536
+    assert lane.comment_problems(body)[0].startswith("report: too long to post as a pull-request comment")

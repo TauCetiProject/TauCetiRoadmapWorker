@@ -105,6 +105,9 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
   opened (file and line at the pin) and the cross-roadmap citations you resolved. A section
   summarised as sound without them has not been reviewed: review it before you accept. `## Not
   verifiable` is for what you cannot check (a text you cannot open), with the reason.
+  The report is posted as one pull-request comment of at most 60,000 characters: the adversarial
+  table covers the sampled targets, the headline theorems and every target a finding touches, not
+  every target of the roadmap; a per-target ledger over hundreds of targets does not fit and is cut.
   Then `## Source issues`: every mistake you found in a source while checking locators, one bullet
   each, in this exact shape (it is collected into the project's errata register, as the explorer's
   was): `- **Misprint** | **Error** | **Gap** in <source id> at <locator: theorem or section, printed

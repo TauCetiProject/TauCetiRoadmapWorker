@@ -113,6 +113,9 @@ def limited(job: Job, result: agents.AgentResult, where: str, worked: float) -> 
                       worked=worked)
 
 
+# GitHub refuses an issue comment above 65,536 characters; the review is one comment.
+COMMENT_LIMIT = 60_000
+
 class LaneError(Exception):
     pass
 
@@ -1079,10 +1082,14 @@ class Lane:
 
     def comment_problems(self, body: str) -> list[str]:
         """A comment the board would not read (no verdict, or changes asked for without a numbered
-        finding) is caught before it is posted."""
+        finding) or that GitHub refuses (longer than a comment may be) is caught before it is posted."""
         if prreviews.parse(body) is None:
             return [("report: the board cannot read it as a review: give the verdict, and write every finding as "
                      "`## R01 (P1) — <short title>`")]
+        if len(body) > COMMENT_LIMIT:
+            return [(f"report: too long to post as a pull-request comment ({len(body):,} characters; the limit is "
+                     f"{COMMENT_LIMIT:,}): keep every finding and the sampled rows of the adversarial table, and cut "
+                     "the per-target ledgers and the restated package content")]
         return []
 
     def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
