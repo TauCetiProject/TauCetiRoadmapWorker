@@ -12,7 +12,7 @@ from tauceti_roadmap_worker import boardpr, claims, cli, intake, prreviews
 from tauceti_roadmap_worker.board import Board, Outcome, new_job, title_key
 from tauceti_roadmap_worker.gh import GHError
 
-from .fakes import FakeClaims, FakeIssuesGH, bot_context, example_config, job_issue
+from .fakes import FakeClaims, FakeIssuesGH, bot_context, example_config, head_tree, job_issue
 
 FUTURE = 4_102_444_800
 
@@ -254,6 +254,8 @@ class ReviewGH(FakeIssuesGH):
         if f"/pulls/{pr}/files" in path:
             return [{"filename": f, "status": "added"}
                     for f in ("packages/Foo/README.md", "packages/Foo/reports/PKG-Foo.md")]
+        if "/git/trees/" in path:
+            return head_tree(("packages/Foo/README.md", "packages/Foo/reports/PKG-Foo.md"))
         if "/check-runs" in path:
             return {"check_runs": []}
         if "/contents/" in path:

@@ -103,7 +103,7 @@ def parse(body: str) -> Parsed | None:
     parsed.findings = FINDING.findall(body)
     if m := CONDITIONAL.search(body):
         parsed.conditional = gap_slugs(m.group(1))
-    parsed.worker = worker if isinstance(worker, dict) else {}
+    parsed.worker = {k: v for k, v in worker.items() if isinstance(v, str)} if isinstance(worker, dict) else {}
     if parsed.verdict == "needs_changes" and not parsed.findings:
         return None
     return parsed

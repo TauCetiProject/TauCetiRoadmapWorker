@@ -238,6 +238,11 @@ class FakeIssuesGH:
         raise GHError(f"{method} {path}: not faked")
 
 
+def head_tree(paths) -> dict:
+    """A head commit's tree as `git/trees/<sha>?recursive=1` answers it: every path a regular file."""
+    return {"tree": [{"path": p, "mode": "100644", "type": "blob"} for p in paths]}
+
+
 def job_issue(number: int, job_id: str, *states: str, namespace: str = "roadmap-job", **spec) -> dict:
     """A board issue carrying the job `job_id` (spec fields as keywords) with the given state labels."""
     job = board.new_job(job_id, **spec)

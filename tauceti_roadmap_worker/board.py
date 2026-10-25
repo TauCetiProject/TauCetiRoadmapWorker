@@ -202,15 +202,25 @@ def decode_spec(body: str) -> Job | None:
         return None
 
 
+SPEC_TYPES = {"after": list, "independent_of": list, "inputs": dict, "requires_agent": str, "requires_model": str,
+              "requires_operator": str, "note": str}
+
+
 def job_from_spec(data) -> Job | None:
-    """The job a spec dict describes, or None when it does not name a valid job id."""
+    """The job a spec dict describes, or None when it does not name a valid job id or a field has
+    the wrong type (`after` and `independent_of` are lists of job ids)."""
+    if not isinstance(data, dict) or not isinstance(data.get("id"), str):
+        return None
     try:
         job = new_job(data["id"])
-    except (TypeError, KeyError, JobIdError):
+    except JobIdError:
         return None
-    for key in ("after", "independent_of", "inputs", "requires_agent", "requires_model", "requires_operator", "note"):
-        if key in data:
-            setattr(job, key, data[key])
+    for key, kind in SPEC_TYPES.items():
+        if key not in data:
+            continue
+        if not isinstance(data[key], kind) or kind is list and not all(isinstance(x, str) for x in data[key]):
+            return None
+        setattr(job, key, data[key])
     return job
 
 
@@ -587,6 +597,37 @@ def plan_change_problems(path: str, before: str, after: str) -> list[str]:
     return []
 
 
+def listing_problems(files: list[dict]) -> list[str]:
+    """Why a pull request's file listing cannot be taken in, whatever its files hold: a submission
+    deletes nothing, so a deleted file is refused, and so is a renamed one (its old path is deleted,
+    whatever the new path is)."""
+    out = []
+    for f in files:
+        if f.get("status") == "removed":
+            out.append(f"{f['filename']} is deleted")
+        elif f.get("status") == "renamed":
+            out.append(f"{f.get('previous_filename') or '?'} is renamed to {f['filename']}, which deletes it")
+    return out
+
+
+REGULAR_FILE = "100644"
+MODE_NAMES = {"100755": "an executable file", "120000": "a symbolic link", "160000": "a submodule", "040000": "a folder"}
+
+
+def mode_problems(modes: dict[str, str], paths: list[str]) -> list[str]:
+    """Every path a submission adds or changes is a regular file at its head (`modes`: path -> git
+    mode there). A symbolic link is refused because the contents API answers with its target's text
+    when the target is in the repository, so the checks would read another file than the one merged."""
+    out = []
+    for path in paths:
+        mode = modes.get(path)
+        if mode is None:
+            out.append(f"{path} is not in the head's tree")
+        elif mode != REGULAR_FILE:
+            out.append(f"{path} is {MODE_NAMES.get(mode, f'of mode {mode}')}, not a regular file")
+    return out
+
+
 def file_problems(path: str, text: str, allowed: set[str], data: bytes | None = None) -> list[str]:
     """Why a file of a board submission cannot be merged: not a deliverable, source material (a
     source document, extracted text, a manifest embedding text, a long pasted passage), a local path,
@@ -639,6 +680,8 @@ def encode_submission(job_id: str, worker: str, operator: str, agent: str, model
 
 
 def decode_submission(body: str) -> dict | None:
+    """The submission marker of a pull request body, or None when there is none or a field is not a
+    string."""
     m = SUBMISSION_RE.search(body or "")
     if not m:
         return None
@@ -646,7 +689,11 @@ def decode_submission(body: str) -> dict | None:
         data = json.loads(m.group(1))
     except ValueError:
         return None
-    return data if isinstance(data, dict) and "job" in data else None
+    if not isinstance(data, dict) or not isinstance(data.get("job"), str):
+        return None
+    if any(not isinstance(data.get(k, ""), str) for k in ("worker", "operator", "agent", "model")):
+        return None
+    return data
 
 
 INTAKE_NOTE = re.compile(r"^Intake: merged #(\d+) from @([A-Za-z0-9-]+)(?: \(([^,)]*)(?:, ([^)]*))?\))?")

@@ -2,9 +2,9 @@
 
 * `intake(pr)`: take in one submission pull request on the packages repository (or an explorer
   import pull request: see explorer.py). It is merged only
-  when it names an open job, changes only that job's deliverables, contains no local path, has
-  valid JSON/TOML, its checks passed, and (for a job with `independent_of`) its author did none of
-  the listed jobs. After the merge the job is done, the board records "Intake: merged #N from
+  when it names an open job, adds or changes only that job's deliverables as regular files
+  (`submission_files`), contains no local path, has valid JSON/TOML, its checks passed, and (for a
+  job with `independent_of`) its author did none of the listed jobs; the merge names the head checked. After the merge the job is done, the board records "Intake: merged #N from
   @login" (the authorship record the separation check reads), and the job's successors are created.
   Port of the explorer's intake.py merge path.
 * `sync()`: target issues become TARGET jobs; an issue carrying several `state:` labels keeps one
@@ -61,6 +61,35 @@ def _checks(ctx, repo: str, sha: str) -> tuple[list[str], bool]:
     failed = [n for n, r in latest.items() if r.get("conclusion") not in NOT_A_VERDICT]
     running = any(r.get("status") in PENDING for r in latest.values())
     return failed, running
+
+
+class HeadMoved(GHError):
+    """A pull request's head changed while the intake read it: nothing read is used, and the next
+    run (which catches a GHError per pull request) reads it again."""
+
+
+def submission_files(ctx, repo: str, number: int, pr: dict) -> tuple[list[dict], list[str]]:
+    """(the files a pull request adds or changes, why its change cannot be taken in as a whole), at
+    the head `pr` names. The listing is read by pull request number, so the pull request is read
+    again after it: a head that moved raises HeadMoved, and a listing shorter than its file count is
+    refused. Deletions and renames are refused (`board.listing_problems`), and so is every path that
+    is not a regular file at the head (`board.mode_problems`, from the head commit's tree)."""
+    head = pr["head"]["sha"]
+    files = ctx.gh.api(f"repos/{repo}/pulls/{number}/files?per_page=100", paginate=True) or []
+    now = ctx.gh.api(f"repos/{repo}/pulls/{number}") or {}
+    if (now.get("head") or {}).get("sha") != head:
+        raise HeadMoved(f"#{number}: the head moved from `{head[:7]}` while its files were read")
+    problems = board.listing_problems(files)
+    if isinstance(now.get("changed_files"), int) and now["changed_files"] != len(files):
+        problems.append(f"the file listing is incomplete ({len(files)} of {now['changed_files']} files)")
+    kept = [f for f in files if f.get("status") != "removed"]
+    if kept:
+        tree = ctx.gh.api(f"repos/{pr['head']['repo']['full_name']}/git/trees/{head}?recursive=1") or {}
+        if tree.get("truncated"):
+            problems.append(f"the tree of `{head[:7]}` is too large to read whole")
+        modes = {e.get("path"): e.get("mode") for e in tree.get("tree", []) if isinstance(e, dict)}
+        problems += board.mode_problems(modes, [f["filename"] for f in kept])
+    return kept, problems
 
 
 def outcome_for(ctx, job: Job, pr: dict, all_jobs: list[Job]) -> Outcome:
@@ -120,12 +149,10 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None) -> str:
         return f"#{number}: not open"
     if job.state in ("done", "blocked"):
         problems.append(f"{job.id} is {job.state}")
-    files = ctx.gh.api(f"repos/{repo}/pulls/{number}/files?per_page=100", paginate=True)
+    files, listed = submission_files(ctx, repo, number, pr)
+    problems += listed
     allowed = board.allowed_paths(job, cfg.board.packages_dir, board.order_file(cfg))
     for f in files:
-        if f.get("status") == "removed":
-            problems.append(f"{f['filename']} is deleted")
-            continue
         text = ctx.gh.raw_file(pr["head"]["repo"]["full_name"], f["filename"], pr["head"]["sha"]) \
             if f["filename"] in allowed else ""
         problems += board.file_problems(f["filename"], text, allowed)
@@ -151,7 +178,7 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None) -> str:
         return boardpr.submission_under_review(ctx, number, pr, sub, job, jobs, yes)
     if not yes:
         return f"#{number}: would merge {job.id} (dry run; pass --yes)"
-    ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash"})
+    ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash", "sha": pr["head"]["sha"]})
     ctx.board.comment(job.number, f"Intake: merged #{number} from @{author} ({sub.get('agent') or '?'}, "
                                   f"{sub.get('model') or '?'}).")
     job.state = "done"

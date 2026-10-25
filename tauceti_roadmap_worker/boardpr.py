@@ -299,7 +299,7 @@ def merge_problems(ctx, number: int, pr: dict, jobs: list[Job]) -> list[str]:
     """The intake's checks again, on the head about to be merged (fixes pushed since the submission):
     only the deliverables of the jobs that wrote it (and of an explorer import, the files its marker
     declares), no source material, local path or bad data, and passing checks."""
-    from .intake import _checks
+    from .intake import _checks, submission_files
     sub = board.decode_submission(pr.get("body") or "") or {}
     od = board.order_file(ctx.cfg)
     writers = authors_of(number, sub.get("job", ""), jobs)
@@ -309,11 +309,8 @@ def merge_problems(ctx, number: int, pr: dict, jobs: list[Job]) -> list[str]:
     allowed |= imported_files(ctx, pr)
     # A pull request that carries a package (no job of the design stage wrote it) changes plan.json in its gaps only.
     gaps_only = bool(writers) and all(board.gaps_only(j) for j in writers)
-    problems = []
-    for f in ctx.gh.api(f"repos/{repo(ctx)}/pulls/{number}/files?per_page=100", paginate=True) or []:
-        if f.get("status") == "removed":
-            problems.append(f"{f['filename']} is deleted")
-            continue
+    files, problems = submission_files(ctx, repo(ctx), number, pr)
+    for f in files:
         text = ctx.gh.raw_file(pr["head"]["repo"]["full_name"], f["filename"], pr["head"]["sha"]) \
             if f["filename"] in allowed else ""
         problems += board.file_problems(f["filename"], text, allowed)
@@ -550,6 +547,7 @@ def pusher(comments: list[dict], fix: Job) -> dict:
                 marker = json.loads(parsed[-1])
             except ValueError:
                 marker = {}
+            marker = {k: v for k, v in marker.items() if isinstance(v, str)} if isinstance(marker, dict) else {}
             return {"login": (c.get("user") or {}).get("login", ""), **marker}
     return {}
 

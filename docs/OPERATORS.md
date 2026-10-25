@@ -640,8 +640,10 @@ the workflow notes what it skipped. Team membership for `[board] target_filers` 
 `board/filers.json`, which every run with a maintainer's token keeps current.
 
 The intake merges a submission only when it names an open job, changes only that job's deliverables
-and report, contains no local path, has valid JSON and TOML, its checks passed, and its author is
-independent where required. When a design is accepted it inserts the roadmap into the merge-order
+and report (adding or modifying regular files: no deletion, no rename, no symbolic link, submodule or
+executable), contains no local path, has valid JSON and TOML, its checks passed, and its author is
+independent where required. It reads the pull request's files at one head and merges that head only
+(`sha` on the merge): a push while it reads, or after, waits for the next run. When a design is accepted it inserts the roadmap into the merge-order
 file after its last supplier. With `[redteam] ready_after = true` the last red-team fix marks the
 pull request ready for review; otherwise it stays a draft for a human to mark ready.
 

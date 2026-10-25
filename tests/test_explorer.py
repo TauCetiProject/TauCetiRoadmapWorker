@@ -11,7 +11,7 @@ from tauceti_roadmap_worker import depgraph, explorer, gitops, intake, sources
 from tauceti_roadmap_worker.board import encode_spec, new_job
 from tauceti_roadmap_worker.gh import GHError
 
-from .fakes import FakeBoard, example_config
+from .fakes import FakeBoard, example_config, head_tree
 
 
 def write(path, text):
@@ -205,6 +205,8 @@ class IntakeGH:
                     "author_association": self.association, "head": {"sha": "abc", "repo": {"full_name": "m/jobs"}}}
         if "/pulls/61/files" in path:
             return [{"filename": f, "status": "added"} for f in self.files]
+        if "/git/trees/" in path:
+            return head_tree(self.files)
         if "/check-runs" in path:
             return {"check_runs": []}
         raise AssertionError(path)

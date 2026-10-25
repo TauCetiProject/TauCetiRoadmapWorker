@@ -8,7 +8,7 @@ from tauceti_roadmap_worker import boardpr, depgraph, intake, prreviews
 from tauceti_roadmap_worker.board import encode_submission, new_job
 from tauceti_roadmap_worker.gh import GHError
 
-from .fakes import bot_context, example_config
+from .fakes import bot_context, example_config, head_tree
 
 REPO = "TauCetiProject/TauCetiRoadmapJobs"
 
@@ -73,6 +73,8 @@ class GH:
             return [] if self.merged else [self.pr]
         if "/pulls/12/files" in path:
             return [{"filename": f, "status": "added"} for f in ("packages/Foo/README.md", "packages/Foo/reports/PKG-Foo.md")]
+        if "/git/trees/" in path:      # every listed file is a regular file at the head
+            return head_tree(f["filename"] for f in self.api("repos/o/r/pulls/12/files"))
         if "/check-runs" in path:
             return {"check_runs": []}
         if "/issues/12/comments" in path:

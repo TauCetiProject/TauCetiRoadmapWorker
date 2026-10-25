@@ -15,7 +15,7 @@ from tauceti_roadmap_worker.board import Board, allowed_paths, file_problems, ne
 from tauceti_roadmap_worker.lanes import Context, lane_for
 from tauceti_roadmap_worker.paths import HERE
 
-from .fakes import FakeClaims, FakeIssuesGH, example_config, job_issue, make_pdf
+from .fakes import FakeClaims, FakeIssuesGH, example_config, head_tree, job_issue, make_pdf
 from .test_gate_scanners import CLEAN_LEAN, CLEAN_README
 from .test_lane_dry_run import ctx  # noqa: F401 - the shared lane fixture
 
@@ -162,6 +162,8 @@ class IntakeGH:
                     "head": {"sha": "abc", "repo": {"full_name": "alice/jobs"}}}
         if "/pulls/12/files" in path:
             return [{"filename": f, "status": "added"} for f in self.files]
+        if "/git/trees/" in path:
+            return head_tree(self.files)
         if "/check-runs" in path:
             return {"check_runs": []}
         raise AssertionError(path)
