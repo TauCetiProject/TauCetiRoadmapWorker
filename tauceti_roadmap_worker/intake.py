@@ -1198,7 +1198,7 @@ def sync_pull_requests(ctx) -> list[str]:
             out.append(f"#{number}: labels on {repo} not changed ({exc})")
         if want == r.awaiting_author:
             mine = [j for j in jobs if j.kind == "gate" and j.name == p["name"]]
-            if not any(j.state in ("available", "claimed", "submitted") for j in mine):
+            if not any(j.state in ("available", "claimed", "submitted", "blocked") for j in mine):
                 gate = board.new_job(board.make_id("gate", p["name"], len(mine) + 1), requires_operator=p["owner"],
                                      inputs={"pr": number, "operator": p["owner"]})
                 ctx.board.create(gate)
