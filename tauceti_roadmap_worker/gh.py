@@ -38,9 +38,11 @@ class GHRateLimited(Exception):
 
 
 # Answers about the account, not the request: a 403 because an issue is locked is the request's.
-HALT = re.compile(r"HTTP 401|Bad credentials|secondary rate limit|abuse detection|account (?:was|has been|is) suspended",
-                  re.IGNORECASE)
-RATE_LIMITED = re.compile(r"API rate limit exceeded|rate limit exceeded for", re.IGNORECASE)
+HALT = re.compile(r"HTTP 401|Bad credentials|account (?:was|has been|is) suspended", re.IGNORECASE)
+# The primary hourly limit and the secondary (burst) limit both pass; a host running several workers
+# as one account meets both every day, so they pause the worker rather than halt it (2026-10-27).
+RATE_LIMITED = re.compile(r"API rate limit exceeded|rate limit exceeded for|secondary rate limit|abuse detection",
+                          re.IGNORECASE)
 RATE_PAUSE = 900      # seconds: the CLI's error does not carry the reset time
 
 
@@ -190,11 +192,13 @@ class GH:
         first = next((line.strip() for line in text.splitlines() if "Logged in" in line), text[:120])
         return result.returncode == 0, first
 
-    def can_push(self, repo: str) -> bool:
+    def can_push(self, repo: str) -> bool | None:
+        """True/False from the repository's permissions; None when GitHub did not answer the probe
+        (a limit, an outage), which is not the same as "cannot push"."""
         try:
             return self._run(["api", f"repos/{repo}", "--jq", ".permissions.push"]).strip() == "true"
         except GHError:
-            return False
+            return None
 
     def raw_file(self, repo: str, path: str, ref: str = "") -> str:
         """The raw contents of a file at a ref (empty ref = default branch)."""

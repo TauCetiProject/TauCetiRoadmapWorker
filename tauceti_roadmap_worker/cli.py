@@ -392,6 +392,9 @@ def work(args) -> int:
     except GHHalt as exc:
         record_halt(ctx, str(exc))
         return round_end(args, ctx, LaneResult("", "halted", str(exc)), began)
+    except GHRateLimited as exc:
+        log(f"GitHub is rate limited at startup: {exc}")
+        return round_end(args, ctx, LaneResult("", "github-limited", str(exc)), began)
     sweep_worktrees(ctx, log)
     # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
     signal.signal(signal.SIGTERM, _stop)
@@ -1048,6 +1051,12 @@ def main(argv: list[str] | None = None) -> int:
                 "usage": usage_cmd, "roadmaps": roadmaps_cmd}
     try:
         return handlers[args.command](args)
+    except GHRateLimited as exc:
+        print(f"GitHub: rate limited: {exc}", file=sys.stderr)
+        return ROUND_EXIT["github-limited"]
+    except GHHalt as exc:
+        print(f"GitHub: halted: {exc}", file=sys.stderr)
+        return ROUND_EXIT["halted"]
     except GHError as exc:
         print(f"GitHub: {exc}", file=sys.stderr)
         return 3

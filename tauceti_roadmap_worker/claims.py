@@ -286,8 +286,14 @@ def namespace_for(cfg, gh, operator: str) -> str:
     if os.environ.get("CLAIM_REPO"):
         return os.environ["CLAIM_REPO"]
     shared = cfg.repositories.claims
-    if shared and gh.can_push(shared):
-        return shared
+    if shared:
+        ok = gh.can_push(shared)
+        if ok:
+            return shared
+        if ok is None:
+            from .gh import GHError
+            raise GHError(f"could not verify push access to the claims namespace {shared} (GitHub did not answer "
+                          "the probe); try again when it does, rather than falling back to leases in a fork")
     return f"{operator}/{cfg.repositories.packages_repo().split('/', 1)[1]}"
 
 

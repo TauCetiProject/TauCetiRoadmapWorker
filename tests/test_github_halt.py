@@ -29,7 +29,6 @@ def answering(monkeypatch, stderr: str):
 
 @pytest.mark.parametrize("stderr", [
     "HTTP 401: Bad credentials (https://api.github.com/user)",
-    "HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
     "HTTP 403: Sorry. Your account was suspended.",
 ])
 def test_an_answer_about_the_account_halts_and_nothing_more_is_sent(monkeypatch, stderr):
@@ -111,3 +110,26 @@ def test_a_halted_job_sends_nothing_more(monkeypatch, tmp_path):
     monkeypatch.setattr(worker, "release", lambda *a: pytest.fail("a halted round tried to release the job"))
     monkeypatch.setattr(worker, "request_board_run", lambda *a: pytest.fail("a halted round asked for a board run"))
     assert worker.run_job(c, job, Lane(), "key").status == "halted"
+
+
+def test_the_secondary_limit_pauses_like_the_primary_one(monkeypatch):
+    """A burst limit is transient (GitHub says wait a few minutes); a host running several workers as one
+    account meets it, so it pauses the worker instead of halting every worker until a human intervenes."""
+    from tauceti_roadmap_worker.gh import GHRateLimited
+    calls, gh = answering(monkeypatch, "HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again."), GH()
+    with pytest.raises(GHRateLimited):
+        gh.api("repos/o/r")
+    assert not gh.halted
+
+
+def test_an_unanswered_push_probe_is_unknown_not_a_refusal(monkeypatch):
+    from types import SimpleNamespace
+    from tauceti_roadmap_worker import claims
+    from tauceti_roadmap_worker.gh import GHError
+    cfg = SimpleNamespace(repositories=SimpleNamespace(claims="TauCetiProject/tauceti-roadmap-claims",
+                                                       packages_repo=lambda: "TauCetiProject/TauCetiRoadmapJobs"))
+    monkeypatch.delenv("CLAIM_REPO", raising=False)
+    assert claims.namespace_for(cfg, SimpleNamespace(can_push=lambda repo: True), "me") == "TauCetiProject/tauceti-roadmap-claims"
+    assert claims.namespace_for(cfg, SimpleNamespace(can_push=lambda repo: False), "me") == "me/TauCetiRoadmapJobs"
+    with pytest.raises(GHError):
+        claims.namespace_for(cfg, SimpleNamespace(can_push=lambda repo: None), "me")
