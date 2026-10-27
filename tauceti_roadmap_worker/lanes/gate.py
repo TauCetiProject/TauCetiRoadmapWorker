@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from .. import gates, gitops, prompts, replies
 from ..board import Job
-from .base import (Context, Lane, LaneError, Workspace, dropped_names, load_order, open_roadmap_prs, order_path, pr_answerers,
+from .base import (Context, Lane, LaneError, Workspace, dropped_names, ensure_in_order_logged, load_order, open_roadmap_prs, order_path, pr_answerers,
                    scan_problems, sibling_checkouts, sibling_readmes)
 from .fix import worktree_elaboration_problems
 from .pr import flip_labels, inline_comments, pr_branch_worktree, timeline
@@ -79,6 +79,12 @@ class GateLane(Lane):
             problems.append("uncommitted changes left in the worktree")
         if problems:
             return problems
+        folder = ws.workdir / ctx.cfg.roadmap.active_dir / job.name
+        if job.name not in load_order(order_path(ctx.cfg, ws.board, ws.content)):
+            # An adopted author's new roadmap was never placed by the port lane: place it after its last
+            # supplier now (in the board checkout, so the submission carries the change).
+            texts = [(folder / f).read_text(encoding="utf-8") if (folder / f).is_file() else "" for f in ("README.md", "Suggested.lean")]
+            ws.extra["order_notes"] = ensure_in_order_logged(ctx, ws, job.name, *texts)
         order = load_order(order_path(ctx.cfg, ws.board, ws.content))
         opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
                                              siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]))

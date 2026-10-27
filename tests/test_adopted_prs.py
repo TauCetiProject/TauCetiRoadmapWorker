@@ -86,3 +86,12 @@ def test_a_pool_members_reply_counts_as_the_authors_reply(sync):
     assert board.created == []
     assert "#1398 PlanarHodge: awaiting-review" in out
     assert ("POST", LABELS, {"labels": ["awaiting-review"]}) in gh.writes
+
+
+def test_a_cycle_elsewhere_is_not_this_roadmaps_problem():
+    from tauceti_roadmap_worker import depgraph
+    edges = {"A": {"B": {1}}, "B": {"A": {2}}, "C": {"D": {3}}, "D": {}}
+    order = ["D", "C", "A", "B"]
+    assert depgraph.check_order(edges, order, only={"C"}) == []
+    assert any(p.startswith("CYCLE") for p in depgraph.check_order(edges, order, only={"A"}))
+    assert any(p.startswith("CYCLE") for p in depgraph.check_order(edges, order))

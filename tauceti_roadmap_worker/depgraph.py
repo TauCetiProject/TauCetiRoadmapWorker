@@ -252,7 +252,7 @@ def strongly_connected(adj: dict[str, set[str]]) -> list[list[str]]:
 
 def check_order(edges: dict[str, dict[str, set[int]]], order: list[str], only: set[str] | None = None) -> list[str]:
     """Problems with the supplier graph: NOT IN ORDER, UPWARD and CYCLE lines (empty = clean).
-    `only` restricts the per-roadmap lines to those roadmaps; cycles are always reported."""
+    `only` restricts the per-roadmap lines, and the cycles reported, to those involving those roadmaps."""
     pos = {name: i for i, name in enumerate(order)}
     problems = []
     for consumer in sorted(edges, key=lambda n: pos.get(n, len(pos))):
@@ -267,6 +267,10 @@ def check_order(edges: dict[str, dict[str, set[int]]], order: list[str], only: s
                                 f"at README lines {sorted(lines)[:6]}")
     adj = {a: set(b) for a, b in edges.items()}
     for comp in strongly_connected(adj):
+        # With `only`, a cycle elsewhere in the graph is another roadmap's defect (2026-10-27: one
+        # author's cycles failed every other roadmap's gate once their pull requests were managed).
+        if only and not (set(comp) & only):
+            continue
         problems.append("CYCLE among: " + ", ".join(comp))
     return problems
 
