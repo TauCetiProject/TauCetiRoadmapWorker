@@ -160,14 +160,15 @@ def events_from_api(reviews: list[dict], comments: list[dict], inline: list[dict
     return sorted(out + inline_events(inline), key=lambda e: e.t)
 
 
-def flip_labels(ctx: Context, pr: int, events: list[replies.Event], head_sha: str, owner) -> str:
+def flip_labels(ctx: Context, pr: int, events: list[replies.Event], head_sha: str, owner, answerers=()) -> str:
+    """`owner` is the author; `answerers` the logins whose replies count as the author's (the pool)."""
     r = ctx.cfg.replies
-    owners = {owner} if isinstance(owner, str) else set(owner)
+    owners = {owner, *answerers}
     want, drop = replies.wanted_label(events, owners, head_sha, markers=r.review_markers,
                                       housekeeping=r.housekeeping_prefixes, approvers=r.approvers,
                                       ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,
                                       awaiting_review=r.awaiting_review, maintainers=set(r.maintainer_logins),
-                                      maintainer_prefix=r.maintainer_review_prefix)
+                                      maintainer_prefix=r.maintainer_review_prefix, owner=owner)
     repo = ctx.cfg.repositories.content
     have = {label["name"] for label in ctx.gh.api(f"repos/{repo}/issues/{pr}/labels")}
     if want and want not in have:

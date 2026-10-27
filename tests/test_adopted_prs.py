@@ -123,3 +123,32 @@ def test_a_gate_submission_may_carry_the_merge_order_file():
     assert "merge-order/ORDER.txt" in board.allowed_paths(job, "packages", "merge-order/ORDER.txt")
     review = Job(id="REV-PKG-X~1", kind="review", name="X")
     assert "merge-order/ORDER.txt" not in board.allowed_paths(review, "packages", "merge-order/ORDER.txt")
+
+
+def _event(t, user, body, cid):
+    from tauceti_roadmap_worker import replies
+    return replies.Event(t=t, user=user, body=body, ref=f"comment-{cid}", version=replies.text_version(body))
+
+
+def test_another_pool_members_own_words_are_a_review_not_a_reply():
+    """A pool member who reviews another member's pull request in their own words is a reviewer: only
+    a comment in reply form (the worker's, the operator's scripts') answers for the author."""
+    from tauceti_roadmap_worker import replies
+    cfg = adopted_config()
+    r = cfg.replies
+    ours = pr_answerers(cfg, AUTHOR)
+    theirs = _event("2026-10-19T03:58:08Z", THIRD,
+                    "Shouldn't the Lean code all go in Suggested.lean, which is the standard place? "
+                    "Layer 2 also cites a theorem the paper does not prove.", 1)
+    kw = dict(markers=r.review_markers, housekeeping=r.housekeeping_prefixes, approvers=r.approvers, owner=AUTHOR)
+    assert [e.ref for e in replies.unanswered([theirs], ours, r.review_markers, r.housekeeping_prefixes,
+                                              owner=AUTHOR)] == ["comment-1"]
+    assert replies.wanted_label([theirs], ours, SHA, **kw)[0] == "awaiting-author"
+    for_them = _event("2026-10-20T04:08:24Z", CUSTODIAN,
+                      "Fixed in `def5678` (reply to the review):\n\n- **F01** (applied) — moved to Suggested.lean.", 2)
+    assert replies.unanswered([theirs, for_them], ours, r.review_markers, r.housekeeping_prefixes, owner=AUTHOR) == []
+    assert replies.wanted_label([theirs, for_them], ours, SHA, **kw)[0] == "awaiting-review"
+    # The author's own words answer, as before; without an owner every answerer's do.
+    own = _event("2026-10-20T04:08:24Z", AUTHOR, "Moved the code to Suggested.lean and fixed the citation.", 3)
+    assert replies.unanswered([theirs, own], ours, r.review_markers, r.housekeeping_prefixes, owner=AUTHOR) == []
+    assert replies.unanswered([theirs], ours, r.review_markers, r.housekeeping_prefixes) == []

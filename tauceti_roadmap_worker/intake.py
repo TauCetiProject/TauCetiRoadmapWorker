@@ -1399,7 +1399,7 @@ def sync_pull_requests(ctx) -> list[str]:
                                           housekeeping=r.housekeeping_prefixes, approvers=r.approvers,
                                           ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,
                                           awaiting_review=r.awaiting_review, maintainers=set(r.maintainer_logins),
-                                          maintainer_prefix=r.maintainer_review_prefix)
+                                          maintainer_prefix=r.maintainer_review_prefix, owner=p["owner"])
         have = {label["name"] for label in data.get("labels", [])}
         try:   # a token of the board alone (its workflow's) cannot write to the roadmap repository
             if want and want not in have:

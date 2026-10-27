@@ -254,3 +254,17 @@ def test_inline_comments_count_with_their_review_and_the_owners_are_never_replie
     recorded = answered_reply("2026-10-24T12:00:00Z", a, nit, kinds=("review", "inline"))
     assert pending(evs + events([], [recorded])) == []
     assert json.loads(replies.ANSWERED_RE.search(recorded["body"]).group(1))["job"] == "GATE-Foo~1"
+
+
+def test_a_hand_reply_in_reply_form_counts_after_a_recorded_one():
+    """The operator's scripts answer by hand in the reply form and never carry a record; after a
+    worker's recorded reply they must still count, while the owner's other notes do not."""
+    old = review(60, "2026-10-20T10:00:00Z", "Changes needed: old point.")
+    recorded = answered_reply("2026-10-20T12:00:00Z", old)
+    later = review(61, "2026-10-21T10:00:00Z", "Changes needed: a newer point.")
+    by_hand = comment(803, "2026-10-21T11:00:00Z",
+                      "Fixed in `def5678` (reply to the review):\n\n- **H01** (applied) — done.", user=OWNER)
+    assert pending(events([old, later], [recorded])) == ["review-61"]
+    assert pending(events([old, later], [recorded, by_hand])) == []
+    note = comment(804, "2026-10-21T11:00:00Z", "Rebased on main; the merge order is unchanged.", user=OWNER)
+    assert pending(events([old, later], [recorded, note])) == ["review-61"]

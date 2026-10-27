@@ -50,7 +50,7 @@ class GateLane(Lane):
         authors = pr_answerers(ctx.cfg, mine["owner"])
         since = replies.unanswered(timeline(ctx, pr) + inline, authors, r.review_markers,
                                    r.housekeeping_prefixes, set(r.ignore_logins), maintainers=set(r.maintainer_logins),
-                                   maintainer_prefix=r.maintainer_review_prefix)
+                                   maintainer_prefix=r.maintainer_review_prefix, owner=mine["owner"])
         if since:
             # Every inline comment of the reviews being answered (a maintainer's review under the owner's
             # login brings its own), those an earlier reply answered included.
@@ -122,6 +122,6 @@ class GateLane(Lane):
             raise LaneError("the reply would read as a review; not posting")
         text += replies.answered_marker(job.id, ws.extra["answered"]) + "\n"
         ctx.gh.write("POST", f"repos/{cfg.repositories.content}/issues/{pr}/comments", {"body": text})
-        label = flip_labels(ctx, pr, timeline(ctx, pr) + inline_comments(ctx, pr), new,
-                            set(ws.extra.get("answerers") or [ws.extra["owner"]]))
+        label = flip_labels(ctx, pr, timeline(ctx, pr) + inline_comments(ctx, pr), new, ws.extra["owner"],
+                            ws.extra.get("answerers") or ())
         return f"answered the review on #{pr} at {new[:7]} ({label})"

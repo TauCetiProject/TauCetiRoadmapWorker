@@ -47,6 +47,10 @@ SETTLED = re.compile(
     r"(?:I )?would approve|Verdict: APPROVE|comments resolved|found no reason|finding resolved|are resolved|finding addressed|"
     r"comments addressed|are addressed|is addressed|fully addressed|— addressed|- addressed")
 APPROVE_VERDICT = re.compile(r"Verdict[^\n]{0,30}APPROVE")
+# The forms a reply takes when it is written for the author by someone else (a pool member, the
+# worker, the operator's scripts): a comment by another answerer in any other words is their own
+# review of the pull request, not an answer on the author's behalf.
+REPLY_FORM = re.compile(r"\(reply to the review|^Fixed in `|tauceti-roadmap-answered", re.M)
 THANKS = re.compile(r"^(?:Thank you|Thanks)")
 MAINTAINER_REVIEW_PREFIX = "Maintainer review"
 SHORTCODE = re.compile(r":[a-z0-9_+-]+:")
@@ -100,12 +104,23 @@ def is_maintainer_review(e: Event, maintainers: set[str], prefix: str = MAINTAIN
     return undecorated(e.body or "")[:len(prefix)].lower() == prefix.lower()
 
 
+def speaks_for_author(e: Event, ours: set[str], owner: str = "") -> bool:
+    """The event is by an answerer speaking for the author: the author (any words), or another
+    answerer in reply form. Without an `owner` every answerer speaks for the author."""
+    if e.user.lower() not in ours:
+        return False
+    if not owner or e.user.lower() == owner.lower():
+        return True
+    return bool(REPLY_FORM.search(e.body or ""))
+
+
 def is_review(e: Event, ours: set[str], markers: list[str], ignore: set[str] = frozenset(),
-              maintainers: set[str] = frozenset(), maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> bool:
+              maintainers: set[str] = frozenset(), maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX,
+              owner: str = "") -> bool:
     if e.user in ignore:
         return False
     body = ("Verdict: APPROVE " if e.approved else "") + (e.body or "")
-    mine = e.user.lower() in ours and not is_maintainer_review(e, maintainers, maintainer_prefix)
+    mine = speaks_for_author(e, ours, owner) and not is_maintainer_review(e, maintainers, maintainer_prefix)
     if mine and not (_markers_re(markers).search(body[:60]) and not THANKS.match(body)):
         return False
     if APPROVE_VERDICT.search(body):
@@ -114,8 +129,9 @@ def is_review(e: Event, ours: set[str], markers: list[str], ignore: set[str] = f
 
 
 def is_reply(e: Event, ours: set[str], markers: list[str], housekeeping: list[str],
-             maintainers: set[str] = frozenset(), maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> bool:
-    if e.user.lower() not in ours or is_maintainer_review(e, maintainers, maintainer_prefix):
+             maintainers: set[str] = frozenset(), maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX,
+             owner: str = "") -> bool:
+    if not speaks_for_author(e, ours, owner) or is_maintainer_review(e, maintainers, maintainer_prefix):
         return False
     if _markers_re(markers).search((e.body or "")[:40]):
         return False
@@ -124,12 +140,12 @@ def is_reply(e: Event, ours: set[str], markers: list[str], housekeeping: list[st
 
 def classify(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
              ignore: set[str] = frozenset(), maintainers: set[str] = frozenset(),
-             maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> tuple[str, str]:
+             maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX, owner: str = "") -> tuple[str, str]:
     """(time of the last review, time of our last reply); '' when there is none."""
     ours = {o.lower() for o in ours}
     ordered = sorted(events, key=lambda e: e.t)
-    reviews = [e.t for e in ordered if is_review(e, ours, markers, ignore, maintainers, maintainer_prefix)]
-    replies = [e.t for e in ordered if is_reply(e, ours, markers, housekeeping, maintainers, maintainer_prefix)]
+    reviews = [e.t for e in ordered if is_review(e, ours, markers, ignore, maintainers, maintainer_prefix, owner)]
+    replies = [e.t for e in ordered if is_reply(e, ours, markers, housekeeping, maintainers, maintainer_prefix, owner)]
     return (reviews[-1] if reviews else ""), (replies[-1] if replies else "")
 
 
@@ -144,11 +160,12 @@ def wanted_label(events: list[Event], ours: set[str], head: str, *, markers: lis
                  approvers: list[str], ignore: set[str] = frozenset(),
                  awaiting_author: str = "awaiting-author", awaiting_review: str = "awaiting-review",
                  maintainers: set[str] = frozenset(),
-                 maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> tuple[str, list[str]]:
-    """(label to add or '', labels to remove)."""
+                 maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX, owner: str = "") -> tuple[str, list[str]]:
+    """(label to add or '', labels to remove). `owner` is the pull request's author when `ours` has
+    other answerers (the pool): their comments then count as replies only in reply form."""
     if approved_at_head(events, approvers, head):
         return "", [awaiting_author, awaiting_review]
-    if unanswered(events, ours, markers, housekeeping, ignore, maintainers, maintainer_prefix):
+    if unanswered(events, ours, markers, housekeeping, ignore, maintainers, maintainer_prefix, owner):
         return awaiting_author, [awaiting_review]
     return awaiting_review, [awaiting_author]
 
@@ -182,37 +199,38 @@ def answered_by(body: str) -> dict[str, str] | None:
 
 def acknowledged(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
                  maintainers: set[str] = frozenset(),
-                 maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> tuple[set[tuple[str, str]], str]:
+                 maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX, owner: str = "") -> tuple[set[tuple[str, str]], str]:
     """What our replies acknowledge: the (ref, version) pairs their records name, and the time up to
-    which the replies without a record acknowledge everything older. Only those older than the first
-    recorded reply count so, since they were posted before the records existed. An inline comment is
-    never a reply."""
+    which the replies without a record acknowledge everything older. Once a recorded reply exists,
+    an unrecorded one counts so only in reply form (a reply written by hand or by the operator's
+    scripts): the author's other notes answer nothing. An inline comment is never a reply."""
     ours = {o.lower() for o in ours}
     seen: set[tuple[str, str]] = set()
     before, recorded = "", False
     for e in sorted(events, key=lambda e: e.t):
-        if e.ref.startswith("inline-") or not is_reply(e, ours, markers, housekeeping, maintainers, maintainer_prefix):
+        if e.ref.startswith("inline-") or not is_reply(e, ours, markers, housekeeping, maintainers, maintainer_prefix,
+                                                        owner):
             continue
         answered = answered_by(e.body)
         if answered is not None:
             recorded = True
             seen |= set(answered.items())
-        elif not recorded:
-            before = e.t
+        elif not recorded or REPLY_FORM.search(e.body or ""):
+            before = max(before, e.t)
     return seen, before
 
 
 def unanswered(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
                ignore: set[str] = frozenset(), maintainers: set[str] = frozenset(),
-               maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> list[Event]:
+               maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX, owner: str = "") -> list[Event]:
     """Every review and comment no reply acknowledges, oldest first (not only the latest), a
     maintainer's review under the owner's login included. An inline comment counts when the review
     it belongs to does, or on its own terms. An acknowledged review edited since is unanswered again."""
     ours_l = {o.lower() for o in ours}
-    seen, before = acknowledged(events, ours_l, markers, housekeeping, maintainers, maintainer_prefix)
+    seen, before = acknowledged(events, ours_l, markers, housekeeping, maintainers, maintainer_prefix, owner)
 
     def review(e: Event) -> bool:
-        return is_review(e, ours_l, markers, ignore, maintainers, maintainer_prefix)
+        return is_review(e, ours_l, markers, ignore, maintainers, maintainer_prefix, owner)
     reviewing = {e.review_id for e in events if e.ref.startswith("review-") and review(e)}
     return [e for e in sorted(events, key=lambda e: e.t)
             if (review(e) or (e.ref.startswith("inline-") and e.review_id in reviewing))
