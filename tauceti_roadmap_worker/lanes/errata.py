@@ -19,7 +19,7 @@ from pathlib import Path
 from .. import board, gitops, prreviews, references
 from ..board import Job
 from ..gh import GHError
-from .base import TEMP_ROOTS, Context, Lane, LaneBlocked, LaneError, Workspace, rev_dir
+from .base import TEMP_ROOTS, Context, Lane, LaneBlocked, LaneError, Workspace, rev_dir, same_job_and_head
 
 QUOTE_LIMIT = 40        # words a quoted span may run to (the reviews' rule: describe, never copy)
 QUOTED = re.compile(r"“([^”]*)”|\"([^\"\n]*)\"")
@@ -257,10 +257,13 @@ class ErrataLane(Lane):
 
     def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
         """The errata as a comment on the job's own issue, after the job is recorded as this worker's
-        and marked submitted (so the board can never collect it and then see it flipped back)."""
+        and marked submitted (so the board can never collect it and then see it flipped back); posted
+        once (an earlier try's comment carries the same marker)."""
         body = self.comment_body(job, ctx, ws)
         if ctx.dry_run:
             return f"[dry-run] would comment on #{job.number}"
         self.after_board_submission(job, ctx)
-        self.push(lambda: ctx.board.comment(job.number, body))
+        mark = prreviews.worker_marker(body)
+        self.post_once(ctx, lambda: ctx.board.comments(job.number), lambda: ctx.board.comment(job.number, body),
+                       lambda text: same_job_and_head(text, mark))
         return f"https://github.com/{ctx.cfg.repositories.board_repo()}/issues/{job.number}"

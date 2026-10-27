@@ -35,7 +35,7 @@ class HeadGH:
             if isinstance(head, Exception):
                 raise head
             return {"number": int(path.rsplit("/", 1)[1]), "head": {"sha": head}}
-        if path.endswith("/labels"):
+        if path.endswith("/labels") or "/comments" in path:
             return []
         raise GHError(f"GET {path}: not faked")
 
@@ -89,6 +89,7 @@ def test_a_head_already_in_hand_saves_the_read(monkeypatch):
 
 
 def gate_finish(tmp_path, monkeypatch, gh):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
     lane, ctx, sleeps = lane_and_ctx(monkeypatch, gh)
     pushed = []
     monkeypatch.setattr(gitops, "git", lambda cwd, *args, **k: NEW + "\n" if args[:1] == ("rev-parse",) else "")

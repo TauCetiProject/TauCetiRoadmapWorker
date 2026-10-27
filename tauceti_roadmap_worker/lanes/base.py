@@ -1049,12 +1049,32 @@ class Lane:
                     f" What it wrote is kept in `{kept}` (laid out like the repository). Start from it: put what is sound "
                     "back in place and repair the listed problems, rather than starting over." if kept.is_dir() else ""))
 
+    def post_once(self, ctx: Context, read, post, mine) -> dict:
+        """A comment posted once: before each try, the comments `read` returns are searched for one of
+        the operator's whose body `mine` recognises, which an earlier try posted though its answer was
+        lost (in this attempt or an earlier one), and only without one is `post` called. The read and
+        the post are tried again like a push."""
+        def once():
+            for c in reversed(read() or []):
+                if (c.get("user") or {}).get("login", "").lower() == ctx.operator.lower() and mine(c.get("body") or ""):
+                    return c
+            return post()
+        return self.push(once) or {}
+
+    def comment_once(self, ctx: Context, repo: str, number: int, body: str, mine) -> dict:
+        """`body` posted once on issue or pull request #number of `repo` (see post_once)."""
+        path = f"repos/{repo}/issues/{number}/comments"
+        return self.post_once(ctx, lambda: ctx.gh.api(path + "?per_page=100", paginate=True),
+                              lambda: ctx.gh.write("POST", path, {"body": body}), mine)
+
     def comment_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, body: str) -> str:
+        """The job's comment on its board pull request, posted once: a comment of the operator's whose
+        marker names the same job and head is that comment."""
         if ctx.dry_run:
             return f"[dry-run] would comment on #{self.board_pr(job)}"
-        made = self.push(lambda: ctx.gh.write(
-            "POST", f"repos/{ctx.cfg.repositories.packages_repo()}/issues/{self.board_pr(job)}/comments",
-            {"body": body})) or {}
+        mark = prreviews.worker_marker(body)
+        made = self.comment_once(ctx, ctx.cfg.repositories.packages_repo(), self.board_pr(job), body,
+                                 lambda text: same_job_and_head(text, mark))
         return made.get("html_url", "")
 
     def marker(self, job: Job, ctx: Context, ws: Workspace) -> dict:
@@ -1064,29 +1084,54 @@ class Lane:
     def submit_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
         """A fix on the board pull request: commit the job's files on top of its head, push them to
         its branch (the job's operator owns it), and say so on the pull request with the worker's
-        marker; the intake opens the next round."""
-        changed = gitops.changed_files(ws.board)
-        if not changed:
-            raise LaneError("nothing to push")
-        if ctx.dry_run:
-            return f"[dry-run] would push {', '.join(changed)} to #{self.board_pr(job)}"
-        gitops.commit_paths(ws.board, changed, f"{job.id}: {summary}\n\nAI-assisted: {ctx.agent} ({ctx.model}), "
-                                               f"worker {ctx.worker_id}.", ctx.operator)
-        fork = gitops.ensure_fork(ctx.gh, ctx.cfg.repositories.packages_repo(), ctx.operator)
-        if ws.extra.get("pr_repo") and ws.extra["pr_repo"].lower() != fork.lower():
-            raise LaneError(f"the pull request's branch is in {ws.extra['pr_repo']}; only its owner pushes to it")
-        self.push(lambda: gitops.push_branch(ws.board, fork, ws.extra.get("pr_ref") or ws.branch,
-                                             expected=ws.extra.get("push_base") or ws.extra.get("head")))
-        head = gitops.git(ws.board, "rev-parse", "HEAD").strip()
+        marker; the intake opens the next round. From before the push the pending record holds the
+        commit, the branch and the head the push expects, so an attempt after one that stopped once
+        the push was made only comments and marks the job submitted (no agent run, no new commit).
+        Marking it submitted is repeated by every attempt: a failed one's release made it available."""
+        number, repo = self.board_pr(job), ctx.cfg.repositories.packages_repo()
+        if owes(ctx, job, PUSH):
+            changed = gitops.changed_files(ws.board)
+            if not changed:
+                raise LaneError("nothing to push")
+            if ctx.dry_run:
+                return f"[dry-run] would push {', '.join(changed)} to #{number}"
+            gitops.commit_paths(ws.board, changed, f"{job.id}: {summary}\n\nAI-assisted: {ctx.agent} ({ctx.model}), "
+                                                   f"worker {ctx.worker_id}.", ctx.operator)
+            fork = gitops.ensure_fork(ctx.gh, repo, ctx.operator)
+            if ws.extra.get("pr_repo") and ws.extra["pr_repo"].lower() != fork.lower():
+                raise LaneError(f"the pull request's branch is in {ws.extra['pr_repo']}; only its owner pushes to it")
+            branch, base = ws.extra.get("pr_ref") or ws.branch, ws.extra.get("push_base") or ws.extra.get("head")
+            owe(ctx, job, ws, (PUSH, COMMENT, SUBMITTED), board={
+                "sha": gitops.git(ws.board, "rev-parse", "HEAD").strip(), "base": base, "branch": branch,
+                "repo": fork, "pr": number})
+            self.push(lambda: gitops.push_branch(ws.board, fork, branch, expected=base))
+            settle(ctx, job, PUSH)
+        head = kept_commit(read_pending(ctx, job) or {}, "board").get("sha", "")
         # The intake reads the pull request's head once it sees this comment (a head still at the
         # fix's base releases the fix as not pushed): the comment waits for the head.
-        self.await_pr_head(ctx, ctx.cfg.repositories.packages_repo(), self.board_pr(job), head,
-                           then="not commenting")
-        marker = {**self.marker(job, ctx, ws), "head": head}
-        url = self.comment_on_board_pr(job, ctx, ws, f"Fix `{job.id}` pushed `{head[:7]}` by `{ctx.operator}` "
-                                                     f"({ctx.agent}, {ctx.model}): {summary}\n\n"
-                                                     f"<!-- tauceti-roadmap-review {json.dumps(marker, sort_keys=True)} -->\n")
+        self.await_pr_head(ctx, repo, number, head, then="not commenting")
+        url = f"https://github.com/{repo}/pull/{number}"
+        if owes(ctx, job, COMMENT):
+            marker = {**self.marker(job, ctx, ws), "head": head}
+            body = (f"Fix `{job.id}` pushed `{head[:7]}` by `{ctx.operator}` ({ctx.agent}, {ctx.model}): {summary}\n\n"
+                    f"<!-- tauceti-roadmap-review {json.dumps(marker, sort_keys=True)} -->\n")
+            url = self.comment_on_board_pr(job, ctx, ws, body) or url
+            settle(ctx, job, COMMENT)
         self.after_board_submission(job, ctx)
+        settle(ctx, job, SUBMITTED)
+        return url
+
+    def comment_submission(self, job: Job, ctx: Context, ws: Workspace, body: str) -> str:
+        """A review or a pass on the board pull request: the job recorded as this worker's and marked
+        submitted, then its comment, posted once. The pending record holds the head the job read, so
+        a later attempt never posts the comment once the pull request has moved on."""
+        if ctx.dry_run:
+            return self.comment_on_board_pr(job, ctx, ws, body)
+        owe(ctx, job, ws, (SUBMITTED, COMMENT), board={"base": ws.extra.get("head", ""), "pr": self.board_pr(job)})
+        self.after_board_submission(job, ctx)
+        settle(ctx, job, SUBMITTED)
+        url = self.comment_on_board_pr(job, ctx, ws, body)
+        settle(ctx, job, COMMENT)
         return url
 
     def after_board_submission(self, job: Job, ctx: Context) -> None:
@@ -1120,35 +1165,47 @@ class Lane:
     def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
         """Commit the job's own files on the worker's board branch, push it to the operator's fork
         and open the submission pull request that names the job (or, for a job on a board pull
-        request, push to it or comment on it)."""
+        request, push to it or comment on it). From before the push the pending record holds the
+        commit, its files and then the pull request, so a later attempt does only what is still owed
+        (an earlier attempt's pull request whose answer was lost is found by its head)."""
         if self.board_pr(job):
             return self.submit_on_board_pr(job, ctx, ws, summary)
-        cfg = ctx.cfg
-        problems = self.submission_problems(job, ctx, ws)
-        if problems:
-            raise LaneError("; ".join(problems))
-        changed = gitops.changed_files(ws.board)
-        if not changed:
-            raise LaneError("nothing to submit")
-        message = (f"{job.id}: {summary}\n\nAI-assisted: {ctx.agent} ({ctx.model}), worker {ctx.worker_id}.")
-        if ctx.dry_run:
-            return f"[dry-run] would submit {', '.join(changed)}"
-        gitops.commit_paths(ws.board, changed, message, ctx.operator)
-        repo = cfg.repositories.packages_repo()
-        fork = self.push(lambda: gitops.ensure_fork(ctx.gh, repo, ctx.operator))
-        self.push(lambda: gitops.push(ws.board, fork, ws.branch))
-        body = (f"Refs #{job.number}\n\n{summary}\n\nAgent: {ctx.agent} ({ctx.model}); operator `{ctx.operator}`; "
-                f"worker `{ctx.worker_id}`. Files: " + ", ".join(f"`{p}`" for p in changed) + "\n\n"
-                + board.encode_submission(job.id, ctx.worker_id, ctx.operator, ctx.agent, ctx.model))
-        pr = self.push(lambda: gitops.open_pull_request(ctx.gh, repo, f"{ctx.operator}:{ws.branch}", "main",
-                                                        f"{board.title_for(job)}: submission", body, draft=False))
+        repo = ctx.cfg.repositories.packages_repo()
+        if owes(ctx, job, PUSH):
+            problems = self.submission_problems(job, ctx, ws)
+            if problems:
+                raise LaneError("; ".join(problems))
+            changed = gitops.changed_files(ws.board)
+            if not changed:
+                raise LaneError("nothing to submit")
+            message = (f"{job.id}: {summary}\n\nAI-assisted: {ctx.agent} ({ctx.model}), worker {ctx.worker_id}.")
+            if ctx.dry_run:
+                return f"[dry-run] would submit {', '.join(changed)}"
+            gitops.commit_paths(ws.board, changed, message, ctx.operator)
+            fork = self.push(lambda: gitops.ensure_fork(ctx.gh, repo, ctx.operator))
+            owe(ctx, job, ws, (PUSH, PULL_REQUEST, SUBMITTED), board={
+                "sha": gitops.git(ws.board, "rev-parse", "HEAD").strip(), "branch": ws.branch, "repo": fork,
+                "files": changed})
+            self.push(lambda: gitops.push(ws.board, fork, ws.branch))
+            settle(ctx, job, PUSH)
+        kept = kept_commit(read_pending(ctx, job) or {}, "board")
+        if owes(ctx, job, PULL_REQUEST):
+            body = (f"Refs #{job.number}\n\n{summary}\n\nAgent: {ctx.agent} ({ctx.model}); operator `{ctx.operator}`; "
+                    f"worker `{ctx.worker_id}`. Files: " + ", ".join(f"`{p}`" for p in kept.get("files", [])) + "\n\n"
+                    + board.encode_submission(job.id, ctx.worker_id, ctx.operator, ctx.agent, ctx.model))
+            pr = self.push(lambda: gitops.open_pull_request(ctx.gh, repo, f"{ctx.operator}:{ws.branch}", "main",
+                                                            f"{board.title_for(job)}: submission", body,
+                                                            draft=False)) or {}
+            kept = {**kept, "pr": pr.get("number"), "url": pr.get("html_url", "")}
+            settle(ctx, job, PULL_REQUEST, board=kept)
         if self.records_author(job) and ctx.claims:
             ctx.claims.record_author(job.id, ctx.agent, ctx.model)
         try:
             ctx.board.set_state(job, "submitted")
         except GHError:
             pass  # operators without write access on the board: `board sync` mirrors the state
-        return (pr or {}).get("html_url", "")
+        settle(ctx, job, SUBMITTED)
+        return kept.get("url", "")
 
     agent_started = False   # set once the first agent run begins: a failure before it is the operator's side
     parked = False          # set by the run's one needs-references request
@@ -1159,7 +1216,12 @@ class Lane:
             return LaneResult(job.id, "skipped", reason)
         pending = read_pending(ctx, job)
         if pending:
-            return self.resume_push(job, ctx, pending)
+            dropped = self.reconcile(job, ctx, pending)
+            if not dropped:
+                return self.resume_push(job, ctx, read_pending(ctx, job))
+            clear_pending(ctx, job)
+            return LaneResult(job.id, "skipped", f"dropped the run kept after its submission stopped: {dropped}; "
+                                                 "the next round runs the job afresh")
         ws = self.prepare(job, ctx)
         self.restore_wip(job, ctx, ws)
         self.prepare_sources(job, ctx, ws)
@@ -1290,10 +1352,13 @@ class Lane:
 
     def deliver(self, job: Job, ctx: Context, ws: Workspace) -> LaneResult:
         """The lane's last steps and the submission, once the checks passed. A branch that moved
-        while the job ran blocks the job for a human; a push that keeps failing keeps the run
-        (`pending-push/`), and the next attempt on this worker pushes it without running the agent.
-        A round whose lease is lost (`claims.Heartbeat`: checked before the first push, and by every
-        GitHub write after it) submits nothing more, and its run is kept the same way."""
+        while the job ran blocks the job for a human. A submission that stops before it is done keeps
+        the run (`pending-push/`) with what it still owes, when the stop may pass (a refused push, a
+        GitHub 5xx or timeout) or when the submission has already changed something on GitHub (a
+        push, a comment); the next attempt on this worker finishes it without running the agent.
+        Otherwise nothing is kept. A round whose lease is lost (`claims.Heartbeat`: checked before the
+        first push, and by every GitHub write after it) submits nothing more, and its run is kept the
+        same way, with what it still owes."""
         try:
             check_fence(ctx.gh)
             note = self.finish(job, ctx, ws) or f"{board.TITLE[job.kind].lower()} of {job.name}"
@@ -1303,20 +1368,30 @@ class Lane:
             return LaneResult(job.id, "lease-lost", f"{exc}; nothing more is submitted, and the run is kept in "
                               f"{ws.job_dir / PENDING_DIR} for the next attempt on this worker")
         except gitops.BranchMoved as exc:
+            if not submission_started(ctx, job):
+                clear_pending(ctx, job)
             return LaneResult(job.id, "blocked", str(exc))
-        except (gitops.PushError, GHError) as exc:
-            if isinstance(exc, GHError) and not transient(exc):
+        except (gitops.GitError, GHError, LaneError) as exc:
+            passing = isinstance(exc, gitops.PushError) or (isinstance(exc, GHError) and transient(exc))
+            started = submission_started(ctx, job)
+            if not passing and not started:
+                clear_pending(ctx, job)
                 return LaneResult(job.id, "failed", str(exc))
             tries = save_pending(ctx, job, ws, str(exc))
             if tries >= PUSH_ATTEMPTS:
                 clear_pending(ctx, job)
-                return LaneResult(job.id, "failed", f"the push failed {tries} times; the run is given up: {exc}")
+                return LaneResult(job.id, "failed", f"the {'submission' if started else 'push'} failed {tries} times; "
+                                  f"the run is given up: {exc}")
+            if started:
+                owed = ", ".join((read_pending(ctx, job) or {}).get("outstanding", []))
+                return LaneResult(job.id, "failed", f"{exc}; the run is kept in {ws.job_dir / PENDING_DIR} and the "
+                                  f"next attempt finishes its submission without running the agent (still owed: "
+                                  f"{owed}; try {tries} of {PUSH_ATTEMPTS})")
             return LaneResult(job.id, "failed", f"push failed ({exc}); the run is kept in "
                               f"{ws.job_dir / PENDING_DIR} and the next attempt pushes it without running the agent "
                               f"(try {tries} of {PUSH_ATTEMPTS})")
-        except (LaneError, gitops.GitError) as exc:
-            return LaneResult(job.id, "failed", str(exc))
         clear_pending(ctx, job)
+        drop_kept_run(job, ws)
         self.drop_worktree(ctx, ws)
         return LaneResult(job.id, "submitted", note, url)
 
@@ -1361,16 +1436,54 @@ class Lane:
 
     sleep = staticmethod(time.sleep)
 
+    def reconcile(self, job: Job, ctx: Context, pending: dict) -> str:
+        """Before an attempt finishes a kept run, the run is compared with GitHub: a push the pull
+        request already shows is settled (an earlier attempt stopped after it, or lost its answer),
+        and why the run is superseded is returned ('' when it is not): the job was filed again or
+        moved to another pull request, a pull request the run pushes to is closed, or its branch
+        moved away from the head the run was built on or past the commit the run pushed (someone
+        else pushed). A read that fails transiently decides nothing: the push still checks the head."""
+        if pending.get("issue") and job.number and pending["issue"] != job.number:
+            return f"the job is now #{job.number}, the run was for #{pending['issue']}"
+        repos = ctx.cfg.repositories
+        for key, effect, repo, named in (("board", PUSH, repos.packages_repo(), self.board_pr(job)),
+                                         ("content", CONTENT_PUSH, repos.content, int(job.inputs.get("pr") or 0))):
+            kept = kept_commit(pending, key)
+            if not (kept.get("base") and kept.get("pr")):
+                continue
+            if named and kept["pr"] != named:
+                return f"the job is now on #{named}, the run was for #{kept['pr']}"
+            try:
+                pr = ctx.gh.api(f"repos/{repo}/pulls/{kept['pr']}") or {}
+            except GHError as exc:
+                if not transient(exc):
+                    raise
+                continue
+            head, sha = (pr.get("head") or {}).get("sha", ""), kept.get("sha", "")
+            if pr.get("state") != "open":
+                return f"#{kept['pr']} is {pr.get('state') or 'not open'}"
+            pushed = bool(sha) and not owes(ctx, job, effect)
+            if sha and head == sha:
+                settle(ctx, job, effect)
+            elif head and (pushed or head != kept["base"]):
+                return f"#{kept['pr']} is at {head[:7]}, " + (f"past the {sha[:7]} the run pushed" if pushed else
+                                                              f"no longer the {kept['base'][:7]} the run was built on")
+        return ""
+
     def resume_push(self, job: Job, ctx: Context, pending: dict) -> LaneResult:
-        """The next attempt after a push failed: fresh checkouts, the run's deliverables and commit
-        put back, the checks again (no agent run), then the push and the submission."""
+        """The next attempt after a submission stopped before it was done: fresh checkouts, the run's
+        deliverables and commit put back, the checks again (no agent run), then the submission, which
+        does only what the record still owes."""
         ws = self.prepare(job, ctx)
         restore_pending(ctx, job, ws, pending)
         problems = self.validate(job, ctx, ws)
         if problems:
             clear_pending(ctx, job)
             return LaneResult(job.id, "failed", "the kept run no longer passes its checks: " + "; ".join(problems[:5]))
-        ws.extra.setdefault("notes", []).append(f"pushing the run kept after a failed push (try {pending.get('tries', 1) + 1})")
+        n = pending.get("tries", 1) + 1
+        ws.extra.setdefault("notes", []).append(
+            f"finishing the submission of the run kept after it stopped ({', '.join(pending['done'])} done; try {n})"
+            if pending.get("done") else f"pushing the run kept after a failed push (try {n})")
         return with_notes(self.deliver(job, ctx, ws), ws)
 
 
@@ -1398,7 +1511,9 @@ def builds(job: Job) -> bool:
 
 
 PENDING_DIR = "pending-push"
-PUSH_ATTEMPTS = 3       # attempts (each with its in-run retries) before a run whose push fails is given up
+PUSH, PULL_REQUEST, COMMENT, SUBMITTED = "push", "pull-request", "comment", "submitted"
+CONTENT_PUSH, CONTENT_COMMENT = "content-push", "content-comment"
+PUSH_ATTEMPTS = 3       # attempts (each with its in-run retries) before a submission that keeps failing is given up
 PUSH_RETRIES = 2        # retries of a push inside one attempt
 PUSH_BACKOFF = 60       # seconds between them
 HEAD_WAIT = 90          # seconds a pushed head may take to become the pull request's head
@@ -1416,8 +1531,14 @@ def pr_head(ctx: Context, repo: str, number: int) -> str:
         return ""
 
 
+def same_job_and_head(text: str, marker: dict) -> bool:
+    """Whether a comment's worker marker names the job and the head that `marker` names."""
+    found = prreviews.worker_marker(text)
+    return bool(marker.get("job")) and (found.get("job"), found.get("head")) == (marker["job"], marker.get("head"))
+
+
 def pending_path(ctx: Context) -> Path:
-    """The worker's record of runs kept after a failed push (beside attempts.json)."""
+    """The worker's record of runs whose submission stopped before it was done (beside attempts.json)."""
     return ctx.wdir / "pending-push.json"
 
 
@@ -1429,22 +1550,92 @@ def _pending_all(ctx: Context) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _write_pending_all(ctx: Context, data: dict) -> None:
+    """Written beside the record and renamed over it: a crash mid-write leaves the previous record whole."""
+    path = pending_path(ctx)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
 def read_pending(ctx: Context, job: Job) -> dict | None:
     entry = _pending_all(ctx).get(job.id)
     return entry if isinstance(entry, dict) else None
 
 
+def write_pending(ctx: Context, job: Job, entry: dict) -> None:
+    data = _pending_all(ctx)
+    data[job.id] = entry
+    _write_pending_all(ctx, data)
+
+
 def clear_pending(ctx: Context, job: Job) -> None:
     data = _pending_all(ctx)
     if data.pop(job.id, None) is not None:
-        pending_path(ctx).write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        _write_pending_all(ctx, data)
 
 
-def save_pending(ctx: Context, job: Job, ws: Workspace, error: str) -> int:
-    """Keep a run whose push failed: the job's deliverables in the board checkout (copied to
-    `jobs/<JOB>/pending-push/board/`), and the commit in the content worktree (a bundle beside them,
-    and a ref in the content checkout, so it survives the worktree), recorded in pending-push.json.
-    Returns how many attempts have failed to push it."""
+def kept_commit(entry: dict, key: str) -> dict:
+    """The record's `board` or `content` commit: `sha`, the `base` its push expects (for a review,
+    the head it read), `branch`, `repo` (the fork pushed to) and `pr`. A record from before these
+    were kept has the content commit's sha, base and branch at its top level."""
+    found = entry.get(key)
+    if isinstance(found, dict):
+        return found
+    if key == "content" and entry.get("sha"):
+        return {k: entry[k] for k in ("sha", "base", "branch") if k in entry}
+    return {}
+
+
+def owe(ctx: Context, job: Job, ws: Workspace, effects: tuple[str, ...], **commits: dict) -> None:
+    """Before a submission's first external effect: the effects it owes, in order (`outstanding`),
+    and the commits they carry (`board=`, `content=`, see kept_commit) recorded in pending-push.json
+    with the run kept beside them, so that an attempt that stops anywhere after this, a crash
+    included, leaves a record the next attempt finishes from. A record that already lists its
+    effects (a replay, or a lane whose finish recorded its content push first) keeps the list; the
+    commits are updated."""
+    entry = read_pending(ctx, job)
+    fresh = entry is None
+    entry = entry or {"issue": job.number}
+    entry.setdefault("outstanding", list(effects))
+    entry.setdefault("done", [])
+    for key, commit in commits.items():
+        entry[key] = {**kept_commit(entry, key), **commit}
+    if fresh or "content" in commits:
+        keep_run(ctx, job, ws, entry)
+    write_pending(ctx, job, entry)
+
+
+def owes(ctx: Context, job: Job, effect: str) -> bool:
+    """Whether the job's submission still owes `effect`: every effect, until a record says otherwise."""
+    entry = read_pending(ctx, job)
+    return entry is None or effect in entry.get("outstanding", [effect])
+
+
+def settle(ctx: Context, job: Job, effect: str, **commits: dict) -> None:
+    """Record `effect` as done (it happened in this attempt, or GitHub shows that an earlier one made
+    it), with what it produced (`board={"pr": ...}`)."""
+    entry = read_pending(ctx, job)
+    if entry is None or effect not in entry.get("outstanding", []):
+        return
+    entry["outstanding"].remove(effect)
+    entry.setdefault("done", []).append(effect)
+    for key, commit in commits.items():
+        entry[key] = {**kept_commit(entry, key), **commit}
+    write_pending(ctx, job, entry)
+
+
+def submission_started(ctx: Context, job: Job) -> bool:
+    """Whether the job's submission has already changed something on GitHub."""
+    return bool((read_pending(ctx, job) or {}).get("done"))
+
+
+def keep_run(ctx: Context, job: Job, ws: Workspace, entry: dict) -> None:
+    """The run a record finishes, kept where fresh checkouts cannot lose it: the job's deliverables
+    in the board checkout (copied to `jobs/<JOB>/pending-push/board/`), and the commit in the content
+    worktree (a bundle beside them, and a ref in the content checkout, so it survives the worktree).
+    A record that names no content commit gets the worktree's."""
     keep = ws.job_dir / PENDING_DIR
     shutil.rmtree(keep, ignore_errors=True)
     (keep / "board").mkdir(parents=True, exist_ok=True)
@@ -1452,47 +1643,68 @@ def save_pending(ctx: Context, job: Job, ws: Workspace, error: str) -> int:
         if (ws.board / rel).is_file():
             (keep / "board" / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ws.board / rel, keep / "board" / rel)
-    entry = {"tries": (read_pending(ctx, job) or {}).get("tries", 0) + 1, "error": error[:300],
-             "at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds")}
+    if ws.workdir == ws.board or not (ws.workdir / ".git").exists():
+        return
+    content = kept_commit(entry, "content")
+    if not content.get("sha"):
+        content = entry["content"] = {
+            "sha": gitops.git(ws.workdir, "rev-parse", "HEAD").strip(),
+            "base": ws.extra.get("push_base") or ws.extra.get("head") or ws.extra.get("base") or "",
+            "branch": ws.extra.get("branch", ""), **content}
+    sha, base = content["sha"], content.get("base", "")
+    ref = f"refs/tauceti-pending/{claims.ref_safe(job.id)}"
+    gitops.git(ws.workdir, "update-ref", ref, sha)
+    if base and base != sha:
+        gitops.git(ws.workdir, "bundle", "create", str(keep / "commit.bundle"), f"{base}..{ref}", check=False)
+
+
+def drop_kept_run(job: Job, ws: Workspace) -> None:
+    """After the submission: the kept run goes, its folder and the ref that kept its content commit."""
+    shutil.rmtree(ws.job_dir / PENDING_DIR, ignore_errors=True)
     if ws.workdir != ws.board and (ws.workdir / ".git").exists():
-        sha = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
-        base = ws.extra.get("push_base") or ws.extra.get("head") or ws.extra.get("base") or ""
-        entry.update(sha=sha, base=base, branch=ws.extra.get("branch", ""))
-        ref = f"refs/tauceti-pending/{claims.ref_safe(job.id)}"
-        gitops.git(ws.workdir, "update-ref", ref, sha)
-        if base and base != sha:
-            gitops.git(ws.workdir, "bundle", "create", str(keep / "commit.bundle"), f"{base}..{ref}", check=False)
-    data = _pending_all(ctx)
-    data[job.id] = entry
-    pending_path(ctx).parent.mkdir(parents=True, exist_ok=True)
-    pending_path(ctx).write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        gitops.git(ws.workdir, "update-ref", "-d", f"refs/tauceti-pending/{claims.ref_safe(job.id)}", check=False)
+
+
+def save_pending(ctx: Context, job: Job, ws: Workspace, error: str) -> int:
+    """Keep a run whose submission stopped before it was done (keep_run), recorded in
+    pending-push.json with what the submission still owes when it got as far as recording that.
+    Returns how many attempts have failed to finish it."""
+    entry = read_pending(ctx, job) or {"issue": job.number}
+    entry.update(tries=entry.get("tries", 0) + 1, error=error[:300],
+                 at=dt.datetime.now(dt.UTC).isoformat(timespec="seconds"))
+    keep_run(ctx, job, ws, entry)
+    write_pending(ctx, job, entry)
     return entry["tries"]
 
 
 def restore_pending(ctx: Context, job: Job, ws: Workspace, pending: dict) -> None:
     """Put a kept run back into fresh checkouts: the deliverables into the board checkout, the
-    commit onto the branch in the content worktree; the push expects the head the run was built on."""
+    commit onto the branch in the content worktree; the checks and the pushes see the head the run
+    was built on."""
     keep = ws.job_dir / PENDING_DIR / "board"
     for path in keep.rglob("*") if keep.is_dir() else []:
         if path.is_file():
             dest = ws.board / path.relative_to(keep)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, dest)
-    if pending.get("sha") and ws.workdir != ws.board:
+    content = kept_commit(pending, "content")
+    sha = content.get("sha", "")
+    if sha and ws.workdir != ws.board:
         ref = f"refs/tauceti-pending/{claims.ref_safe(job.id)}"
-        if not gitops.git(ws.workdir, "rev-parse", "-q", "--verify", f"{pending['sha']}^{{commit}}", check=False).strip():
+        if not gitops.git(ws.workdir, "rev-parse", "-q", "--verify", f"{sha}^{{commit}}", check=False).strip():
             bundle = ws.job_dir / PENDING_DIR / "commit.bundle"
             gitops.git(ws.workdir, "fetch", "-q", str(bundle), f"+{ref}:{ref}", check=False)
-        branch = pending.get("branch") or ws.extra.get("branch", "")
+        branch = content.get("branch") or ws.extra.get("branch", "")
         if branch:
-            gitops.git(ws.workdir, "checkout", "-q", "-B", branch, pending["sha"])
+            gitops.git(ws.workdir, "checkout", "-q", "-B", branch, sha)
         else:
-            gitops.git(ws.workdir, "checkout", "-q", "--detach", pending["sha"])
+            gitops.git(ws.workdir, "checkout", "-q", "--detach", sha)
         if "lake" in ws.extra:          # the kept commit may pin other packages than the main it is restored onto
             fetch = bool(ctx.cfg.gates.build or ctx.cfg.gates.elaborate) and not ctx.dry_run
             ws.extra["lake"] = prepare_lake(ws.workdir, ctx.state, content=ws.content, fetch=fetch, free=free_gb)
-    if pending.get("base"):
-        ws.extra["push_base"] = pending["base"]
+    base = content.get("base") or kept_commit(pending, "board").get("base")
+    if base:
+        ws.extra["push_base"] = ws.extra["head"] = base
 
 
 def with_notes(result: LaneResult, ws: Workspace) -> LaneResult:

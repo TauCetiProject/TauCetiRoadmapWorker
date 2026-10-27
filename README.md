@@ -93,7 +93,7 @@ override it; it must not lie inside a git checkout):
 | `workers/<id>/jobs/<JOB>/unsubmitted/` | what a round left behind without submitting it |
 | `workers/<id>/rounds.log`, `attempts.json` | the round log `tail` follows; failures per job |
 | `workers/<id>/worker.lock` | held by the worker's running process, so the id runs one process at a time |
-| `workers/<id>/pending-push.json`, `jobs/<JOB>/pending-push/` | a run kept after its push failed or its lease was lost, pushed by the next attempt without the agent |
+| `workers/<id>/pending-push.json`, `jobs/<JOB>/pending-push/` | a run whose submission stopped part-way (a failed push or comment, a lost lease, a crash) and the steps it still owes, finished by the next attempt without the agent |
 | `sources/<sha256>.pdf`, `sources/<sha256>.txt` | the sources cache: each text under its hash, with a line-numbered extraction beside it |
 | `logs/` | where the service example above writes the worker's output |
 

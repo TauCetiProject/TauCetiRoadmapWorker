@@ -18,9 +18,10 @@ from pathlib import Path
 
 from .. import board, gates, gitops, prreviews, replies
 from ..board import Job
-from .base import (Context, Lane, LaneError, Workspace, board_reports, checkout_board_pr, count, dropped_names,
-                   ensure_in_order_logged, load_order, open_roadmap_prs, order_path, repair_order_file, scan_problems,
-                   sibling_checkouts, sibling_readmes)
+from .base import (CONTENT_COMMENT, CONTENT_PUSH, PULL_REQUEST, PUSH, SUBMITTED, Context, Lane, LaneError, Workspace,
+                   board_reports, checkout_board_pr, count, dropped_names, ensure_in_order_logged, load_order,
+                   open_roadmap_prs, order_path, owe, owes, repair_order_file, scan_problems, settle, sibling_checkouts,
+                   sibling_readmes)
 from .package import PACKAGE_FILES, elaboration_problems, package_gate, package_scan
 from .pr import fresh_worktree, pr_branch_worktree, remove_worktree
 
@@ -362,13 +363,20 @@ class RedTeamFixLane(Lane):
             raise LaneError("the head did not move; nothing to push")
         if ctx.dry_run:
             return f"[dry-run] would push {new[:7]} to {ws.extra['branch']}"
-        fork = gitops.ensure_fork(ctx.gh, ctx.cfg.repositories.content, ctx.operator)
-        self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"],
-                                      expected=ws.extra.get("push_base") or ws.extra["head"]))
-        self.await_pr_head(ctx, ctx.cfg.repositories.content, ws.extra["pr"], new, then="no repair comment posted")
-        rows = replies.dispositions(ws.report.read_text(encoding="utf-8"))
-        applied = sum(1 for _, how in rows if how.startswith("applied"))
-        ctx.gh.write("POST", f"repos/{ctx.cfg.repositories.content}/issues/{ws.extra['pr']}/comments",
-                     {"body": f"Red-team repairs at `{new[:7]}`: {applied} of {len(rows)} internal findings applied, "
-                              f"the rest disputed with evidence. {replies.validation_sentence(new[:7], ws.extra['gate'])}"})
-        return f"red-team round {job.round} repaired on #{ws.extra['pr']} at {new[:7]}"
+        repo, pr = ctx.cfg.repositories.content, ws.extra["pr"]
+        if owes(ctx, job, CONTENT_PUSH):
+            fork = gitops.ensure_fork(ctx.gh, repo, ctx.operator)
+            base = ws.extra.get("push_base") or ws.extra["head"]
+            owe(ctx, job, ws, (CONTENT_PUSH, CONTENT_COMMENT, PUSH, PULL_REQUEST, SUBMITTED),
+                content={"sha": new, "base": base, "branch": ws.extra["branch"], "repo": fork, "pr": pr})
+            self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"], expected=base))
+            settle(ctx, job, CONTENT_PUSH)
+        self.await_pr_head(ctx, repo, pr, new, then="no repair comment posted")
+        if owes(ctx, job, CONTENT_COMMENT):
+            rows = replies.dispositions(ws.report.read_text(encoding="utf-8"))
+            applied = sum(1 for _, how in rows if how.startswith("applied"))
+            body = (f"Red-team repairs at `{new[:7]}`: {applied} of {len(rows)} internal findings applied, the rest "
+                    f"disputed with evidence. {replies.validation_sentence(new[:7], ws.extra['gate'])}")
+            self.comment_once(ctx, repo, pr, body, lambda text: text.strip() == body.strip())
+            settle(ctx, job, CONTENT_COMMENT)
+        return f"red-team round {job.round} repaired on #{pr} at {new[:7]}"

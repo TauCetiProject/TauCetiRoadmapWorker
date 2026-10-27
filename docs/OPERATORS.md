@@ -274,6 +274,21 @@ deliverables and the commit, runs the checks again and pushes, without running t
 three such attempts the run is given up). Every checkout the worker creates carries the operator's
 git identity in its own configuration, so an agent's own `git commit` works.
 
+The record in `pending-push.json` is written before a submission's first push: the commit, its
+branch and pull request, the head the push expects, and the steps still `outstanding` (a fix on a
+board pull request: `push`, `comment`, `submitted`; a submission pull request: `push`,
+`pull-request`, `submitted`; a red-team fix or a gate reply on a roadmap pull request owes
+`content-push` and `content-comment` first), each moved to `done` as it happens. A submission that
+stops after something reached GitHub (a comment refused after the push, a lost answer, a crash) is
+kept even when the error would not pass by itself, and the next attempt does only what is still
+owed: a pushed fix gets its comment and `state:submitted`, with no agent run and no new commit.
+Before finishing a kept run the worker compares it with GitHub: a push the pull request already
+shows counts as done, and a comment is posted only if no comment of the operator's carries the
+job's marker and head (on a roadmap pull request: the same text). A run that is no longer the
+current one is dropped instead (`skipped: dropped the run kept after its submission stopped: …`;
+the next round runs the job afresh): its pull request is closed, its branch moved past the pushed
+commit or away from the head the run was built on, or the job was filed again.
+
 ## The job graph
 
 ```text
@@ -845,7 +860,7 @@ machine are here:
 | `open-roadmaps/mirror.git`, `open-roadmaps/index.json` | the bare mirror of the roadmap repository with the head of every open roadmap pull request (`refs/open/<n>`), and their index; shared by the host's workers, rebuilt at most every half hour |
 | `open-roadmaps/tokens-<pin>.txt` | the identifiers of the pinned Mathlib and Tau Ceti sources, for `roadmaps resolve` |
 | `workers/<id>/attempts.json` | failures per job on this worker |
-| `workers/<id>/pending-push.json`, `workers/<id>/jobs/<JOB>/pending-push/` | runs kept after their push failed or their lease was lost (the job's deliverables, and the commit as a bundle and a `refs/tauceti-pending/` ref): the next attempt on this worker pushes them without running the agent |
+| `workers/<id>/pending-push.json`, `workers/<id>/jobs/<JOB>/pending-push/` | submissions that stopped part-way (a failed push or comment, a lost lease, a crash): the record (commits, branch, pull request, the steps `outstanding` and `done`) and the run (the job's deliverables, and the content commit as a bundle and a `refs/tauceti-pending/` ref): the next attempt on this worker finishes them without running the agent |
 | `workers/<id>/rounds.log` | every line the worker printed, timestamped (what `tail` follows) |
 | `workers/<id>/worker.lock` | locked by the worker's running process (its pid and host inside): a second process with the same id exits |
 | `workers/<id>/jobs/<JOB>/unsubmitted/` | what the job's last round that left anything left in the board checkout beyond the board's main, set aside before the next round reset it |

@@ -236,9 +236,10 @@ def test_a_worker_review_and_a_worker_fix_on_the_board_pull_request(tmp_path, mo
     monkeypatch.setattr(gitops, "push_branch", lambda wt, fork, branch, expected=None: pushed.append(("push", fork, branch)))
     monkeypatch.setattr(gitops, "changed_files", lambda wt, base="HEAD": ["packages/Foo/README.md"])
     gh = FakeGH()
-    gh.api = lambda path, paginate=False: {"state": "open", "user": {"login": "alice"},
-                                           "head": {"ref": "w1/PKG-Foo", "sha": SHA,      # the pushed head, current
-                                                    "repo": {"full_name": "alice/TauCetiRoadmapJobs"}}}
+    gh.api = lambda path, paginate=False: [] if "/comments" in path else {
+        "state": "open", "user": {"login": "alice"},
+        "head": {"ref": "w1/PKG-Foo", "sha": SHA,      # the pushed head, current
+                 "repo": {"full_name": "alice/TauCetiRoadmapJobs"}}}
     gh.raw_file = lambda repo, path, ref="": "Review (chatgpt) of ccccccc\n\nVerdict: needs_changes\n\n1. **F01** (P1) x\n"
     from tauceti_roadmap_worker.lanes import Context
     ctx = Context(cfg=example_config(), gh=gh, board=FakeBoard(), claims=FakeClaims(), worker_id="alice-1",
