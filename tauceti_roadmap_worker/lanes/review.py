@@ -129,10 +129,7 @@ class ReviewLane(Lane):
 
     def submit_on_board_pr(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
         """The review as a comment on the pull request, in the shape the board reads."""
-        body = self.comment_body(job, ctx, ws)
-        if not ctx.dry_run:
-            self.after_board_submission(job, ctx)
-        return self.comment_on_board_pr(job, ctx, ws, body)
+        return self.comment_submission(job, ctx, ws, self.comment_body(job, ctx, ws))
 
     def files(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         pkg = ws.package(ctx.cfg, job.name)

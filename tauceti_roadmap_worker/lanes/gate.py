@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from .. import gates, gitops, prompts, replies
 from ..board import Job
-from .base import (Context, Lane, LaneError, Workspace, dropped_names, ensure_in_order_logged, load_order, open_roadmap_prs, order_path, pr_answerers,
-                   scan_problems, sibling_checkouts, sibling_readmes)
+from .base import (CONTENT_COMMENT, CONTENT_PUSH, PULL_REQUEST, PUSH, SUBMITTED, Context, Lane, LaneError, Workspace,
+                   dropped_names, ensure_in_order_logged, load_order, open_roadmap_prs, order_path, owe, owes,
+                   pr_answerers, scan_problems, settle, sibling_checkouts, sibling_readmes)
 from .fix import worktree_elaboration_problems
 from .pr import flip_labels, inline_comments, pr_branch_worktree, timeline
 
@@ -94,23 +95,29 @@ class GateLane(Lane):
         return problems + scan_problems(result) + worktree_elaboration_problems(ctx, ws, job.name)
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
-        cfg, pr = ctx.cfg, ws.extra["pr"]
+        cfg, pr, repo = ctx.cfg, ws.extra["pr"], ctx.cfg.repositories.content
         new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
         moved = new != ws.extra["head"]
         if ctx.dry_run:
             return f"[dry-run] would push {new[:7]} and reply on #{pr}"
-        if moved:
+        base = ws.extra.get("push_base") or ws.extra["head"]
+        owe(ctx, job, ws, ((CONTENT_PUSH,) if moved else ()) + (CONTENT_COMMENT, PUSH, PULL_REQUEST, SUBMITTED),
+            content={"sha": new, "base": base, "branch": ws.extra["branch"], "pr": pr})
+        if moved and owes(ctx, job, CONTENT_PUSH):
             # The branch lives in the pull request's head repository: the operator's fork for a port,
             # the content repository itself for an adopted author's branch (2026-10-27).
-            fork = ws.extra.get("head_repo") or gitops.ensure_fork(ctx.gh, cfg.repositories.content, ctx.operator)
-            self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"],
-                                          expected=ws.extra.get("push_base") or ws.extra["head"]))
-            self.await_pr_head(ctx, cfg.repositories.content, pr, new, then="not replying")
+            fork = ws.extra.get("head_repo") or gitops.ensure_fork(ctx.gh, repo, ctx.operator)
+            self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"], expected=base))
+            settle(ctx, job, CONTENT_PUSH, content={"repo": fork})
+        if moved:
+            self.await_pr_head(ctx, repo, pr, new, then="not replying")
         intro = "reply to the review" if moved else "reply to the review, no change needed"
         text = replies.build_reply(new[:7], ws.report.read_text(encoding="utf-8"),
                                    replies.validation_sentence(new[:7], ws.extra["gate"]), intro, cfg.replies.review_markers)
         if not replies.reply_is_safe(text, cfg.replies.review_markers):
             raise LaneError("the reply would read as a review; not posting")
-        ctx.gh.write("POST", f"repos/{cfg.repositories.content}/issues/{pr}/comments", {"body": text})
+        if owes(ctx, job, CONTENT_COMMENT):
+            self.comment_once(ctx, repo, pr, text, lambda body: body.strip() == text.strip())
+            settle(ctx, job, CONTENT_COMMENT)
         label = flip_labels(ctx, pr, timeline(ctx, pr), new, set(ws.extra.get("answerers") or [ws.extra["owner"]]))
         return f"answered the review on #{pr} at {new[:7]} ({label})"

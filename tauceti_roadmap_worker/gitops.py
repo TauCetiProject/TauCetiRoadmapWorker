@@ -105,12 +105,15 @@ def remote_head(worktree: Path, fork: str, branch: str) -> str:
 def push(worktree: Path, fork: str, branch: str, dry_run: bool = False, expected: str | None = None) -> None:
     """Push HEAD to the fork's branch with an explicit lease. With `expected` (the head the work was
     built on), the branch must still be there (else BranchMoved, and nothing is pushed); without,
-    whatever the branch holds now may be replaced, but nothing that changes in between. A refused or
+    whatever the branch holds now may be replaced, but nothing that changes in between. A branch
+    already at HEAD is left as it is: an earlier push whose answer was lost made it. A refused or
     failed push raises PushError."""
     if dry_run:
         print(f"[dry-run] push {branch} to {fork}")
         return
     found = remote_head(worktree, fork, branch)
+    if found and found == git(worktree, "rev-parse", "HEAD").strip():
+        return
     if expected is not None and found != expected:
         raise BranchMoved(branch, expected, found)
     lease = expected if expected is not None else found
