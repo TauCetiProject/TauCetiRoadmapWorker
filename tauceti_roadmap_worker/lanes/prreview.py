@@ -190,8 +190,9 @@ class PRReviewLane(Lane):
         prs = open_roadmap_prs(ctx)
         folder = wt / cfg.roadmap.active_dir / job.name
         owner = str(job.inputs.get("owner") or (data.get("user") or {}).get("login", ""))
-        ws.extra.update(pr=number, head=recorded, owner=owner, branch=branch, pr_branch=(data.get("head") or {}).get("ref", ""),
-                        prs=prs, siblings=sibling_checkouts(ctx, prs, skip=job.name), folder=folder,
+        ws.extra.update(pr=number, head=recorded, owner=owner, branch=branch,
+                        pr_branch=(data.get("head") or {}).get("ref", ""), prs=prs,
+                        siblings=sibling_checkouts(ctx, prs, skip=job.name), folder=folder,
                         readme=folder / "README.md", lean=folder / "Suggested.lean")
         (ws.scratch / PULL_REQUEST_TEXT).write_text(pull_request_document(number, data, owner), encoding="utf-8")
         self.order_for_review(ctx, ws, job.name)
@@ -306,8 +307,10 @@ class PRReviewLane(Lane):
                 previous = f"`{path}`"
         return {"PR": str(ws.extra["pr"]), "HEAD": head, "HEAD7": head[:7], "OWNER": ws.extra.get("owner") or "?",
                 "FILES": files, "FOLDER": folder,
-                "SAMPLE": "; ".join(f"“{s}”" for s in sample) or f"a random sample of {SAMPLE_SIZE} targets (none found by heading)",
-                "BUILD": build, "GATE": ctx.cli("gate", str(ws.workdir), job.name, "--base", f"origin/{cfg.project.branch}"),
+                "SAMPLE": "; ".join(f"“{s}”" for s in sample)
+                          or f"a random sample of {SAMPLE_SIZE} targets (none found by heading)",
+                "BUILD": build,
+                "GATE": ctx.cli("gate", str(ws.workdir), job.name, "--base", f"origin/{cfg.project.branch}"),
                 "GATE_REPORT": str(ws.scratch / GATE_REPORT), "PR_TEXT": str(ws.scratch / PULL_REQUEST_TEXT),
                 "OUTSIDE_CHECK": f"git -C {ws.workdir} diff --stat origin/{cfg.project.branch}...HEAD -- . ':!{folder}'",
                 "PREVIOUS": previous, "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)),
