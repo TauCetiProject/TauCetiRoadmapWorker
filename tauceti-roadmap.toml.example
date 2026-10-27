@@ -182,6 +182,15 @@ claude_model = "fable"
 # references waits, it looks every minute whether the board answered it and polls at once when it did.
 idle_seconds = 600
 
+[claims]
+# Seconds a job lease lasts after its last renewal. A worker that dies holds its job this long, and
+# `board sync` releases a claim with no lease once its "Claimed for" comment is this old. A running
+# worker whose renewals all fail for this long has lost the lease and submits nothing more.
+job_ttl_seconds = 3600
+# Seconds between a running worker's renewals of its lease (at least 30, below job_ttl_seconds);
+# each renewal is a push to the claims namespace.
+renew_seconds = 1200
+
 [review]
 # Who counts as independent of an author. "operator": another operator login (projects with several
 # operators keep this). "agent": also the same operator, when the reviewing agent and model differ

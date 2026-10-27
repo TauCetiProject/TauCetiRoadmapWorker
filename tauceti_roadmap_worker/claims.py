@@ -13,12 +13,16 @@ Keys used by this project (all under `roadmap/<project>/`):
 
 Git ref names may not contain `~`, so `REV-PKG-Name~2` is stored as `REV-PKG-Name_r2`.
 
-Leases only avoid duplicate work; they are fail-open. Author/reviewer separation is enforced
-twice: here, before a worker spends anything on a review, and again by the intake, which compares
-the submission's GitHub author with the logins the board recorded for the reviewed jobs.
+Taking a lease is fail-open: a worker whose acquisition fails runs the job unclaimed. Holding one is
+not: a `Heartbeat` renews the lease while the run lasts, and once it is lost (taken over, or not
+renewed before it expired) the run makes no further GitHub write. Author/reviewer separation is
+enforced twice: here, before a worker spends anything on a review, and again by the intake, which
+compares the submission's GitHub author with the logins the board recorded for the reviewed jobs.
 
 Namespace choice (as TauCetiWorker): `$CLAIM_REPO` if set; else `repositories.claims` when this
-account can push there; else the operator's own fork of the packages repository.
+account can push there; else the operator's own fork of the packages repository. A lease excludes
+only the workers that share its namespace: leases in two operators' forks exclude nothing between
+them, and the board's intake alone decides which of their submissions is taken in.
 """
 
 from __future__ import annotations
@@ -27,13 +31,14 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 NS = "refs/tauceti-claims"
 SCHEMA = "tauceti-claim/v1"
-JOB_TTL = 1500
+JOB_TTL = 3600         # the default `[claims] job_ttl_seconds`
 AUTHOR_TTL = 10 * 365 * 24 * 3600
 GIT_ID = {"GIT_AUTHOR_NAME": "tauceti-claim", "GIT_AUTHOR_EMAIL": "claim@tauceti.invalid",
           "GIT_COMMITTER_NAME": "tauceti-claim", "GIT_COMMITTER_EMAIL": "claim@tauceti.invalid"}
@@ -153,9 +158,15 @@ class Claims:
     def _ref(self, key: str) -> str:
         return f"{NS}/{key}"
 
-    def remote_oid(self, ref: str) -> str:
+    def _remote(self, ref: str) -> str | None:
+        """The oid the namespace holds at `ref` ('' when it has none), or None when it cannot be read."""
         out = self._git("ls-remote", "origin", ref)
-        return out.stdout.split()[0] if out.returncode == 0 and out.stdout.strip() else ""
+        if out.returncode != 0:
+            return None
+        return out.stdout.split()[0] if out.stdout.strip() else ""
+
+    def remote_oid(self, ref: str) -> str:
+        return self._remote(ref) or ""
 
     def lease_at(self, oid: str, ref: str) -> dict | None:
         if self._git("cat-file", "-e", oid).returncode != 0:
@@ -198,14 +209,25 @@ class Claims:
             return ERROR
 
     def renew(self, key: str, ttl: int = JOB_TTL) -> int:
+        """0 renewed (its acquisition time kept) · 1 lost (the lease is gone, or another owner's) ·
+        2 error (the namespace could not be read or written: the lease may still be ours until it
+        expires)."""
         try:
             self.ensure_repo()
             ref, now = self._ref(key), int(time.time())
-            cur = self.remote_oid(ref)
-            lease = self.lease_at(cur, ref) if cur else None
-            if not lease or lease.get("owner") != self.owner:
+            cur = self._remote(ref)
+            if cur is None:
+                return ERROR
+            if not cur:
                 return HELD
-            return self._push_cas(ref, cur, self._build(lease_payload(key, self.owner, self.operator, self.project, ttl, now)))
+            lease = self.lease_at(cur, ref)
+            if lease is None:
+                return ERROR
+            if lease.get("owner") != self.owner:
+                return HELD
+            payload = lease_payload(key, self.owner, self.operator, self.project, ttl, now,
+                                    extra={"acquired_at": lease.get("acquired_at", now)})
+            return self._push_cas(ref, cur, self._build(payload))
         except (OSError, subprocess.SubprocessError):
             return ERROR
 
@@ -279,6 +301,77 @@ class Claims:
             if lease and lease.get("operator"):
                 out[jid] = {"operator": lease["operator"], "agent": lease.get("agent", ""), "model": lease.get("model", "")}
         return out
+
+
+class LeaseLost(Exception):
+    """A write refused because the lease that guards it is no longer this process's (`Heartbeat`)."""
+
+
+class Heartbeat:
+    """Holds a lease for the length of a `with` block: a daemon thread renews it every `every`
+    seconds and records its loss, which is final: a renewal that finds the lease gone or another
+    owner's, or an expiry that passes with no renewal succeeding (the namespace unreachable: anyone
+    may take an expired lease). From then on `check()` raises LeaseLost, and so does every write of
+    `gh` inside the block (`GH.fence`). A run that started unclaimed (`held=False`: its acquisition
+    failed, and taking a lease is fail-open) tries to take the lease at every beat instead, and has
+    lost it once another owner holds it. With no claims (a dry run) it guards nothing."""
+
+    def __init__(self, claims: Claims | None, key: str, ttl: int, every: float, *, held: bool = True, gh=None,
+                 log=None, clock=time.time):
+        self.claims, self.key, self.ttl, self.every = claims, key, ttl, every
+        self.gh, self.log, self.clock = gh, log, clock
+        self.held = held and claims is not None
+        self.expires = clock() + ttl if self.held else 0.0
+        self.lost = ""
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self._fence = None
+
+    def beat(self) -> None:
+        """One renewal of the lease (an attempt to take it, while unclaimed)."""
+        if self.lost or self.claims is None:
+            return
+        start = self.clock()
+        status = self.claims.renew(self.key, self.ttl) if self.held else self.claims.acquire(self.key, self.ttl)
+        if status == ACQUIRED:
+            self.held, self.expires = True, start + self.ttl
+        elif status == HELD:
+            self._lose("it is gone or another owner holds it" if self.held else "another owner holds it")
+        else:
+            self._expire()
+
+    def check(self) -> None:
+        """Raise LeaseLost once the lease is lost; an expiry passes at once, not at the next beat."""
+        self._expire()
+        if self.lost:
+            raise LeaseLost(f"the lease {self.key} was lost: {self.lost}")
+
+    def _expire(self) -> None:
+        if not self.lost and self.held and self.clock() >= self.expires:
+            self._lose("no renewal succeeded before it expired")
+
+    def _lose(self, why: str) -> None:
+        self.lost = why
+        if self.log:
+            self.log(f"lease {self.key} lost: {why}; nothing more is written for it")
+
+    def _run(self) -> None:
+        while not self.lost and not self.stop.wait(self.every):
+            self.beat()
+
+    def __enter__(self):
+        if self.gh is not None:
+            self._fence, self.gh.fence = getattr(self.gh, "fence", None), self.check
+        if self.claims is not None:
+            self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        if self.thread.is_alive():
+            self.thread.join()      # a renewal still under way could beat the release that follows to the ref
+        if self.gh is not None:
+            self.gh.fence = self._fence
 
 
 def namespace_for(cfg, gh, operator: str) -> str:

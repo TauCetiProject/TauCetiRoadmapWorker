@@ -47,8 +47,9 @@ tauceti-roadmap --conf $CONF work --worker-id alice-1 --dry-run                 
 Each round takes the most useful job this worker may do, leases it, runs the lane's agent in fresh
 checkouts, checks the result, and submits it to the board as a pull request; a round that stops
 early puts the job back. `--worker-id` names the worker (its folder, branch prefix and lease owner);
-run several with distinct ids. `--only` limits it to some job kinds; `--agent` pins the family and
-leaves the model to the lane. Ctrl-C (or a stop signal) ends the round cleanly.
+run several with distinct ids (a second process with an id already running on the machine exits at
+once). `--only` limits it to some job kinds; `--agent` pins the family and leaves the model to the
+lane. Ctrl-C (or a stop signal) ends the round cleanly.
 
 To keep a worker running in the background, a user service does well:
 
@@ -91,7 +92,8 @@ override it; it must not lie inside a git checkout):
 | `open-roadmaps/` | a mirror of the roadmap repository with the head of every open roadmap pull request, and its index |
 | `workers/<id>/jobs/<JOB>/unsubmitted/` | what a round left behind without submitting it |
 | `workers/<id>/rounds.log`, `attempts.json` | the round log `tail` follows; failures per job |
-| `workers/<id>/pending-push.json`, `jobs/<JOB>/pending-push/` | a run kept after its push failed, pushed by the next attempt without the agent |
+| `workers/<id>/worker.lock` | held by the worker's running process, so the id runs one process at a time |
+| `workers/<id>/pending-push.json`, `jobs/<JOB>/pending-push/` | a run kept after its push failed or its lease was lost, pushed by the next attempt without the agent |
 | `sources/<sha256>.pdf`, `sources/<sha256>.txt` | the sources cache: each text under its hash, with a line-numbered extraction beside it |
 | `logs/` | where the service example above writes the worker's output |
 

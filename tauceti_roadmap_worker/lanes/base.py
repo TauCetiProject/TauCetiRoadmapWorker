@@ -28,7 +28,7 @@ from .. import (agents, board, claims, depgraph, fetcher, gates, gitops, openroa
 from ..board import Board, Job
 from ..config import Config
 from ..depgraph import read_order
-from ..gh import GH, GHError, transient
+from ..gh import GH, GHError, check_fence, transient
 from ..paths import sanitize_worker_id
 from .lake import (MIN_FREE_GB_BUILD, MIN_FREE_GB_WARN, LakeSetup, free_gb, prepare_lake,  # noqa: F401 (re-exports)
                    wire_packages)
@@ -92,7 +92,7 @@ class Workspace:
 @dataclass
 class LaneResult:
     job: str
-    status: str            # submitted | failed | limited | needs-references | skipped | dry-run
+    status: str            # submitted | failed | limited | needs-references | skipped | dry-run | lease-lost
     detail: str = ""
     url: str = ""
     retry_at: dt.datetime | None = None
@@ -1286,10 +1286,17 @@ class Lane:
     def deliver(self, job: Job, ctx: Context, ws: Workspace) -> LaneResult:
         """The lane's last steps and the submission, once the checks passed. A branch that moved
         while the job ran blocks the job for a human; a push that keeps failing keeps the run
-        (`pending-push/`), and the next attempt on this worker pushes it without running the agent."""
+        (`pending-push/`), and the next attempt on this worker pushes it without running the agent.
+        A round whose lease is lost (`claims.Heartbeat`: checked before the first push, and by every
+        GitHub write after it) submits nothing more, and its run is kept the same way."""
         try:
+            check_fence(ctx.gh)
             note = self.finish(job, ctx, ws) or f"{board.TITLE[job.kind].lower()} of {job.name}"
             url = self.submit(job, ctx, ws, note)
+        except claims.LeaseLost as exc:
+            save_pending(ctx, job, ws, str(exc))
+            return LaneResult(job.id, "lease-lost", f"{exc}; nothing more is submitted, and the run is kept in "
+                              f"{ws.job_dir / PENDING_DIR} for the next attempt on this worker")
         except gitops.BranchMoved as exc:
             return LaneResult(job.id, "blocked", str(exc))
         except (gitops.PushError, GHError) as exc:

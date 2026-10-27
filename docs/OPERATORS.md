@@ -114,7 +114,10 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   age, when every try fails (a worker fails only when there is no copy at all). The `gh` login at
   startup is retried the same way.
 * `--worker-id` names the worker: its directory, its branch prefix and its lease owner
-  (`<login>/<worker-id>`). Use distinct ids for concurrent workers.
+  (`<login>/<worker-id>`). Use distinct ids for concurrent workers. A process holds
+  `workers/<id>/worker.lock` for its lifetime, so a second one started with the same id on the same
+  machine (a `--dry-run` too, which resets the same checkouts) exits at once with `worker <id> is
+  already running here (pid N on <host>; ...)`.
 * `--only` pins a worker to some kinds (`target, design, package, review, fix, port, redteam, gate`);
   without it the worker takes whatever is most useful: first the jobs whose roadmap descends from a
   target a human filed (origin `target:<issue>`), then imported ones (`explorer:<job>`; an unknown
@@ -223,8 +226,13 @@ prerequisite and a `gaps` entry naming the supplier and its section; the intake 
 on the supplier's open job on the board (or on the design's own issue when it has none).
 
 A round that stops before it submits or parks its job (the lane fails, git or GitHub raises, the
-agent hits a usage limit, or you press Ctrl-C) releases the lease and puts the job back to
-`state:available` with a "Released by worker" note. A usage limit is any agent run whose stdout or
+agent hits a usage limit, its lease is lost, or you press Ctrl-C) releases the lease and puts the job
+back to `state:available` with a "Released by worker" note (a job that needs a human goes to
+`state:blocked` instead). Either move is made only while the job is still as the round left it: the
+issue's newest "Claimed for" comment names this worker, no other owner holds a live lease on the
+job, and its labels, read again just before the write, still say `state:claimed`. A job another
+worker took over, or that was submitted or finished meanwhile, is left as it is (logged `<JOB>: left
+as it is, not set to available: <why>`). A usage limit is any agent run whose stdout or
 stderr carries one of the CLIs' limit messages ("out of usage credits", "usage limit", "manage
 usage credits", "hit/reached your … limit", "model is at capacity"; on a run that exited non-zero
 also "rate limit", "Too many requests"/429), wherever the text appears and whatever the exit code:
@@ -534,20 +542,34 @@ restarts, since the configuration is loaded once per start.
 Leases use the TauCetiTools format (TauCetiWorker `scripts/claim.sh`): refs
 `refs/tauceti-claims/roadmap/<project>/job/<JOB>` updated with an atomic compare-and-swap push. The
 namespace is `$CLAIM_REPO` if set, else `[repositories] claims` when your account can push there,
-else your own fork (then your workers de-duplicate only among themselves). When `[repositories]
-claims` names a namespace your account cannot push to, `work` refuses to start: leases in your fork
-are invisible to every other operator's workers and to `board sync`, so you would run the jobs they
-run. Ask the maintainer for push access, or pass `--private-claims` (or set `CLAIM_REPO`) to work
-with private leases on purpose. Leases are cooperative and fail-open: a lease that cannot be
-registered is logged and the round proceeds. A worker id
-runs one process at a time: at its start a worker releases any lease its previous process left
-behind (killed before it could release, or crashed), and any claimed job whose last "Claimed for"
-comment names this worker id and operator even with no lease (a process that died before it wrote
-one), and puts those jobs back to `state:available`. `board sync` puts back every claimed job whose
-lease has expired (the worker stopped renewing it), and every claimed job with no lease at all whose
-"Claimed for" comment is older than the job lease's 25 minutes ("Released: claimed by <worker> at
-<time> with no live lease"; a claim made by a `reviewing` comment holds for its four hours), without
-waiting for `board stale`; a claims namespace that cannot be read at that moment releases nothing.
+else your own fork. A lease excludes only the workers that share its namespace: leases in your fork
+keep your own workers apart and nobody else's, so two operators on fork namespaces can both run one
+job, and the board's intake alone decides which submission is taken in. For that reason, when
+`[repositories] claims` names a namespace your account cannot push to, `work` refuses to start: ask
+the maintainer for push access, or pass `--private-claims` (or set `CLAIM_REPO`) to work with
+private leases on purpose.
+
+Taking a lease is fail-open: a lease that cannot be registered is logged and the round proceeds
+unclaimed, trying to take the lease at every renewal; once another owner holds it, the round has
+lost it. Holding a lease is not: a job lease lasts an hour from its last renewal (`[claims]
+job_ttl_seconds`, default 3600), the worker renews it every 20 minutes while the round runs
+(`[claims] renew_seconds`, default 1200), and the lease is lost when a renewal finds it gone or
+another owner's, or when every renewal fails until it expires (an unreachable namespace: anyone may
+take an expired lease). The round's work goes on, but it writes nothing more to GitHub: the first
+write it attempts (or its submission, which checks before its first push) ends the round as
+`lease-lost: the lease ... was lost: <why>`, a checked run is kept in `pending-push/` as a run whose
+push failed is (the next attempt on this worker pushes it without the agent), and the job is
+released only while it is still this worker's claim.
+
+A worker id runs one process at a time (`workers/<id>/worker.lock`): at its start a worker releases
+any lease its previous process left behind (killed before it could release, or crashed), and any
+claimed job whose last "Claimed for" comment names this worker id and operator even with no lease (a
+process that died before it wrote one), and puts those jobs back to `state:available` while their
+issues still say `state:claimed`. `board sync` puts back every claimed job whose lease has expired
+(the worker stopped renewing it), and every claimed job with no lease at all whose "Claimed for"
+comment is older than a job lease lasts ("Released: claimed by <worker> at <time> with no live
+lease"; a claim made by a `reviewing` comment holds for its four hours), without waiting for `board
+stale`; a claims namespace that cannot be read at that moment releases nothing.
 
 When a design, package or fix is submitted, the worker also records an author lease
 (`roadmap/<project>/author/<JOB>`, with the operator login, agent and model inside). A review job
@@ -621,11 +643,17 @@ git fetch of the board, no REST request), all in one commit, logged `merge order
 merge order from #a to #b, right after its last supplier <S>` (or `... not moved ...` with the
 reason). A clean order is only read.
 
-A `board intake` or `board sync` that writes first takes the board lock, a 15-minute lease ref in
-the board repository (the workers' lease mechanism; the hosted workflow's token and a maintainer
-can both push it), and releases it at the end, so the hosted run and a maintainer's shell never
-interleave. A run that finds it held prints `intake already running (intake:run-<id or host>, since
-<time>); nothing done` and exits 0: wait, or let the schedule pick things up. Every job creation
+Every `board` command that writes (`intake`, `sync`, `references`, `stale --release`, `errata seed`
+and `import-explorer`, each with `--yes`) first takes the board lock, a 15-minute lease ref in the
+board repository (the workers' lease mechanism; the hosted workflow's token and a maintainer can
+both push it), renews it every three minutes while it runs, and releases it at the end, so the
+hosted run and a maintainer's shell never interleave, however long a run takes. A run that finds it
+held prints `intake already running (intake:run-<id or host>, since <time>); nothing done` and exits
+0: wait, or let the schedule pick things up. A run that cannot take it (no push access to the board
+repository, no network) prints `board lock not taken (the lock ref could not be written); nothing
+done` and exits 1. A run whose lock is lost (a renewal finds another owner, or every renewal fails
+until the 15 minutes run out) stops at its next write with `stopped: the lease ... was lost: <why>;
+the next run carries on` and exits 1. Every job creation
 re-reads the live board first and skips a job whose issue exists (logged `already on the board as
 #n`), and each intake closes an open job issue that duplicates another open one (`Duplicate of #n`,
 labelled `duplicate`); a `state:done` twin is never closed. The twin kept is the one that got
@@ -798,8 +826,9 @@ machine are here:
 | `open-roadmaps/mirror.git`, `open-roadmaps/index.json` | the bare mirror of the roadmap repository with the head of every open roadmap pull request (`refs/open/<n>`), and their index; shared by the host's workers, rebuilt at most every half hour |
 | `open-roadmaps/tokens-<pin>.txt` | the identifiers of the pinned Mathlib and Tau Ceti sources, for `roadmaps resolve` |
 | `workers/<id>/attempts.json` | failures per job on this worker |
-| `workers/<id>/pending-push.json`, `workers/<id>/jobs/<JOB>/pending-push/` | runs kept after their push failed (the job's deliverables, and the commit as a bundle and a `refs/tauceti-pending/` ref): the next attempt on this worker pushes them without running the agent |
+| `workers/<id>/pending-push.json`, `workers/<id>/jobs/<JOB>/pending-push/` | runs kept after their push failed or their lease was lost (the job's deliverables, and the commit as a bundle and a `refs/tauceti-pending/` ref): the next attempt on this worker pushes them without running the agent |
 | `workers/<id>/rounds.log` | every line the worker printed, timestamped (what `tail` follows) |
+| `workers/<id>/worker.lock` | locked by the worker's running process (its pid and host inside): a second process with the same id exits |
 | `workers/<id>/jobs/<JOB>/unsubmitted/` | what the job's last round that left anything left in the board checkout beyond the board's main, set aside before the next round reset it |
 | `rev/<pr>/` | read-only checkouts of open roadmap pull requests at their heads (was `/tmp/rev/<pr>`) |
 | `prs.json` | open roadmap pull requests: number, roadmap, head, branch, owner (was `/tmp/rev-list.txt` and `/tmp/watch-prs`) |
@@ -914,6 +943,10 @@ reach) is not built yet.
 * Two workers of the branch owner may run a red-team fix and a gate round on the same pull request
   at once; the branch push uses `--force-with-lease`, so one of them fails and retries rather than
   overwriting the other.
+* Leases and the board lock are not fencing tokens: a writer stops at the first write after it
+  notices the loss, but a write already under way when the lease lapses still lands, and the board
+  does not check which attempt a submission or a state change comes from. The conditional release
+  reads the issue and then writes it, so a change made in between is overwritten.
 * The citation resolver and the lost-binder flags are heuristics: a citation written in running
   prose, a generated Lean name (`to_additive`, `simps`, a structure projection) or a binder named
   otherwise than `h…` can be missed or flagged wrongly. They are leads for the agent, never gates.

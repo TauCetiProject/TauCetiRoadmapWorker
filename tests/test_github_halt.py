@@ -105,7 +105,7 @@ def test_a_halted_job_sends_nothing_more(monkeypatch, tmp_path):
 
         def run(self, job, ctx):
             raise GHHalt("HTTP 401: Bad credentials")
-    c = SimpleNamespace(cfg=parsed(), board=board, claims=None, dry_run=True, worker_id="w1", operator="alice",
+    c = SimpleNamespace(cfg=parsed(), board=board, claims=None, gh=None, dry_run=True, worker_id="w1", operator="alice",
                         agent="claude", model="m")
     monkeypatch.setattr(worker, "release", lambda *a: pytest.fail("a halted round tried to release the job"))
     monkeypatch.setattr(worker, "request_board_run", lambda *a: pytest.fail("a halted round asked for a board run"))

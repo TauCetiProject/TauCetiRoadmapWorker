@@ -4,15 +4,18 @@ the job was released, and the next attempt ran the whole agent again).
 
 - the lease names the head the work was built on and is checked against the remote itself;
 - a branch that moved blocks the job for a human instead of being overwritten;
-- a push that keeps failing keeps the run, and the next attempt pushes it without the agent;
+- a push that keeps failing keeps the run, and the next attempt pushes it without the agent; so
+  does a round whose lease was lost;
 - every checkout carries the worker's git identity, so an agent's own `git commit` works."""
 
+import dataclasses
 import os
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
-from tauceti_roadmap_worker import agents, gitops
+from tauceti_roadmap_worker import agents, claims, gitops
 from tauceti_roadmap_worker.board import new_job
 from tauceti_roadmap_worker.lanes import LaneResult, lane_for
 from tauceti_roadmap_worker.lanes import base as lane_base
@@ -183,3 +186,21 @@ def test_the_kept_commit_comes_back_onto_its_branch(repos, tmp_path):
     assert sh(work, "rev-parse", "HEAD") == sha and sh(work, "rev-parse", "--abbrev-ref", "HEAD") == "roadmap/foo"
     assert fresh.extra["push_base"] == base
     assert (board_dir / "packages" / "Foo" / "reports" / f"{job.id}.md").read_text().startswith("## R01")
+
+
+def test_a_lost_lease_finishes_nothing_and_keeps_the_run(ctx, monkeypatch):  # noqa: F811
+    """A round whose lease was lost keeps its run as a failed push's is, and the next attempt on
+    this worker pushes it without the agent."""
+    job, lane, calls = lane_with(ctx, monkeypatch, lambda ws: "repaired")
+    ws = lane.prepare(job, ctx)
+    ws.report.write_text("## R01 (P1) — applied\nfixed\n")
+    lost = "the lease roadmap/P/job/FIX-RT-ArithmeticDynamics_r1 was lost: another owner holds it"
+
+    def fence():
+        raise claims.LeaseLost(lost)
+    result = lane.deliver(job, dataclasses.replace(ctx, gh=SimpleNamespace(fence=fence)), ws)
+    assert result.status == "lease-lost" and calls == []
+    assert "nothing more is submitted, and the run is kept in" in result.detail
+    assert lane_base.read_pending(ctx, job)["error"] == lost
+    job2, lane2, calls2 = lane_with(ctx, monkeypatch, lambda ws: "repaired")
+    assert lane2.run(job2, ctx).status == "submitted" and calls2 == ["finish", "submit"]

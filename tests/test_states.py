@@ -169,10 +169,11 @@ def test_an_interrupt_during_the_claim_still_releases(round_ctx, monkeypatch):
     ctx, gh = round_ctx
     claim = ctx.board.set_state
 
-    def interrupted_claim(job, state, comment=""):
-        claim(job, state, comment)
+    def interrupted_claim(job, state, comment="", expect=""):
+        written = claim(job, state, comment, expect)
         if state == "claimed":
             raise KeyboardInterrupt
+        return written
     monkeypatch.setattr(ctx.board, "set_state", interrupted_claim)
     monkeypatch.setattr(worker, "lane_for", lambda job: Lane(LaneResult(JOB, "submitted", "")))
     with pytest.raises(KeyboardInterrupt):

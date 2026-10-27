@@ -1,6 +1,8 @@
 """A thin wrapper around the `gh` CLI.
 
-Every GitHub write goes through `GH.write`, so `--dry-run` covers all of them. Reads that come
+Every GitHub write goes through `GH.write`, so `--dry-run` covers all of them, and so does a fence:
+while a lease guards a run (`claims.Heartbeat`), `GH.fence` refuses every write once the lease is
+lost; a write that is not a REST call (a git push) asks `check_fence` first. Reads that come
 back as an API error object (`{"message": ..., "documentation_url": ...}`), or empty where a body
 was expected, raise instead of being taken as data: a rate-limited read once overwrote pull
 request descriptions with the error text.
@@ -63,12 +65,20 @@ def looks_like_api_error(text: str) -> bool:
 READ_DELAYS = (2, 5, 15)     # seconds before the second, third and fourth try of a read GitHub answered 5xx or not at all
 
 
+def check_fence(gh) -> None:
+    """Raise as `gh`'s fence does (nothing when it has none)."""
+    fence = getattr(gh, "fence", None)
+    if fence is not None:
+        fence()
+
+
 @dataclass
 class GH:
     dry_run: bool = False
     timeout: int = 120
     read_delays: tuple = READ_DELAYS
     sleep: object = time.sleep
+    fence: object = None         # called before every write; it raises to refuse the write
 
     def _read(self, args: list[str]) -> str:
         """A read (GET), tried again after a transient failure (a 5xx answer, a timeout, a dropped
@@ -150,6 +160,7 @@ class GH:
 
     def write(self, method: str, path: str, payload: dict | None = None) -> dict | None:
         """POST/PATCH/PUT/DELETE a REST path with a JSON payload; prints instead in dry-run mode."""
+        check_fence(self)
         if self.dry_run:
             print(f"[dry-run] {method} {path} {json.dumps(payload or {})[:300]}")
             return None
@@ -159,6 +170,7 @@ class GH:
     def cli_write(self, *args: str) -> str:
         """A `gh` subcommand that writes (for the few operations REST lacks, such as marking a pull
         request ready or back to draft); printed instead in dry-run mode."""
+        check_fence(self)
         if self.dry_run:
             print("[dry-run] gh " + " ".join(args))
             return ""

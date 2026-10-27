@@ -38,7 +38,7 @@ import tomllib
 
 from . import board, claims, depgraph, explorer, prompts, prreviews, sources
 from .board import Job, Outcome
-from .gh import GHError
+from .gh import GHError, check_fence
 
 NEEDS_REVIEW = "needs-review"
 BRIEF_MARK = "tauceti-roadmap-review-brief"
@@ -444,6 +444,7 @@ def squash_with_main(ctx, number: int, pr: dict) -> tuple[bool, str]:
         how = "; ".join(resolved)
         message = (f"{title} (#{number})\n\nMerged by the board's intake onto main" + (f", with {how}" if how else "") + ".")
         gitops.git(dest, "commit", "-q", "--author", f"{author} <{author}@users.noreply.github.com>", "-m", message)
+        check_fence(ctx.gh)
         gitops.git(dest, "push", "-q", "origin", "HEAD:refs/heads/main")
         sha = gitops.git(dest, "rev-parse", "HEAD").strip()
     except (gitops.GitError, tomllib.TOMLDecodeError, OSError) as exc:

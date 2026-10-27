@@ -331,8 +331,10 @@ def work(args) -> int:
     from .mergeorder import _order
     from .worker import (
         EX_HALTED,
+        WorkerBusy,
         halt_path,
         halt_record,
+        hold_worker_dir,
         record_halt,
         release_leftovers,
         sweep_worktrees,
@@ -375,50 +377,55 @@ def work(args) -> int:
     ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=cl, worker_id=paths.sanitize_worker_id(args.worker_id),
                   operator=operator, agent=agent, model=model, conf=_local_conf(args, cfg), dry_run=args.dry_run,
                   agent_fixed=bool(args.agent), model_fixed=bool(args.model))
-    log = watch.round_logger(ctx.wdir)
-    started = build.build_id()
-    build.snapshot(ctx.wdir, started)
-    log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}, "
-        f"build {started}")
-    if args.loop and args.status_file:
-        raise SystemExit("--status-file describes one round; it does not go with --loop")
-    began = dt.datetime.now(dt.UTC)
-    if halt := halt_record(ctx):
-        print(f"halted at {halt.get('at', '')}: {halt.get('detail', '')}; look at the account, then delete "
-              f"{halt_path(ctx)}", file=sys.stderr)
-        return round_end(args, ctx, LaneResult("", "halted", halt.get("detail", "")), began)
     try:
-        release_leftovers(ctx, log)
-    except GHHalt as exc:
-        record_halt(ctx, str(exc))
-        return round_end(args, ctx, LaneResult("", "halted", str(exc)), began)
-    except GHRateLimited as exc:
-        log(f"GitHub is rate limited at startup: {exc}")
-        return round_end(args, ctx, LaneResult("", "github-limited", str(exc)), began)
-    sweep_worktrees(ctx, log)
-    # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
-    signal.signal(signal.SIGTERM, _stop)
-    if args.loop:
+        held = hold_worker_dir(ctx.wdir)
+    except WorkerBusy as exc:
+        raise SystemExit(str(exc)) from None
+    with held:
+        log = watch.round_logger(ctx.wdir)
+        started = build.build_id()
+        build.snapshot(ctx.wdir, started)
+        log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}, "
+            f"build {started}")
+        if args.loop and args.status_file:
+            raise SystemExit("--status-file describes one round; it does not go with --loop")
+        began = dt.datetime.now(dt.UTC)
+        if halt := halt_record(ctx):
+            print(f"halted at {halt.get('at', '')}: {halt.get('detail', '')}; look at the account, then delete "
+                  f"{halt_path(ctx)}", file=sys.stderr)
+            return round_end(args, ctx, LaneResult("", "halted", halt.get("detail", "")), began)
         try:
-            ended = work_loop(ctx, only, lambda: _order(ctx), log=log, build=started)
+            release_leftovers(ctx, log)
+        except GHHalt as exc:
+            record_halt(ctx, str(exc))
+            return round_end(args, ctx, LaneResult("", "halted", str(exc)), began)
+        except GHRateLimited as exc:
+            log(f"GitHub is rate limited at startup: {exc}")
+            return round_end(args, ctx, LaneResult("", "github-limited", str(exc)), began)
+        sweep_worktrees(ctx, log)
+        # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
+        signal.signal(signal.SIGTERM, _stop)
+        if args.loop:
+            try:
+                ended = work_loop(ctx, only, lambda: _order(ctx), log=log, build=started)
+            except KeyboardInterrupt:
+                return 130
+            except SandboxUnavailable as exc:
+                log(f"{exc}: the worker stops")
+                raise
+            return EX_HALTED if ended == "halted" else 0
+        try:
+            result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx), log=log)
+        except GHHalt as exc:
+            result = LaneResult("", "halted", str(exc))
+        except GHRateLimited as exc:
+            result = LaneResult("", "github-limited", str(exc), retry_at=dt.datetime.fromtimestamp(exc.until, dt.UTC))
         except KeyboardInterrupt:
-            return 130
-        except SandboxUnavailable as exc:
-            log(f"{exc}: the worker stops")
-            raise
-        return EX_HALTED if ended == "halted" else 0
-    try:
-        result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx), log=log)
-    except GHHalt as exc:
-        result = LaneResult("", "halted", str(exc))
-    except GHRateLimited as exc:
-        result = LaneResult("", "github-limited", str(exc), retry_at=dt.datetime.fromtimestamp(exc.until, dt.UTC))
-    except KeyboardInterrupt:
-        result = LaneResult("", "interrupted", "KeyboardInterrupt")
-    if result.status == "halted":
-        record_halt(ctx, result.detail)
-    print(f"{result.job or '-'} {result.describe()}" + (f" {result.url}" if result.url else ""))
-    return round_end(args, ctx, result, began)
+            result = LaneResult("", "interrupted", "KeyboardInterrupt")
+        if result.status == "halted":
+            record_halt(ctx, result.detail)
+        print(f"{result.job or '-'} {result.describe()}" + (f" {result.url}" if result.url else ""))
+        return round_end(args, ctx, result, began)
 
 
 # The exit status of a one-shot `work` round, by outcome; anything else (failed, setup-failed) is 1. A
@@ -821,22 +828,29 @@ def board_cmd(args) -> int:
 
 
 def board_run(args, cfg, ctx) -> int:
-    """`board intake` and `board sync` that write hold the board lock (one run at a time, hosted or
-    local); a run that finds it held says so and exits 0 having done nothing."""
+    """Every `board` run that writes (`--yes`; `stale` only with `--release`) holds the board lock for
+    its whole length, one run at a time, hosted or local: a heartbeat renews it, and once it is lost
+    (another run took it over, or no renewal succeeded before it expired) every further GitHub write
+    raises and the run stops, exit 1. A run that finds the lock held says so and exits 0 having done
+    nothing; one that cannot take it (no push access, no network) does nothing either, exit 1."""
     from . import intake
     write = args.yes and not args.dry_run
-    lock = intake.board_lock(cfg, ctx) if write and args.action in ("intake", "sync") else None
-    if lock is not None:
-        proceed, line = intake.take_lock(lock, cfg.project.name)
-        if line:
-            print(line)
-        if not proceed:
-            return 0
-    try:
+    if not write or (args.action == "stale" and not args.release):
         return _board_steps(args, cfg, ctx, intake, write)
+    lock, key = intake.board_lock(cfg, ctx), intake.lock_key(cfg.project.name)
+    status, line = intake.take_lock(lock, cfg.project.name)
+    if line:
+        print(line)
+    if status != claims.ACQUIRED:
+        return 0 if status == claims.HELD else 1
+    try:
+        with claims.Heartbeat(lock, key, intake.LOCK_TTL, intake.LOCK_RENEW, gh=ctx.gh, log=print):
+            return _board_steps(args, cfg, ctx, intake, write)
+    except claims.LeaseLost as exc:
+        print(f"stopped: {exc}; the next run carries on")
+        return 1
     finally:
-        if lock is not None:
-            lock.release(intake.lock_key(cfg.project.name))
+        lock.release(key)
 
 
 def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
