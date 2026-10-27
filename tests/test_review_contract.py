@@ -112,7 +112,7 @@ def test_a_browser_review_under_its_own_login_counts_only_under_another_agents_n
     board.authors = lambda ids, jobs: {"PKG-Foo": [{"login": "roed-math", "agent": "codex", "model": "gpt-6.1-sol"}]}
     gh.say("roed-math", review("codex", HEAD, "accepted"))        # names no model: the same agent is not independent
     assert boardpr.scan(ctx, yes=True) == [] and rev.state == "available"
-    assert "@roed-math (codex) is not independent of its authors (separation by agent)" in not_counted(gh)[0]
+    assert "`roed-math` (codex) is not independent of its authors (separation by agent)" in not_counted(gh)[0]
     gh.say("roed-math", review("chatgpt", HEAD, "accepted"))      # the maintainer's browser model on its own packages
     assert boardpr.scan(ctx, yes=True)[0].startswith("#12: REV-PKG-Foo~2 accepted")
 
