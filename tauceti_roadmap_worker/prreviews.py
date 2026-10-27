@@ -22,7 +22,8 @@ The errata of a roadmap's sources are a comment on the errata job's own issue, f
 and `## Not verifiable` sections.
 A comment whose first line is `reviewing` (optionally `reviewing (<agent>)`) claims the open review.
 Only the shapes are read; everything else in a comment is data. This module is the pure part:
-parsing, and rendering a worker's report into the shape.
+parsing, the contract a review or pass is held to whichever route it came by (`contract_problems`),
+and rendering a worker's report into the shape.
 """
 
 from __future__ import annotations
@@ -30,6 +31,9 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+
+from . import claims
+from .board import Job
 
 MARK = "tauceti-roadmap-review"
 MARK_RE = re.compile(r"<!--\s*" + MARK + r"\s*(\{.*?\})\s*-->", re.DOTALL)
@@ -63,10 +67,19 @@ class Parsed:
     pass_: str = ""
     worker: dict = field(default_factory=dict)                      # the posting worker's marker, if any
     conditional: list[str] = field(default_factory=list)            # gaps an acceptance is conditional on
+    evidence: int = 0                                               # rows of its adversarial tables
 
     @property
     def blocking(self) -> int:
         return sum(1 for _f, severity in self.findings if severity in ("P1", "P2"))
+
+    @property
+    def provenance(self) -> tuple[str, str]:
+        """(agent, model) behind the comment: its worker's marker when it carries one, else the agent
+        its first line names and no model."""
+        if self.worker:
+            return str(self.worker.get("agent", self.agent)), str(self.worker.get("model", ""))
+        return self.agent, ""
 
 
 def normal_verdict(text: str) -> str:
@@ -107,6 +120,7 @@ def parse(body: str) -> Parsed | None:
     if m := CONDITIONAL.search(body):
         parsed.conditional = gap_slugs(m.group(1))
     parsed.worker = {k: v for k, v in worker.items() if isinstance(v, str)} if isinstance(worker, dict) else {}
+    parsed.evidence = adversarial_rows(body)
     if parsed.verdict == "needs_changes" and not parsed.findings:
         return None
     return parsed
@@ -199,6 +213,45 @@ def adversarial_rows(report: str) -> int:
 EVIDENCE = ("the report has no adversarial table with computed values: an acceptance carries its evidence, a "
             "Markdown table whose header names the instances tried (statement, instances tried, the values computed "
             "on each side, result, change), one row per statement, with the values")
+
+
+def contract_problems(parsed: Parsed, job: Job, declared: set[str] | None = None) -> list[str]:
+    """Why a review or red-team pass does not count for `job` ([] when it does): the contract the
+    review and red-team lanes hold a worker's report to, which the board applies to every comment,
+    whichever route it came by, and a lane to the comment it is about to post.
+
+    Every finding names its severity, so that the verdict record's counts are the findings'; an
+    acceptance has no P1 or P2 finding; an accepted review, and a pass with no finding, carry the
+    adversarial table (`adversarial_rows`); an acceptance is conditional only on gaps in `declared`,
+    the slugs the plan at the reviewed head declares (None: not checked).
+
+    A pass job that requires an agent counts a pass by that agent's family of models only
+    (`claims.family`), and one that requires a model, a pass whose worker marker names that model.
+    A comment without a marker is trusted only from a listed login or the board's bot
+    (`boardpr.trusted`): the name it signs with (`chatgpt`, `claude`, ...) is that login's
+    attestation of the family that ran, and its model is not checked."""
+    problems = []
+    unrated = [f for f, severity in parsed.findings if not severity]
+    if unrated:
+        problems.append(f"finding {', '.join(unrated)} names no severity (P1, P2 or P3)")
+    blocking = [f"{f} ({severity})" for f, severity in parsed.findings if severity in ("P1", "P2")]
+    if parsed.verdict == "accepted" and blocking:
+        problems.append(f"it accepts with blocking findings ({', '.join(blocking)}): an acceptance leaves P3 notes only")
+    if not parsed.evidence and parsed.kind == "review" and parsed.verdict == "accepted":
+        problems.append(EVIDENCE)
+    elif not parsed.evidence and parsed.kind == "redteam" and not parsed.findings:
+        problems.append(EVIDENCE.replace("an acceptance", "a pass with no finding"))
+    if parsed.verdict == "accepted" and declared is not None and set(parsed.conditional) - declared:
+        problems.append("it is conditional on gaps the plan at this head does not declare: "
+                        + ", ".join(f"`{g}`" for g in sorted(set(parsed.conditional) - declared)))
+    if parsed.kind == "redteam" and job.requires_agent:
+        agent, model = parsed.provenance
+        if claims.family(agent) != claims.family(job.requires_agent):
+            problems.append(f"it is signed `{agent}`, but this pass is for the family of `{job.requires_agent}` (sign "
+                            + ", ".join(f"`{n}`" for n in claims.family_names(job.requires_agent)) + ")")
+        elif job.requires_model and parsed.worker and model != job.requires_model:
+            problems.append(f"its worker ran `{model or '?'}`, but this pass requires the model `{job.requires_model}`")
+    return problems
 
 
 def reraised(title: str, body: str) -> set[str]:

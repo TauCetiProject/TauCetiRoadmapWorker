@@ -98,19 +98,27 @@ def family(agent: str) -> str:
     return FAMILIES.get(name) or FAMILIES.get(name.split("-")[0]) or name
 
 
+def family_names(agent: str) -> list[str]:
+    """The agent names of `agent`'s family of models, `agent` first."""
+    return [agent] + [name for name, fam in FAMILIES.items() if fam == family(agent) and name != agent]
+
+
 def independent(mode: str, reviewer: tuple[str, str, str], author: tuple[str, str, str]) -> bool:
     """Whether a reviewer (operator, agent, model) is independent of an author. Another operator
     always is, except in `family` mode. In `agent` mode (a single-operator project) the same operator
-    is too, when the reviewing agent and model differ from the authoring ones recorded for the job; an
-    author record that lacks its agent or its model never counts as different. In `family` mode the
-    reviewing agent's model family must differ from the authoring agent's (`family`), whoever the
-    operators are: different families find different defects; an author record without its agent
-    falls back to another operator."""
+    is too, when the reviewing agent and model differ from the authoring ones recorded for the job: an
+    author record that lacks its agent or its model, or a reviewer without an agent, never counts as
+    different, and a reviewer without a model (a browser comment names its agent only) differs only
+    when its agent does. In `family` mode the reviewing agent's model
+    family must differ from the authoring agent's (`family`), whoever the operators are: different
+    families find different defects; an author record without its agent falls back to another
+    operator."""
     if mode == "family" and author[1]:
         return bool(reviewer[1]) and family(reviewer[1]) != family(author[1])
     if not author[0] or reviewer[0].lower() != author[0].lower():
         return True
-    return mode == "agent" and bool(author[1] and author[2]) and (reviewer[1], reviewer[2]) != (author[1], author[2])
+    return (mode == "agent" and bool(author[1] and author[2] and reviewer[1])
+            and (reviewer[1] != author[1] or bool(reviewer[2]) and reviewer[2] != author[2]))
 
 
 def separation_problem(review_independent_of: list[str], operator: str, recorded: dict, mode: str = "operator",
