@@ -132,6 +132,14 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   minute whether the board answered it and polls at once when it did. Without `--loop` it does one
   round and exits.
 * `--dry-run` takes no lease, writes the brief to the job folder and prints every GitHub write.
+* GitHub's answers about the account stop the worker: a 401 (bad credentials), or a 403 naming a
+  suspension, abuse detection or a secondary rate limit.
+  - The worker sends nothing more, writes `<state>/halt.json` and exits with code 78.
+  - Every worker of the host stops at its next round boundary, and none starts while the file exists.
+  - Look at the account, then delete the file.
+  - A 403 about the request itself (a locked issue, a missing permission) is an ordinary failure.
+
+  A spent primary rate limit pauses the worker for 15 minutes; during the pause nothing is sent.
 
 **Watching.** `tauceti-roadmap tail --worker-id <id> [--job <JOB>]` follows a worker's round log
 (`workers/<id>/rounds.log`: every line the worker prints, timestamped) and the live output of the

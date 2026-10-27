@@ -58,7 +58,7 @@ from . import (
 from . import targets as target_files
 from . import usage as usage_mod
 from .board import KINDS, Board
-from .gh import GH, GHError
+from .gh import GH, GHError, GHHalt, GHRateLimited
 
 OK, WARN, FAIL = "ok", "warn", "FAIL"
 
@@ -308,9 +308,18 @@ def _stop(signum, frame):
 
 def work(args) -> int:
     from .agents import SandboxUnavailable, sandbox_problem
-    from .lanes import Context
+    from .lanes import Context, LaneResult
     from .mergeorder import _order
-    from .worker import release_leftovers, sweep_worktrees, work_loop, work_once
+    from .worker import (
+        EX_HALTED,
+        halt_path,
+        halt_record,
+        record_halt,
+        release_leftovers,
+        sweep_worktrees,
+        work_loop,
+        work_once,
+    )
     cfg = _load(args)
     sandbox = "" if args.dry_run else sandbox_problem(cfg.sandbox.profile, cfg.sandbox.proxy_url, cfg.sandbox.netjail)
     if sandbox:
@@ -323,7 +332,9 @@ def work(args) -> int:
         try:
             operator = gh.login()
             break
-        except GHError as exc:
+        except GHHalt as exc:
+            raise SystemExit(f"gh: GitHub refused the account: {exc}") from exc
+        except (GHError, GHRateLimited) as exc:
             last = exc
     if not operator:
         raise SystemExit(f"gh: {last} (run gh auth login)")
@@ -344,20 +355,35 @@ def work(args) -> int:
     build.snapshot(ctx.wdir, started)
     log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}, "
         f"build {started}")
-    release_leftovers(ctx, log)
+    if halt := halt_record(ctx):
+        print(f"halted at {halt.get('at', '')}: {halt.get('detail', '')}; look at the account, then delete "
+              f"{halt_path(ctx)}", file=sys.stderr)
+        return EX_HALTED
+    try:
+        release_leftovers(ctx, log)
+    except GHHalt as exc:
+        record_halt(ctx, str(exc))
+        return EX_HALTED
     sweep_worktrees(ctx, log)
     # A stop signal (systemd, kill, a container stop) ends the round like Ctrl-C: the job is released.
     signal.signal(signal.SIGTERM, _stop)
     if args.loop:
         try:
-            work_loop(ctx, only, lambda: _order(ctx), log=log, build=started)
+            ended = work_loop(ctx, only, lambda: _order(ctx), log=log, build=started)
         except KeyboardInterrupt:
             return 130
         except SandboxUnavailable as exc:
             log(f"{exc}: the worker stops")
             raise
-        return 0
-    result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx), log=log)
+        return EX_HALTED if ended == "halted" else 0
+    try:
+        result = work_once(ctx, only, job_id=args.job or "", order=_order(ctx), log=log)
+    except GHHalt as exc:
+        result = LaneResult("", "halted", str(exc))
+    if result.status == "halted":
+        record_halt(ctx, result.detail)
+        print(f"- halted: {result.detail}")
+        return EX_HALTED
     print(f"{result.job or '-'} {result.describe()}" + (f" {result.url}" if result.url else ""))
     return 0 if result.status in ("submitted", "idle", "dry-run", "needs-references") else 1
 
