@@ -50,7 +50,8 @@ QUERY = """query($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 50, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
-      nodes { number title isDraft headRefOid author { login } files(first: 100) { totalCount nodes { path } } }
+      nodes { number title isDraft headRefOid author { login } labels(first: 50) { nodes { name } }
+              files(first: 100) { totalCount nodes { path } } }
     }
   }
 }"""
@@ -100,7 +101,7 @@ def roadmap_folders(paths: list[str], dirs: tuple[str, ...]) -> dict[str, str]:
 
 def inventory(gh, repo: str, dirs: tuple[str, ...]) -> list[dict]:
     """The repository's open pull requests that touch a roadmap folder: number, title, author, head,
-    draft, the roadmap folders they touch."""
+    draft, labels, the roadmap folders they touch."""
     owner, name = repo.split("/", 1)
     out, after = [], None
     while True:
@@ -117,6 +118,8 @@ def inventory(gh, repo: str, dirs: tuple[str, ...]) -> list[dict]:
             if folders:
                 out.append({"pr": pr["number"], "title": pr.get("title", ""), "head": pr.get("headRefOid", ""),
                             "author": (pr.get("author") or {}).get("login", ""), "draft": bool(pr.get("isDraft")),
+                            "labels": [x.get("name", "") for x in ((pr.get("labels") or {}).get("nodes") or [])
+                                       if isinstance(x, dict)],
                             "roadmaps": list(folders), "folders": folders})
         info = page.get("pageInfo") or {}
         if not info.get("hasNextPage"):

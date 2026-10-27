@@ -11,7 +11,9 @@
 * `sync()`: target issues become TARGET jobs; an issue carrying several `state:` labels keeps one
   (the board's invariant: exactly one); live leases are mirrored as `state:claimed`;
   roadmap pull requests get their awaiting-author / awaiting-review labels, and a GATE job is
-  created for the branch owner when humans are waiting for a reply; held pull requests stay drafts.
+  created for the branch owner when humans are waiting for a reply; held pull requests stay drafts;
+  with `[prreview] enabled`, every open roadmap pull request gets a PRREVIEW job per new head and
+  keeps the AI-approved label only while an accepted AI review covers its head (`sync_pr_reviews`).
 * `replace_upward_roadmaps()`: every roadmap the merge order on the board's main lists above a
   supplier its board README names is moved right after the last of them (`board intake`'s last step;
   idempotent), as the merge of a package whose port follows does for that package.
@@ -33,8 +35,9 @@ import os
 import re
 import socket
 import subprocess
+from urllib.parse import quote
 
-from . import board, boardpr, claims, depgraph, explorer, filers, gitops, prreviews, replies
+from . import board, boardpr, claims, depgraph, explorer, filers, gitops, openroadmaps, prreviews, replies
 from .board import Job, Outcome
 from .gh import GHError, transient
 from .lanes.base import open_roadmap_prs, pr_answerers
@@ -1420,6 +1423,184 @@ def sync_pull_requests(ctx) -> list[str]:
                 ctx.board.create(gate)
                 out.append(f"#{number}: {gate.id} created for " + (f"@{operator}" if operator else "the pool"))
         out.append(f"#{number} {p['name']}: {want or 'approved'}")
+    return out
+
+
+# --- the AI review of every roadmap pull request ------------------------------------------------------
+
+OPEN_ROUND = ("available", "claimed", "submitted")     # a review or gate round that is not over
+
+
+def review_target(entry: dict, cfg) -> tuple[str, list[str], str]:
+    """(the roadmap a pull request is reviewed as, every roadmap it touches, '' or why it is not
+    reviewed), from its `openroadmaps.inventory` entry. Only top-level `<active_dir>/<Name>/` folders
+    are reviewed; with `[prreview] require_single_folder` a pull request touching more than one
+    roadmap folder is not, else it is reviewed as the first of them (by name)."""
+    folders = entry.get("folders") or {}
+    active = cfg.roadmap.active_dir
+    names = sorted(folders)
+    if cfg.prreview.require_single_folder and len(folders) != 1:
+        return "", names, f"{len(folders)} roadmap folders"
+    top = [n for n in names if folders[n] == f"{active}/{n}" and re.fullmatch(board.NAME_RE, n)]
+    if not top:
+        return "", names, f"no `{active}/<Name>/` folder"
+    return top[0], names, ""
+
+
+def author_reviewed(p, author: str) -> bool:
+    """Whether `[prreview] authors` and `skip_authors` let a pull request by `author` be reviewed."""
+    who = (author or "").lower()
+    if p.authors and who not in {a.lower() for a in p.authors}:
+        return False
+    return who not in {a.lower() for a in p.skip_authors}
+
+
+def prreview_verdicts(ctx, name: str, jobs: list[Job] | None = None, head: str = "") -> dict[str, dict]:
+    """The verdicts of the roadmap's merged pull-request reviews, read from the board's main: job id
+    -> its `review` object ({status, head, pr, ...}). Only the done PRREVIEW jobs of `name` (among
+    `jobs`, else the board's) are read, and with `head` only those that reviewed it: one read each."""
+    jobs = ctx.board.kind_jobs("prreview") if jobs is None else jobs
+    repo, out = ctx.cfg.repositories.packages_repo(), {}
+    for job in jobs:
+        if job.kind != "prreview" or job.name != name or job.state != "done" or board.SUPERSEDED_LABEL in job.labels:
+            continue
+        if head and job.inputs.get("head") != head:
+            continue
+        try:
+            data = json.loads(ctx.gh.raw_file(repo, board.prreview_verdict_path(ctx.cfg.board.packages_dir, job)))
+        except (GHError, ValueError):
+            continue
+        review = data.get("review") if isinstance(data, dict) else None
+        if isinstance(review, dict):
+            out[job.id] = review
+    return out
+
+
+def supersede(ctx, job: Job, note: str) -> bool:
+    """Close a PRREVIEW job nobody has taken as done, its issue labelled `superseded` with `note`: it
+    stays a job of the board (its round and head count), and is never taken. False when a worker took
+    it meanwhile (it is left to finish)."""
+    if not ctx.board.set_state(job, "done", expect="available"):
+        return False
+    ctx.board.close(job, f"{note}. This review is no longer needed; closed by the board.", board.SUPERSEDED_LABEL)
+    return True
+
+
+def sync_pr_reviews(ctx) -> list[str]:
+    """`board sync`, with `[prreview] enabled`: the AI review of every open roadmap pull request of the
+    content repository, whoever opened it, drafts included.
+
+    The pull requests come from `openroadmaps.inventory`: one GraphQL listing gives every open pull
+    request with its head, author, labels and the roadmap folders it touches. `openroadmaps.refresh`
+    is not used: it also fetches every head into a mirror, which a hosted board run (a fresh runner
+    each time) would clone again on every run, and it keeps an index for half an hour, while filing
+    needs the heads as they are now. The REST listing would need a `pulls/N/files` read per pull request.
+
+    * An available PRREVIEW job whose pull request moved to another head, or was closed, is closed as
+      superseded (`supersede`); a claimed or submitted one is left to finish.
+    * `[prreview] label` stays only on a pull request whose current head the latest AI review accepted
+      (its verdict on the board's main), or whose review of that head is still being finished
+      (claimed or submitted); otherwise it is removed. Verdicts are read only for labelled pull
+      requests.
+    * `PRREVIEW-<Name>~N` (N: one more than the roadmap's PRREVIEW jobs) is filed for a pull request
+      whose authors `[prreview] authors` and `skip_authors` admit, whose head no PRREVIEW job names,
+      with no review and no gate round of it open (a gate round is about to move the head): at most
+      `[prreview] per_run` per run, oldest pull request first. Any operator may take it except the
+      author (`PRReviewLane.eligible`).
+    A label the token cannot change (a hosted board run's token may not write to the content
+    repository) is reported, not raised."""
+    cfg = ctx.cfg
+    p = cfg.prreview
+    if not p.enabled:
+        return []
+    repo = cfg.repositories.content
+    listed = sorted(openroadmaps.inventory(ctx.gh, repo, (cfg.roadmap.active_dir, cfg.roadmap.completed_dir)),
+                    key=lambda x: int(x["pr"]))
+    live = {int(x["pr"]): x for x in listed}
+    reviews = sorted(ctx.board.kind_jobs("prreview"), key=lambda j: j.number)
+    gate_rounds = ctx.board.kind_jobs("gate", "open")
+    out = []
+
+    def pr_of(job: Job) -> int:
+        try:
+            return int(job.inputs.get("pr") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    for job in [j for j in reviews if j.state == "available"]:
+        number, entry = pr_of(job), live.get(pr_of(job))
+        if entry is not None:
+            head, state = entry.get("head", ""), "open"
+        else:
+            try:     # not in the listing: closed, or no longer touching a roadmap folder
+                data = ctx.gh.api(f"repos/{repo}/pulls/{number}") or {}
+            except GHError as exc:
+                out.append(f"#{number}: {job.id} not checked ({str(exc).splitlines()[0][:160]})")
+                continue
+            head, state = (data.get("head") or {}).get("sha", ""), data.get("state") or "?"
+        if state != "open":
+            note = f"Closed: #{number} is closed"
+        elif head != job.inputs.get("head"):
+            note = f"Superseded: #{number} is at {head[:7]}"
+        else:
+            continue
+        if supersede(ctx, job, note):
+            out.append(f"#{number}: {job.id} superseded")
+
+    for entry in listed:
+        number, head = int(entry["pr"]), entry.get("head", "")
+        if p.label not in entry.get("labels", []):
+            continue
+        mine = [j for j in reviews if pr_of(j) == number]
+        at_head = [j for j in mine if j.inputs.get("head") == head]
+        if any(j.state in ("claimed", "submitted") for j in at_head):
+            continue             # being finished: its merge records the verdict
+        verdicts = {}
+        for name in sorted({j.name for j in at_head if j.state == "done"}):
+            verdicts.update(prreview_verdicts(ctx, name, at_head, head))
+        done = sorted((j for j in at_head if j.id in verdicts), key=lambda j: board.parse_job_id(j.id).round)
+        if done and verdicts[done[-1].id].get("status") == "accepted" and verdicts[done[-1].id].get("head") == head:
+            continue
+        why = (f"the AI review of {head[:7]} does not accept it" if done
+               else "head moved" if mine else "no AI review accepted it")
+        try:
+            ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
+            out.append(f"#{number}: {p.label} removed ({why})")
+        except GHError as exc:
+            out.append(f"#{number}: {p.label} on {repo} not removed ({str(exc).splitlines()[0][:160]})")
+
+    made, waiting = 0, 0
+    for entry in listed:
+        number, head, author = int(entry["pr"]), entry.get("head", ""), entry.get("author", "")
+        name, names, why = review_target(entry, cfg)
+        if not name:
+            out.append(f"#{number}: not reviewed ({why})")
+            continue
+        if not author_reviewed(p, author) or not head:
+            continue
+        mine = [j for j in reviews if pr_of(j) == number]
+        if any(j.inputs.get("head") == head for j in mine) or any(j.state in OPEN_ROUND for j in mine):
+            continue
+        if any(pr_of(g) == number and g.state in OPEN_ROUND for g in gate_rounds):
+            continue
+        if made >= p.per_run:
+            waiting += 1
+            continue
+        inputs = {"pr": number, "head": head, "owner": author, "name": name}
+        if len(names) > 1:
+            inputs["roadmaps"] = names
+        job = board.new_job(board.make_id("prreview", name, 1 + sum(1 for j in reviews if j.name == name)),
+                            inputs=inputs)
+        issue = ctx.board.create(job)
+        job.number, job.state = issue, "available"
+        reviews.append(job)
+        made += 1
+        if job.id in getattr(ctx.board, "reused", {}):
+            out.append(f"#{number}: {job.id} already on the board as #{issue}")
+        else:
+            out.append(f"#{number}: {job.id} created")
+    if waiting:
+        out.append(f"{waiting} pull request(s) wait for a review job ([prreview] per_run = {p.per_run})")
     return out
 
 

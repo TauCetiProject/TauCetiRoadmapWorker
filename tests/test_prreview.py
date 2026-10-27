@@ -1,0 +1,550 @@
+"""The AI review of every roadmap pull request (PRREVIEW): the job kind, the `[prreview]` table, the
+`board sync` step that files one review per new head, retires stale ones and keeps the `ai-approved`
+label honest, and the lane that reviews a head read-only, posts one comment and labels an accepted
+head. The final approval stays a human's."""
+
+import json
+import re
+from types import SimpleNamespace
+
+import pytest
+
+from tauceti_roadmap_worker import board, cli, config, gates, intake, prompts, prreviews, replies
+from tauceti_roadmap_worker.board import Outcome, new_job
+from tauceti_roadmap_worker.gh import GHError
+from tauceti_roadmap_worker.lanes import Context, LaneError, lane_for
+from tauceti_roadmap_worker.lanes import base as lane_base
+from tauceti_roadmap_worker.lanes import prreview as lane_prreview
+from tauceti_roadmap_worker.lanes.base import Workspace
+from tauceti_roadmap_worker.worker import rank
+
+from .fakes import FakeBoard, example_config
+from .test_checkout import needs_git
+from .test_lane_dry_run import ctx as dry_ctx  # noqa: F401 (fixture)
+from .test_submission_recovery import CONTENT, ROADMAP_BRANCH, Hub, hub, no_agent, process, sh  # noqa: F401
+
+H1, H2, H3 = "1" * 40, "2" * 40, "3" * 40
+REPO = example_config().repositories.content
+ADVERSARIAL = ("| Statement | Instances tried | Values | Result | Change |\n| --- | --- | --- | --- | --- |\n"
+               "| 1.1 | p = 2 | 4 = 4 | holds | none |\n")
+
+
+# --- the kind ----------------------------------------------------------------------------------------
+
+def test_the_job_id_round_trips_with_an_explicit_round_and_ranks_after_the_fixes():
+    jid = board.parse_job_id("PRREVIEW-Foo~1")
+    assert jid.kind == "prreview" and jid.round == 1 and str(jid) == "PRREVIEW-Foo~1"
+    assert board.make_id("prreview", "Foo") == "PRREVIEW-Foo~1" and board.next_round("PRREVIEW-Foo~1") == "PRREVIEW-Foo~2"
+    with pytest.raises(board.JobIdError):
+        board.parse_job_id("PRREVIEW-DESIGN-Foo~1")
+    assert board.title_for(new_job("PRREVIEW-Foo~1")) == "[PR review] Foo (round 1)"
+    assert [k for k, _ in sorted(board.KIND_PRIORITY.items(), key=lambda kv: kv[1])][:3] == ["gate", "fix", "prreview"]
+    assert board.stage_of("PRREVIEW-Foo~3") == "PRREVIEW" and "prreview" in board.KINDS
+    jobs = [new_job(i) for i in ("RT-Foo~1a", "PRREVIEW-Bar~1", "FIX-RT-Foo~1", "GATE-Baz~1", "REV-PKG-Qux")]
+    for n, j in enumerate(jobs, 1):
+        j.number = n
+    assert [j.id for j in rank(jobs, human_first=False)] == ["GATE-Baz~1", "FIX-RT-Foo~1", "PRREVIEW-Bar~1",
+                                                              "RT-Foo~1a", "REV-PKG-Qux"]
+
+
+def test_a_review_delivers_its_report_and_verdict_and_releases_nothing():
+    job = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "owner": "carol", "name": "Foo"})
+    wanted = {"packages/Foo/reports/PRREVIEW-Foo~2.md", "packages/Foo/reports/PRREVIEW-Foo~2.json"}
+    assert board.required_paths(job, "packages") == wanted
+    assert board.allowed_paths(job, "packages", "merge-order/ORDER.txt") == wanted     # no manifest, no order
+    for verdict in ("accepted", "needs_changes", "rejected"):
+        assert board.successors(job, Outcome(verdict=verdict)) == []
+        assert board.blocked_reason(job, Outcome(verdict=verdict)) == ""
+    assert "Pull request: #12 on the content repository." in board.issue_body(job, "o/board", "packages")
+    assert lane_for(job).__class__.__name__ == "PRReviewLane" and cli.parser().parse_args(
+        ["work", "--worker-id", "w", "--only", "prreview"]).only == "prreview"
+
+
+# --- the configuration -------------------------------------------------------------------------------
+
+def test_the_prreview_table_defaults_off_and_parses():
+    cfg = config.Config()
+    assert (cfg.prreview.enabled, cfg.prreview.label, cfg.prreview.per_run, cfg.prreview.authors,
+            cfg.prreview.skip_authors, cfg.prreview.require_single_folder) == (False, "ai-approved", 3, [], [], True)
+    text = ('[project]\nname = "P"\n[prreview]\nenabled = true\nlabel = "ai-ok"\nper_run = 5\nauthors = ["carol"]\n'
+            'skip_authors = ["dave"]\nrequire_single_folder = false\n')
+    parsed = config.parse(text, "x.toml").prreview
+    assert (parsed.enabled, parsed.label, parsed.per_run, parsed.authors, parsed.skip_authors,
+            parsed.require_single_folder) == (True, "ai-ok", 5, ["carol"], ["dave"], False)
+    for bad, why in (("per_run = -1", "prreview.per_run"), ('authors = ["not a login"]', "prreview.authors"),
+                     ('enabled = true\nlabel = ""', "prreview.label"), ('per_run = "3"', "expected int")):
+        with pytest.raises(config.ConfigError, match=re.escape(why)):
+            config.parse(f'[project]\nname = "P"\n[prreview]\n{bad}\n', "x.toml")
+
+
+def test_the_lane_runs_on_the_review_models_unless_its_own_table_pins_others():
+    cfg = example_config()
+    assert cfg.lane_models("prreview") == cfg.lane_models("review") == {"codex": "gpt-6-astra", "claude": "fable"}
+    cfg.agents.lanes["prreview"] = config.LaneAgent(codex_model="astra-x", claude_model="fable-x")
+    assert cfg.lane_models("prreview") == {"codex": "astra-x", "claude": "fable-x"}
+    assert config.Config().lane_models("prreview") == {}           # nothing hardcoded without a table
+
+
+# --- board sync --------------------------------------------------------------------------------------
+
+def node(number, head, author="carol", paths=("TauCetiRoadmap/Foo/README.md",), labels=(), draft=False):
+    return {"number": number, "title": f"Roadmap #{number}", "isDraft": draft, "headRefOid": head,
+            "author": {"login": author}, "labels": {"nodes": [{"name": x} for x in labels]},
+            "files": {"totalCount": len(paths), "nodes": [{"path": p} for p in paths]}}
+
+
+class ContentGH:
+    """The content repository's open pull requests (one GraphQL listing), single pull requests by
+    REST, the board's main (verdict records), and every write; label writes fail with `refuse`."""
+
+    def __init__(self, nodes=(), pulls=None, files=None, refuse=False):
+        self.nodes, self.pulls, self.files, self.refuse = list(nodes), dict(pulls or {}), dict(files or {}), refuse
+        self.writes, self.listings, self.dry_run, self.fence = [], 0, False, None
+
+    def graphql(self, query, **variables):
+        self.listings += 1
+        return {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": self.nodes}}}
+
+    def api(self, path, paginate=False):
+        m = re.fullmatch(r"repos/[^/]+/[^/]+/pulls/(\d+)", path)
+        if m and int(m.group(1)) in self.pulls:
+            return self.pulls[int(m.group(1))]
+        raise GHError(f"GET {path}: 404")
+
+    def raw_file(self, repo, path, ref=""):
+        if path in self.files:
+            return self.files[path]
+        raise GHError(f"{path}: 404")
+
+    def write(self, method, path, payload=None):
+        if self.refuse and "/labels" in path:
+            raise GHError(f"gh api -X {method} {path}: HTTP 403: Resource not accessible by integration")
+        self.writes.append((method, path, payload or {}))
+        return {}
+
+
+def review_job(number, round_, pr, head, state, name="Foo", owner="carol"):
+    job = new_job(board.make_id("prreview", name, round_), inputs={"pr": pr, "head": head, "owner": owner, "name": name})
+    job.number, job.state, job.labels = number, state, ["roadmap-job", "kind:prreview", f"state:{state}"]
+    return job
+
+
+def verdict_file(job, status, head):
+    return {board.prreview_verdict_path("packages", job): json.dumps(
+        {"review": {"status": status, "reviewer": f"independent-review-{job.id}", "head": head, "pr": job.inputs["pr"]}})}
+
+
+def sync(gh, jobs=(), **over):
+    cfg = example_config()
+    cfg.prreview.enabled = True
+    for key, value in over.items():
+        setattr(cfg.prreview, key, value)
+    fake = FakeBoard(jobs=list(jobs))
+    out = intake.sync_pr_reviews(SimpleNamespace(cfg=cfg, gh=gh, board=fake, operator="board-bot", dry_run=False))
+    return out, fake
+
+
+def test_one_review_is_filed_per_new_head_for_any_author_drafts_included():
+    out, fake = sync(ContentGH([node(12, H1, author="outsider", draft=True)]))
+    [(job, state, _)] = fake.created
+    assert job.id == "PRREVIEW-Foo~1" and state == "available" and job.requires_operator == ""
+    assert job.inputs == {"pr": 12, "head": H1, "owner": "outsider", "name": "Foo"}
+    assert out == ["#12: PRREVIEW-Foo~1 created"]
+    # The head it names is reviewed (whatever became of that review): no second job until the head moves.
+    done = review_job(40, 1, 12, H1, "done")
+    out, fake = sync(ContentGH([node(12, H1)]), [done])
+    assert fake.created == [] and out == []
+    out, fake = sync(ContentGH([node(12, H2)]), [done])
+    assert [j.id for j, _s, _p in fake.created] == ["PRREVIEW-Foo~2"] and fake.created[0][0].inputs["head"] == H2
+
+
+@pytest.mark.parametrize("open_job", [review_job(41, 1, 12, H1, "claimed"), review_job(41, 1, 12, H1, "submitted"),
+                                      new_job("GATE-Foo~2", inputs={"pr": 12, "operator": "", "owner": "carol"})])
+def test_no_review_is_filed_while_a_review_or_a_gate_round_of_the_pull_request_is_open(open_job):
+    if open_job.kind == "gate":
+        open_job.number, open_job.state = 41, "claimed"
+    _out, fake = sync(ContentGH([node(12, H2)]), [open_job])
+    assert fake.created == [] and fake.states == []          # a claimed or submitted review is left to finish
+
+
+def test_at_most_per_run_jobs_are_filed_oldest_pull_request_first():
+    nodes = [node(n, str(n) * 40 if n < 10 else H1, paths=(f"TauCetiRoadmap/R{n}/README.md",)) for n in (31, 7, 19, 5)]
+    out, fake = sync(ContentGH(nodes), per_run=2)
+    assert [j.inputs["pr"] for j, _s, _p in fake.created] == [5, 7]
+    assert out[-1] == "2 pull request(s) wait for a review job ([prreview] per_run = 2)"
+
+
+def test_the_author_lists_decide_whose_pull_requests_are_reviewed():
+    nodes = [node(1, H1, author="Carol", paths=("TauCetiRoadmap/A/README.md",)),
+             node(2, H2, author="dave", paths=("TauCetiRoadmap/B/README.md",))]
+    _out, fake = sync(ContentGH(nodes), authors=["carol", "dave"], skip_authors=["DAVE"])
+    assert [j.name for j, _s, _p in fake.created] == ["A"]
+    _out, fake = sync(ContentGH(nodes), authors=["erin"])
+    assert fake.created == []
+
+
+def test_a_pull_request_with_several_roadmap_folders_is_skipped_unless_allowed():
+    paths = ("TauCetiRoadmap/Foo/README.md", "TauCetiRoadmap/Bar/Suggested.lean")
+    out, fake = sync(ContentGH([node(12, H1, paths=paths)]))
+    assert fake.created == [] and out == ["#12: not reviewed (2 roadmap folders)"]
+    out, fake = sync(ContentGH([node(12, H1, paths=paths)]), require_single_folder=False)
+    [(job, _s, _p)] = fake.created
+    assert job.id == "PRREVIEW-Bar~1" and job.inputs["roadmaps"] == ["Bar", "Foo"]
+    out, fake = sync(ContentGH([node(13, H1, paths=("Completed/Foo/README.md",))]))
+    assert fake.created == [] and out == ["#13: not reviewed (no `TauCetiRoadmap/<Name>/` folder)"]
+
+
+def test_a_review_nobody_took_is_superseded_when_the_head_moves_or_the_pull_request_closes():
+    stale, gone = review_job(41, 1, 12, H1, "available"), review_job(42, 1, 13, H1, "available", name="Bar")
+    gh = ContentGH([node(12, H2)], pulls={13: {"number": 13, "state": "closed", "head": {"sha": H1}}})
+    out, fake = sync(gh, [stale, gone])
+    assert out == ["#12: PRREVIEW-Foo~1 superseded", "#13: PRREVIEW-Bar~1 superseded", "#12: PRREVIEW-Foo~2 created"]
+    assert fake.states == [("PRREVIEW-Foo~1", "done"), ("PRREVIEW-Bar~1", "done")]
+    assert fake.posted[0] == (41, f"Superseded: #12 is at {H2[:7]}. This review is no longer needed; closed by the board.")
+    assert fake.posted[1][1].startswith("Closed: #13 is closed.")
+    assert fake.labels == [("PRREVIEW-Foo~1", board.SUPERSEDED_LABEL), ("PRREVIEW-Bar~1", board.SUPERSEDED_LABEL)]
+    # A claimed review of the old head is left to finish, and holds back the next one.
+    taken = review_job(41, 1, 12, H1, "claimed")
+    out, fake = sync(ContentGH([node(12, H2)]), [taken])
+    assert out == [] and fake.states == [] and fake.created == []
+
+
+def test_the_label_goes_when_the_head_moves_and_stays_on_an_accepted_current_head():
+    accepted_old = review_job(41, 1, 12, H1, "done")
+    labels = f"repos/{REPO}/issues/12/labels/ai-approved"
+    gh = ContentGH([node(12, H2, labels=["ai-approved", "awaiting-review"])], files=verdict_file(accepted_old, "accepted", H1))
+    out, _fake = sync(gh, [accepted_old], per_run=0)
+    assert gh.writes == [("DELETE", labels, {})] and out[0] == "#12: ai-approved removed (head moved)"
+    accepted_now = review_job(42, 2, 12, H2, "done")
+    gh = ContentGH([node(12, H2, labels=["ai-approved"])], files=verdict_file(accepted_now, "accepted", H2))
+    out, _fake = sync(gh, [accepted_old, accepted_now])
+    assert gh.writes == [] and out == []
+    # A later review of the same head that blocks takes it off; one still being finished keeps it.
+    blocking = review_job(43, 3, 12, H2, "done")
+    gh = ContentGH([node(12, H2, labels=["ai-approved"])],
+                   files={**verdict_file(accepted_now, "accepted", H2), **verdict_file(blocking, "needs_changes", H2)})
+    out, _fake = sync(gh, [accepted_now, blocking])
+    assert out == [f"#12: ai-approved removed (the AI review of {H2[:7]} does not accept it)"]
+    finishing = review_job(44, 4, 12, H3, "submitted")
+    gh = ContentGH([node(12, H3, labels=["ai-approved"])])
+    assert sync(gh, [finishing])[0] == [] and gh.writes == []
+    # A label put on by hand, with no AI review at all, goes too; a token that may not write says so.
+    gh = ContentGH([node(14, H1, labels=["ai-approved"], paths=("TauCetiRoadmap/Baz/README.md",))], refuse=True)
+    out, _fake = sync(gh, per_run=0)
+    assert out[0].startswith(f"#14: ai-approved on {REPO} not removed (gh api -X DELETE")
+
+
+def test_a_disabled_board_reads_nothing():
+    gh = ContentGH([node(12, H1)])
+    out, fake = sync(gh, enabled=False)
+    assert out == [] and gh.listings == 0 and fake.created == []
+
+
+def test_board_sync_runs_the_review_step_right_after_the_pull_requests(monkeypatch, capsys):
+    cfg, ran = example_config(), []
+    for name in ("sync_targets", "sync_pull_requests", "sync_pr_reviews", "repark_capped", "sync_origins",
+                 "note_gap_registry_blocks"):
+        monkeypatch.setattr(intake, name, lambda ctx, name=name: ran.append(name) or [])
+    for name in ("sync_states", "sync_expired", "sync_leases"):
+        monkeypatch.setattr(intake, name, lambda ctx, shared, name=name: ran.append(name) or [])
+    monkeypatch.setattr(cli.filers, "refresh", lambda ctx: [])
+    monkeypatch.setattr(cli.boardpr, "review_queue", lambda ctx, yes=False: [])
+    monkeypatch.setattr(cli.errata, "sync_errata", lambda ctx, shared: [])
+    ctx = SimpleNamespace(cfg=cfg, gh=None, board=FakeBoard(), operator="maintainer", dry_run=True)
+    assert cli.board_run(cli.parser().parse_args(["board", "sync"]), cfg, ctx) == 0
+    assert ran[ran.index("sync_pull_requests") + 1] == "sync_pr_reviews"
+
+
+# --- the comment it posts ------------------------------------------------------------------------------
+
+REPORT = ("# Review of Foo (pull request #905 at {h7})\n\n**Verdict:** {v}\n\n{findings}## Verified sound\n\n"
+          + ADVERSARIAL + "\n## Not verifiable\n\n- none\n\n## Source issues\n\n- none\n")
+FINDING = "## R01 (P1) — the hypothesis on p is missing\n\nLocation: README line 4. Witness: p = 2.\n\n"
+
+
+def body_for(status: str, head: str = H1) -> str:
+    report = REPORT.format(h7=head[:7], v=status, findings=FINDING if status != "accepted" else "")
+    return prreviews.render_pr_review(prreviews.pr_review_head("codex", "gpt-x", head), status, report,
+                                      {"job": "PRREVIEW-Foo~1", "head": head}, head)
+
+
+def test_a_review_that_asks_for_changes_is_a_review_to_answer_and_an_acceptance_is_not():
+    markers = config.Config().replies.review_markers
+    accepted, blocking = body_for("accepted"), body_for("needs_changes")
+    assert "\nVerdict: APPROVE\n" in accepted and replies.APPROVE_VERDICT.search(accepted)
+    assert not replies.APPROVE_VERDICT.search(blocking) and f"\nReviewed head: {H1}\n" in blocking
+    for login, owner in (("reviewer", "carol"), ("carol", "carol")):     # another login, or the author's own
+        ask = replies.Event("2026-10-27T10:00:00Z", login, blocking)
+        ok = replies.Event("2026-10-27T10:00:00Z", login, accepted)
+        assert replies.is_review(ask, {"carol"}, markers, owner=owner)
+        assert not replies.is_review(ok, {"carol"}, markers, owner=owner)
+        assert not replies.is_reply(ask, {"carol"}, markers, [], owner=owner)
+    assert replies.unanswered([replies.Event("2026-10-27T10:00:00Z", "reviewer", blocking)], {"carol"}, markers, [])
+    assert prreviews.prreview_marker(blocking) == {"job": "PRREVIEW-Foo~1", "head": H1}
+    assert prreviews.worker_marker(blocking) == {}                 # not a board review comment
+
+
+# --- the lane ------------------------------------------------------------------------------------------
+
+def lane_ctx(tmp_path, operator="alice", separation="operator", gh=None, dry_run=False):
+    cfg = example_config()
+    cfg.review.separation = separation
+    return Context(cfg=cfg, gh=gh, board=FakeBoard(), claims=None, worker_id="alice-1", operator=operator,
+                   agent="codex", model="gpt-x", dry_run=dry_run)
+
+
+def test_the_author_does_not_review_their_own_pull_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 12, "head": H1, "owner": "Carol", "name": "Foo"})
+    lane = lane_for(job)
+    assert lane.eligible(job, lane_ctx(tmp_path, operator="carol")) == "the author does not review their own pull request"
+    assert lane.eligible(job, lane_ctx(tmp_path, operator="carol", separation="family")) != ""
+    assert lane.eligible(job, lane_ctx(tmp_path, operator="carol", separation="agent")) == ""
+    assert lane.eligible(job, lane_ctx(tmp_path, operator="alice")) == ""
+
+
+@pytest.mark.parametrize("pull,why", [({"state": "open", "head": {"sha": H2}}, f"#12 moved to {H2[:7]}; the intake files"),
+                                      ({"state": "closed", "head": {"sha": H1}}, "#12 is closed"),
+                                      ({"state": "closed", "merged": True, "head": {"sha": H1}}, "#12 is merged")])
+def test_a_pull_request_that_moved_or_closed_is_not_reviewed(tmp_path, monkeypatch, pull, why):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 12, "head": H1, "owner": "carol", "name": "Foo"})
+    ctx = lane_ctx(tmp_path, gh=ContentGH(pulls={12: {"number": 12, **pull}}))
+    with pytest.raises(LaneError, match=re.escape(why)):
+        lane_for(job).prepare(job, ctx)
+
+
+def test_the_brief_gets_a_value_for_every_placeholder(dry_ctx):  # noqa: F811
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": "abc1234" + "0" * 33, "owner": "carol", "name": "Foo"})
+    job.number = 7
+    lane = lane_for(job)
+    ws = lane.prepare(job, dry_ctx)
+    values = {**lane.common_values(job, dry_ctx, ws), **lane.values(job, dry_ctx, ws)}
+    assert prompts.placeholders("prreview") <= set(values)
+    text = prompts.render("prreview", values)
+    assert not re.search(r"__[A-Z][A-Z0-9_]*__", text)
+    assert "# Review of Foo (pull request #905 at abc1234)" in text and "independent-review-PRREVIEW-Foo~1" in text
+
+
+class LabelGH(ContentGH):
+    """Content pull request #905: its comments and labels; a comment write may be lost or crash."""
+
+    def __init__(self, head=H1, labels=(), fail=()):
+        super().__init__(pulls={905: {"number": 905, "state": "open", "head": {"sha": head}}})
+        self.comments, self.labels, self.fail = [], list(labels), list(fail)
+
+    def api(self, path, paginate=False):
+        if path.startswith(f"repos/{REPO}/issues/905/comments"):
+            return [dict(c) for c in self.comments]
+        if path == f"repos/{REPO}/issues/905/labels":
+            return [{"name": x} for x in self.labels]
+        return super().api(path, paginate)
+
+    def write(self, method, path, payload=None):
+        self.writes.append((method, path, payload or {}))
+        if path.endswith("/issues/905/comments"):
+            self.comments.append({"id": len(self.comments) + 1, "body": payload["body"], "user": {"login": "alice"},
+                                  "html_url": f"https://github.com/{REPO}/pull/905#c{len(self.comments) + 1}"})
+            fault = self.fail.pop(0) if self.fail else None
+            if fault == "lose":
+                raise GHError(f"gh api -X POST {path}: HTTP 504: Gateway Timeout")
+            if fault == "crash":
+                raise KeyboardInterrupt
+            return self.comments[-1]
+        if path.endswith("/issues/905/labels") and method == "POST":
+            self.labels += [x for x in payload["labels"] if x not in self.labels]
+        elif "/issues/905/labels/" in path and method == "DELETE":
+            self.labels.remove(path.rsplit("/", 1)[1])
+        return {}
+
+
+def finished_ws(tmp_path, ctx, job, status, gate_ok=True):
+    """A workspace as the agent left it: the report and verdict in the board checkout, the gate run."""
+    board_dir = tmp_path / "board"
+    ws = Workspace(job_dir=tmp_path / "job", scratch=tmp_path / "job" / "scratch", board=board_dir,
+                   content=tmp_path / "content", workdir=tmp_path / "wt", report=board_dir / "packages" / "Foo" /
+                   "reports" / f"{job.id}.md", branch="alice-1/PRREVIEW-Foo_r1", job_id=job.id)
+    for d in (ws.scratch, ws.workdir, ws.report.parent):
+        d.mkdir(parents=True, exist_ok=True)
+    ws.report.write_text(REPORT.format(h7=H1[:7], v=status, findings="" if status == "accepted" else FINDING))
+    lane = lane_for(job)
+    lane.verdict_file(job, ctx, ws).write_text(json.dumps({"review": {
+        "status": status, "reviewer": f"independent-review-{job.id}", "head": H1, "pr": 905, "date": "2026-10-27",
+        "findings": 0 if status == "accepted" else 1, "blocking": 0 if status == "accepted" else 1, "notes": "x"}}))
+    gate = gates.GateResult("Foo", counts={"build": 0, "depcheck": 0 if gate_ok else 1, "readme-ids-missing": 0})
+    ws.extra.update(pr=905, head=H1, owner="carol", gate=gate, readme=ws.workdir / "README.md")
+    return lane, ws
+
+
+@pytest.fixture
+def review_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    monkeypatch.setattr(lane_base.Lane, "sleep", staticmethod(lambda s: None))
+    return tmp_path
+
+
+def test_an_acceptance_is_one_comment_with_the_approve_line_and_the_label(review_env):
+    gh = LabelGH(labels=["awaiting-review"])
+    ctx = lane_ctx(review_env, gh=gh)
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    summary = lane.finish(job, ctx, ws)
+    [comment] = gh.comments
+    lines = comment["body"].split("\n")
+    assert lines[0] == f"\U0001f916 AI review (codex, gpt-x) of {H1}" and lines[2] == "Verdict: APPROVE"
+    assert f"Reviewed head: {H1}" in lines[:6] and "the targeted build succeeded" in comment["body"]
+    assert prreviews.prreview_marker(comment["body"]) == {"job": job.id, "head": H1, "verdict": "accepted",
+                                                          "agent": "codex", "model": "gpt-x", "worker": "alice-1"}
+    assert gh.labels == ["awaiting-review", "ai-approved"]               # the awaiting-* labels are not touched
+    assert summary.endswith("labelled ai-approved") and "accepted" in summary
+    assert lane_base.read_pending(ctx, job)["done"] == ["content-comment"]
+
+
+def test_changes_asked_for_take_the_label_off(review_env):
+    gh = LabelGH(labels=["ai-approved", "awaiting-author"])
+    ctx = lane_ctx(review_env, gh=gh)
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    lane, ws = finished_ws(review_env, ctx, job, "needs_changes")
+    assert lane.check(job, ctx, ws) == []
+    lane.finish(job, ctx, ws)
+    [comment] = gh.comments
+    assert comment["body"].split("\n")[2] == "Verdict: CHANGES NEEDED" and "1. **F01** (P1)" in comment["body"]
+    assert gh.labels == ["awaiting-author"]
+
+
+def test_an_accepted_head_that_moved_meanwhile_is_not_labelled(review_env):
+    gh = LabelGH(head=H2)
+    ctx = lane_ctx(review_env, gh=gh)
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    assert lane.finish(job, ctx, ws).endswith(f"not labelled ai-approved: #905 moved to {H2[:7]}")
+    assert len(gh.comments) == 1 and gh.labels == []
+
+
+def test_a_dry_run_writes_nothing(review_env):
+    gh = LabelGH()
+    ctx = lane_ctx(review_env, gh=gh, dry_run=True)
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    assert lane.finish(job, ctx, ws) == "[dry-run] would comment on #905 (accepted)"
+    assert gh.writes == [] and lane_base.read_pending(ctx, job) is None
+
+
+def test_a_lost_comment_answer_is_found_and_not_posted_twice(review_env):
+    gh = LabelGH(fail=["lose"])
+    ctx = lane_ctx(review_env, gh=gh)
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    lane.finish(job, ctx, ws)
+    assert len(gh.comments) == 1 and gh.labels == ["ai-approved"]
+
+
+@pytest.mark.parametrize("status,report,gate_ok,problem", [
+    ("accepted", "no table", True, "adversarial table"),
+    ("accepted", "blocking", True, "an acceptance leaves P3 notes only"),
+    ("accepted", "", False, "an acceptance needs the worker's gate to pass at this head"),
+    ("needs_changes", "no findings", True, "a verdict that asks for changes writes each finding"),
+    ("accepted", "wrong head line", True, "report: first line must be '# Review of Foo (pull request #905 at 1111111)'"),
+])
+def test_the_checks_refuse_what_the_board_would_not_take(review_env, monkeypatch, status, report, gate_ok, problem):
+    monkeypatch.setattr(lane_prreview.gitops, "git", lambda cwd, *args, **kw: H1 + "\n" if args[0] == "rev-parse" else "")
+    ctx = lane_ctx(review_env, gh=LabelGH())
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    lane, ws = finished_ws(review_env, ctx, job, status, gate_ok)
+    text = ws.report.read_text()
+    text = {"no table": text.replace(ADVERSARIAL, ""), "blocking": text.replace("## Verified sound", FINDING + "## Verified sound"),
+            "no findings": text.replace(FINDING, ""), "wrong head line": text.replace("# Review of Foo", "# Review of Bar")
+            }.get(report, text)
+    ws.report.write_text(text)
+    assert any(problem in p for p in lane.check(job, ctx, ws)), lane.check(job, ctx, ws)
+
+
+def test_a_verdict_must_name_the_pull_request_and_head_of_its_job():
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    good = {"review": {"status": "accepted", "reviewer": "independent-review-PRREVIEW-Foo~1", "head": H1, "pr": 905}}
+    assert lane_prreview.prreview_verdict_problems(good, job) == []
+    bad = {"review": {**good["review"], "head": H2, "pr": 906}}
+    assert lane_prreview.prreview_verdict_problems(bad, job) == [f"verdict file: head must be {H1} (the head reviewed)",
+                                                                 "verdict file: pr must be 905"]
+
+
+def test_the_intake_takes_a_verdict_naming_its_job_head_and_creates_nothing_after_it():
+    job = review_job(61, 1, 905, H1, "submitted")
+    path = board.prreview_verdict_path("packages", job)
+    verdict = {"review": {"status": "accepted", "reviewer": "independent-review-PRREVIEW-Foo~1", "head": H1, "pr": 905}}
+    texts = {"packages/Foo/reports/PRREVIEW-Foo~1.md": "# Review of Foo (pull request #905 at 1111111)\n",
+             path: json.dumps(verdict)}
+    ctx = SimpleNamespace(cfg=example_config(), gh=ContentGH(), board=FakeBoard(jobs=[job]))
+    pr = {"head": {"repo": {"full_name": "alice/TauCetiRoadmapJobs"}, "sha": "f" * 40}, "user": {"login": "alice"}}
+    assert intake.deliverable_problems(ctx, job, pr, texts, [job]) == []
+    texts[path] = json.dumps({"review": {**verdict["review"], "head": H2}})
+    assert intake.deliverable_problems(ctx, job, pr, texts, [job]) == [
+        f"verdict file: head must be {H1} (the head reviewed)"]
+    assert intake.deliverable_problems(ctx, job, pr, {k: v for k, v in texts.items() if k != path}, [job]) == [
+        f"{path} is missing"]
+    assert intake.advance(ctx, job, intake.outcome_for(ctx, job, pr, [job]), [job]) == "created nothing"
+    assert ctx.board.created == []
+
+
+# --- a run that stops after its comment is finished without a second one -----------------------------------
+
+class ReviewHub(Hub):
+    """The submission hub, with the content pull request's labels."""
+
+    def __init__(self, tmp_path):
+        super().__init__(tmp_path)
+        self.labels = []
+
+    def api(self, path, paginate=False):
+        if path == f"repos/{CONTENT}/issues/905/labels":
+            return [{"name": x} for x in self.labels]
+        return super().api(path, paginate)
+
+    def write(self, method, path, payload=None):
+        if path == f"repos/{CONTENT}/issues/905/labels":
+            self.labels += payload["labels"]
+            return {}
+        return super().write(method, path, payload)
+
+
+@needs_git
+def test_a_review_whose_run_stopped_after_its_comment_is_submitted_without_a_second_comment(
+        hub, monkeypatch, no_agent, tmp_path):  # noqa: F811
+    rh = ReviewHub.__new__(ReviewHub)
+    rh.__dict__.update(hub.__dict__, labels=[])
+    work = tmp_path / "author"
+    sh(tmp_path, "clone", "-q", "-b", ROADMAP_BRANCH, str(rh.content), str(work))
+    (work / ".gitignore").write_text(".lake/\n")
+    sh(work, "add", "-A")
+    sh(work, "commit", "-q", "-m", "ignore the Lake folder")
+    sh(work, "push", "-q", "origin", f"HEAD:refs/heads/{ROADMAP_BRANCH}")
+    head = rh.head(905)
+    passing = gates.GateResult("Foo", counts={"build": 0, "depcheck": 0, "readme-ids-missing": 0})
+    monkeypatch.setattr(lane_prreview.gates, "run_gate", lambda *a, **k: passing)
+    monkeypatch.setattr(lane_prreview, "open_roadmap_prs", lambda ctx: [])
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": head, "owner": "carol", "name": "Foo"})
+    job.number = 61
+
+    ctx = process(rh)
+    lane = lane_for(job)
+    ws = lane.prepare(job, ctx)
+    assert ws.workdir.name == "Foo" and lane_base.pr_head(ctx, CONTENT, 905) == head
+    ws.report.write_text(REPORT.format(h7=head[:7], v="accepted", findings=""))
+    lane.verdict_file(job, ctx, ws).write_text(json.dumps({"review": {
+        "status": "accepted", "reviewer": f"independent-review-{job.id}", "head": head, "pr": 905,
+        "date": "2026-10-27", "findings": 0, "blocking": 0, "notes": "x"}}))
+    assert lane.validate(job, ctx, ws) == []
+    rh.fail("/issues/905/comments", "crash")
+    with pytest.raises(KeyboardInterrupt):
+        lane.deliver(job, ctx, ws)
+    assert len(rh.comments[905]) == 1 and lane_base.read_pending(ctx, job)["outstanding"][0] == "content-comment"
+
+    ctx = process(rh)
+    result = lane_for(job).run(job, ctx)
+    assert result.status == "submitted", result.detail
+    [comment] = rh.comments[905]
+    assert prreviews.prreview_marker(comment["body"])["head"] == head and "\nVerdict: APPROVE\n" in comment["body"]
+    assert rh.labels == ["ai-approved"]
+    [opened] = rh.opened
+    assert "PRREVIEW-Foo~1" in opened["body"] and ctx.board.states == [(job.id, "submitted")]
+    assert lane_base.read_pending(ctx, job) is None

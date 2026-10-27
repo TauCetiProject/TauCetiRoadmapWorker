@@ -161,6 +161,12 @@ class FakeBoard:
     def add_label(self, job, label: str) -> None:
         self.labels.append((job.id, label))
 
+    def close(self, job, comment: str, label: str) -> None:
+        self.comment(job.number, comment)
+        self.add_label(job, label)
+        job.labels = [*job.labels, label]
+        self.closed = [*getattr(self, "closed", []), job.id]
+
     def list_jobs(self, states=("available",), kinds=None):
         return [j for j in self.jobs if j.state in states and (not kinds or j.kind in kinds)]
 

@@ -918,6 +918,7 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
         steps = [("filers", lambda: filers.refresh(ctx)), ("targets", lambda: intake.sync_targets(ctx)),
                  ("states", lambda: intake.sync_states(ctx, shared)), ("expired", lambda: intake.sync_expired(ctx, shared)),
                  ("leases", lambda: intake.sync_leases(ctx, shared)), ("pull requests", lambda: intake.sync_pull_requests(ctx)),
+                 ("pull-request reviews", lambda: intake.sync_pr_reviews(ctx)),
                  ("max rounds", lambda: intake.repark_capped(ctx)), ("origins", lambda: intake.sync_origins(ctx)),
                  ("gap registry", lambda: intake.note_gap_registry_blocks(ctx)),
                  ("review queue", lambda: boardpr.review_queue(ctx, yes=write)),
