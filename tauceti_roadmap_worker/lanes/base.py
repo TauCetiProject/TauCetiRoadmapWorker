@@ -292,7 +292,7 @@ UNREADABLE_NOTE = ("the text was fetched, but it is a scan this worker could not
 # Machine paths in the files that hand work on (reports, the triage, verdicts, the manifest) are
 # rewritten before the gate; README and Lean content is never rewritten (a path there is a defect).
 SCRUBBED = ("target.md", "review.json", "sources.toml")
-TEMP_ROOTS = re.compile(r"(?<![\w.~<>/-])/(?:private/(?:tmp|var)|tmp)/(?=[^\s/])")
+TEMP_ROOTS = re.compile(board.TEMP_ROOT)
 
 
 def scrub_paths(text: str, state: Path, home: Path) -> str:

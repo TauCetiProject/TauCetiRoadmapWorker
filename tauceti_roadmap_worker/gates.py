@@ -425,7 +425,8 @@ def strip_anchors(readme: str) -> AnchorRepair:
 
 
 def scan_private_paths(text: str) -> list[Hit]:
-    return _hits(r"/Users/[^\s/]+|/home/[^\s/]+/|/private/(?:tmp|var)/|/tmp/[\w.-]+/|[A-Za-z]:\\Users\\", text)
+    from .board import PRIVATE_PATH
+    return _hits(PRIVATE_PATH.pattern, text)
 
 
 def scan_forbidden(text: str, patterns: list[str]) -> list[Hit]:

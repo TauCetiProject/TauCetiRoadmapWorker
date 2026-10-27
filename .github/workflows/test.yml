@@ -1,0 +1,27 @@
+# The test suite on every push and pull request. Poppler and the `pdf` extra are installed so that
+# both PDF text extractors run (pdftotext first, pypdf as the fallback); `-rs` names every test
+# skipped for a missing optional tool (a Lean toolchain, Ghostscript).
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install poppler-utils (pdftotext)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Install the worker and its test dependencies
+        run: uv sync --locked --extra pdf
+      - name: Tests
+        run: uv run pytest -rs

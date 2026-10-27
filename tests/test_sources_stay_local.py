@@ -255,6 +255,33 @@ def test_hand_offs_lose_machine_paths_and_readmes_still_fail_on_them(ctx):  # no
                                                             {"packages/Foo/README.md"})[0]
 
 
+@pytest.mark.parametrize("text", [
+    "notes in /Users/alice/notes.md", "see /home/bob/run.log", "the root user's /root/notes/q-series.md",
+    "a container's `/workspace/TauCetiRoadmapWorker/.pytest-tmp/state`", "a codespace's /workspaces/repo/x",
+    "the run log (/tmp/rmw-1/run.out)", "/tmp/x.lean at the start of a line", "kept in /var/tmp/w1/scratch",
+    "macOS temp /var/folders/xy/abc/T/tmp1/a.pdf", "or /private/var/folders/xy/T/a", r"C:\Users\carol\x.md"])
+def test_machine_paths_of_every_supported_layout_are_private(text):
+    assert board.PRIVATE_PATH.search(text) and gates.scan_private_paths(text)
+    assert "local path" in file_problems("packages/Foo/README.md", text, {"packages/Foo/README.md"})[0]
+
+
+@pytest.mark.parametrize("text", [
+    "a relative path packages/Foo/tmp/x stays", "the arXiv listing https://arxiv.org/tmp/2101.00001",
+    "a mirror at https://example.org/root/papers/x.pdf and https://host/workspace/y", "a /tmpfs mount, /rooted trees",
+    "the square root/sum of squares, x/root/y", "the scrubbed ~/notes/q.md, <scratch>/rmw-1/run.out, <state>/workers",
+    "a /workspaces project", "the quotient R/I and the map Z/nZ -> Z/mZ"])
+def test_repository_paths_urls_and_prose_are_not_machine_paths(text):
+    assert not board.PRIVATE_PATH.search(text) and gates.scan_private_paths(text) == []
+
+
+def test_the_scrubber_rewrites_the_temporary_roots_the_privacy_check_refuses(tmp_path):
+    from tauceti_roadmap_worker.lanes.base import scrub_paths
+    text = "logs in /tmp/rmw-1/run.out and /var/folders/xy/T/tmp1/a.pdf; packages/Foo/tmp/x stays\n"
+    clean = scrub_paths(text, tmp_path / "state", tmp_path / "home")
+    assert clean == "logs in <scratch>/rmw-1/run.out and <scratch>/xy/T/tmp1/a.pdf; packages/Foo/tmp/x stays\n"
+    assert not board.PRIVATE_PATH.search(clean)
+
+
 def test_a_request_comment_carries_no_machine_path(ctx):  # noqa: F811
     from pathlib import Path
     job = new_job("TARGET-Foo")

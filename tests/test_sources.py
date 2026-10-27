@@ -193,6 +193,30 @@ def test_extract_pdf_with_pdftotext_and_image_only_note(tmp_path):
         assert "OCR is not installed" in on.note and "uv tool install" in on.note
 
 
+@pytest.mark.skipif(not shutil.which("pdftotext"), reason="poppler's pdftotext is not installed")
+def test_a_page_of_text_is_extracted_whole(tmp_path):
+    text = "Theorem 2.3 holds for every ring " * 10
+    (tmp_path / "t.pdf").write_bytes(make_pdf([text]))
+    e = extract(tmp_path / "t.pdf", "pdf")
+    assert " ".join(e.pages[0].split()) == text.strip() and not e.unreadable
+
+
+@pytest.mark.skipif(not shutil.which("pdftotext"), reason="poppler's pdftotext is not installed")
+def test_a_sparse_page_among_pages_of_text_is_readable(tmp_path):
+    (tmp_path / "t.pdf").write_bytes(make_pdf(["On example rings", "Theorem 2.3 holds for every ring " * 10,
+                                               "Proof of Theorem 2.3 " * 15]))
+    e = extract(tmp_path / "t.pdf", "pdf")
+    assert not e.unreadable and not e.note and e.pages[0].strip() == "On example rings"
+
+
+@pytest.mark.skipif(not shutil.which("pdftotext"), reason="poppler's pdftotext is not installed")
+def test_a_scan_of_images_without_a_text_layer_is_unreadable_without_ocr(tmp_path):
+    (tmp_path / "scan.pdf").write_bytes(make_pdf(["Digitised by a library", None, None, None]))
+    e = extract(tmp_path / "scan.pdf", "pdf")
+    assert e.unreadable and "image-only scan (4 of 4 pages have no text layer)" in e.note
+    assert e.pages[0].strip() == "Digitised by a library" and not "".join(e.pages[1:]).strip()
+
+
 def test_extract_pdf_with_pypdf(tmp_path, monkeypatch):
     pytest.importorskip("pypdf")
     monkeypatch.setattr(sources, "pdf_pages_pdftotext", lambda path: None)
