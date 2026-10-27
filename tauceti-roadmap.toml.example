@@ -83,8 +83,8 @@ reference_answerers = []
 dispatch = true
 dispatch_workflow = "board.yml"
 human_first = true
-priority = ["GATE", "PORT", "FIX-RT", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN", "DESIGN", "TARGET",
-            "ERRATA"]
+priority = ["GATE", "PORT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN",
+            "DESIGN", "TARGET", "ERRATA"]
 
 [roadmap]
 # Active roadmap folders in the content repository, and where completed ones live.
@@ -169,8 +169,8 @@ timeout_minutes = 360
 # the model per family and leave the family to the worker. Reviews run only on the review models,
 # whichever family a worker runs; a worker pinned with --model to another model skips them (one
 # pinned with --agent only picks the family). Authoring lanes keep the family defaults above. Errata
-# jobs (the mistakes in a roadmap's sources) run on the review models unless [agents.lanes.errata]
-# names others.
+# jobs (the mistakes in a roadmap's sources) and reviews of roadmap pull requests (PRREVIEW) run on
+# the review models unless [agents.lanes.errata] or [agents.lanes.prreview] names others.
 [agents.lanes.review]
 codex_model = "gpt-6-astra"
 claude_model = "fable"
@@ -205,6 +205,24 @@ separation = "operator"
 # Logins whose review comments on a board pull request count, besides the board's bots and the
 # project's own workers (for example a maintainer reviewing from a browser model).
 comment_reviewers = []
+
+[prreview]
+# The AI review of every open roadmap pull request of the content repository, by any author. When
+# enabled, `board sync` files a PRREVIEW-<Name>~k job for each pull-request head not reviewed yet (at
+# most `per_run` per run, oldest pull request first; none while a review or a gate round of that pull
+# request is open); a review worker posts its verdict as a comment on the pull request and records it
+# on the board. A pull request whose latest AI review of its current head accepts carries `label`;
+# the label goes when the head moves or a later review blocks. A human still approves and merges.
+# The operators' tokens need write access to the content repository for the comment and the label.
+enabled = false
+label = "ai-approved"
+per_run = 3
+# Only these authors' pull requests (empty: everyone's), and never these.
+authors = []
+skip_authors = []
+# A pull request that touches several roadmap folders is not reviewed (false: it is reviewed as the
+# first of them, with the others named in the brief).
+require_single_folder = true
 
 [sources]
 # Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through

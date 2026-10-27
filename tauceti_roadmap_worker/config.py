@@ -25,13 +25,14 @@ from pathlib import Path
 from . import paths
 
 AGENTS = ("codex", "claude")
-# Job stages, closest to delivery first: what `[board] priority` orders. The errata of a roadmap's
-# sources deliver nothing to its pull request: they come last.
-STAGE_ORDER = ("GATE", "PORT", "FIX-RT", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN", "DESIGN",
-               "TARGET", "ERRATA")
+# Job stages, closest to delivery first: what `[board] priority` orders. A review of a roadmap pull
+# request comes after the repairs of pull requests in flight (gate rounds, red-team fixes); the errata
+# of a roadmap's sources deliver nothing to its pull request: they come last.
+STAGE_ORDER = ("GATE", "PORT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN",
+               "DESIGN", "TARGET", "ERRATA")
 # A lane with no `[agents.lanes.<kind>]` table of its own runs on the models of this one: the errata of
-# a roadmap's sources are read by the review models.
-LANE_FALLBACK = {"errata": "review"}
+# a roadmap's sources, and the reviews of roadmap pull requests, run on the review models.
+LANE_FALLBACK = {"errata": "review", "prreview": "review"}
 SANDBOX_PROFILES = ("off", "proxy", "netjail")
 # What an operator's overlay (`--overlay`, `$TAUCETI_ROADMAP_OVERLAY`) may set over the project file:
 # settings of the host or the operator, never the board's rules. None: every key of the table.
@@ -246,6 +247,19 @@ class Review:
 
 
 @dataclass
+class PRReview:
+    # The AI review of every open roadmap pull request of the content repository, whoever opened it:
+    # `board sync` files a PRREVIEW job for each head not reviewed yet, and a pull request whose latest
+    # AI review of its current head accepts carries `label`. A human still approves and merges.
+    enabled: bool = False
+    label: str = "ai-approved"
+    per_run: int = 3                 # new jobs filed per `board sync` run, oldest pull request first
+    authors: list[str] = field(default_factory=list)        # only these authors' pull requests (empty: all)
+    skip_authors: list[str] = field(default_factory=list)   # never these authors' pull requests
+    require_single_folder: bool = True   # a pull request that touches several roadmap folders is not reviewed
+
+
+@dataclass
 class Worker:
     # Seconds a `--loop` worker sleeps when no job is eligible; every poll is a board listing on the
     # operator's GitHub quota. After a failure, and once the board answers a job the worker parked
@@ -280,6 +294,7 @@ class Config:
     worker: Worker = field(default_factory=Worker)
     claims: Claims = field(default_factory=Claims)
     review: Review = field(default_factory=Review)
+    prreview: PRReview = field(default_factory=PRReview)
     path: str = ""
     warnings: list[str] = field(default_factory=list)
     overlay_path: str = ""
@@ -290,7 +305,8 @@ class Config:
 
     def lane_settings(self, kind: str) -> LaneAgent | None:
         """The lane's `[agents.lanes.<kind>]` table; for a lane without one, the table of the lane it
-        falls back to (`LANE_FALLBACK`: errata jobs run on the review models), else None."""
+        falls back to (`LANE_FALLBACK`: errata jobs and pull-request reviews run on the review models),
+        else None."""
         return self.agents.lanes.get(kind) or self.agents.lanes.get(LANE_FALLBACK.get(kind, ""))
 
     def lane_agent(self, kind: str) -> tuple[str, str]:
@@ -402,6 +418,14 @@ def validate(cfg: Config) -> None:
         problems.append("design.daily_cap must be >= 0")
     if cfg.review.separation not in ("operator", "agent", "family"):
         problems.append("review.separation must be operator, agent or family")
+    if cfg.prreview.per_run < 0:
+        problems.append("prreview.per_run must be >= 0")
+    if cfg.prreview.enabled and not re.fullmatch(r"[^\s,][^,]{0,49}", cfg.prreview.label or ""):
+        problems.append("prreview.label must be a GitHub label name (1 to 50 characters, no comma)")
+    for key in ("authors", "skip_authors"):
+        if any(not isinstance(a, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", a)
+               for a in getattr(cfg.prreview, key)):
+            problems.append(f"prreview.{key} must list GitHub logins")
     if cfg.worker.idle_seconds < 30:
         problems.append("worker.idle_seconds must be at least 30")
     if not 30 <= cfg.claims.renew_seconds < cfg.claims.job_ttl_seconds:

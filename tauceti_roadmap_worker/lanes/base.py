@@ -1506,8 +1506,9 @@ def elaborate_line(cfg: Config, ws: Workspace) -> str:
 
 def builds(job: Job) -> bool:
     """Whether the job's lane checks out the roadmap repository and builds it: the port, the red team,
-    their fixes and the gate rounds."""
-    return job.kind in ("port", "redteam", "gate") or (job.kind == "fix" and board.parse_job_id(job.id).subject == "RT")
+    their fixes, the gate rounds and the reviews of roadmap pull requests."""
+    return job.kind in ("port", "redteam", "gate", "prreview") or (
+        job.kind == "fix" and board.parse_job_id(job.id).subject == "RT")
 
 
 PENDING_DIR = "pending-push"

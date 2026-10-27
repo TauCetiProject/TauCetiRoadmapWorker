@@ -13,6 +13,7 @@ manual_jobs.py, with the same job-id scheme `KIND-NAME~roundN`:
     FIX-RT-Name~r          the fix lane after red-team round r (merges that round's passes)
     GATE-Name~k            the k-th reply round to human reviewers on the draft PR
     ERRATA-Name            the mistakes in the roadmap's published sources, read at the locators it cites
+    PRREVIEW-Name~k        the k-th AI review of the roadmap in an open roadmap pull request (any author)
 
 Every job issue carries `<namespace label>`, `kind:<kind>` and `state:<state>` labels and a
 machine-readable spec in an HTML comment. The pure functions here (ids, specs, successors,
@@ -28,23 +29,24 @@ from urllib.parse import quote
 
 from .gh import GH, GHError
 
-KINDS = ("target", "design", "package", "review", "fix", "port", "redteam", "gate", "errata")
+KINDS = ("target", "design", "package", "review", "fix", "port", "redteam", "gate", "errata", "prreview")
 PREFIX = {"target": "TARGET", "design": "DESIGN", "package": "PKG", "review": "REV", "fix": "FIX",
-          "port": "PORT", "redteam": "RT", "gate": "GATE", "errata": "ERRATA"}
+          "port": "PORT", "redteam": "RT", "gate": "GATE", "errata": "ERRATA", "prreview": "PRREVIEW"}
 KIND_OF = {v: k for k, v in PREFIX.items()}
 SUBJECTS = {"REV": ("DESIGN", "PKG"), "FIX": ("DESIGN", "PKG", "RT")}
 STATES = ("available", "claimed", "submitted", "done", "blocked", "needs-references")
 # Which work a worker takes first: humans waiting on a PR, then work in flight, then new work.
-KIND_PRIORITY = {"gate": 0, "fix": 1, "redteam": 2, "review": 3, "port": 4, "package": 5, "design": 6, "target": 7,
-                 "errata": 8}
+KIND_PRIORITY = {"gate": 0, "fix": 1, "prreview": 2, "redteam": 3, "review": 4, "port": 5, "package": 6, "design": 7,
+                 "target": 8, "errata": 9}
 TITLE = {"target": "Target", "design": "Design", "package": "Package", "review": "Review", "fix": "Fix",
-         "port": "Port", "redteam": "Red team", "gate": "Gate", "errata": "Errata"}
+         "port": "Port", "redteam": "Red team", "gate": "Gate", "errata": "Errata", "prreview": "PR review"}
 
 NAME_RE = r"[A-Z][A-Za-z0-9]*"
 JOB_ID_RE = re.compile(
-    rf"^(?P<prefix>TARGET|DESIGN|PKG|REV|FIX|PORT|RT|GATE|ERRATA)-(?:(?P<subject>DESIGN|PKG|RT)-)?"
+    rf"^(?P<prefix>TARGET|DESIGN|PKG|REV|FIX|PORT|RT|GATE|ERRATA|PRREVIEW)-(?:(?P<subject>DESIGN|PKG|RT)-)?"
     rf"(?P<name>{NAME_RE})(?:~(?P<round>[1-9]\d*)(?P<pass>[a-z])?)?$")
 DUPLICATE_LABEL = "duplicate"     # a job issue closed as the twin of an older one: no longer a job
+SUPERSEDED_LABEL = "superseded"   # a job closed as done because what it would work on is gone (a moved head)
 SPEC_RE = re.compile(r"<!--\s*tauceti-roadmap-job\s*(\{.*?\})\s*-->", re.S)
 SUBMISSION_RE = re.compile(r"<!--\s*tauceti-roadmap-submission\s*(\{.*?\})\s*-->", re.S)
 # Machine paths that never enter a published file: home directories (macOS, Linux, the root user's,
@@ -91,12 +93,13 @@ def parse_job_id(text: str) -> JobId:
     return JobId(prefix, m["name"], int(m["round"] or 1), subject, pass_)
 
 
-EXPLICIT_ROUNDS = ("RT", "GATE")
+EXPLICIT_ROUNDS = ("RT", "GATE", "PRREVIEW")
 
 
 def format_job_id(jid: JobId) -> str:
     """Canonical form: round 1 of a design, package, review or design/package fix carries no suffix
-    (as in the explorer); red-team passes, red-team fixes and gate rounds always name their round."""
+    (as in the explorer); red-team passes, red-team fixes, gate rounds and pull-request reviews always
+    name their round."""
     head = f"{jid.prefix}-{jid.subject + '-' if jid.subject else ''}{jid.name}"
     if jid.pass_:
         return f"{head}~{jid.round}{jid.pass_}"
@@ -284,7 +287,7 @@ def title_for(job: Job) -> str:
     text = f"[{what}] {job.name}"
     if j.pass_:
         text += f" (round {j.round}, pass {j.pass_})"
-    elif j.round > 1 or job.kind in ("redteam", "gate") or (job.kind == "fix" and j.subject == "RT"):
+    elif j.round > 1 or job.kind in ("redteam", "gate", "prreview") or (job.kind == "fix" and j.subject == "RT"):
         text += f" (round {j.round})"
     return text
 
@@ -411,7 +414,8 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
 
 
 def stage_of(job_id: str) -> str:
-    """GATE, PORT, FIX-RT, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET or ERRATA."""
+    """GATE, PORT, FIX-RT, PRREVIEW, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET or
+    ERRATA."""
     j = parse_job_id(job_id)
     return f"{j.prefix}-{j.subject}" if j.prefix in ("FIX", "REV") and j.subject else j.prefix
 
@@ -566,6 +570,8 @@ def allowed_paths(job: Job, packages_dir: str, order_file: str = "") -> set[str]
     if job.kind == "review":
         verdict = f"{p}/design/review.json" if art == "DESIGN" else f"{p}/review.json"
         return report | manifest | {verdict}
+    if job.kind == "prreview":
+        return report | {prreview_verdict_path(packages_dir, job)}     # read-only on the pull request
     if job.kind == "fix" and art:
         return report | manifest | (design if art == "DESIGN" else package | plan)
     if job.kind == "fix" and job.inputs.get("board_pr"):
@@ -588,7 +594,14 @@ def required_paths(job: Job, packages_dir: str) -> set[str]:
         return report | {f"{p}/README.md", f"{p}/Suggested.lean", f"{p}/metadata.toml"}
     if job.kind == "review":
         return report | {f"{p}/design/review.json" if artefact_of(job.id) == "DESIGN" else f"{p}/review.json"}
+    if job.kind == "prreview":
+        return report | {prreview_verdict_path(packages_dir, job)}
     return report
+
+
+def prreview_verdict_path(packages_dir: str, job: Job) -> str:
+    """The verdict record of a pull-request review, beside its report: `reports/PRREVIEW-<Name>~k.json`."""
+    return f"{package_dir(packages_dir, job.name)}/reports/{job.id}.json"
 
 
 def order_change_problems(path: str, before: str, after: str, own: set[str]) -> list[str]:
@@ -1034,6 +1047,17 @@ class Board:
         self.gh.write("POST", f"repos/{self.repo}/issues/{job.number}/labels", {"labels": [label]})
         if label not in job.labels:
             job.labels.append(label)
+
+    def close(self, job: Job, comment: str, label: str) -> None:
+        """Close the job's issue with a comment saying why and a label naming it (`duplicate`: the
+        issue is no longer a job; `superseded`: a job the board set done). A label that cannot be
+        added does not stop the close."""
+        self.comment(job.number, comment)
+        try:
+            self.add_label(job, label)
+        except GHError:
+            pass
+        self.gh.write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"state": "closed"})
 
     def comments(self, number: int) -> list[dict]:
         return self.gh.api(f"repos/{self.repo}/issues/{number}/comments?per_page=100", paginate=True)

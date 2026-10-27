@@ -1214,13 +1214,8 @@ def repair_duplicates(ctx, shared: claims.Claims | None, yes: bool = False) -> l
             if not yes:
                 out.append(f"{dup.id}: would close #{dup.number} as a duplicate of #{keep.number} ({why}; dry run)")
                 continue
-            ctx.board.comment(dup.number, f"Duplicate of #{keep.number}: this job was created twice; #{keep.number} is "
-                                          f"the job ({why}). Closed by the board.")
-            try:
-                ctx.board.add_label(dup, board.DUPLICATE_LABEL)
-            except GHError:
-                pass
-            ctx.gh.write("PATCH", f"repos/{cfg.repositories.board_repo()}/issues/{dup.number}", {"state": "closed"})
+            ctx.board.close(dup, f"Duplicate of #{keep.number}: this job was created twice; #{keep.number} is the job "
+                                 f"({why}). Closed by the board.", board.DUPLICATE_LABEL)
             closed = True
             if carry_inputs(keep, dup):
                 ctx.board.update_spec(keep)

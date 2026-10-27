@@ -2,12 +2,13 @@
 
 Order (`rank`, configurable under `[board]`): jobs whose roadmap descends from a target a human filed
 before imported ones (`human_first`), then by stage closest to delivery first (`priority`: GATE, PORT,
-FIX-RT, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET), then the oldest issue. A
-lease is renewed by a heartbeat while the agent runs, so a long run is not mistaken for a dead one;
-once the heartbeat loses it, the round writes nothing more to GitHub and keeps its run for the next
-attempt. The lease is released when the round ends, whatever the outcome (a submitted job is then
-held by its pull request, a parked one by its request). A round that stops before either puts the
-job back to `state:available`, unless the board has moved it on from this worker's claim meanwhile.
+FIX-RT, PRREVIEW, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET, ERRATA), then the
+oldest issue. A lease is renewed by a heartbeat while the agent runs, so a long run is not mistaken
+for a dead one; once the heartbeat loses it, the round writes nothing more to GitHub and keeps its
+run for the next attempt. The lease is released when the round ends, whatever the outcome (a
+submitted job is then held by its pull request, a parked one by its request). A round that stops
+before either puts the job back to `state:available`, unless the board has moved it on from this
+worker's claim meanwhile.
 """
 
 from __future__ import annotations

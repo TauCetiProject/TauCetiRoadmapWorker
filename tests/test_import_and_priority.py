@@ -92,11 +92,12 @@ def test_origins_are_recorded_and_carried():
     assert legacy.inputs["origin"] == "target:12" and board.specs[-1][0] == "REV-PKG-QWittVectors"
 
 
-@pytest.mark.parametrize("stage", ["GATE", "PORT", "FIX-RT", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN",
-                                   "REV-DESIGN", "DESIGN", "TARGET"])
+@pytest.mark.parametrize("stage", ["GATE", "PORT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG",
+                                   "FIX-DESIGN", "REV-DESIGN", "DESIGN", "TARGET", "ERRATA"])
 def test_every_stage_is_known(stage):
     from tauceti_roadmap_worker.board import stage_of
+    from tauceti_roadmap_worker.config import STAGE_ORDER
     ids = {"GATE": "GATE-Foo~1", "PORT": "PORT-Foo", "FIX-RT": "FIX-RT-Foo~1", "RT": "RT-Foo~1a", "FIX-PKG": "FIX-PKG-Foo~2",
            "REV-PKG": "REV-PKG-Foo", "PKG": "PKG-Foo", "FIX-DESIGN": "FIX-DESIGN-Foo~2", "REV-DESIGN": "REV-DESIGN-Foo",
-           "DESIGN": "DESIGN-Foo", "TARGET": "TARGET-Foo"}
-    assert stage_of(ids[stage]) == stage
+           "DESIGN": "DESIGN-Foo", "TARGET": "TARGET-Foo", "ERRATA": "ERRATA-Foo", "PRREVIEW": "PRREVIEW-Foo~1"}
+    assert stage_of(ids[stage]) == stage and stage in STAGE_ORDER
