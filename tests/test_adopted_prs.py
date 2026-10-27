@@ -1,6 +1,7 @@
-"""Adopted authors (2026-10-27): the maintainer took over another author's roadmap pull requests. Their
-gate rounds go to the custodian, the custodian's replies count as the author's, and the repair is
-pushed onto the pull request's own branch (which lives in the content repository, not in a fork)."""
+"""The pool (2026-10-27): operators who act for one another on managed roadmap pull requests. A pull
+request whose author is in the pool gets gate rounds any pool member may take, a pool member's reply
+counts as the author's, and the repair is pushed onto the pull request's own branch (which lives in the
+content repository, not in a fork)."""
 
 from types import SimpleNamespace
 
@@ -8,14 +9,14 @@ import pytest
 
 from tauceti_roadmap_worker import intake
 from tauceti_roadmap_worker.gh import GHError
-from tauceti_roadmap_worker.lanes.base import pr_operator
+from tauceti_roadmap_worker.lanes.base import pr_answerers, pr_operator
 
 from .fakes import FakeBoard, example_config
 
-AUTHOR, CUSTODIAN = "kim-em", "CBirkbeck"
+AUTHOR, CUSTODIAN, THIRD = "kim-em", "CBirkbeck", "roed-math"
 SHA = "abc1234" + "0" * 33
 PR = {"pr": 1398, "name": "PlanarHodge", "head": SHA, "branch": "roadmap/planar-hodge", "owner": AUTHOR,
-      "operator": CUSTODIAN, "head_repo": "TauCetiProject/TauCetiRoadmap"}
+      "operator": "", "head_repo": "TauCetiProject/TauCetiRoadmap"}
 LABELS = f"repos/{example_config().repositories.content}/issues/1398/labels"
 REVIEW = {"id": 5, "user": {"login": CUSTODIAN}, "state": "COMMENTED", "commit_id": SHA,
           "submitted_at": "2026-10-27T09:00:00Z",
@@ -43,18 +44,18 @@ class PullGH:
 
 def adopted_config():
     cfg = example_config()
-    cfg.roadmap.adopted_authors = [AUTHOR]
-    cfg.roadmap.custodian = CUSTODIAN
+    cfg.roadmap.pool = [CUSTODIAN, AUTHOR, THIRD]
     return cfg
 
 
-def test_pr_operator_maps_an_adopted_author_to_the_custodian():
+def test_pool_authors_are_answered_by_any_pool_member():
     cfg = adopted_config()
-    assert pr_operator(cfg, AUTHOR) == CUSTODIAN
-    assert pr_operator(cfg, CUSTODIAN) == CUSTODIAN
+    assert pr_operator(cfg, AUTHOR) == "" and pr_operator(cfg, CUSTODIAN) == ""
+    assert pr_answerers(cfg, AUTHOR) == {AUTHOR, CUSTODIAN, THIRD}
     assert pr_operator(cfg, "someone-else") == "someone-else"
+    assert pr_answerers(cfg, "someone-else") == {"someone-else"}
     plain = example_config()
-    assert pr_operator(plain, AUTHOR) == AUTHOR
+    assert pr_operator(plain, AUTHOR) == AUTHOR and pr_answerers(plain, AUTHOR) == {AUTHOR}
 
 
 @pytest.fixture
@@ -66,18 +67,18 @@ def sync(tmp_path, monkeypatch):
     return run
 
 
-def test_a_review_on_an_adopted_pull_request_creates_a_gate_job_for_the_custodian(sync):
+def test_a_review_on_a_pool_pull_request_creates_a_gate_job_any_pool_member_may_take(sync):
     gh, board = PullGH(reviews=[REVIEW]), FakeBoard()
     out = sync(gh, board)
     [(job, _state, _)] = board.created
     assert job.id == "GATE-PlanarHodge~1"
-    assert job.requires_operator == CUSTODIAN
-    assert job.inputs == {"pr": 1398, "operator": CUSTODIAN, "owner": AUTHOR}
-    assert f"#1398: GATE-PlanarHodge~1 created for @{CUSTODIAN}" in out
+    assert job.requires_operator == ""
+    assert job.inputs == {"pr": 1398, "operator": "", "owner": AUTHOR}
+    assert "#1398: GATE-PlanarHodge~1 created for the pool" in out
     assert ("POST", LABELS, {"labels": ["awaiting-author"]}) in gh.writes
 
 
-def test_the_custodians_reply_counts_as_the_authors_reply(sync):
+def test_a_pool_members_reply_counts_as_the_authors_reply(sync):
     reply = {"id": 2, "user": {"login": CUSTODIAN}, "created_at": "2026-10-27T10:00:00Z",
              "body": "Fixed in `def5678` (reply to the review):\n\n- **H01** (applied) — sign corrected.\n"}
     gh, board = PullGH(reviews=[REVIEW], comments=[reply], labels=("awaiting-author",)), FakeBoard()

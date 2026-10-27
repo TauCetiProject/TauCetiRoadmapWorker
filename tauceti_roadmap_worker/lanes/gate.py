@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from .. import gates, gitops, prompts, replies
 from ..board import Job
-from .base import (Context, Lane, LaneError, Workspace, dropped_names, load_order, open_roadmap_prs, order_path,
+from .base import (Context, Lane, LaneError, Workspace, dropped_names, load_order, open_roadmap_prs, order_path, pr_answerers,
                    scan_problems, sibling_checkouts, sibling_readmes)
 from .fix import worktree_elaboration_problems
 from .pr import flip_labels, inline_comments, pr_branch_worktree, timeline
@@ -41,7 +41,7 @@ class GateLane(Lane):
             raise LaneError(f"pull request #{pr} is not an open roadmap pull request")
         r = ctx.cfg.replies
         events = timeline(ctx, pr)
-        authors = {mine["owner"], mine.get("operator") or mine["owner"]}
+        authors = pr_answerers(ctx.cfg, mine["owner"])
         since = replies.reviews_since_reply(events, authors, r.review_markers, r.housekeeping_prefixes,
                                             set(r.ignore_logins), maintainers=set(r.maintainer_logins),
                                             maintainer_prefix=r.maintainer_review_prefix)
@@ -58,7 +58,7 @@ class GateLane(Lane):
         wt, head = pr_branch_worktree(ctx, ws.content, job.name, pr, mine["branch"], ws)
         ws.workdir = wt
         ws.extra.update(prs=prs, siblings=sibling_checkouts(ctx, prs, skip=job.name), pr=pr, branch=mine["branch"],
-                        head=head, owner=mine["owner"], operator=mine.get("operator") or mine["owner"],
+                        head=head, owner=mine["owner"], answerers=sorted(authors),
                         head_repo=mine.get("head_repo") or "", readme=wt / ctx.cfg.roadmap.active_dir / job.name / "README.md")
         return ws
 
@@ -106,5 +106,5 @@ class GateLane(Lane):
         if not replies.reply_is_safe(text, cfg.replies.review_markers):
             raise LaneError("the reply would read as a review; not posting")
         ctx.gh.write("POST", f"repos/{cfg.repositories.content}/issues/{pr}/comments", {"body": text})
-        label = flip_labels(ctx, pr, timeline(ctx, pr), new, {ws.extra["owner"], ws.extra.get("operator") or ws.extra["owner"]})
+        label = flip_labels(ctx, pr, timeline(ctx, pr), new, set(ws.extra.get("answerers") or [ws.extra["owner"]]))
         return f"answered the review on #{pr} at {new[:7]} ({label})"

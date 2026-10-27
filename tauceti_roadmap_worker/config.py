@@ -104,10 +104,11 @@ class Roadmap:
     pr_label: str = "roadmap-worker"
     open_as_draft: bool = True
     main_extended: list[str] = field(default_factory=list)
-    # Authors whose roadmap pull requests the project has taken over (2026-10-27): their gate rounds
-    # are assigned to `custodian`, who pushes onto their branches and answers in their place.
-    adopted_authors: list[str] = field(default_factory=list)
-    custodian: str = ""
+    # The pool (2026-10-27): operators who may act for one another on managed roadmap pull requests.
+    # A pull request whose author is in the pool gets gate rounds any pool member may take; a pool
+    # member's reply counts as the author's reply, and the repair is pushed onto the pull request's
+    # own branch. Pull requests of authors outside the pool stay with their author.
+    pool: list[str] = field(default_factory=list)
 
 
 @dataclass

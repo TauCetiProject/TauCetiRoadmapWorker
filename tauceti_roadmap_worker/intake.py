@@ -34,7 +34,7 @@ import socket
 from . import board, boardpr, claims, depgraph, explorer, filers, gitops, prreviews, replies
 from .board import Job, Outcome
 from .gh import GHError, transient
-from .lanes.base import open_roadmap_prs
+from .lanes.base import open_roadmap_prs, pr_answerers
 from .lanes.port import pr_number_from_report
 from .lanes.pr import events_from_api
 from .lanes.target import parse_triage
@@ -1182,7 +1182,7 @@ def sync_pull_requests(ctx) -> list[str]:
         reviews = ctx.gh.api(f"repos/{repo}/pulls/{number}/reviews?per_page=100", paginate=True)
         comments = ctx.gh.api(f"repos/{repo}/issues/{number}/comments?per_page=100", paginate=True)
         events = events_from_api(reviews, comments)
-        want, drop = replies.wanted_label(events, {p["owner"], p.get("operator") or p["owner"]}, p["head"], markers=r.review_markers,
+        want, drop = replies.wanted_label(events, pr_answerers(cfg, p["owner"]), p["head"], markers=r.review_markers,
                                           housekeeping=r.housekeeping_prefixes, approvers=r.approvers,
                                           ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,
                                           awaiting_review=r.awaiting_review, maintainers=set(r.maintainer_logins),
@@ -1199,11 +1199,11 @@ def sync_pull_requests(ctx) -> list[str]:
         if want == r.awaiting_author:
             mine = [j for j in jobs if j.kind == "gate" and j.name == p["name"]]
             if not any(j.state in ("available", "claimed", "submitted", "blocked") for j in mine):
-                operator = p.get("operator") or p["owner"]
+                operator = p.get("operator", p["owner"])
                 gate = board.new_job(board.make_id("gate", p["name"], len(mine) + 1), requires_operator=operator,
                                      inputs={"pr": number, "operator": operator, "owner": p["owner"]})
                 ctx.board.create(gate)
-                out.append(f"#{number}: {gate.id} created for @{operator}")
+                out.append(f"#{number}: {gate.id} created for " + (f"@{operator}" if operator else "the pool"))
         out.append(f"#{number} {p['name']}: {want or 'approved'}")
     return out
 

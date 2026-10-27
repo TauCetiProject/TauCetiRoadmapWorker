@@ -126,10 +126,15 @@ class LaneBlocked(LaneError):
 
 # --- shared lookups -------------------------------------------------------------------------------
 
+def pr_answerers(cfg, owner: str) -> set[str]:
+    """Who may answer for a pull request: its author, plus every pool member when the author is in the pool."""
+    pool = set(cfg.roadmap.pool)
+    return {owner} | pool if owner in pool else {owner}
+
+
 def pr_operator(cfg, owner: str) -> str:
-    """Who answers for a pull request: its author, or the custodian for an adopted author."""
-    r = cfg.roadmap
-    return r.custodian if owner in set(r.adopted_authors) and r.custodian else owner
+    """The operator a gate round of this pull request requires: "" (any operator) for a pool author."""
+    return "" if owner in set(cfg.roadmap.pool) else owner
 
 
 def open_roadmap_prs(ctx: Context) -> list[dict]:
