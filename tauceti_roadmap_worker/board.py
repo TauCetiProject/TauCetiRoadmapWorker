@@ -533,8 +533,9 @@ def allowed_paths(job: Job, packages_dir: str, order_file: str = "") -> set[str]
     check a locator; the review lane keeps the author's entries intact)."""
     p = package_dir(packages_dir, job.name)
     report = {f"{p}/reports/{job.id}.md"}
-    if order_file and (job.kind == "port" or (job.kind == "fix" and parse_job_id(job.id).subject == "RT")):
-        report.add(order_file)   # the lane that first needs the merge order places the roadmap in it
+    if order_file and (job.kind in ("port", "gate") or (job.kind == "fix" and parse_job_id(job.id).subject == "RT")):
+        report.add(order_file)   # the lane that first needs the merge order places the roadmap in it (a gate on
+        # an adopted author's roadmap that no port ever placed, 2026-10-27)
     manifest = {manifest_path(packages_dir, job.name)}
     design = {f"{p}/design/README.md", f"{p}/design/plan.json"}
     package = {f"{p}/README.md", f"{p}/Suggested.lean", f"{p}/metadata.toml"}

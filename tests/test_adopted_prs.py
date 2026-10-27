@@ -112,3 +112,12 @@ def test_a_pool_member_may_take_a_gate_round_that_names_another_pool_member():
     plain = SimpleNamespace(cfg=example_config(), agent="claude", model="opus", operator=CUSTODIAN, claims=None, state=state)
     job.requires_operator = AUTHOR
     assert Lane().eligible(job, plain).startswith("needs the branch owner")
+
+
+def test_a_gate_submission_may_carry_the_merge_order_file():
+    from tauceti_roadmap_worker import board
+    from tauceti_roadmap_worker.board import Job
+    job = Job(id="GATE-X~1", kind="gate", name="X")
+    assert "merge-order/ORDER.txt" in board.allowed_paths(job, "packages", "merge-order/ORDER.txt")
+    review = Job(id="REV-PKG-X~1", kind="review", name="X")
+    assert "merge-order/ORDER.txt" not in board.allowed_paths(review, "packages", "merge-order/ORDER.txt")
