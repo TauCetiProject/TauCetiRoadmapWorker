@@ -7,6 +7,8 @@
 # (~/.local/state/tauceti/projects/<project.name>/tauceti-roadmap.toml).
 # The format this file is written in. A worker refuses a version it does not read before doing any
 # work; within a version, keys it does not know are warnings (`doctor` lists them).
+# Settings of one host or operator ([sandbox], [worker], [board] dispatch, [sources] local_dirs,
+# [agents] timeout_minutes) belong in that operator's overlay file instead (`--overlay`), not here.
 schema_version = 1
 
 [project]

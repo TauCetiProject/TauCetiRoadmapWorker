@@ -46,3 +46,44 @@ def test_a_cached_copy_stands_in_when_every_try_fails():
 def test_no_cache_and_no_network_fails():
     with pytest.raises(config.ConfigError, match="after 4 tries, and no cached copy"):
         config.load(URL, opener=Opener(99), sleep=lambda s: None)
+
+
+def test_an_overlay_sets_host_and_operator_settings_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    conf = tmp_path / "tauceti-roadmap.toml"
+    conf.write_text(TEXT)
+    overlay = tmp_path / "overlay.toml"
+    overlay.write_text('[sandbox]\nprofile = "netjail"\nnetjail = "/opt/launcher"\n'
+                       '[board]\ndispatch = false\n[sources]\nlocal_dirs = ["~/texts"]\n')
+    cfg = config.load(str(conf), overlay=str(overlay))
+    assert (cfg.sandbox.profile, cfg.sandbox.netjail, cfg.board.dispatch) == ("netjail", "/opt/launcher", False)
+    assert cfg.sources.local_dirs == ["~/texts"]
+    assert cfg.board.target_filers == config.parse(TEXT).board.target_filers    # the rest of the table stays
+    assert cfg.overlaid == ["board.dispatch", "sandbox.netjail", "sandbox.profile", "sources.local_dirs"]
+    monkeypatch.setenv("TAUCETI_ROADMAP_OVERLAY", str(overlay))
+    assert config.load(str(conf)).sandbox.profile == "netjail" and config.load(str(conf)).overlay_path
+
+
+def test_an_overlay_never_changes_the_boards_rules(tmp_path):
+    conf = tmp_path / "tauceti-roadmap.toml"
+    conf.write_text(TEXT)
+    for text, refused in (('[review]\nseparation = "agent"\n', "review"),
+                          ('[board]\ndispatch = false\ntarget_filers = ["me"]\n', "board.target_filers"),
+                          ('sandbox = "off"\n', "sandbox")):
+        overlay = tmp_path / "overlay.toml"
+        overlay.write_text(text)
+        with pytest.raises(config.ConfigError, match=f"refused {refused}"):
+            config.load(str(conf), overlay=str(overlay))
+    bad = tmp_path / "bad.toml"
+    bad.write_text('[sandbox]\nprofile = "jail"\n')
+    with pytest.raises(config.ConfigError, match="sandbox.profile"):
+        config.load(str(conf), overlay=str(bad))
+
+
+def test_agents_commands_carry_the_overlay():
+    from types import SimpleNamespace
+
+    from tauceti_roadmap_worker.lanes import Context
+    ctx = Context(cfg=SimpleNamespace(overlay_path="/home/a/overlay.toml"), gh=None, board=None, claims=None,
+                  worker_id="w1", operator="alice", agent="claude", model="m", conf="/home/a/conf.toml")
+    assert ctx.cli("gate", "x") == "tauceti-roadmap --conf /home/a/conf.toml --overlay /home/a/overlay.toml gate x"

@@ -65,7 +65,7 @@ OK, WARN, FAIL = "ok", "warn", "FAIL"
 
 def _load(args) -> config.Config:
     try:
-        return config.load(args.conf)
+        return config.load(args.conf, overlay=getattr(args, "overlay", None))
     except config.ConfigError as exc:
         raise SystemExit(f"configuration: {exc}") from exc
 
@@ -104,8 +104,10 @@ def doctor(args) -> int:
     add = rows.append
     add((OK if sys.version_info >= (3, 12) else FAIL, "python", sys.version.split()[0]))
     try:
-        cfg = config.load(args.conf)
+        cfg = config.load(args.conf, overlay=getattr(args, "overlay", None))
         add((OK, "configuration", cfg.path))
+        if cfg.overlay_path:
+            add((OK, "overlay", f"{cfg.overlay_path} sets {', '.join(cfg.overlaid) or 'nothing'}"))
         for w in cfg.warnings:
             add((WARN, "configuration", w))
     except config.ConfigError as exc:
@@ -830,6 +832,7 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="tauceti-roadmap", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--conf", help="tauceti-roadmap.toml path or https URL")
+    ap.add_argument("--overlay", help="this operator's host settings over the project file (default: $TAUCETI_ROADMAP_OVERLAY)")
     ap.add_argument("--dry-run", action="store_true", help="print GitHub writes instead of making them")
     ap.add_argument("--version", action="version", version=f"tauceti-roadmap {__version__}")
     sub = ap.add_subparsers(dest="command", required=True)

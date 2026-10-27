@@ -67,6 +67,9 @@ class Context:
     def cli(self, *args: str) -> str:
         """A command line agents can run to call this harness (gate, depcheck)."""
         conf = f"--conf {shlex.quote(self.conf)} " if self.conf else ""
+        # Agents get a minimal environment, so $TAUCETI_ROADMAP_OVERLAY would not reach them.
+        overlay = getattr(self.cfg, "overlay_path", "")
+        conf += f"--overlay {shlex.quote(overlay)} " if overlay else ""
         return f"tauceti-roadmap {conf}" + " ".join(shlex.quote(a) for a in args)
 
 
