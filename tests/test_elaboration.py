@@ -23,7 +23,7 @@ JOB = f"PKG-{NAME}"
 def mark_ready(state: Path, checkout: Path) -> Path:
     shared = lake.shared_packages(state, checkout)
     shared.mkdir(parents=True, exist_ok=True)
-    (shared.parent / ".ready").write_text("2026-10-21T09:52:00Z\n")
+    lake.mark_ready(shared, lake.lake_pin(checkout))
     return shared
 
 
@@ -333,7 +333,7 @@ def test_a_worktree_links_the_shared_packages_and_records_its_setup(tmp_path, mo
     shared = lake.shared_packages(state, wt)
     assert os.path.realpath(wt / ".lake" / "packages") == str(shared.resolve())
     assert ws.extra["lake"].reason == "lake exe cache get exited 1"               # conftest: the fetch is `false`
-    (shared.parent / ".ready").write_text("now\n")
+    lake.mark_ready(shared, lake.lake_pin(wt))
     # The content checkout wired to the same pin changes nothing for the worktree: the same directory,
     # its `.ready` honoured, no fetch.
     assert lake.prepare_lake(content, state).packages == shared
