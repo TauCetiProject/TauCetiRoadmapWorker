@@ -49,7 +49,7 @@ def test_an_acceptance_with_a_blocking_finding_and_no_evidence_is_not_counted():
     gh.say("roed-math", prreviews.review_head("chatgpt", HEAD) + "\n\nVerdict: accepted\n\n1. **F01** (P1) false\n")
     assert boardpr.scan(ctx, yes=True) == [] and rev.state == "available" and board.find("RT-Foo~1a") is None
     [note] = not_counted(gh)
-    assert note.startswith("Not counted for `REV-PKG-Foo~2`: @roed-math's review: it accepts with blocking findings "
+    assert note.startswith("Not counted for `REV-PKG-Foo~2`: `roed-math`'s review: it accepts with blocking findings "
                            "(F01 (P1)): an acceptance leaves P3 notes only; the report has no adversarial table")
     assert boardpr.scan(ctx, yes=True) == [] and len(not_counted(gh)) == 1             # answered once
     # The browser workflow itself still works: an acceptance with its table and only P3 notes.

@@ -306,7 +306,7 @@ def reviews_for(ctx, job: Job, comments: list[dict], head: str, jobs: list[Job],
                 continue
             problems = prreviews.contract_problems(parsed, job, declared)
             if problems:
-                refused = f"Not counted for `{job.id}`: @{login}'s {parsed.kind}: " + "; ".join(problems) + "."
+                refused = f"Not counted for `{job.id}`: `{login}`'s {parsed.kind}: " + "; ".join(problems) + "."
         if refused:
             if cid not in handled:
                 note(ctx, number, refused)
