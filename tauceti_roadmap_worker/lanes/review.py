@@ -69,8 +69,14 @@ def declared_slugs(pkg) -> set[str] | None:
         plan = json.loads((pkg / "design" / "plan.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return {str(g.get("slug") or g.get("id")) for g in plan.get("gaps", []) if isinstance(g, dict)} \
-        if isinstance(plan, dict) else None
+    return plan_slugs(plan) if isinstance(plan, dict) else None
+
+
+def plan_slugs(plan) -> set[str]:
+    """The gap slugs a parsed plan declares (none when it is not a plan object)."""
+    if not isinstance(plan, dict):
+        return set()
+    return {str(g.get("slug") or g.get("id")) for g in plan.get("gaps", []) if isinstance(g, dict)}
 
 
 def review_summary(what: str, verdict: dict, report: str) -> str:
@@ -175,9 +181,9 @@ class ReviewLane(Lane):
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)
         vf = self.verdict_file(job, ctx, ws)
+        declared = declared_slugs(ws.package(ctx.cfg, job.name))
         try:
-            problems += verdict_problems(json.loads(vf.read_text(encoding="utf-8")), job.id,
-                                         declared_slugs(ws.package(ctx.cfg, job.name)))
+            problems += verdict_problems(json.loads(vf.read_text(encoding="utf-8")), job.id, declared)
         except (OSError, ValueError) as exc:
             problems.append(f"verdict file: {exc}")
         if ws.report.is_file() and not ws.report.read_text(encoding="utf-8").startswith(f"# Review of {job.name}"):
@@ -193,7 +199,7 @@ class ReviewLane(Lane):
         if manifest in changed:
             problems += manifest_record_problems(ctx, ws, manifest)
         if self.board_pr(job) and not problems and ws.report.is_file():
-            problems += self.comment_problems(self.comment_body(job, ctx, ws))
+            problems += self.comment_problems(self.comment_body(job, ctx, ws), job, declared)
         return problems
 
 

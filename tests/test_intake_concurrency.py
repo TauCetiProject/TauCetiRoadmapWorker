@@ -10,11 +10,12 @@ from types import SimpleNamespace
 import pytest
 
 from tauceti_roadmap_worker import board as board_mod
-from tauceti_roadmap_worker import boardpr, claims, cli, intake, prreviews
+from tauceti_roadmap_worker import boardpr, claims, cli, intake
 from tauceti_roadmap_worker.board import Board, Outcome, new_job, title_key
 from tauceti_roadmap_worker.gh import GHError
 
 from .fakes import FakeClaims, FakeIssuesGH, bot_context, example_config, head_tree, job_issue
+from .test_boardpr import review
 
 FUTURE = 4_102_444_800
 
@@ -354,7 +355,7 @@ def test_a_review_created_from_the_closed_twins_pull_request_still_advances():
     jobs = ctx.board.all_jobs()
     assert [j.number for j in jobs] == [11, 12] and ctx.board.find("PKG-Foo", jobs).number == 11
     assert [j.number for j in boardpr.authors_of(89, "PKG-Foo", jobs)] == [11]   # what the merge will close
-    gh.say("roed-math", "\n".join([prreviews.review_head("chatgpt", "a" * 40), "", "Verdict: accepted", ""]))
+    gh.say("roed-math", review("chatgpt", "a" * 40, "accepted"))
     out = boardpr.scan(ctx, None, yes=True)
     assert out[0].startswith("#89: REV-PKG-Foo accepted; created RT-Foo~1a, RT-Foo~1b")
     jobs = ctx.board.all_jobs()

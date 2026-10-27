@@ -107,10 +107,15 @@ class GH:
         return {"number": 12}
 
 
+TABLE = ("## Verified sound\n\n| Statement | Instances tried | Values | Result | Change |\n|---|---|---|---|---|\n"
+         "| 1.2 `ghost_image` | ℤ, 𝔽₂ | (0,1) over 𝔽₂ has ghosts 0, 0 | holds | none |\n")
+
+
 def review(agent, sha, verdict, findings=0):
+    """A browser review in the brief's shape; an acceptance carries its adversarial table."""
     lines = [prreviews.review_head(agent, sha), "", f"Verdict: {verdict}", ""]
     lines += [f"{k}. **F{k:02d}** (P1) finding {k}" for k in range(1, findings + 1)]
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n" + ("\n" + TABLE if verdict == "accepted" else "")
 
 
 def test_a_package_through_review_fix_review_red_team_and_port():
@@ -163,9 +168,9 @@ def test_a_package_through_review_fix_review_red_team_and_port():
 
     # Pass a from the browser model; pass b from the worker that claimed it (a forged claim note and
     # review from someone without write access do not count).
-    gh.say("roed-math", prreviews.redteam_head(1, "a", "chatgpt", "c" * 40) + "\n\nVerdict: accepted\n")
+    gh.say("roed-math", prreviews.redteam_head(1, "a", "chatgpt", "c" * 40) + "\n\nVerdict: accepted\n\n" + TABLE)
     board.comment(rt_b.number, f"Claimed for `{rt_b.id}` by worker `m-1` (@mallory, claude).", login="mallory")
-    gh.say("mallory", prreviews.render(prreviews.redteam_head(1, "b", "claude", "c" * 40), "accepted", "",
+    gh.say("mallory", prreviews.render(prreviews.redteam_head(1, "b", "claude", "c" * 40), "accepted", TABLE,
                                        {"job": rt_b.id, "worker": "m-1", "agent": "claude", "model": "fable"}))
     board.claimed_by[rt_b.id] = "bob"
     worker_pass = prreviews.render(prreviews.redteam_head(1, "b", "claude", "c" * 40), "needs_changes",

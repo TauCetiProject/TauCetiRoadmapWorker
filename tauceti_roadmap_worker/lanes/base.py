@@ -1100,17 +1100,22 @@ class Lane:
         except GHError:
             pass
 
-    def comment_problems(self, body: str) -> list[str]:
+    def comment_problems(self, body: str, job: Job | None = None, declared: set[str] | None = None) -> list[str]:
         """A comment the board would not read (no verdict, or changes asked for without a numbered
-        finding) or that GitHub refuses (longer than a comment may be) is caught before it is posted."""
-        if prreviews.parse(body) is None:
+        finding), that GitHub refuses (longer than a comment may be), or that the board would read and
+        not count for `job` (`prreviews.contract_problems`, against the gap slugs `declared` at the head),
+        is caught before it is posted."""
+        parsed = prreviews.parse(body)
+        if parsed is None:
             return [("report: the board cannot read it as a review: give the verdict, and write every finding as "
                      "`## R01 (P1) — <short title>`")]
         if len(body) > COMMENT_LIMIT:
             return [(f"report: too long to post as a pull-request comment ({len(body):,} characters; the limit is "
                      f"{COMMENT_LIMIT:,}): keep every finding and the sampled rows of the adversarial table, and cut "
                      "the per-target ledgers and the restated package content")]
-        return []
+        if job is None:
+            return []
+        return [f"comment: the board would not count it: {p}" for p in prreviews.contract_problems(parsed, job, declared)]
 
     def submit(self, job: Job, ctx: Context, ws: Workspace, summary: str) -> str:
         """Commit the job's own files on the worker's board branch, push it to the operator's fork

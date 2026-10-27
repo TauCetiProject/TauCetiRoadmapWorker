@@ -295,7 +295,10 @@ target ──triage──▶ DESIGN-Name ═══ board PR (needs-review) ═�
 A design or package submission is not merged right away: its board pull request stays open, labelled
 `needs-review`, through its reviews, their fix rounds (pushed to its branch by its owner) and, for a
 package, the red-team rounds; every review or pass is a comment on it (see "Reviewing from a browser
-model" below for the shape). After the last red-team fix the intake merges it and creates the port.
+model" below for the shape). A round's fix follows only when every pass of the round reviewed the
+same package: a pass done at a head whose package files changed since (`sources.toml` aside, as after
+a rebase onto main) goes back to `state:available`, its issue reopened, with a note on the pull
+request. After the last red-team fix the intake merges it and creates the port.
 The merge carries the deliverables of the jobs that wrote the pull request and, for an explorer
 import, the files its import marker declares under the roadmap's folder (the explorer's
 `review.json`), each through the submission checks (source material, local paths, JSON/TOML). A merge
@@ -430,13 +433,22 @@ the board needs. The steps for the human who drives it:
 4. Post the review as one comment: first line `Review (<agent>) of <sha7>` (for a red-team pass,
    `Red team round <N> pass <x> (<agent>) of <sha7>`), then `Verdict: accepted`, `needs_changes` or
    `rejected`, then numbered findings `1. **F01** (P1) <title>` with location, claim, witness and
-   repair, then `## Verified sound` and `## Not verifiable`.
+   repair, then `## Verified sound` (with the adversarial table) and `## Not verifiable`.
 
 The board reads such comments only from the logins in `[review] comment_reviewers` (and from the
 workers that claimed the job), only of the pull request's current head (a review of an older head is
 answered once, as stale), and only when the reviewer is independent of the authors in the
-configured separation mode (a browser model's agent name counts as its agent). A worker that
-already holds a review is not preempted: the board waits for its review, and both count.
+configured separation mode (a browser model's agent name counts as its agent; it names no model, so
+in `agent` mode it is independent of an author under the same login only when its agent name differs
+from the author's). A comment also keeps
+the contract the review and red-team lanes keep, else it is answered once as not counted: an
+acceptance has no P1 or P2 finding, an accepted review and a pass with no finding carry the
+adversarial table, an acceptance is conditional only on gaps the plan at the head declares, and a
+red-team pass is signed with a name of its pass's family of models (`codex` or `chatgpt` for the
+`codex` pass, `claude` or `fable` for the `claude` pass; the brief lists them). The name is the
+listed login's word for the model it drove; a worker's pass must also name its job's model in its
+marker. A worker that already holds a review is not preempted: the board waits for its review, and
+both count.
 
 With `[redteam] sharded = true`, every red-team job runs its whole-document pass and then one section
 pass per README section that states targets (the `## Layer` sections, or the `### Layer`

@@ -22,6 +22,15 @@ def test_independence_by_operator_or_by_agent_and_model():
     assert claims.independent("agent", fable, opus)                        # same family, another model
 
 
+def test_a_reviewer_without_its_agent_or_model_is_unknown_not_different():
+    sol = ("chris", "codex", "gpt-6.1-sol")
+    assert claims.independent("agent", ("chris", "chatgpt", ""), sol)       # a browser comment: another agent
+    assert not claims.independent("agent", ("chris", "codex", ""), sol)     # the same agent, model unknown
+    assert not claims.independent("agent", ("chris", "", "fable"), sol)
+    assert not claims.independent("agent", ("chris", "", ""), sol)
+    assert claims.independent("agent", ("dana", "chatgpt", ""), sol)        # another operator still is
+
+
 def test_separation_problem_reads_author_records_old_and_new():
     recorded = {"PKG-Foo": {"operator": "chris", "agent": "codex", "model": "gpt-6.1-sol"}, "FIX-PKG-Foo~2": "chris"}
     assert claims.separation_problem(["PKG-Foo"], "chris", recorded) == "operator chris authored PKG-Foo"
