@@ -147,6 +147,8 @@ available again once every key is answered.
 | `port` | copy the accepted package into the roadmap repository, run the gates, open the draft pull request |
 | `redteam` | independent passes on the draft pull request by different agents, each round followed by a fix |
 | `gate` | answer the human reviewers of the draft pull request: fix, push, reply finding by finding |
+| `errata` | read a roadmap's sources at the locators it cites and register their misprints, errors and gaps |
+| `prreview` | the AI review of a roadmap pull request by any author: one comment with a verdict, the `ai-approved` label on an accepted head; a human approves and merges |
 
 ## Filing targets
 

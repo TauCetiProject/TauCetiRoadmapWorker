@@ -128,6 +128,20 @@ checkout, submits a PR to the board, and the intake advances the state.
 9. `errata` — reads the published sources a roadmap cites, at the locators it cites, and records
    their misprints, errors and gaps in the board's errata register (`board errata seed` makes one
    job per roadmap whose sources no errata cover yet).
+10. `prreview` — the AI review of a roadmap pull request on the content repository, whoever opened
+    it (an operator, a worker's port, a contributor outside the project). With `[prreview] enabled`,
+    `board sync` files `PRREVIEW-<Name>~k` for every head of an open roadmap pull request that no
+    review names yet, while no review or gate round of that pull request is open, and closes a review
+    nobody took once its pull request moves on or closes. The lane is read-only on the pull request:
+    it runs the push gate with the targeted build on the head, an agent on the review models reviews
+    the roadmap there as a package review does (seeded source sample, adversarial pass, duplication,
+    supplier order, shape, headline theorems), and the worker posts one comment (`Verdict: APPROVE`,
+    `CHANGES NEEDED` or `REJECT`) and records the verdict on the board. An accepted head carries the
+    `ai-approved` label until the head moves or a later review blocks; a review that asks for changes
+    reads, to the gate lane, as a review to answer. It never commits, pushes, approves or merges, and
+    it never touches the awaiting-author and awaiting-review labels: the final approval and the merge
+    stay a human's. The author's operator does not review their own pull request (except under
+    `[review] separation = "agent"`, where the pinned review models differ from the authoring ones).
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.
