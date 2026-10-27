@@ -234,6 +234,18 @@ def test_the_label_goes_when_the_head_moves_and_stays_on_an_accepted_current_hea
     assert out[0].startswith(f"#14: ai-approved on {REPO} not removed (gh api -X DELETE")
 
 
+def test_a_verdict_github_did_not_answer_for_keeps_the_label():
+    accepted = review_job(42, 1, 12, H2, "done")
+
+    class Blip(ContentGH):
+        def raw_file(self, repo, path, ref=""):
+            raise GHError(f"gh api repos/{repo}/contents/{path}: HTTP 502: Bad Gateway")
+    gh = Blip([node(12, H2, labels=["ai-approved"])])
+    with pytest.raises(GHError, match="HTTP 502"):
+        sync(gh, [accepted])
+    assert gh.writes == []
+
+
 def test_a_disabled_board_reads_nothing():
     gh = ContentGH([node(12, H1)])
     out, fake = sync(gh, enabled=False)

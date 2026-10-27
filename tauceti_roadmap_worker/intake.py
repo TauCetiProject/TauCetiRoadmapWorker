@@ -1458,7 +1458,9 @@ def author_reviewed(p, author: str) -> bool:
 def prreview_verdicts(ctx, name: str, jobs: list[Job] | None = None, head: str = "") -> dict[str, dict]:
     """The verdicts of the roadmap's merged pull-request reviews, read from the board's main: job id
     -> its `review` object ({status, head, pr, ...}). Only the done PRREVIEW jobs of `name` (among
-    `jobs`, else the board's) are read, and with `head` only those that reviewed it: one read each."""
+    `jobs`, else the board's) are read, and with `head` only those that reviewed it: one read each. A
+    verdict that is not there counts as none; a read GitHub did not answer raises (a label is never
+    taken off for a blip)."""
     jobs = ctx.board.kind_jobs("prreview") if jobs is None else jobs
     repo, out = ctx.cfg.repositories.packages_repo(), {}
     for job in jobs:
@@ -1468,7 +1470,11 @@ def prreview_verdicts(ctx, name: str, jobs: list[Job] | None = None, head: str =
             continue
         try:
             data = json.loads(ctx.gh.raw_file(repo, board.prreview_verdict_path(ctx.cfg.board.packages_dir, job)))
-        except (GHError, ValueError):
+        except GHError as exc:
+            if transient(exc):
+                raise
+            continue
+        except ValueError:
             continue
         review = data.get("review") if isinstance(data, dict) else None
         if isinstance(review, dict):
