@@ -14,7 +14,7 @@ from .. import gates, gitops, prompts, replies
 from ..board import Job
 from .base import (CONTENT_COMMENT, CONTENT_PUSH, PULL_REQUEST, PUSH, SUBMITTED, Context, Lane, LaneError, Workspace,
                    dropped_names, ensure_in_order_logged, load_order, open_roadmap_prs, order_path, owe, owes,
-                   pr_answerers, scan_problems, settle, sibling_checkouts, sibling_readmes)
+                   pr_answerers, scan_problems, settle, sibling_checkouts, sibling_readmes, submission_started)
 from .fix import worktree_elaboration_problems
 from .pr import flip_labels, inline_comments, pr_branch_worktree, timeline
 
@@ -53,7 +53,8 @@ class GateLane(Lane):
             since += [e for e in inline_comments(ctx, pr)
                       if e.review_id in answered or (e.t >= cutoff and e.user.lower() not in {a.lower() for a in authors})]
             since.sort(key=lambda e: e.t)
-        if not since:
+        if not since and not submission_started(ctx, job):
+            # An attempt that finishes a kept run may find its own reply as the last one.
             raise LaneError(f"#{pr}: no review since the last reply")
         (ws.scratch / "reviews.md").write_text(reviews_document(since), encoding="utf-8")
         wt, head = pr_branch_worktree(ctx, ws.content, job.name, pr, mine["branch"], ws)
