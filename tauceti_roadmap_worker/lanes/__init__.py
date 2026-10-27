@@ -11,12 +11,13 @@ from .fix import ArtefactFixLane, RedTeamFixLane
 from .gate import GateLane
 from .package import PackageLane
 from .port import PortLane
+from .prreview import PRReviewLane
 from .redteam import RedTeamLane
 from .review import ReviewLane
 from .target import TargetLane
 
 LANES = {"target": TargetLane, "design": DesignLane, "package": PackageLane, "review": ReviewLane,
-         "port": PortLane, "redteam": RedTeamLane, "gate": GateLane, "errata": ErrataLane}
+         "port": PortLane, "redteam": RedTeamLane, "gate": GateLane, "errata": ErrataLane, "prreview": PRReviewLane}
 
 
 def lane_for(job: Job) -> Lane:

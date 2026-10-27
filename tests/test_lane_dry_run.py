@@ -10,6 +10,7 @@ from tauceti_roadmap_worker.lanes import base as lane_base
 from tauceti_roadmap_worker.lanes import fix as lane_fix
 from tauceti_roadmap_worker.lanes import gate as lane_gate
 from tauceti_roadmap_worker.lanes import port as lane_port
+from tauceti_roadmap_worker.lanes import prreview as lane_prreview
 from tauceti_roadmap_worker.lanes import redteam as lane_redteam
 from tauceti_roadmap_worker.paths import HERE
 
@@ -52,7 +53,7 @@ def ctx(tmp_path, monkeypatch):
     monkeypatch.setattr(gitops, "git", fake_git)
     monkeypatch.setattr(gitops, "sync_checkout", fake_checkout)
     monkeypatch.setattr(gitops, "checkout_pr", fake_checkout)
-    for module in (lane_port, lane_redteam, lane_fix, lane_gate):
+    for module in (lane_port, lane_redteam, lane_fix, lane_gate, lane_prreview):
         monkeypatch.setattr(module, "open_roadmap_prs", lambda ctx: PRS)
     review = replies.Event("2026-10-20T10:00:00Z", "reviewer", "Changes needed: the hypothesis on p is missing.")
     monkeypatch.setattr(lane_gate, "timeline", lambda ctx, pr: [review])
@@ -81,6 +82,9 @@ JOBS = [
     ("RT-Foo~1b", {"board_pr": 12, "operator": "alice"}),
     ("RT-Foo~2a", {"board_pr": 12, "operator": "alice", "previous": ["RT-Foo~1a", "RT-Foo~1b"], "repair": "FIX-RT-Foo~1"}),
     ("FIX-RT-Foo~2", {"board_pr": 12, "operator": "alice", "reviews": ["RT-Foo~2a", "RT-Foo~2b"]}),
+    # The AI review of a roadmap pull request by another author.
+    ("PRREVIEW-Foo~1", {"pr": 905, "head": SHA, "owner": "carol", "name": "Foo"}),
+    ("PRREVIEW-Foo~2", {"pr": 905, "head": SHA, "owner": "carol", "name": "Foo", "roadmaps": ["Bar", "Foo"]}),
 ]
 
 

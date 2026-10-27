@@ -53,7 +53,7 @@ RETIRED = ("two proved", "at most two", "lean mirror", "proved examples that tes
 
 
 @pytest.mark.parametrize("lane", ["package", "port", "fix", "gate", "review", "review-web", "redteam",
-                                  "redteam-section"])
+                                  "redteam-section", "prreview"])
 def test_briefs_that_write_or_review_the_lean_carry_the_headline_rule(lane):
     text = prompts.render(lane, all_values())
     assert HEADLINE_RULE in text and "Fermat's Last Theorem" in text
@@ -68,7 +68,7 @@ def test_no_brief_asks_for_an_example_quota_or_lean_counterparts_of_checks(lane)
         assert phrase.lower() not in text, f"{lane}: {phrase}"
 
 
-@pytest.mark.parametrize("lane", ["review", "review-web", "redteam", "redteam-section"])
+@pytest.mark.parametrize("lane", ["review", "review-web", "redteam", "redteam-section", "prreview"])
 def test_review_and_red_team_briefs_ask_for_headlines_and_padding(lane):
     text = " ".join(prompts.render(lane, all_values()).split())
     for phrase in PADDING_QUESTIONS:
@@ -76,7 +76,7 @@ def test_review_and_red_team_briefs_ask_for_headlines_and_padding(lane):
     assert "Padding in Suggested.lean" in text or lane == "redteam-section"   # the defect class
 
 
-@pytest.mark.parametrize("lane", ["design", "package", "port", "fix", "gate", "review", "review-web"])
+@pytest.mark.parametrize("lane", ["design", "package", "port", "fix", "gate", "review", "review-web", "prreview"])
 def test_readme_api_bullets_and_checks_are_prose_and_a_lean_name_is_a_claim(lane):
     text = " ".join(prompts.render(lane, all_values()).split())
     assert "lists its API as bullets that state each fact in prose, hypotheses and conclusion" in text

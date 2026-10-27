@@ -185,7 +185,8 @@ def deliverable_problems(ctx, job: Job, pr: dict, texts: dict[str, str], jobs: l
     rest of its kind's deliverables (`board.required_paths`) there or already at the head, and an
     outcome the job's successors can follow: a triage `lanes.target` accepts (a merge-into naming a
     job on the board), a review verdict `lanes.review` accepts, a port report naming the roadmap
-    pull request its author opened."""
+    pull request its author opened, a pull-request review's verdict naming the pull request and head
+    its job names."""
     from .lanes.review import verdict_problems
     from .lanes.target import triage_problems
     pkg = board.package_dir(ctx.cfg.board.packages_dir, job.name)
@@ -213,6 +214,12 @@ def deliverable_problems(ctx, job: Job, pr: dict, texts: dict[str, str], jobs: l
             out += verdict_problems(json.loads(verdict), job.id)
         except ValueError:
             pass      # file_problems reports the invalid JSON
+    if job.kind == "prreview" and (verdict := found.get(board.prreview_verdict_path(ctx.cfg.board.packages_dir, job))):
+        from .lanes.prreview import prreview_verdict_problems
+        try:
+            out += prreview_verdict_problems(json.loads(verdict), job)
+        except ValueError:
+            pass
     if job.kind == "port" and report in texts:
         number = pr_number_from_report(texts[report])
         if not number:

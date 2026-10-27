@@ -20,6 +20,9 @@ and a red-team pass the same, with the first line `Red team round <N> pass <x> (
 The errata of a roadmap's sources are a comment on the errata job's own issue, first line
 `Errata (<agent>) of <sha7>`, then `Verdict: recorded`, then its `## Source issues`, `## Checked`
 and `## Not verifiable` sections.
+The AI review of a roadmap pull request on the content repository (`render_pr_review`) is a comment
+in the same shape, first line `🤖 AI review (<agent>, <model>) of <sha40>`, its verdict `APPROVE`,
+`CHANGES NEEDED` or `REJECT`, and its own marker (`tauceti-roadmap-prreview`).
 A comment whose first line is `reviewing` (optionally `reviewing (<agent>)`) claims the open review.
 Only the shapes are read; everything else in a comment is data. This module is the pure part:
 parsing, the contract a review or pass is held to whichever route it came by (`contract_problems`),
@@ -37,6 +40,8 @@ from .board import Job
 
 MARK = "tauceti-roadmap-review"
 MARK_RE = re.compile(r"<!--\s*" + MARK + r"\s*(\{.*?\})\s*-->", re.DOTALL)
+PRREVIEW_MARK = "tauceti-roadmap-prreview"
+PRREVIEW_MARK_RE = re.compile(r"<!--\s*" + PRREVIEW_MARK + r"\s*(\{.*?\})\s*-->", re.DOTALL)
 REVIEW_HEAD = re.compile(r"^Review \(([^)\n]{1,40})\) of ([0-9a-f]{7,40})\s*$", re.IGNORECASE)
 REDTEAM_HEAD = re.compile(r"^Red team round (\d+) pass ([a-z]) \(([^)\n]{1,40})\) of ([0-9a-f]{7,40})\s*$",
                           re.IGNORECASE)
@@ -87,9 +92,9 @@ def normal_verdict(text: str) -> str:
     return "needs_changes" if text in ("needs_changes", "changes_needed") else text
 
 
-def worker_marker(body: str) -> dict:
+def worker_marker(body: str, pattern: re.Pattern = MARK_RE) -> dict:
     """The worker's marker a comment carries ({job, worker, agent, model, head}), or {}."""
-    found = MARK_RE.findall(body or "")
+    found = pattern.findall(body or "")
     try:
         marker = json.loads(found[-1]) if found else {}
     except ValueError:
@@ -331,19 +336,22 @@ def report_findings(report: str) -> tuple[list[tuple[str, str, list[str]]], list
     return findings, rest
 
 
-def render(head: str, verdict: str, report: str, marker: dict, conditional: list[str] | None = None) -> str:
+def render(head: str, verdict: str, report: str, marker: dict, conditional: list[str] | None = None, *,
+           preamble: list[str] = (), mark: str = MARK) -> str:
     """A worker's report in the comment shape: `head` (the first line), the verdict (and the gaps an
-    acceptance is conditional on), the findings numbered F01, F02, ... with their severity, the
-    report's other sections, and the worker's marker."""
+    acceptance is conditional on), the `preamble` lines, the findings numbered F01, F02, ... with
+    their severity, the report's other sections, and the worker's marker (`mark`)."""
     findings, rest = report_findings(report)
     lines = [head, "", f"Verdict: {verdict}", ""]
     if conditional:
         lines[-1:] = ["Conditional on the announced gaps: " + ", ".join(f"`{g}`" for g in conditional), ""]
+    if preamble:
+        lines += [*preamble, ""]
     for k, (severity, title, body) in enumerate(findings, 1):
         lines.append(f"{k}. **F{k:02d}** ({severity}) {title}")
         lines += [("   " + line) if line.strip() else "" for line in body]
     text = "\n".join(lines).rstrip() + "\n\n" + "\n".join(rest).strip() + "\n"
-    return text + "\n" + f"<!-- {MARK} {json.dumps(marker, sort_keys=True)} -->\n"
+    return text + "\n" + f"<!-- {mark} {json.dumps(marker, sort_keys=True)} -->\n"
 
 
 def review_head(agent: str, sha: str) -> str:
@@ -356,3 +364,42 @@ def redteam_head(round_: int, pass_: str, agent: str, sha: str) -> str:
 
 def errata_head(agent: str, sha: str) -> str:
     return f"Errata ({agent}) of {sha[:7]}"
+
+
+# --- the AI review of a roadmap pull request ---------------------------------------------------------
+
+# The verdict line of a pull-request review: an acceptance reads `Verdict: APPROVE`, which the gate
+# lane's reading of the timeline (`replies.APPROVE_VERDICT`) never takes for a review to answer; the
+# others read as a review that asks for changes.
+PR_VERDICTS = {"accepted": "APPROVE", "needs_changes": "CHANGES NEEDED", "rejected": "REJECT"}
+PR_STATUS_LINES = {
+    "accepted": ("The AI review accepts this head: the pull request is ready for a human's final approval. The AI "
+                 "does not approve or merge; a human does."),
+    "needs_changes": ("Changes needed before a human's final approval: the findings below (P1 and P2) block it at "
+                      "this head."),
+    "rejected": ("Changes needed: the AI review rejects the roadmap as it stands at this head (its scope or plan, "
+                 "see the findings); a human decides how to continue."),
+}
+
+
+def pr_review_head(agent: str, model: str, sha: str) -> str:
+    """The first line of a pull-request review: `🤖 AI review (<agent>, <model>) of <sha40>`."""
+    return f"\U0001f916 AI review ({agent}, {model}) of {sha}"
+
+
+def render_pr_review(head: str, status: str, report: str, marker: dict, reviewed: str,
+                     validation: str = "", conditional: list[str] | None = None) -> str:
+    """A pull-request review's comment: `head` (`pr_review_head`), the verdict line, the head reviewed
+    (`Reviewed head: <sha>`), what the verdict means for the human who approves, the worker's gate at
+    that head (`validation`), then the report's findings and sections (`render`) and the marker
+    `tauceti-roadmap-prreview` ({job, head, verdict, agent, model, worker})."""
+    preamble = [f"Reviewed head: {reviewed}", "", PR_STATUS_LINES.get(status, PR_STATUS_LINES["needs_changes"])]
+    if validation:
+        preamble += ["", validation]
+    return render(head, PR_VERDICTS.get(status, PR_VERDICTS["needs_changes"]), report, marker,
+                  conditional if status == "accepted" else None, preamble=preamble, mark=PRREVIEW_MARK)
+
+
+def prreview_marker(body: str) -> dict:
+    """The marker of a pull-request review comment ({job, head, verdict, agent, model, worker}), or {}."""
+    return worker_marker(body, PRREVIEW_MARK_RE)
