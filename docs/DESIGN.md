@@ -114,8 +114,10 @@ checkout, submits a PR to the board, and the intake advances the state.
    description, and opens the roadmap pull request (a draft, or ready with
    `[redteam] ready_after`), which receives human reviews only.
 8. `gate` — reacts to the human reviewers' comments on the roadmap PR: ingest every review
-   since the last reply (not only the latest), run a fix lane, push, reply finding by
-   finding, and flip the labels. A roadmap that no port placed in the merge order (an adopted
+   and comment no reply has acknowledged (not only the latest), run a fix lane, push, reply finding
+   by finding, and flip the labels. The reply records the version of every review, review comment
+   and issue comment the agent read, and acknowledges those only, so feedback posted or edited
+   during the run stays pending. A roadmap that no port placed in the merge order (an adopted
    author's) is placed after its last supplier before the dependency check, and the gate's
    submission carries that change. The final merge is a human action.
 9. `errata` — reads the published sources a roadmap cites, at the locators it cites, and records

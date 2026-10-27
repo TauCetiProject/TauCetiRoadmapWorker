@@ -47,6 +47,9 @@ CONDITIONAL = re.compile(r"^\W*conditional on the (?:announced|declared) gaps\W*
 ANY_FINDING = re.compile(r"^(?:##\s+([RSF]\d+)\s*[(\[](P[123])[)\]]\s*[:—–-]*\s*(.*)"
                          r"|\s*\d+\.\s+\*\*([RSF]\d+)\*\*\s*(?:\((P[123])\))?\s*(.*))$")
 RERAISED = re.compile(r"\bre-?rais(?:ed|es)\b[^:\n]*:\s*([^\n]+)", re.IGNORECASE)
+# A finding id's qualification by its review's job id and its comment (`review_findings`).
+QUALIFIER = r"(?:[A-Z]+-[\w~-]*/)?(?:c\d+/)?"
+FROM_LINE = re.compile(r"^<!-- from @[^,\n]*, (\S*) -->$", re.MULTILINE)
 
 
 @dataclass
@@ -134,6 +137,38 @@ def findings_with_bodies(text: str) -> list[tuple[str, str, str, str]]:
     return [(f, s, t, "\n".join(b).strip()) for f, s, t, b in out]
 
 
+def report_comments(text: str) -> list[tuple[str, str]]:
+    """The comments a review's report holds, as (key, text). The intake joins the comments a review
+    counted under a `<!-- from @login, url -->` line each; the key is `c` and the comment's id from the
+    url (its position when the url has none). A report without such lines is one comment, keyed ''."""
+    text = text or ""
+    heads = list(FROM_LINE.finditer(text))
+    if not heads:
+        return [("", text)]
+    out = []
+    for k, m in enumerate(heads):
+        cid = re.search(r"#issuecomment-(\d+)$", m.group(1))
+        end = heads[k + 1].start() if k + 1 < len(heads) else len(text)
+        out.append((f"c{cid.group(1) if cid else k + 1}", text[m.end():end]))
+    return out
+
+
+def review_findings(reviews: list[tuple[str, str]]) -> list[tuple[str, str, str, str]]:
+    """(id, severity, title, body) of every finding of the reviews in scope, each review given as (job
+    id, text). Every review, and every comment of one, numbers its findings from F01: when more than one
+    of them has findings, each id is qualified by its review (`RT-Foo~2a/F01`), and by its comment too
+    when that review holds several with findings (`REV-PKG-Foo~2/c123/F01`); else the ids are the
+    review's own."""
+    parts = [(job, key, found) for job, text in reviews for key, part in report_comments(text)
+             if (found := findings_with_bodies(part))]
+    jobs = [job for job, _key, _found in parts]
+    out = []
+    for job, key, found in parts:
+        prefix = "" if len(parts) == 1 else f"{job}/" + (f"{key}/" if jobs.count(job) > 1 else "")
+        out += [(prefix + fid, severity, title, body) for fid, severity, title, body in found]
+    return out
+
+
 TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
 EVIDENCE_HEADER = re.compile(r"instance|tried|computed", re.I)
 TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{2,}")
@@ -167,8 +202,10 @@ EVIDENCE = ("the report has no adversarial table with computed values: an accept
 
 
 def reraised(title: str, body: str) -> set[str]:
-    """The earlier finding ids a finding says it re-raises (`Re-raised: F01`)."""
-    return {fid for m in RERAISED.findall(title + "\n" + body) for fid in re.findall(r"\b[RSF]\d+\b", m)}
+    """The earlier finding ids a finding says it re-raises (`Re-raised: F01`), qualified as the repair
+    report wrote them (`Re-raised: REV-PKG-Foo~2/c123/F01`)."""
+    return {fid for m in RERAISED.findall(title + "\n" + body)
+            for fid in re.findall(r"\b" + QUALIFIER + r"[RSF]\d+\b", m)}
 
 
 SOURCE_ISSUE = re.compile(r"^\s*[-*]\s*\*\*(Misprint|Error|Gap)\*\*\s+in\s+(.+?)\s+at\s+(.+?):\s*(.+?);\s*"

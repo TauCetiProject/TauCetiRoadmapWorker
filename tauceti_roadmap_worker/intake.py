@@ -372,16 +372,19 @@ _norm = board.title_key
 
 def stuck_findings(repair_report: str, review: str) -> list[str]:
     """A review's blocking findings, when every one of them re-raises a finding the round's repair
-    marked `not actionable in this package` (by `Re-raised: <id>` in the finding, or the same title);
-    else []. Another repair round could not change them: a human decides."""
+    marked `not actionable in this package` (by `Re-raised: <id>` in the finding, an id that names
+    exactly one of the repair's findings as `replies.names` reads it, or the same title); else [].
+    Another repair round could not change them: a human decides."""
     settled = replies.not_actionable(repair_report)
     if not settled:
         return []
+    ids = [fid for fid, _how in replies.dispositions(repair_report)]
     by_title = {_norm(t): fid for fid, (t, _r) in settled.items() if _norm(t)}
     blocking = [f for f in prreviews.findings_with_bodies(review) if f[1] in ("P1", "P2")]
     out = []
     for fid, severity, title, body in blocking:
-        hit = sorted(prreviews.reraised(title, body) & set(settled)) or (
+        named = [replies.names(r, ids) for r in prreviews.reraised(title, body)]
+        hit = sorted({n[0] for n in named if len(n) == 1 and n[0] in settled}) or (
             [by_title[_norm(title)]] if _norm(title) in by_title else [])
         if not hit:
             return []
@@ -1390,7 +1393,8 @@ def sync_pull_requests(ctx) -> list[str]:
                 out.append(f"#{number}: held, but not converted back to draft ({exc})")
         reviews = ctx.gh.api(f"repos/{repo}/pulls/{number}/reviews?per_page=100", paginate=True)
         comments = ctx.gh.api(f"repos/{repo}/issues/{number}/comments?per_page=100", paginate=True)
-        events = events_from_api(reviews, comments)
+        inline = ctx.gh.api(f"repos/{repo}/pulls/{number}/comments?per_page=100", paginate=True)
+        events = events_from_api(reviews, comments, inline)
         want, drop = replies.wanted_label(events, pr_answerers(cfg, p["owner"]), p["head"], markers=r.review_markers,
                                           housekeeping=r.housekeeping_prefixes, approvers=r.approvers,
                                           ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,

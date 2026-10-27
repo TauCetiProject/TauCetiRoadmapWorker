@@ -365,7 +365,7 @@ read as an instruction.
 | redteam | the board PR's head (read-only) | a comment on the board PR in the red-team shape | the agent and model the pass requires | report header, checkout untouched, a pass with no finding has its adversarial table with computed values |
 | fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
-| gate | every review since the last reply | commits on the PR branch, a reply, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
+| gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
 headline theorems the finished roadmap will prove, stated now against the pinned Mathlib and Tau
@@ -384,6 +384,13 @@ the package gate on the package as it stands. It removes `<a id>` anchor tags it
 pointed at the heading slugs) and lists every other failure in the brief's mandatory section "Gate
 failures to clear": the round log's line, the gate's rule and every hit (logged `before the agent: ...`).
 The gate after the agent is unchanged.
+
+Every review, and every comment of one, numbers its findings from F01. When a fix answers several
+(the passes of a red-team round, or a review the intake concluded from several comments), its brief
+lists the findings by qualified id, `RT-Foo~2a/F01` (and `REV-PKG-Foo~2/c<comment id>/F01` for a
+comment), and the coverage check counts a section only for the one finding its id names: a bare `F01`
+settles nothing when two reports have one. A section may settle several findings by naming each
+(`## RT-Foo~2a/F01, RT-Foo~2b/F03 (P1) — applied`); `Re-raised:` takes the id as the repair wrote it.
 
 Every lane writes its report to `packages/<Name>/reports/<JOB>.md` on the board, so the next lane
 (often another operator) can read it. The roadmap's `sources.toml` is a deliverable of every job that
@@ -925,6 +932,9 @@ reach) is not built yet.
   `targets import-intentions`; there is nothing else to do.
 * **A draft pull request**: review it on GitHub. Your comments feed the gate lane; the reply answers
   every point, and the labels flip between awaiting-author and awaiting-review. Merging is yours.
+  The reply records the exact reviews and comments it answers (an HTML comment at its end), so a
+  review posted or edited while the gate works stays awaiting-author and gets its own round; a
+  comment of the branch owner's acknowledges nothing once the pull request has such a reply.
   A maintainer whose login is also the one the workers act as is the author of every worker-ported
   draft, so on those drafts their comments would read as the author's own replies. List that login
   in `[replies] maintainer_logins` and open each review with `[replies] maintainer_review_prefix`

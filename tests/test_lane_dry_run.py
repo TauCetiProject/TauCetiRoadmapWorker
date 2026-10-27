@@ -118,8 +118,9 @@ def test_gate_lane_answers_a_maintainer_review_posted_under_the_owners_login(ctx
                            commit=SHA, review_id=71)
     reply = replies.Event("2026-10-21T09:00:00Z", "alice", "Fixed in `0000000` (reply to the review).")
     inline = [replies.Event("2026-10-22T12:50:00Z", "alice", "(on `Suggested.lean` line 3) drop the hypothesis",
-                            review_id=71),
-              replies.Event("2026-10-22T13:10:00Z", "alice", "(on `README.md` line 9) noted", review_id=80)]
+                            review_id=71, ref="inline-1"),
+              replies.Event("2026-10-22T13:10:00Z", "alice", "(on `README.md` line 9) noted", review_id=80,
+                            ref="inline-2")]
     monkeypatch.setattr(lane_gate, "timeline", lambda ctx, pr: [reply, review])
     monkeypatch.setattr(lane_gate, "inline_comments", lambda ctx, pr: inline)
     ctx.cfg.replies.maintainer_logins = ["alice"]
