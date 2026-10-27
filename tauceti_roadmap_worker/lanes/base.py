@@ -527,7 +527,9 @@ class Lane:
         if job.requires_model and job.requires_model != ctx.model:
             return f"needs model {job.requires_model}"
         if job.requires_operator and job.requires_operator.lower() != ctx.operator.lower():
-            return f"needs the branch owner {job.requires_operator}"
+            pool = {p.lower() for p in ctx.cfg.roadmap.pool}
+            if not (job.requires_operator.lower() in pool and ctx.operator.lower() in pool):
+                return f"needs the branch owner {job.requires_operator}"
         if job.independent_of and ctx.claims:
             problem = claims.separation_problem(job.independent_of, ctx.operator,
                                                 ctx.claims.recorded_authors(job.independent_of),

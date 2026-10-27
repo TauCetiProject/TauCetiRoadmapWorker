@@ -95,3 +95,20 @@ def test_a_cycle_elsewhere_is_not_this_roadmaps_problem():
     assert depgraph.check_order(edges, order, only={"C"}) == []
     assert any(p.startswith("CYCLE") for p in depgraph.check_order(edges, order, only={"A"}))
     assert any(p.startswith("CYCLE") for p in depgraph.check_order(edges, order))
+
+
+def test_a_pool_member_may_take_a_gate_round_that_names_another_pool_member():
+    from tauceti_roadmap_worker.board import Job
+    from tauceti_roadmap_worker.lanes.base import Lane
+    import tempfile
+    from pathlib import Path
+    cfg = adopted_config()
+    state = Path(tempfile.mkdtemp())
+    ctx = SimpleNamespace(cfg=cfg, agent="claude", model="opus", operator=CUSTODIAN, claims=None, state=state)
+    job = Job(id="GATE-X~1", kind="gate", name="X", requires_operator=AUTHOR)
+    assert Lane().eligible(job, ctx) == ""
+    job.requires_operator = "someone-else"
+    assert Lane().eligible(job, ctx).startswith("needs the branch owner")
+    plain = SimpleNamespace(cfg=example_config(), agent="claude", model="opus", operator=CUSTODIAN, claims=None, state=state)
+    job.requires_operator = AUTHOR
+    assert Lane().eligible(job, plain).startswith("needs the branch owner")
