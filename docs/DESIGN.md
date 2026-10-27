@@ -115,7 +115,9 @@ checkout, submits a PR to the board, and the intake advances the state.
    `[redteam] ready_after`), which receives human reviews only.
 8. `gate` — reacts to the human reviewers' comments on the roadmap PR: ingest every review
    since the last reply (not only the latest), run a fix lane, push, reply finding by
-   finding, and flip the labels. The final merge is a human action.
+   finding, and flip the labels. A roadmap that no port placed in the merge order (an adopted
+   author's) is placed after its last supplier before the dependency check, and the gate's
+   submission carries that change. The final merge is a human action.
 9. `errata` — reads the published sources a roadmap cites, at the locators it cites, and records
    their misprints, errors and gaps in the board's errata register (`board errata seed` makes one
    job per roadmap whose sources no errata cover yet).
@@ -175,8 +177,10 @@ Agents fetch what they need themselves, within rules:
     the only route out) are off by default. Neither separates the agent from the operator's
     files.
 - Fixes on a draft PR (red-team fix rounds and gate rounds) run under the operator who
-  opened the PR, since only that operator can push to its fork branch; reviews and red-team
-  passes run under any other operator.
+  opened the PR, since only that operator can push to its fork branch, unless the PR's author
+  is in `[roadmap] pool`: then any pool member's worker may take the gate round, a pool
+  member's reply counts as the author's, and the repair is pushed onto the PR's own branch in
+  its head repository. Reviews and red-team passes run under any other operator.
 - What `Suggested.lean` holds (the maintainer's rule of 2026-10-22): it is the roadmap's
   acceptance test, not an API catalogue. It states the headline theorems, the deep results the
   finished roadmap will prove, against the pins with `sorry` (a roadmap toward Fermat's Last

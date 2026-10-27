@@ -18,9 +18,12 @@ and returned with the result.
 
 Sandbox profiles (`[sandbox] profile`): "off" (default) runs on the host; "proxy" points the agent's
 HTTP(S)_PROXY at the allow-everything-and-log proxy (bundled sandbox/allowproxy.py); "netjail" runs
-the agent in a private network namespace whose only route out is that proxy, and falls back to
-"proxy" when the jail cannot start. Claude agents also get a PreToolUse hook (sandbox/url-guard.py)
-that refuses to execute fetched content, raw network tools, proxy changes and credential access.
+the agent in a private network namespace whose only route out is that proxy. A requested profile that
+cannot run here (no usable jail, nothing listening at the proxy) stops the worker: no agent runs
+without the sandbox the configuration asks for. No profile isolates the filesystem or credentials:
+the agent runs as the operator, with the operator's home directory and permissions. Claude agents
+also get a PreToolUse hook (sandbox/url-guard.py) that refuses to execute fetched content, raw
+network tools, proxy changes and credential access in shell commands.
 """
 
 from __future__ import annotations
@@ -31,11 +34,13 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .paths import SANDBOX
@@ -172,6 +177,12 @@ def claude_settings(settings_dir: Path) -> Path:
     return path
 
 
+class SandboxUnavailable(SystemExit):
+    """The sandbox `[sandbox] profile` asks for cannot run agents on this host. That is so for every
+    job, so it ends the worker (exit status 1, the reason on stderr) once the job at hand is released,
+    instead of running the agent without it or releasing one job after another."""
+
+
 def netjail_usable(binary: str) -> bool:
     if not binary or not Path(binary).is_file():
         return False
@@ -180,6 +191,27 @@ def netjail_usable(binary: str) -> bool:
                               env={**os.environ, "NETJAIL_FORWARDER": str(SANDBOX / "nsforward.py")}).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def proxy_listening(url: str) -> bool:
+    u = urlparse(url)
+    try:
+        with socket.create_connection((u.hostname or "127.0.0.1", u.port or 3128), timeout=3):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def sandbox_problem(profile: str, proxy_url: str, netjail: str) -> str:
+    """Why the sandbox profile cannot run an agent on this host, '' when it can (always for "off")."""
+    if profile == "netjail" and not netjail:
+        return 'profile "netjail" is requested and [sandbox] netjail names no jail binary'
+    if profile == "netjail" and not netjail_usable(netjail):
+        return (f'profile "netjail" is requested and {netjail} cannot start a jail here (build sandbox/netjail.c '
+                "and grant it user namespaces: docs/OPERATORS.md, The sandbox profile)")
+    if profile in ("proxy", "netjail") and not proxy_listening(proxy_url):
+        return f'profile "{profile}" is requested and nothing listens at {proxy_url} (start sandbox/allowproxy.py)'
+    return ""
 
 
 def command_for(run: AgentRun, base_env: dict | None = None) -> tuple[list[str], dict, Path]:
@@ -195,10 +227,10 @@ def command_for(run: AgentRun, base_env: dict | None = None) -> tuple[list[str],
             argv += ["--settings", str(claude_settings(run.settings_dir))]
     else:
         raise ValueError(f"unknown agent {run.agent!r}")
-    if run.sandbox_profile == "netjail" and netjail_usable(run.netjail):
+    if run.sandbox_profile == "netjail":
         env["NETJAIL_FORWARDER"] = str(SANDBOX / "nsforward.py")
         argv = [run.netjail, *argv]
-    elif run.sandbox_profile in ("proxy", "netjail"):
+    elif run.sandbox_profile == "proxy":
         env.update(proxy_env(run.proxy_url))
     return argv, env, run.workdir
 
@@ -215,7 +247,11 @@ def events_path(log_out: Path) -> Path:
 def run_agent(run: AgentRun, launch=None) -> AgentResult:
     """Run the agent on the brief. Its events are rendered into the log as they arrive (`tail` follows
     it) and kept raw beside it; the usage-limit check reads the rendered log and stderr, and the
-    token usage comes from the events. `launch` (tests) replaces `subprocess.Popen`."""
+    token usage comes from the events. `launch` (tests) replaces `subprocess.Popen`. Raises
+    SandboxUnavailable, before anything runs, when the requested sandbox cannot run here."""
+    problem = sandbox_problem(run.sandbox_profile, run.proxy_url, run.netjail)
+    if problem:
+        raise SandboxUnavailable(f"sandbox: {problem}; no agent runs without it")
     argv, env, cwd = command_for(run)
     if launch is None and not shutil.which(argv[0]) and not Path(argv[0]).is_file():
         raise FileNotFoundError(f"{argv[0]} is not installed (run `tauceti-roadmap doctor`)")
