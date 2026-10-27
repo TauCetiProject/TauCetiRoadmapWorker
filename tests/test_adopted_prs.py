@@ -35,6 +35,8 @@ class PullGH:
             return list(self.reviews)
         if "/issues/1398/comments" in path:
             return list(self.comments)
+        if "/pulls/1398/comments" in path:
+            return []
         raise GHError(f"GET {path}: not faked")
 
     def write(self, method, path, payload=None):

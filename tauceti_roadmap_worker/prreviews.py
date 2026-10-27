@@ -49,7 +49,7 @@ ANY_FINDING = re.compile(r"^(?:##\s+([RSF]\d+)\s*[(\[](P[123])[)\]]\s*[:—–-]
 RERAISED = re.compile(r"\bre-?rais(?:ed|es)\b[^:\n]*:\s*([^\n]+)", re.IGNORECASE)
 # A finding id's qualification by its review's job id and its comment (`review_findings`).
 QUALIFIER = r"(?:[A-Z]+-[\w~-]*/)?(?:c\d+/)?"
-FROM_LINE = re.compile(r"^<!-- from @[^,\n]*, (\S*) -->$", re.MULTILINE)
+FROM_LINE = re.compile(r"^<!-- from @?[^,\n]*, (\S*) -->$", re.MULTILINE)
 
 
 @dataclass
@@ -139,7 +139,7 @@ def findings_with_bodies(text: str) -> list[tuple[str, str, str, str]]:
 
 def report_comments(text: str) -> list[tuple[str, str]]:
     """The comments a review's report holds, as (key, text). The intake joins the comments a review
-    counted under a `<!-- from @login, url -->` line each; the key is `c` and the comment's id from the
+    counted under a `<!-- from login, url -->` line each (`@login` in older reports); the key is `c` and the comment's id from the
     url (its position when the url has none). A report without such lines is one comment, keyed ''."""
     text = text or ""
     heads = list(FROM_LINE.finditer(text))
