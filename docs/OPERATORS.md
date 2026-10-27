@@ -21,8 +21,9 @@ tauceti-roadmap --conf <toml path or raw https URL> doctor
 ```
 
 `doctor` exits 1 on any failure and reports: Python, git, gh, the agent CLIs, `lake`, the `gh` login,
-access to the content, board, packages and library repositories, which claims namespace your
-workers will use, the merge-order file, the state directory, whether every brief renders, the PDF
+access to the content, board, packages and library repositories, whether you can set the board's
+state labels, which claims namespace your workers will use (a FAIL when the configured shared one is
+not writable), the merge-order file, the state directory, whether every brief renders, the PDF
 text extractor, OCR (when enabled) and the sandbox.
 
 **Sources.** The sources service extracts PDF text with `pdftotext` (install poppler-utils) or, more
@@ -525,8 +526,12 @@ restarts, since the configuration is loaded once per start.
 Leases use the TauCetiTools format (TauCetiWorker `scripts/claim.sh`): refs
 `refs/tauceti-claims/roadmap/<project>/job/<JOB>` updated with an atomic compare-and-swap push. The
 namespace is `$CLAIM_REPO` if set, else `[repositories] claims` when your account can push there,
-else your own fork (then your workers de-duplicate only among themselves). Leases are cooperative
-and fail-open: a lease that cannot be registered is logged and the round proceeds. A worker id
+else your own fork (then your workers de-duplicate only among themselves). When `[repositories]
+claims` names a namespace your account cannot push to, `work` refuses to start: leases in your fork
+are invisible to every other operator's workers and to `board sync`, so you would run the jobs they
+run. Ask the maintainer for push access, or pass `--private-claims` (or set `CLAIM_REPO`) to work
+with private leases on purpose. Leases are cooperative and fail-open: a lease that cannot be
+registered is logged and the round proceeds. A worker id
 runs one process at a time: at its start a worker releases any lease its previous process left
 behind (killed before it could release, or crashed), and any claimed job whose last "Claimed for"
 comment names this worker id and operator even with no lease (a process that died before it wrote

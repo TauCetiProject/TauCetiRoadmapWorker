@@ -101,6 +101,24 @@ def free_space_row(state: Path) -> tuple[str, str, str] | None:
                                 f"red-team and gate lanes stop below {MIN_FREE_GB_BUILD} GB)")
 
 
+def claims_row(cfg: config.Config, ns: str) -> tuple[str, str, str]:
+    """The doctor's line on the claims namespace: FAIL when the configured shared one is not writable,
+    since `work` then refuses to start."""
+    if why := claims.fallback_problem(cfg, ns):
+        return FAIL, "claims namespace", f"{why}; `work` refuses to start without --private-claims"
+    if cfg.repositories.claims and ns == cfg.repositories.claims:
+        return OK, "claims namespace", ns
+    return WARN, "claims namespace", f"{ns} (de-duplication covers only the workers that use it)"
+
+
+def board_labels_row(repo: str, permissions: dict) -> tuple[str, str, str]:
+    """The doctor's line on the board's state labels, which need triage."""
+    if any(permissions.get(p) for p in ("triage", "push", "maintain", "admin")):
+        return OK, "board labels", f"{repo}: this login sets state labels"
+    return WARN, "board labels", (f"{repo}: this login cannot set state labels; its claims, parks and releases "
+                                  "reach the board only when `board sync` mirrors them")
+
+
 def doctor(args) -> int:
     rows: list[tuple[str, str, str]] = []
     add = rows.append
@@ -151,12 +169,11 @@ def doctor(args) -> int:
             try:
                 data = gh.api(f"repos/{repo}")
                 add((OK, f"repository {label}", f"{repo} (push: {data.get('permissions', {}).get('push', False)})"))
+                if label == "board":
+                    add(board_labels_row(repo, data.get("permissions") or {}))
             except GHError as exc:
                 add((FAIL, f"repository {label}", f"{repo}: {exc}"))
-        ns = claims.namespace_for(cfg, gh, login)
-        shared = bool(r.claims) and ns == r.claims
-        add((OK if shared else WARN, "claims namespace",
-             ns + ("" if shared else " (your fork: de-duplication covers only your own workers until you are admitted)")))
+        add(claims_row(cfg, claims.namespace_for(cfg, gh, login)))
         if cfg.roadmap.merge_order_repo != "local":
             repo = r.packages_repo() if cfg.roadmap.merge_order_repo == "packages" else r.content
             try:
@@ -349,6 +366,12 @@ def work(args) -> int:
     agent = args.agent or cfg.agents.default
     model = args.model or cfg.model_for(agent)
     cl = claims.open_claims(cfg, gh, operator, paths.sanitize_worker_id(args.worker_id), dry_run=args.dry_run)
+    if (why := claims.fallback_problem(cfg, cl.repo)) and not args.private_claims:
+        why += ("; ask the maintainer for push access, or pass --private-claims (or set CLAIM_REPO) to work with "
+                "private leases on purpose")
+        if not args.dry_run:
+            raise SystemExit(f"claims: {why}")
+        print(f"warning: claims: {why}", file=sys.stderr)
     ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=cl, worker_id=paths.sanitize_worker_id(args.worker_id),
                   operator=operator, agent=agent, model=model, conf=_local_conf(args, cfg), dry_run=args.dry_run,
                   agent_fixed=bool(args.agent), model_fixed=bool(args.model))
@@ -927,6 +950,8 @@ def parser() -> argparse.ArgumentParser:
     w.add_argument("--loop", action="store_true")
     w.add_argument("--status-file", default="", metavar="PATH",
                    help="one round only: write its outcome, exit status and token usage to PATH as JSON")
+    w.add_argument("--private-claims", action="store_true",
+                   help="work with leases in your own fork although the configured claims namespace is not writable")
 
     g = sub.add_parser("gate", help="run the push gates on a roadmap folder (exit 1 on any failure)")
     g.add_argument("worktree", nargs="?")
