@@ -137,9 +137,10 @@ def events_from_api(reviews: list[dict], comments: list[dict]) -> list[replies.E
     return sorted(out, key=lambda e: e.t)
 
 
-def flip_labels(ctx: Context, pr: int, events: list[replies.Event], head_sha: str, owner: str) -> str:
+def flip_labels(ctx: Context, pr: int, events: list[replies.Event], head_sha: str, owner) -> str:
     r = ctx.cfg.replies
-    want, drop = replies.wanted_label(events, {owner}, head_sha, markers=r.review_markers,
+    owners = {owner} if isinstance(owner, str) else set(owner)
+    want, drop = replies.wanted_label(events, owners, head_sha, markers=r.review_markers,
                                       housekeeping=r.housekeeping_prefixes, approvers=r.approvers,
                                       ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,
                                       awaiting_review=r.awaiting_review, maintainers=set(r.maintainer_logins),

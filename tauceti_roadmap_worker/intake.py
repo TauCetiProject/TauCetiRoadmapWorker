@@ -1182,7 +1182,7 @@ def sync_pull_requests(ctx) -> list[str]:
         reviews = ctx.gh.api(f"repos/{repo}/pulls/{number}/reviews?per_page=100", paginate=True)
         comments = ctx.gh.api(f"repos/{repo}/issues/{number}/comments?per_page=100", paginate=True)
         events = events_from_api(reviews, comments)
-        want, drop = replies.wanted_label(events, {p["owner"]}, p["head"], markers=r.review_markers,
+        want, drop = replies.wanted_label(events, {p["owner"], p.get("operator") or p["owner"]}, p["head"], markers=r.review_markers,
                                           housekeeping=r.housekeeping_prefixes, approvers=r.approvers,
                                           ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,
                                           awaiting_review=r.awaiting_review, maintainers=set(r.maintainer_logins),
@@ -1199,10 +1199,11 @@ def sync_pull_requests(ctx) -> list[str]:
         if want == r.awaiting_author:
             mine = [j for j in jobs if j.kind == "gate" and j.name == p["name"]]
             if not any(j.state in ("available", "claimed", "submitted", "blocked") for j in mine):
-                gate = board.new_job(board.make_id("gate", p["name"], len(mine) + 1), requires_operator=p["owner"],
-                                     inputs={"pr": number, "operator": p["owner"]})
+                operator = p.get("operator") or p["owner"]
+                gate = board.new_job(board.make_id("gate", p["name"], len(mine) + 1), requires_operator=operator,
+                                     inputs={"pr": number, "operator": operator, "owner": p["owner"]})
                 ctx.board.create(gate)
-                out.append(f"#{number}: {gate.id} created for @{p['owner']}")
+                out.append(f"#{number}: {gate.id} created for @{operator}")
         out.append(f"#{number} {p['name']}: {want or 'approved'}")
     return out
 

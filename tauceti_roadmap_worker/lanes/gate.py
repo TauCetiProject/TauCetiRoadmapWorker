@@ -41,7 +41,8 @@ class GateLane(Lane):
             raise LaneError(f"pull request #{pr} is not an open roadmap pull request")
         r = ctx.cfg.replies
         events = timeline(ctx, pr)
-        since = replies.reviews_since_reply(events, {mine["owner"]}, r.review_markers, r.housekeeping_prefixes,
+        authors = {mine["owner"], mine.get("operator") or mine["owner"]}
+        since = replies.reviews_since_reply(events, authors, r.review_markers, r.housekeeping_prefixes,
                                             set(r.ignore_logins), maintainers=set(r.maintainer_logins),
                                             maintainer_prefix=r.maintainer_review_prefix)
         if since:
@@ -49,7 +50,7 @@ class GateLane(Lane):
             # login brings its own), and every other reviewer's since the first of them.
             cutoff, answered = since[0].t, {e.review_id for e in since if e.review_id}
             since += [e for e in inline_comments(ctx, pr)
-                      if e.review_id in answered or (e.t >= cutoff and e.user.lower() != mine["owner"].lower())]
+                      if e.review_id in answered or (e.t >= cutoff and e.user.lower() not in {a.lower() for a in authors})]
             since.sort(key=lambda e: e.t)
         if not since:
             raise LaneError(f"#{pr}: no review since the last reply")
@@ -57,7 +58,8 @@ class GateLane(Lane):
         wt, head = pr_branch_worktree(ctx, ws.content, job.name, pr, mine["branch"], ws)
         ws.workdir = wt
         ws.extra.update(prs=prs, siblings=sibling_checkouts(ctx, prs, skip=job.name), pr=pr, branch=mine["branch"],
-                        head=head, owner=mine["owner"], readme=wt / ctx.cfg.roadmap.active_dir / job.name / "README.md")
+                        head=head, owner=mine["owner"], operator=mine.get("operator") or mine["owner"],
+                        head_repo=mine.get("head_repo") or "", readme=wt / ctx.cfg.roadmap.active_dir / job.name / "README.md")
         return ws
 
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
@@ -92,7 +94,9 @@ class GateLane(Lane):
         if ctx.dry_run:
             return f"[dry-run] would push {new[:7]} and reply on #{pr}"
         if moved:
-            fork = gitops.ensure_fork(ctx.gh, cfg.repositories.content, ctx.operator)
+            # The branch lives in the pull request's head repository: the operator's fork for a port,
+            # the content repository itself for an adopted author's branch (2026-10-27).
+            fork = ws.extra.get("head_repo") or gitops.ensure_fork(ctx.gh, cfg.repositories.content, ctx.operator)
             self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"],
                                           expected=ws.extra.get("push_base") or ws.extra["head"]))
             self.await_pr_head(ctx, cfg.repositories.content, pr, new, then="not replying")
@@ -102,5 +106,5 @@ class GateLane(Lane):
         if not replies.reply_is_safe(text, cfg.replies.review_markers):
             raise LaneError("the reply would read as a review; not posting")
         ctx.gh.write("POST", f"repos/{cfg.repositories.content}/issues/{pr}/comments", {"body": text})
-        label = flip_labels(ctx, pr, timeline(ctx, pr), new, ws.extra["owner"])
+        label = flip_labels(ctx, pr, timeline(ctx, pr), new, {ws.extra["owner"], ws.extra.get("operator") or ws.extra["owner"]})
         return f"answered the review on #{pr} at {new[:7]} ({label})"

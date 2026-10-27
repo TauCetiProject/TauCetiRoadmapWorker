@@ -64,7 +64,7 @@ def test_a_maintainer_review_from_the_owner_login_creates_one_gate_job(sync):
     out = sync(gh, board)
     assert gh.writes == [("POST", LABELS, {"labels": ["awaiting-author"]}), ("DELETE", f"{LABELS}/awaiting-review", {})]
     [(job, state, _)] = board.created
-    assert job.id == "GATE-Foo~1" and job.requires_operator == OWNER and job.inputs == {"pr": 905, "operator": OWNER}
+    assert job.id == "GATE-Foo~1" and job.requires_operator == OWNER and job.inputs == {"pr": 905, "operator": OWNER, "owner": OWNER}
     assert f"#905: GATE-Foo~1 created for @{OWNER}" in out and "#905 Foo: awaiting-author" in out
     # The next sync sees the open gate job and creates no second one.
     job.state = state

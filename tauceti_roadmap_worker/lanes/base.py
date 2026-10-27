@@ -126,6 +126,12 @@ class LaneBlocked(LaneError):
 
 # --- shared lookups -------------------------------------------------------------------------------
 
+def pr_operator(cfg, owner: str) -> str:
+    """Who answers for a pull request: its author, or the custodian for an adopted author."""
+    r = cfg.roadmap
+    return r.custodian if owner in set(r.adopted_authors) and r.custodian else owner
+
+
 def open_roadmap_prs(ctx: Context) -> list[dict]:
     """Open pull requests the port lane opened (label `roadmap.pr_label`, marker in the body):
     [{pr, name, head, branch, owner}], cached in the state directory for the gate CLI."""
@@ -141,8 +147,11 @@ def open_roadmap_prs(ctx: Context) -> list[dict]:
         except ValueError:
             data = {}
         if data.get("roadmap"):
+            owner = pr["user"]["login"]
             out.append({"pr": pr["number"], "name": data["roadmap"], "head": pr["head"]["sha"],
-                        "branch": pr["head"]["ref"], "owner": pr["user"]["login"]})
+                        "branch": pr["head"]["ref"], "owner": owner,
+                        "head_repo": ((pr.get("head") or {}).get("repo") or {}).get("full_name") or "",
+                        "operator": pr_operator(ctx.cfg, owner)})
     (ctx.state / "prs.json").parent.mkdir(parents=True, exist_ok=True)
     (ctx.state / "prs.json").write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8")
     return out
