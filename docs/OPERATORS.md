@@ -131,6 +131,22 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   failure comes within a minute, and while a job it parked for references waits, it looks every
   minute whether the board answered it and polls at once when it did. Without `--loop` it does one
   round and exits.
+* A one-shot round's exit status names its outcome, so a supervisor that starts rounds itself (and
+  paces them) needs no log parsing:
+
+  | status | outcome |
+  |---|---|
+  | 0 | submitted, parked (`needs-references`) or blocked |
+  | 75 | nothing done: idle, or the job was skipped |
+  | 76 | an agent's usage limit |
+  | 77 | GitHub's primary rate limit |
+  | 78 | halted (below) |
+  | 1 | failed, or `setup-failed` |
+  | 130 | interrupted |
+
+  `--status-file PATH` also writes the outcome as JSON when the round ends: the job and its stage,
+  the status and detail, the agent, `retry_at` (for a limit), the seconds worked, the start and end
+  times, the exit status, and the token usage of the round's agent runs, summed from `usage.jsonl`.
 * `--dry-run` takes no lease, writes the brief to the job folder and prints every GitHub write.
 * GitHub's answers about the account stop the worker: a 401 (bad credentials), or a 403 naming a
   suspension, abuse detection or a secondary rate limit.
