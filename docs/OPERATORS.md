@@ -750,8 +750,8 @@ The bundled files are in the installed package's `sandbox/` folder.
   that refuses to execute fetched content, raw network tools, proxy changes and credential reads.
 
 Agents always run with a minimal environment: no GitHub token is passed to them; the worker makes
-every GitHub write itself after checking the result. TauCetiWorker's `--bubble` sandbox is the
-alternative for operators who already use it.
+every GitHub write itself after checking the result. None of these profiles separates the agent
+from the operator's files, and TauCetiWorker's `--bubble` sandbox is not connected to this harness.
 
 ## What a human does when
 
