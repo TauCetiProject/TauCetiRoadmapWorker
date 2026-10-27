@@ -12,10 +12,11 @@ import pytest
 
 from tauceti_roadmap_worker import board, cli, gates, intake, references, sources, worker
 from tauceti_roadmap_worker.board import Board, allowed_paths, file_problems, new_job
+from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes import Context, lane_for
 from tauceti_roadmap_worker.paths import HERE
 
-from .fakes import FakeClaims, FakeIssuesGH, example_config, job_issue, make_pdf
+from .fakes import FakeClaims, FakeIssuesGH, example_config, head_tree, job_issue, make_pdf
 from .test_gate_scanners import CLEAN_LEAN, CLEAN_README
 from .test_lane_dry_run import ctx  # noqa: F401 - the shared lane fixture
 
@@ -158,15 +159,20 @@ class IntakeGH:
     def api(self, path, paginate=False):
         if path.endswith("/pulls/12"):
             return {"number": 12, "state": "open", "draft": False, "user": {"login": "alice"},
+                    "author_association": "COLLABORATOR",
                     "body": board.encode_submission("PKG-Foo", "w1", "alice", "codex"),
                     "head": {"sha": "abc", "repo": {"full_name": "alice/jobs"}}}
         if "/pulls/12/files" in path:
             return [{"filename": f, "status": "added"} for f in self.files]
+        if "/git/trees/" in path:
+            return head_tree(self.files)
         if "/check-runs" in path:
             return {"check_runs": []}
         raise AssertionError(path)
 
     def raw_file(self, repo, path, ref=""):
+        if path not in self.files:
+            raise GHError(f"{path}: 404")
         return self.files[path]
 
     def write(self, method, path, payload=None):

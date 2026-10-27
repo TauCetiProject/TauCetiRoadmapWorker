@@ -12,7 +12,7 @@ from tauceti_roadmap_worker import boardpr, claims, cli, intake, prreviews
 from tauceti_roadmap_worker.board import Board, Outcome, new_job, title_key
 from tauceti_roadmap_worker.gh import GHError
 
-from .fakes import FakeClaims, FakeIssuesGH, bot_context, example_config, job_issue
+from .fakes import FakeClaims, FakeIssuesGH, bot_context, example_config, head_tree, job_issue
 
 FUTURE = 4_102_444_800
 
@@ -106,12 +106,13 @@ def test_a_free_lock_is_taken_for_the_run_and_released_after_it(monkeypatch, cap
     ran = []
     monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: lock)
     monkeypatch.setattr(intake, "repair_duplicates", lambda ctx, shared, yes=False: ran.append("repair") or [])
-    monkeypatch.setattr(intake, "intake_open", lambda ctx, write, only=0: ran.append("intake") or [])
+    monkeypatch.setattr(intake, "intake_open", lambda ctx, write, only=0, shared=None: ran.append("intake") or [])
+    monkeypatch.setattr(intake, "reconcile_merged", lambda ctx, yes=False: ran.append("reconcile") or [])
     monkeypatch.setattr(cli.references, "resume_all", lambda ctx, fetcher, yes=False: ran.append("references") or [])
     monkeypatch.setattr(cli.boardpr, "scan", lambda ctx, shared, yes=False: ran.append("scan") or [])
     monkeypatch.setattr(intake, "replace_upward_roadmaps", lambda ctx, yes=False: ran.append("order") or [])
     assert cli.board_run(board_args("intake", "--yes"), cfg, run_context(cfg)) == 0
-    assert ran == ["repair", "intake", "references", "scan", "order"]
+    assert ran == ["repair", "intake", "reconcile", "references", "scan", "order"]
     assert lock.released == [intake.lock_key(cfg.project.name)]
     # A lock that cannot be written never stops a run (fail-open, said so); a dry run takes none.
     monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: Lock(claims.ERROR))
@@ -145,6 +146,7 @@ def repair_context(issues, leases=None, pulls=()):
 
 def submission(number: int, job_id: str, refs: int, state: str = "open") -> dict:
     return {"number": number, "state": state, "draft": False, "user": {"login": "CBirkbeck"},
+            "author_association": "COLLABORATOR",
             "body": f"Refs #{refs}\n\npackage\n\n"
             + board_mod.encode_submission(job_id, "chris-1", "CBirkbeck", "codex", "gpt"),
             "labels": [], "head": {"sha": "a" * 40, "ref": f"chris-1/{job_id}",
@@ -254,6 +256,8 @@ class ReviewGH(FakeIssuesGH):
         if f"/pulls/{pr}/files" in path:
             return [{"filename": f, "status": "added"}
                     for f in ("packages/Foo/README.md", "packages/Foo/reports/PKG-Foo.md")]
+        if "/git/trees/" in path:
+            return head_tree(("packages/Foo/README.md", "packages/Foo/reports/PKG-Foo.md"))
         if "/check-runs" in path:
             return {"check_runs": []}
         if "/contents/" in path:

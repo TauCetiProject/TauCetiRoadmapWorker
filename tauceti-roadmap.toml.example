@@ -62,7 +62,10 @@ intention_labels = ["intention"]
 target_filers = ["team:TauCetiProject/humans", "roed-math"]
 # The project's operators besides every login the claims namespace records (empty: the running
 # login). An open roadmap pull request one of them opened counts as ours in a "Merge order"
-# paragraph when the merge order names its roadmap, even if no worker opened it.
+# paragraph when the merge order names its roadmap, even if no worker opened it. The intake takes
+# in submissions from these logins, from logins with write access to the board, and from the
+# operator the job's claim names; an operator who works through a fork and has no write access to
+# the board or the claims namespace is admitted by listing the login here.
 operators = []
 # Who may answer a needs-references request with `source: KEY <URL>`: a source they have checked is
 # legal, fetched whatever its host's licence class (a denied host never) and recorded with the

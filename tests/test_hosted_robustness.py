@@ -52,7 +52,7 @@ def test_the_intake_reads_the_listing_once_and_goes_on_past_an_error(tmp_path, m
     pulls = [pull(164, ["needs-review"]), pull(165), pull(166)]
     seen = []
 
-    def take(ctx, n, yes=False, pr=None):
+    def take(ctx, n, yes=False, pr=None, shared=None):
         seen.append((n, pr is not None))
         if n == 165:
             raise GHError("gh api repos/o/jobs/pulls/165/files: gh: HTTP 503")

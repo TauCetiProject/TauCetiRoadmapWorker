@@ -63,6 +63,7 @@ class LegacyGH(GH):
         self.job_id = job_id
         self.pr["body"] = "Refs #7\n\n" + encode_submission(job_id, "w2", "bob", "claude", "fable")
         self.pr["head"]["ref"] = f"w2/{job_id}"
+        self.pr["user"] = {"login": "bob"}
 
     def api(self, path, paginate=False):
         if "/pulls/12/files" in path:

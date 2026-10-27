@@ -721,7 +721,7 @@ def resume_job(ctx, job: board.Job, fet: fetcher.Fetcher, yes: bool = False) -> 
                 data = json.loads(mark[-1])
                 handled |= {int(x) for x in data.get("handled", [])}
                 done.update({str(k): str(v) for k, v in data.get("resolved", {}).items()})
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, AttributeError):
                 pass
     answers, notes, read = collect_answers(after, list(items), s.answer_associations, ctx.cfg.board.bot_logins,
                                            answerer_check(ctx))

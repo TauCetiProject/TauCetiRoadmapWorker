@@ -154,7 +154,7 @@ def open_roadmap_prs(ctx: Context) -> list[dict]:
             data = json.loads(marker.group(1)) if marker else {}
         except ValueError:
             data = {}
-        if data.get("roadmap"):
+        if isinstance(data, dict) and isinstance(data.get("roadmap"), str) and data["roadmap"]:
             owner = pr["user"]["login"]
             out.append({"pr": pr["number"], "name": data["roadmap"], "head": pr["head"]["sha"],
                         "branch": pr["head"]["ref"], "owner": owner,

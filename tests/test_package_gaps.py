@@ -55,6 +55,7 @@ class PackageGH(GH):
         super().__init__("e" * 40)
         self.pr["body"] = "Refs #8\n\n" + encode_submission("FIX-PKG-Foo~2", "w2", "bob", "codex", "gpt-6.1-sol")
         self.pr["base"] = {"sha": "b" * 40}
+        self.pr["user"] = {"login": "bob"}
         self.plans = {"b" * 40: json.dumps(base_plan), "e" * 40: json.dumps(head_plan)}
 
     def api(self, path, paginate=False):

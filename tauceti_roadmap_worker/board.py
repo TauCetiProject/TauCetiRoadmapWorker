@@ -207,15 +207,25 @@ def decode_spec(body: str) -> Job | None:
         return None
 
 
+SPEC_TYPES = {"after": list, "independent_of": list, "inputs": dict, "requires_agent": str, "requires_model": str,
+              "requires_operator": str, "note": str}
+
+
 def job_from_spec(data) -> Job | None:
-    """The job a spec dict describes, or None when it does not name a valid job id."""
+    """The job a spec dict describes, or None when it does not name a valid job id or a field has
+    the wrong type (`after` and `independent_of` are lists of job ids)."""
+    if not isinstance(data, dict) or not isinstance(data.get("id"), str):
+        return None
     try:
         job = new_job(data["id"])
-    except (TypeError, KeyError, JobIdError):
+    except JobIdError:
         return None
-    for key in ("after", "independent_of", "inputs", "requires_agent", "requires_model", "requires_operator", "note"):
-        if key in data:
-            setattr(job, key, data[key])
+    for key, kind in SPEC_TYPES.items():
+        if key not in data:
+            continue
+        if not isinstance(data[key], kind) or kind is list and not all(isinstance(x, str) for x in data[key]):
+            return None
+        setattr(job, key, data[key])
     return job
 
 
@@ -564,6 +574,35 @@ def allowed_paths(job: Job, packages_dir: str, order_file: str = "") -> set[str]
     return report
 
 
+def required_paths(job: Job, packages_dir: str) -> set[str]:
+    """The files a job's submission must leave at its head: its report, and what its kind delivers
+    the first time (a triage, a design, a package, a verdict)."""
+    p = package_dir(packages_dir, job.name)
+    report = {f"{p}/reports/{job.id}.md"}
+    if job.kind == "target":
+        return report | {f"{p}/target.md"}
+    if job.kind == "design":
+        return report | {f"{p}/design/README.md", f"{p}/design/plan.json"}
+    if job.kind == "package":
+        return report | {f"{p}/README.md", f"{p}/Suggested.lean", f"{p}/metadata.toml"}
+    if job.kind == "review":
+        return report | {f"{p}/design/review.json" if artefact_of(job.id) == "DESIGN" else f"{p}/review.json"}
+    return report
+
+
+def order_change_problems(path: str, before: str, after: str, own: set[str]) -> list[str]:
+    """A submission may place the roadmaps it carries (`own`) in the merge order and move others
+    with them, but removes no roadmap the order lists and adds no other one."""
+    from .depgraph import read_order
+    old, new = set(read_order(before)), set(read_order(after))
+    out = []
+    if old - new:
+        out.append(f"{path}: removes {', '.join(sorted(old - new))} from the merge order")
+    if new - old - own:
+        out.append(f"{path}: adds {', '.join(sorted(new - old - own))}, which this submission does not carry")
+    return out
+
+
 def gaps_only(job: Job) -> bool:
     """Whether the job may change the design's plan.json only in its top-level `gaps` list: every job
     at the package stage (the package, its fixes, a red-team fix on its board pull request)."""
@@ -590,7 +629,48 @@ def plan_change_problems(path: str, before: str, after: str) -> list[str]:
     gaps = new.get("gaps", [])
     if not isinstance(gaps, list) or not all(isinstance(g, dict) and (g.get("slug") or g.get("id")) for g in gaps):
         return [f"{path}: `gaps` is a list of entries with a `slug`"]
+
+    def slugs(plan: dict) -> set[str]:
+        return {str(g.get("slug") or g.get("id")) for g in plan.get("gaps", []) if isinstance(g, dict)} \
+            if isinstance(plan.get("gaps"), list) else set()
+    named = {str(p)[4:] for layer in new.get("layers", []) if isinstance(layer, dict)
+             for t in layer.get("targets", []) if isinstance(t, dict)
+             for p in t.get("prerequisites", []) if str(p).startswith("gap:")} if isinstance(new.get("layers"), list) else set()
+    dropped = sorted(named & (slugs(old) - slugs(new)))
+    if dropped:
+        return [f"{path}: removes the gaps {', '.join(dropped)}, which targets of the plan still name"]
     return []
+
+
+def listing_problems(files: list[dict]) -> list[str]:
+    """Why a pull request's file listing cannot be taken in, whatever its files hold: a submission
+    deletes nothing, so a deleted file is refused, and so is a renamed one (its old path is deleted,
+    whatever the new path is)."""
+    out = []
+    for f in files:
+        if f.get("status") == "removed":
+            out.append(f"{f['filename']} is deleted")
+        elif f.get("status") == "renamed":
+            out.append(f"{f.get('previous_filename') or '?'} is renamed to {f['filename']}, which deletes it")
+    return out
+
+
+REGULAR_FILE = "100644"
+MODE_NAMES = {"100755": "an executable file", "120000": "a symbolic link", "160000": "a submodule", "040000": "a folder"}
+
+
+def mode_problems(modes: dict[str, str], paths: list[str]) -> list[str]:
+    """Every path a submission adds or changes is a regular file at its head (`modes`: path -> git
+    mode there). A symbolic link is refused because the contents API answers with its target's text
+    when the target is in the repository, so the checks would read another file than the one merged."""
+    out = []
+    for path in paths:
+        mode = modes.get(path)
+        if mode is None:
+            out.append(f"{path} is not in the head's tree")
+        elif mode != REGULAR_FILE:
+            out.append(f"{path} is {MODE_NAMES.get(mode, f'of mode {mode}')}, not a regular file")
+    return out
 
 
 def file_problems(path: str, text: str, allowed: set[str], data: bytes | None = None) -> list[str]:
@@ -645,6 +725,8 @@ def encode_submission(job_id: str, worker: str, operator: str, agent: str, model
 
 
 def decode_submission(body: str) -> dict | None:
+    """The submission marker of a pull request body, or None when there is none or a field is not a
+    string."""
     m = SUBMISSION_RE.search(body or "")
     if not m:
         return None
@@ -652,7 +734,11 @@ def decode_submission(body: str) -> dict | None:
         data = json.loads(m.group(1))
     except ValueError:
         return None
-    return data if isinstance(data, dict) and "job" in data else None
+    if not isinstance(data, dict) or not isinstance(data.get("job"), str):
+        return None
+    if any(not isinstance(data.get(k, ""), str) for k in ("worker", "operator", "agent", "model")):
+        return None
+    return data
 
 
 INTAKE_NOTE = re.compile(r"^Intake: merged #(\d+) from `?@?([A-Za-z0-9-]+)`?(?: \(([^,)]*)(?:, ([^)]*))?\))?")

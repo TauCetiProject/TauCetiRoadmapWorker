@@ -691,11 +691,35 @@ token that can write there, so a maintainer's own runs (or a token with that acc
 the workflow notes what it skipped. Team membership for `[board] target_filers` comes from
 `board/filers.json`, which every run with a maintainer's token keeps current.
 
-The intake merges a submission only when it names an open job, changes only that job's deliverables
-and report, contains no local path, has valid JSON and TOML, its checks passed, and its author is
-independent where required. When a design is accepted it inserts the roadmap into the merge-order
-file after its last supplier. With `[redteam] ready_after = true` the last red-team fix marks the
-pull request ready for review; otherwise it stays a draft for a human to mark ready.
+The intake merges a submission only when all of these hold:
+
+- its author is an operator of the board: a login in `[board] operators`, one with write access to
+  the board, or the operator the job's claim names. An operator who works through a fork without
+  write access is admitted by listing the login in `[board] operators`;
+- it is against `main`; the job is open, neither blocked nor parked in `needs-references`, and every
+  job it follows is done; the author is the job's `requires_operator`, and the marker names the
+  author and records the agent and model the job requires;
+- it adds or modifies regular files only (no deletion, no rename, no symbolic link, submodule or
+  executable), all of them the job's deliverables and report, with no local path and valid JSON and
+  TOML; a merge-order change only places the roadmaps it carries;
+- its deliverables are at the head (the report, and the triage, design, package or verdict its kind
+  delivers) with an outcome the next job can follow: a triage and a verdict the lanes' own checks
+  accept, a port report naming the roadmap pull request its author opened;
+- its checks passed, and its author is independent where required.
+
+It reads the pull request's files at one head and merges that head only (`sha` on the merge): a push
+while it reads, or after, waits for the next run. When a design is accepted it inserts the roadmap
+into the merge-order file after its last supplier. With `[redteam] ready_after = true` the last
+red-team fix marks the pull request ready for review; otherwise it stays a draft for a human to mark
+ready.
+
+A transition the intake starts finishes even when a GitHub write fails on the way: the job is set
+`submitted` before its pull request is merged and `done` only once its successors exist, and every
+`board intake` finishes a merged submission whose job is still `submitted` (from the most recently
+closed pull requests: a run that stopped after the merge, or a maintainer who merged it by hand);
+a board pull request is labelled `needs-review` only once its review jobs exist; and a package's last
+red-team fix becomes done only once its port exists, a fix left submitted on a merged pull request
+being finished by the next scan. The board creates no job twice, so a repeated step is harmless.
 
 Pull requests listed in `hold-draft.txt` in the state directory stay drafts: `board sync` converts
 them back if anything marks them ready.

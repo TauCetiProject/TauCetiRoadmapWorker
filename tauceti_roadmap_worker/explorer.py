@@ -390,11 +390,13 @@ def decode_import(body: str) -> dict | None:
         data = json.loads(found[-1])
     except ValueError:
         return None
-    jobs = [board.job_from_spec(spec) for spec in data.get("jobs", [])] if isinstance(data, dict) else []
-    files = data.get("files", []) if isinstance(data, dict) else []
-    if not jobs or any(j is None for j in jobs) or not isinstance(files, list):
+    if not isinstance(data, dict) or not isinstance(data.get("jobs"), list) or not isinstance(data.get("files", []), list):
         return None
-    return {"jobs": jobs, "files": [str(f) for f in files]}
+    jobs = [board.job_from_spec(spec) for spec in data["jobs"]]
+    files = data.get("files", [])
+    if not jobs or any(j is None for j in jobs) or not all(isinstance(f, str) for f in files):
+        return None
+    return {"jobs": jobs, "files": files}
 
 
 def import_deliverables(found: dict | None, packages_dir: str) -> set[str]:
@@ -577,7 +579,7 @@ def intake_import(ctx, number: int, pr: dict, found: dict, yes: bool) -> str:
     """Merge an import pull request and create its jobs. Only a pull request from an owner, member
     or collaborator (or the board's bot) is taken; its files must be the marker's, under the
     named roadmaps' package folders, and pass the submission gates; its checks must have passed."""
-    from .intake import _checks
+    from .intake import _checks, submission_files
     cfg, repo = ctx.cfg, ctx.cfg.repositories.packages_repo()
     login = pr["user"]["login"]
     if pr.get("author_association") not in TRUSTED and login not in cfg.board.bot_logins:
@@ -585,11 +587,8 @@ def intake_import(ctx, number: int, pr: dict, found: dict, yes: bool) -> str:
     if pr.get("draft") or pr.get("state") != "open":
         return f"#{number}: an import that is a draft or not open"
     allowed = import_deliverables(found, cfg.board.packages_dir)
-    problems = []
-    for f in ctx.gh.api(f"repos/{repo}/pulls/{number}/files?per_page=100", paginate=True):
-        if f.get("status") == "removed":
-            problems.append(f"{f['filename']} is deleted")
-            continue
+    files, problems = submission_files(ctx, repo, number, pr)
+    for f in files:
         text = ctx.gh.raw_file(pr["head"]["repo"]["full_name"], f["filename"], pr["head"]["sha"]) \
             if f["filename"] in allowed else ""
         problems += board.file_problems(f["filename"], text, allowed)
@@ -612,6 +611,6 @@ def intake_import(ctx, number: int, pr: dict, found: dict, yes: bool) -> str:
     todo = [j for j in found["jobs"] if j.id not in existing]
     if not yes:
         return f"#{number}: would merge the import and create {', '.join(j.id for j in todo) or 'nothing'} (dry run)"
-    ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash"})
+    ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash", "sha": pr["head"]["sha"]})
     created = [board.made_note(ctx.board, j, ctx.board.create(j)) for j in todo]
     return f"#{number}: merged the import; created " + (", ".join(created) or "nothing (already on the board)")
