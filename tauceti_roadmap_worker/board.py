@@ -13,7 +13,8 @@ manual_jobs.py, with the same job-id scheme `KIND-NAME~roundN`:
     FIX-RT-Name~r          the fix lane after red-team round r (merges that round's passes)
     GATE-Name~k            the k-th reply round to human reviewers on the draft PR
     ERRATA-Name            the mistakes in the roadmap's published sources, read at the locators it cites
-    PRREVIEW-Name~k        the k-th AI review of the roadmap in an open roadmap pull request (any author)
+    PRREVIEW-Name~k        the k-th AI review of a roadmap folder named Name (its last path component) in an
+                           open roadmap pull request (any author)
 
 Every job issue carries `<namespace label>`, `kind:<kind>` and `state:<state>` labels and a
 machine-readable spec in an HTML comment. The pure functions here (ids, specs, successors,
@@ -604,6 +605,13 @@ def prreview_verdict_path(packages_dir: str, job: Job) -> str:
     return f"{package_dir(packages_dir, job.name)}/reports/{job.id}.json"
 
 
+def prreview_folder(job: Job) -> str:
+    """The roadmap folder a pull-request review reviews, relative to the active directory
+    (`RepresentationTheory/CompactGroups`): its `folder` input, else (a job filed before reviews were
+    per folder) `<Name>`."""
+    return str(job.inputs.get("folder") or job.name).strip("/")
+
+
 def order_change_problems(path: str, before: str, after: str, own: set[str]) -> list[str]:
     """A submission may place the roadmaps it carries (`own`) in the merge order and move others
     with them, but removes no roadmap the order lists and adds no other one."""
@@ -802,6 +810,8 @@ def issue_body(job: Job, packages_repo: str, packages_dir: str, preamble: str = 
         lines.append(f"Operator: `{job.requires_operator}` (owns the pull request branch).")
     if job.inputs.get("pr"):
         lines.append(f"Pull request: #{job.inputs['pr']} on the content repository.")
+    if job.kind == "prreview" and job.inputs.get("folder"):
+        lines.append(f"Roadmap folder: `{job.inputs['folder']}` (under the active directory).")
     delivers = ("posts its result as a comment on this issue" if job.kind == "errata"
                 else "submits a pull request that names this job")
     lines += ["", f"Files: `{packages_repo}` under `{p}/`.", "",

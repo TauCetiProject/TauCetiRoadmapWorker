@@ -66,16 +66,24 @@ def test_a_review_delivers_its_report_and_verdict_and_releases_nothing():
 def test_the_prreview_table_defaults_off_and_parses():
     cfg = config.Config()
     assert (cfg.prreview.enabled, cfg.prreview.label, cfg.prreview.per_run, cfg.prreview.authors,
-            cfg.prreview.skip_authors, cfg.prreview.require_single_folder) == (False, "ai-approved", 3, [], [], True)
+            cfg.prreview.skip_authors, cfg.prreview.max_folders) == (False, "ai-approved", 3, [], [], 10)
     text = ('[project]\nname = "P"\n[prreview]\nenabled = true\nlabel = "ai-ok"\nper_run = 5\nauthors = ["carol"]\n'
-            'skip_authors = ["dave"]\nrequire_single_folder = false\n')
+            'skip_authors = ["dave"]\nmax_folders = 4\n')
     parsed = config.parse(text, "x.toml").prreview
     assert (parsed.enabled, parsed.label, parsed.per_run, parsed.authors, parsed.skip_authors,
-            parsed.require_single_folder) == (True, "ai-ok", 5, ["carol"], ["dave"], False)
+            parsed.max_folders) == (True, "ai-ok", 5, ["carol"], ["dave"], 4)
     for bad, why in (("per_run = -1", "prreview.per_run"), ('authors = ["not a login"]', "prreview.authors"),
-                     ('enabled = true\nlabel = ""', "prreview.label"), ('per_run = "3"', "expected int")):
+                     ('enabled = true\nlabel = ""', "prreview.label"), ('per_run = "3"', "expected int"),
+                     ("max_folders = 0", "prreview.max_folders")):
         with pytest.raises(config.ConfigError, match=re.escape(why)):
             config.parse(f'[project]\nname = "P"\n[prreview]\n{bad}\n', "x.toml")
+
+
+def test_a_file_that_still_sets_the_retired_single_folder_switch_loads_with_a_warning():
+    cfg = config.parse('[project]\nname = "P"\n[prreview]\nenabled = true\nrequire_single_folder = true\n', "x.toml")
+    assert cfg.prreview.enabled and not hasattr(cfg.prreview, "require_single_folder")
+    assert cfg.warnings == [("prreview.require_single_folder is no longer read (every roadmap folder of a pull request "
+                             "gets its own review; see prreview.max_folders): remove it")]
 
 
 def test_the_lane_runs_on_the_review_models_unless_its_own_table_pins_others():
@@ -127,18 +135,23 @@ def test_the_gate_command_takes_a_nested_folder(tmp_path, monkeypatch, capsys):
 
 # --- board sync --------------------------------------------------------------------------------------
 
-def node(number, head, author="carol", paths=("TauCetiRoadmap/Foo/README.md",), labels=(), draft=False):
-    return {"number": number, "title": f"Roadmap #{number}", "isDraft": draft, "headRefOid": head,
+def node(number, head, author="carol", paths=("TauCetiRoadmap/Foo/README.md",), labels=(), draft=False, title=""):
+    """An open pull request as the GraphQL listing gives it; a path is `path` (modified) or
+    `(path, changeType)`."""
+    files = [(p, "MODIFIED") if isinstance(p, str) else p for p in paths]
+    return {"number": number, "title": title or f"Roadmap #{number}", "isDraft": draft, "headRefOid": head,
             "author": {"login": author}, "labels": {"nodes": [{"name": x} for x in labels]},
-            "files": {"totalCount": len(paths), "nodes": [{"path": p} for p in paths]}}
+            "files": {"totalCount": len(files), "nodes": [{"path": p, "changeType": c} for p, c in files]}}
 
 
 class ContentGH:
     """The content repository's open pull requests (one GraphQL listing), single pull requests by
-    REST, the board's main (verdict records), and every write; label writes fail with `refuse`."""
+    REST, main's tree (`tree`: the folders under TauCetiRoadmap/ holding a README.md), the board's main
+    (verdict records), and every write; label writes fail with `refuse`."""
 
-    def __init__(self, nodes=(), pulls=None, files=None, refuse=False):
+    def __init__(self, nodes=(), pulls=None, files=None, refuse=False, tree=()):
         self.nodes, self.pulls, self.files, self.refuse = list(nodes), dict(pulls or {}), dict(files or {}), refuse
+        self.tree = [f"TauCetiRoadmap/{d}/README.md" for d in tree]
         self.writes, self.listings, self.dry_run, self.fence = [], 0, False, None
 
     def graphql(self, query, **variables):
@@ -149,6 +162,8 @@ class ContentGH:
         m = re.fullmatch(r"repos/[^/]+/[^/]+/pulls/(\d+)", path)
         if m and int(m.group(1)) in self.pulls:
             return self.pulls[int(m.group(1))]
+        if re.fullmatch(r"repos/[^/]+/[^/]+/git/trees/main\?recursive=1", path):
+            return {"truncated": False, "tree": [{"path": t, "type": "blob"} for t in self.tree]}
         raise GHError(f"GET {path}: 404")
 
     def raw_file(self, repo, path, ref=""):
@@ -163,15 +178,17 @@ class ContentGH:
         return {}
 
 
-def review_job(number, round_, pr, head, state, name="Foo", owner="carol"):
-    job = new_job(board.make_id("prreview", name, round_), inputs={"pr": pr, "head": head, "owner": owner, "name": name})
+def review_job(number, round_, pr, head, state, name="Foo", owner="carol", folder=""):
+    inputs = {"pr": pr, "head": head, "owner": owner, "name": name, **({"folder": folder} if folder else {})}
+    job = new_job(board.make_id("prreview", name, round_), inputs=inputs)
     job.number, job.state, job.labels = number, state, ["roadmap-job", "kind:prreview", f"state:{state}"]
     return job
 
 
 def verdict_file(job, status, head):
     return {board.prreview_verdict_path("packages", job): json.dumps(
-        {"review": {"status": status, "reviewer": f"independent-review-{job.id}", "head": head, "pr": job.inputs["pr"]}})}
+        {"review": {"status": status, "reviewer": f"independent-review-{job.id}", "head": head, "pr": job.inputs["pr"],
+                    "folder": board.prreview_folder(job)}})}
 
 
 def sync(gh, jobs=(), **over):
@@ -188,7 +205,8 @@ def test_one_review_is_filed_per_new_head_for_any_author_drafts_included():
     out, fake = sync(ContentGH([node(12, H1, author="outsider", draft=True)]))
     [(job, state, _)] = fake.created
     assert job.id == "PRREVIEW-Foo~1" and state == "available" and job.requires_operator == ""
-    assert job.inputs == {"pr": 12, "head": H1, "owner": "outsider", "name": "Foo"}
+    # A review is of one roadmap folder, which the job names (relative to the active directory).
+    assert job.inputs == {"pr": 12, "head": H1, "owner": "outsider", "name": "Foo", "folder": "Foo"}
     assert out == ["#12: PRREVIEW-Foo~1 created"]
     # The head it names is reviewed (whatever became of that review): no second job until the head moves.
     done = review_job(40, 1, 12, H1, "done")
@@ -211,7 +229,8 @@ def test_at_most_per_run_jobs_are_filed_oldest_pull_request_first():
     nodes = [node(n, str(n) * 40 if n < 10 else H1, paths=(f"TauCetiRoadmap/R{n}/README.md",)) for n in (31, 7, 19, 5)]
     out, fake = sync(ContentGH(nodes), per_run=2)
     assert [j.inputs["pr"] for j, _s, _p in fake.created] == [5, 7]
-    assert out[-1] == "2 pull request(s) wait for a review job ([prreview] per_run = 2)"
+    # `per_run` counts jobs (one per roadmap folder), not pull requests.
+    assert out[-1] == "2 review job(s) wait ([prreview] per_run = 2)"
 
 
 def test_the_author_lists_decide_whose_pull_requests_are_reviewed():
@@ -223,15 +242,163 @@ def test_the_author_lists_decide_whose_pull_requests_are_reviewed():
     assert fake.created == []
 
 
-def test_a_pull_request_with_several_roadmap_folders_is_skipped_unless_allowed():
+def test_a_pull_request_with_several_roadmap_folders_gets_one_review_per_folder():
+    # Formerly skipped (`require_single_folder`): every roadmap folder now has a review of its own,
+    # and each job names the pull request's other folders as its own.
     paths = ("TauCetiRoadmap/Foo/README.md", "TauCetiRoadmap/Bar/Suggested.lean")
-    out, fake = sync(ContentGH([node(12, H1, paths=paths)]))
-    assert fake.created == [] and out == ["#12: not reviewed (2 roadmap folders)"]
-    out, fake = sync(ContentGH([node(12, H1, paths=paths)]), require_single_folder=False)
-    [(job, _s, _p)] = fake.created
-    assert job.id == "PRREVIEW-Bar~1" and job.inputs["roadmaps"] == ["Bar", "Foo"]
+    out, fake = sync(ContentGH([node(12, H1, paths=paths)], tree=["Bar"]))
+    assert [(j.id, j.inputs["folder"], j.inputs["roadmaps"]) for j, _s, _p in fake.created] == [
+        ("PRREVIEW-Bar~1", "Bar", ["Bar", "Foo"]), ("PRREVIEW-Foo~1", "Foo", ["Bar", "Foo"])]
+    assert out == ["#12: PRREVIEW-Bar~1 created", "#12: PRREVIEW-Foo~1 created"]
     out, fake = sync(ContentGH([node(13, H1, paths=("Completed/Foo/README.md",))]))
-    assert fake.created == [] and out == ["#13: not reviewed (no `TauCetiRoadmap/<Name>/` folder)"]
+    assert fake.created == [] and out == []
+
+
+REP = "TauCetiRoadmap/RepresentationTheory"
+# Main's README folders in the shape of the content repository: a family index with nested roadmaps,
+# a roadmap with a `references/` note, and top-level roadmaps.
+TREE = ["RepresentationTheory", "RepresentationTheory/SemisimpleAlgebras", "RepresentationTheory/CompactGroups",
+        "GeometricTopology", "GeometricTopology/references", "BelyiMaps", "ConformalMapping", "Foo"]
+
+
+def created(fake):
+    return [(j.id, j.inputs["folder"]) for j, _s, _p in fake.created]
+
+
+def test_a_nested_roadmap_is_one_review_of_its_folder():
+    out, fake = sync(ContentGH([node(989, H1, paths=(f"{REP}/SemisimpleAlgebras/README.md",))], tree=TREE))
+    [(job, _s, _p)] = fake.created
+    assert (job.id, job.inputs["folder"], job.inputs["name"]) == (
+        "PRREVIEW-SemisimpleAlgebras~1", "RepresentationTheory/SemisimpleAlgebras", "SemisimpleAlgebras")
+    assert "roadmaps" not in job.inputs and out == ["#989: PRREVIEW-SemisimpleAlgebras~1 created"]
+    # Extra Lean files belong to their roadmap, whose README is on main when the pull request leaves it
+    # alone; the family's index changing beside it is no roadmap of its own.
+    paths = ((f"{REP}/CompactGroups/AbelianFourierTargets.lean", "ADDED"), f"{REP}/CompactGroups/Suggested.lean",
+             f"{REP}/README.md", f"{REP}/PROGRESS.md")
+    _out, fake = sync(ContentGH([node(1047, H1, paths=paths)], tree=TREE))
+    assert created(fake) == [("PRREVIEW-CompactGroups~1", "RepresentationTheory/CompactGroups")]
+
+
+def test_a_bundle_of_new_roadmaps_is_reviewed_folder_by_folder_across_runs():
+    paths = [(f"TauCetiRoadmap/{n}/{f}", "ADDED") for n in ("Alpha", "Beta", "Gamma")
+             for f in ("README.md", "Suggested.lean")]
+    nodes = [node(1397, H1, paths=paths), node(1400, H2, paths=(("TauCetiRoadmap/Delta/README.md", "ADDED"),))]
+    out, fake = sync(ContentGH(nodes), per_run=2)
+    assert created(fake) == [("PRREVIEW-Alpha~1", "Alpha"), ("PRREVIEW-Beta~1", "Beta")]
+    assert fake.created[0][0].inputs["roadmaps"] == ["Alpha", "Beta", "Gamma"]
+    assert out[-1] == "2 review job(s) wait ([prreview] per_run = 2)"
+    # The next run finishes the bundle before it starts the next pull request.
+    first = [review_job(600 + k, 1, 1397, H1, "available", name=n, folder=n) for k, n in enumerate(("Alpha", "Beta"))]
+    out, fake = sync(ContentGH(nodes), first, per_run=1)
+    assert created(fake) == [("PRREVIEW-Gamma~1", "Gamma")]
+    assert out[-1] == "1 review job(s) wait ([prreview] per_run = 1)"
+    # A folder reviewed at this head is not filed again; one whose review is open waits for it.
+    taken = review_job(610, 1, 1397, H2, "claimed", name="Gamma", folder="Gamma")
+    _out, fake = sync(ContentGH(nodes), first + [taken], per_run=5)
+    assert created(fake) == [("PRREVIEW-Delta~1", "Delta")]
+
+
+def test_a_mass_edit_of_existing_roadmaps_is_a_chore_and_a_bundle_of_new_ones_is_not():
+    names = [f"R{k:02d}" for k in range(43)]
+    bump = node(1187, H1, title="Bump TauCeti", paths=[f"TauCetiRoadmap/{n}/Suggested.lean" for n in names]
+                + ["lake-manifest.json", "Completed/Old/Suggested.lean"])
+    out, fake = sync(ContentGH([bump], tree=names))
+    assert fake.created == [] and out == ["#1187: not reviewed (chore: 43 roadmap folders)"]
+    eight = [f"Point{k}" for k in range(8)]
+    adds = node(196, H2, paths=[(f"TauCetiRoadmap/Family/{n}/{f}", "ADDED") for n in eight
+                                for f in ("README.md", "Suggested.lean")]
+                + [("TauCetiRoadmap/Family/README.md", "ADDED")])
+    _out, fake = sync(ContentGH([adds]), per_run=20)
+    assert [folder for _id, folder in created(fake)] == [f"Family/{n}" for n in eight]      # the index is no roadmap
+    twelve = [f"New{k:02d}" for k in range(12)]
+    paths = [(f"TauCetiRoadmap/{n}/README.md", "ADDED") for n in twelve]
+    _out, fake = sync(ContentGH([node(271, H3, paths=paths)]), per_run=20)
+    assert len(fake.created) == 12                  # more than max_folders, every README added
+    paths[0] = ("TauCetiRoadmap/New00/README.md", "MODIFIED")
+    out, fake = sync(ContentGH([node(271, H3, paths=paths)]), per_run=20)
+    assert fake.created == [] and out == ["#271: not reviewed (chore: 12 roadmap folders)"]
+    out, fake = sync(ContentGH([node(271, H3, paths=paths[:3])]), per_run=20, max_folders=2)
+    assert out == ["#271: not reviewed (chore: 3 roadmap folders)"]
+
+
+def test_completed_progress_reports_and_archives_are_not_reviewed():
+    archive = node(752, H1, title="Archive ConformalMapping", paths=(
+        ("Completed/ConformalMapping/README.md", "RENAMED"), ("Completed/ConformalMapping/Suggested.lean", "ADDED"),
+        "Completed/README.md", ("TauCetiRoadmap/ConformalMapping/Suggested.lean", "DELETED")))
+    progress = node(753, H2, paths=("TauCetiRoadmap/Foo/PROGRESS.md", "TauCetiRoadmap/Foo/STATUS.md",
+                                    "TauCetiRoadmap/Foo/metadata.toml", f"{REP}/STATUS.md"))
+    notes = node(754, H3, paths=("TauCetiRoadmap/GeometricTopology/references/README.md",))
+    out, fake = sync(ContentGH([archive, progress, notes], tree=TREE))
+    assert fake.created == [] and out == []
+    # A roadmap's README edited beside an archive is reviewed, unless the pull request is a chore by its title.
+    archive["files"]["nodes"].append({"path": "TauCetiRoadmap/BelyiMaps/README.md", "changeType": "MODIFIED"})
+    _out, fake = sync(ContentGH([archive], tree=TREE))
+    assert created(fake) == [("PRREVIEW-BelyiMaps~1", "BelyiMaps")]
+    archive["title"] = "chore(ConformalMapping): archive the finished roadmap"
+    out, fake = sync(ContentGH([archive], tree=TREE))
+    assert fake.created == [] and out == ["#752: not reviewed (chore by its title)"]
+    # A README the pull request removes leaves no roadmap behind it.
+    gone = node(755, H1, paths=(("TauCetiRoadmap/Foo/README.md", "DELETED"), "TauCetiRoadmap/Foo/Suggested.lean"))
+    out, fake = sync(ContentGH([gone], tree=TREE))
+    assert fake.created == [] and out == []
+
+
+def test_the_folders_of_a_pull_request_follow_the_nearest_readme():
+    entry = {"files": [{"path": f"{REP}/CompactGroups/Sub/Deep.lean", "change": "added"},
+                       {"path": "TauCetiRoadmap/New/Inner/README.md", "change": "added"},
+                       {"path": "TauCetiRoadmap/New/Inner/Suggested.lean", "change": "added"},
+                       {"path": "TauCetiRoadmap/Moved/Suggested.lean", "change": "modified"},
+                       {"path": "TauCetiRoadmap/Renamed/README.md", "change": "renamed",
+                        "previous": "TauCetiRoadmap/Moved/README.md"},
+                       {"path": "TauCetiRoadmap.lean", "change": "modified"}]}
+    assert intake.review_folders(entry, "TauCetiRoadmap", "Completed", set(TREE) | {"Moved"}) == {
+        "New/Inner": "added", "RepresentationTheory/CompactGroups": "", "Renamed": "renamed"}
+
+
+def two_folder_pr(head, labels=()):
+    return node(1164, head, labels=labels, paths=("TauCetiRoadmap/Foo/README.md", "TauCetiRoadmap/Bar/README.md"))
+
+
+def test_the_label_is_added_once_every_folder_accepts_and_goes_when_one_blocks_or_the_head_moves():
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar", folder="Bar")
+    labels = f"repos/{REPO}/issues/1164/labels"
+    # One folder accepted, the other not reviewed yet (its job is available): no label, no verdict read.
+    pending = review_job(42, 1, 1164, H1, "available", name="Bar", folder="Bar")
+    gh = ContentGH([two_folder_pr(H1)], files=verdict_file(foo, "accepted", H1))
+    out, _fake = sync(gh, [foo, pending])
+    assert gh.writes == [] and out == []
+    # The last folder's verdict lands: the label is added.
+    gh = ContentGH([two_folder_pr(H1)], files={**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)})
+    out, _fake = sync(gh, [foo, bar])
+    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})]
+    assert out == [f"#1164: ai-approved added (the AI review of {H1[:7]} accepts all 2 roadmap folders)"]
+    # Labelled and both accepted: kept. A later review of one folder that blocks takes it off.
+    gh = ContentGH([two_folder_pr(H1, ["ai-approved"])],
+                   files={**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)})
+    assert sync(gh, [foo, bar])[0] == [] and gh.writes == []
+    blocks = review_job(43, 2, 1164, H1, "done", name="Bar", folder="Bar")
+    gh = ContentGH([two_folder_pr(H1, ["ai-approved"])], files={
+        **verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1), **verdict_file(blocks, "needs_changes", H1)})
+    out, _fake = sync(gh, [foo, bar, blocks])
+    assert gh.writes == [("DELETE", f"{labels}/ai-approved", {})]
+    assert out == [f"#1164: ai-approved removed (the AI review of {H1[:7]} does not accept it (Bar))"]
+    # The head moves: the label goes, and both folders get a review of the new head.
+    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])])
+    out, fake = sync(gh, [foo, bar])
+    assert out[0] == "#1164: ai-approved removed (head moved)" and created(fake) == [
+        ("PRREVIEW-Bar~2", "Bar"), ("PRREVIEW-Foo~2", "Foo")]
+    # A token that may not write the content repository says so.
+    gh = ContentGH([two_folder_pr(H1)], files={**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)},
+                   refuse=True)
+    assert sync(gh, [foo, bar])[0][0].startswith(f"#1164: ai-approved on {REPO} not added (gh api -X POST")
+
+
+def test_a_chore_loses_a_label_put_on_by_hand():
+    chore = node(1187, H1, labels=["ai-approved"], title="chore: bump TauCeti", paths=("TauCetiRoadmap/Foo/Suggested.lean",))
+    gh = ContentGH([chore], tree=TREE)
+    out, fake = sync(gh)
+    assert out == ["#1187: ai-approved removed (not reviewed: chore by its title)", "#1187: not reviewed (chore by its title)"]
+    assert fake.created == []
 
 
 def test_a_review_nobody_took_is_superseded_when_the_head_moves_or_the_pull_request_closes():

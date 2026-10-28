@@ -207,22 +207,25 @@ separation = "operator"
 comment_reviewers = []
 
 [prreview]
-# The AI review of every open roadmap pull request of the content repository, by any author. When
-# enabled, `board sync` files a PRREVIEW-<Name>~k job for each pull-request head not reviewed yet (at
-# most `per_run` per run, oldest pull request first; none while a review or a gate round of that pull
-# request is open); a review worker posts its verdict as a comment on the pull request and records it
-# on the board. A pull request whose latest AI review of its current head accepts carries `label`;
-# the label goes when the head moves or a later review blocks. A human still approves and merges.
-# The operators' tokens need write access to the content repository for the comment and the label.
+# The AI review of every roadmap folder an open pull request of the content repository adds or edits,
+# by any author, nested roadmaps (TauCetiRoadmap/<Family>/<Name>/) included; changes under Completed/
+# and progress reports (PROGRESS.md, STATUS.md, metadata) are not reviewed. When enabled, `board sync`
+# files a PRREVIEW-<Leaf>~k job for each roadmap folder and pull-request head not reviewed yet (at
+# most `per_run` jobs per run, oldest pull request first, every folder of one pull request before the
+# next; none while a review of that folder or a gate round of that pull request is open); a review
+# worker posts its verdict as a comment on the pull request and records it on the board. A pull
+# request carries `label` exactly while an AI review of its current head accepts every one of its
+# roadmap folders. A human still approves and merges. The operators' tokens need write access to the
+# content repository for the comment and the label.
 enabled = false
 label = "ai-approved"
 per_run = 3
 # Only these authors' pull requests (empty: everyone's), and never these.
 authors = []
 skip_authors = []
-# A pull request that touches several roadmap folders is not reviewed (false: it is reviewed as the
-# first of them, with the others named in the brief).
-require_single_folder = true
+# A pull request titled `chore...`, or one that edits more roadmap folders than this, is a chore and
+# is not reviewed, unless it adds the README.md of every one of them (a bundle of new roadmaps).
+max_folders = 10
 
 [sources]
 # Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through

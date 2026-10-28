@@ -249,14 +249,17 @@ class Review:
 @dataclass
 class PRReview:
     # The AI review of every open roadmap pull request of the content repository, whoever opened it:
-    # `board sync` files a PRREVIEW job for each head not reviewed yet, and a pull request whose latest
-    # AI review of its current head accepts carries `label`. A human still approves and merges.
+    # `board sync` files a PRREVIEW job for each roadmap folder a head adds or edits that no review
+    # covers yet, and a pull request whose every roadmap folder an AI review of its current head
+    # accepts carries `label`. A human still approves and merges.
     enabled: bool = False
     label: str = "ai-approved"
     per_run: int = 3                 # new jobs filed per `board sync` run, oldest pull request first
     authors: list[str] = field(default_factory=list)        # only these authors' pull requests (empty: all)
     skip_authors: list[str] = field(default_factory=list)   # never these authors' pull requests
-    require_single_folder: bool = True   # a pull request that touches several roadmap folders is not reviewed
+    # A pull request that edits more roadmap folders than this is a chore and is not reviewed, unless
+    # it adds the README.md of every one of them (a bundle of new roadmaps).
+    max_folders: int = 10
 
 
 @dataclass
@@ -334,6 +337,11 @@ class Config:
 
 # --- loading -------------------------------------------------------------------------------------
 
+# Keys a newer worker no longer reads, with what replaced them: a file that still sets one loads, with
+# this warning instead of "unknown key".
+RETIRED = {"prreview.require_single_folder": "every roadmap folder of a pull request gets its own review; "
+                                             "see prreview.max_folders"}
+
 def _build(cls, data, where: str, warnings: list[str]):
     """Instantiate dataclass `cls` from a TOML table, recursing into nested dataclasses and lists of
     them. Unknown keys are reported as warnings rather than errors, so an older worker keeps
@@ -344,7 +352,9 @@ def _build(cls, data, where: str, warnings: list[str]):
     hints = {f.name: f for f in dataclasses.fields(cls)}
     for key, value in data.items():
         if key not in hints or key in ("path", "warnings", "overlay_path", "overlaid"):
-            warnings.append(f"unknown key {where}.{key}" if where else f"unknown key {key}")
+            full = f"{where}.{key}" if where else key
+            warnings.append(f"{full} is no longer read ({RETIRED[full]}): remove it" if full in RETIRED
+                            else f"unknown key {full}")
             continue
         default = getattr(cls(), key)
         if dataclasses.is_dataclass(default):
@@ -420,6 +430,8 @@ def validate(cfg: Config) -> None:
         problems.append("review.separation must be operator, agent or family")
     if cfg.prreview.per_run < 0:
         problems.append("prreview.per_run must be >= 0")
+    if cfg.prreview.max_folders < 1:
+        problems.append("prreview.max_folders must be at least 1")
     if cfg.prreview.enabled and not re.fullmatch(r"[^\s,][^,]{0,49}", cfg.prreview.label or ""):
         problems.append("prreview.label must be a GitHub label name (1 to 50 characters, no comma)")
     for key in ("authors", "skip_authors"):
