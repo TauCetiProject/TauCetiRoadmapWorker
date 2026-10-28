@@ -253,7 +253,7 @@ def test_one_review_is_filed_per_new_head_for_any_author_drafts_included():
     [(job, state, _)] = fake.created
     assert job.id == "PRREVIEW-Foo~1" and state == "available" and job.requires_operator == ""
     # A review is of one roadmap folder, which the job names (relative to the active directory).
-    assert job.inputs == {"pr": 12, "head": H1, "owner": "outsider", "name": "Foo", "folder": "Foo"}
+    assert job.inputs == {"pr": 12, "head": H1, "owner": "outsider", "name": "Foo", "folder": "Foo", "rereview": False}
     assert out == ["#12: PRREVIEW-Foo~1 created"]
     # The head it names is reviewed (whatever became of that review): no second job until the head moves.
     done = review_job(40, 1, 12, H1, "done")
@@ -261,6 +261,26 @@ def test_one_review_is_filed_per_new_head_for_any_author_drafts_included():
     assert fake.created == [] and out == []
     out, fake = sync(ContentGH([node(12, H2)]), [done])
     assert [j.id for j, _s, _p in fake.created] == ["PRREVIEW-Foo~2"] and fake.created[0][0].inputs["head"] == H2
+
+
+def test_a_new_round_is_a_re_review_of_the_head_the_latest_done_review_read():
+    first = review_job(40, 1, 12, H1, "done")
+    skipped = review_job(41, 2, 12, H2, "done")              # superseded: it reviewed nothing
+    skipped.labels.append(board.SUPERSEDED_LABEL)
+    elsewhere = review_job(42, 3, 11, H2, "done")            # the same leaf in another pull request
+    out, fake = sync(ContentGH([node(12, H3)]), [first, skipped, elsewhere])
+    [(job, _s, _p)] = fake.created
+    assert job.id == "PRREVIEW-Foo~4" and out == ["#12: PRREVIEW-Foo~4 created"]
+    assert {k: job.inputs[k] for k in ("previous_head", "previous_job", "rereview")} == {
+        "previous_head": H1, "previous_job": "PRREVIEW-Foo~1", "rereview": True}
+    # A done review wins over a later submitted one; a submitted one serves when none is done.
+    submitted = review_job(43, 5, 12, H3, "submitted")
+    assert intake.previous_review([first, skipped, submitted]) is first
+    assert intake.previous_review([skipped, submitted]) is submitted
+    assert intake.rereview_inputs([skipped]) == {"rereview": False}
+    later = review_job(44, 6, 12, H2, "done")
+    assert intake.rereview_inputs([first, later, submitted]) == {"previous_head": H2, "previous_job": "PRREVIEW-Foo~6",
+                                                                 "rereview": True}
 
 
 @pytest.mark.parametrize("open_job", [review_job(41, 1, 12, H1, "claimed"), review_job(41, 1, 12, H1, "submitted"),

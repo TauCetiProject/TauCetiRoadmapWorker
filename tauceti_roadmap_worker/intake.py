@@ -1532,6 +1532,25 @@ def prreview_verdicts(ctx, name: str, jobs: list[Job] | None = None, head: str =
     return out
 
 
+def previous_review(jobs: list[Job]) -> Job | None:
+    """The review a new round of one roadmap folder of a pull request follows, among `jobs` (that
+    folder's earlier reviews of that pull request): the latest done one (a superseded job reviewed
+    nothing), else the latest submitted one; None when there is neither, or when it names no head."""
+    done = [j for j in jobs if j.state == "done" and board.SUPERSEDED_LABEL not in j.labels]
+    found = max(done or [j for j in jobs if j.state == "submitted"],
+                key=lambda j: (board.parse_job_id(j.id).round, j.number or 0), default=None)
+    return found if found is not None and found.inputs.get("head") else None
+
+
+def rereview_inputs(jobs: list[Job]) -> dict:
+    """The inputs that make a new review round a re-review of a repaired head: `previous_head` and
+    `previous_job` from `previous_review`, and `rereview` (False for a first review)."""
+    before = previous_review(jobs)
+    if before is None:
+        return {"rereview": False}
+    return {"previous_head": str(before.inputs["head"]), "previous_job": before.id, "rereview": True}
+
+
 def supersede(ctx, job: Job, note: str) -> bool:
     """Close a PRREVIEW job nobody has taken as done, its issue labelled `superseded` with `note`: it
     stays a job of the board (its round and head count), and is never taken. False when a worker took
@@ -1598,8 +1617,10 @@ def sync_pr_reviews(ctx) -> list[str]:
       main): added when the last folder's verdict lands, removed otherwise; while a review of that
       head is being finished (claimed or submitted) it is left as it is.
     * `PRREVIEW-<Leaf>~N` (`<Leaf>` the folder's last component, N one more than that name's PRREVIEW
-      jobs; inputs `folder`, `pr`, `head`, `owner`, `name`, and `roadmaps`, every folder of the pull
-      request, when it has several) is filed for each roadmap folder of a pull request whose authors
+      jobs; inputs `folder`, `pr`, `head`, `owner`, `name`, `roadmaps`, every folder of the pull
+      request, when it has several, and `rereview`: after an earlier review of that folder of that
+      pull request, a re-review of the repaired head, with that review's `previous_head` and
+      `previous_job` (`rereview_inputs`)) is filed for each roadmap folder of a pull request whose authors
       `[prreview] authors` and `skip_authors` admit, unless a review of that folder of that pull
       request names this head or is open, or a gate round of the pull request is open (it is about to
       move the head): at most `[prreview] per_run` jobs per run, oldest pull request first, every
@@ -1693,6 +1714,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             inputs = {"pr": number, "head": head, "owner": author, "name": leaf, "folder": folder}
             if len(folders) > 1:
                 inputs["roadmaps"] = list(folders)
+            inputs.update(rereview_inputs(ours))
             job = board.new_job(board.make_id("prreview", leaf, 1 + sum(1 for j in reviews if j.name == leaf)),
                                 inputs=inputs)
             issue = ctx.board.create(job)
