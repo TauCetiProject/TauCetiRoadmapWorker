@@ -422,7 +422,7 @@ def content_clone(tmp_path):
     def git(cwd, *args):
         subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env={**__import__("os").environ, **env})
     origin, seed, wt = tmp_path / "origin.git", tmp_path / "seed", tmp_path / "wt"
-    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "init", "-q", "--bare", "--initial-branch=main", str(origin)], check=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
     for rel in ("TauCetiRoadmap/Later/README.md", "TauCetiRoadmap/Family/README.md", "TauCetiRoadmap/Family/Deep/README.md",
                 "Completed/Old/README.md", "TauCetiRoadmap/Later/references/README.md", "TauCetiRoadmap/README.md"):

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .. import gates
 from ..board import Job
-from .base import (Context, Lane, Workspace, count, dropped_names, gate_order_file, load_order, repair_order_file,
+from .base import (Context, Lane, Workspace, count, dropped_names, gate_order_file, load_order, merged_for, repair_order_file,
                    scan_problems, sibling_readmes)
 from .lake import MIN_FREE_GB_BUILD, free_gb, pin_lock
 from .design import manifest_problems
@@ -41,7 +41,7 @@ def package_gate(ctx: Context, ws: Workspace, name: str, pkg: Path) -> tuple[lis
     order = load_order(repair_order_file(ctx, ws, name, readme, lean, gate_order_file(ctx.cfg, ws, name)))
     opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
                                          siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir),
-                                         tauceti=gates.tauceti_sources(ws.content))
+                                         tauceti=gates.tauceti_sources(ws.content), merged=merged_for(ctx, ws))
     result = gates.scan_folder(name, readme, lean, opts)
     problems = [f"missing {', '.join(missing)}"] if missing else []
     problems += scan_problems(result)

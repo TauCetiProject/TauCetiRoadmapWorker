@@ -496,31 +496,35 @@ def candidate_readme(path: Path) -> Path:
 
 
 def depcheck_lines(name: str, readme: str, siblings: dict[str, str], order: list[str], main_extended: set[str],
-                   candidate: bool = False, movable: bool = False) -> tuple[list[str], list[str]]:
+                   candidate: bool = False, movable: bool = False,
+                   merged: set[str] = frozenset()) -> tuple[list[str], list[str]]:
     """(the lines to print, the problems) of the dependency check of one roadmap. A candidate that the
     merge order does not list yet (a design) is placed right after its last supplier for the check:
     the intake inserts it there when its design is accepted, so its absence is not a problem.
     `movable` (the agents' check): a roadmap the order lists above one of its suppliers is checked as
     moved right after the last of them, as the worker moves it when it submits, unless that would put
-    one of its consumers before it (then the UPWARD line stands, with why)."""
+    one of its consumers before it (then the UPWARD line stands, with why). `merged`: the roadmaps on
+    the content repository's main, suppliers available to all, never upward (`depgraph.check_order`),
+    and a roadmap among them is never moved or placed."""
     readmes = {**siblings, name: readme}
     edges = depgraph.supplier_edges(readmes, set(order) | {name}, main_extended)
     lines = []
-    if movable and name in order:
-        consumers = {c for c, sup in edges.items() if name in sup and c != name}
+    if movable and name in order and name not in merged:
+        consumers = {c for c, sup in edges.items() if name in sup and c != name and c not in merged}
         try:
-            text, note = depgraph.move_after_suppliers("\n".join(order) + "\n", name, set(edges.get(name, {})),
-                                                       consumers)
+            text, note = depgraph.move_after_suppliers("\n".join(order) + "\n", name,
+                                                       set(edges.get(name, {})) - set(merged), consumers)
         except depgraph.OrderCycle as exc:
             lines.append(f"not movable: {exc}")
         else:
             if note:
                 order = depgraph.read_order(text)
                 lines.append(f"moved: {note}; checked as moved (the worker moves it there when it submits)")
-    if candidate and name not in order:
-        consumers = {c for c, sup in edges.items() if name in sup}
+    if candidate and name not in order and name not in merged:
+        consumers = {c for c, sup in edges.items() if name in sup and c not in merged}
         try:
-            text, notes = depgraph.place_in_order("\n".join(order) + "\n", name, set(edges.get(name, {})), consumers)
+            text, notes = depgraph.place_in_order("\n".join(order) + "\n", name, set(edges.get(name, {})) - set(merged),
+                                                  consumers)
         except depgraph.OrderCycle as exc:
             problem = f"CYCLE: {exc}"
             return [problem, f"depcheck: {len(readmes)} roadmaps, 1 problem(s)"], [problem]
@@ -529,7 +533,7 @@ def depcheck_lines(name: str, readme: str, siblings: dict[str, str], order: list
         lines.append(f"candidate: {name} is not in the merge order yet; checked as if placed after {after} (the intake "
                      "inserts it when its design is accepted)")
         lines += [f"note: {n}" for n in notes]
-    problems = depgraph.check_order(edges, order, only={name})
+    problems = depgraph.check_order(edges, order, only={name}, merged=merged)
     lines += problems
     lines.append(f"depcheck: {len(readmes)} roadmaps, {sum(len(v) for v in edges.values())} edges, {len(problems)} problem(s)")
     return lines, problems
@@ -547,15 +551,21 @@ def gate(args) -> int:
             print("depcheck: no merge-order file; nothing to check")
             return 0
         readme = candidate_readme(Path(args.candidate)) if args.candidate else Path(args.depcheck)
+        merged = (gates.merged_roadmaps(Path(args.content), cfg.roadmap.active_dir, cfg.roadmap.completed_dir,
+                                        cfg.project.branch) if args.content else set())
         lines, problems = depcheck_lines(args.name, readme.read_text(encoding="utf-8"), siblings, order,
                                          set(cfg.roadmap.main_extended), candidate=bool(args.candidate),
-                                         movable=args.movable)
+                                         movable=args.movable, merged=merged)
         for line in lines:
             print(line)
         return 1 if problems else 0
     if not args.worktree or not args.name_pos:
         raise SystemExit("usage: gate <worktree> <Name> [--base REF] | gate --depcheck README --name Name")
-    opts = gates.GateOptions.from_config(cfg, order=order, siblings=siblings, dropped=dropped_names(cfg))
+    # The roadmaps on the content repository's main, as the lanes read them: the worktree's own
+    # origin/<branch> (a worktree of the content checkout), else the checkout --content names.
+    merged = gates.merged_roadmaps(Path(args.content or args.worktree), cfg.roadmap.active_dir,
+                                   cfg.roadmap.completed_dir, cfg.project.branch)
+    opts = gates.GateOptions.from_config(cfg, order=order, siblings=siblings, dropped=dropped_names(cfg), merged=merged)
     opts.folder = args.folder
     result = gates.run_gate(Path(args.worktree), args.name_pos, opts, base=args.base,
                             build_cmd=cfg.gates.build if args.build else "")
@@ -1009,6 +1019,9 @@ def parser() -> argparse.ArgumentParser:
                         "it is placed right after its last supplier for the check")
     g.add_argument("--name", "--only", dest="name", default="")
     g.add_argument("--order", default="", help="merge-order file (default: the configured one)")
+    g.add_argument("--content", default="", metavar="PATH",
+                   help="a checkout of the content repository whose origin/<branch> says which roadmaps are on main "
+                        "(never upward suppliers); default: the worktree itself, none with --depcheck/--candidate")
 
     m = sub.add_parser("merge-order", help="refresh the merge-order chain in every open roadmap pull request")
     m.add_argument("--list", action="store_true")

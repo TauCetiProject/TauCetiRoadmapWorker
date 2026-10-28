@@ -70,6 +70,8 @@ from .base import (
     kept_commit,
     library_description,
     load_order,
+    merged_for,
+    on_main_note,
     open_roadmap_prs,
     owe,
     owes,
@@ -458,15 +460,19 @@ class PRReviewLane(Lane):
                         for p in (ws.extra["readme"], ws.extra["lean"]))
         if cfg.roadmap.merge_order_repo != "packages" or not path.is_file():
             return path
+        merged = merged_for(ctx, ws)
+        if name in merged:
+            self.note(ws, on_main_note(name))
+            return path
         text = path.read_text(encoding="utf-8")
         order = read_order(text)
         if name in order:
             return repair_order_file(ctx, ws, name, readme, lean, path)
         readmes = roadmap_readmes(ctx, ws)
         known = set(order) | set(readmes)
-        suppliers = depgraph.package_suppliers(name, readme, lean, known)
+        suppliers = depgraph.package_suppliers(name, readme, lean, known) - merged
         edges = depgraph.supplier_edges({**readmes, name: readme}, known | {name})
-        consumers = {c for c, sups in edges.items() if name in sups and c != name}
+        consumers = {c for c, sups in edges.items() if name in sups and c != name and c not in merged}
         try:
             new, notes = depgraph.place_in_order(text, name, suppliers, consumers)
         except depgraph.OrderCycle as exc:
@@ -503,7 +509,8 @@ class PRReviewLane(Lane):
         cfg = ctx.cfg
         order = load_order(gate_order_file(cfg, ws, job.name))
         opts = gates.GateOptions.from_config(cfg, order=order or None, dropped=dropped_names(cfg),
-                                             siblings=sibling_readmes(ctx.state, cfg.roadmap.active_dir, ws.extra["prs"]))
+                                             siblings=sibling_readmes(ctx.state, cfg.roadmap.active_dir, ws.extra["prs"]),
+                                             merged=merged_for(ctx, ws))
         opts.folder = board.prreview_folder(job)
         active = re.escape(cfg.roadmap.active_dir)
         opts.outside_folder_allow.extend(rf"^{active}/{re.escape(f)}/" for f in other_folders(job))

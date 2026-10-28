@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .. import board, depgraph, gates, sources
 from ..board import Job
-from .base import Context, Lane, Workspace, count, load_order, order_path, sibling_readmes
+from .base import Context, Lane, Workspace, count, load_order, merged_for, order_path, sibling_readmes
 
 PREREQ = re.compile(r"^(?:mathlib|tauceti):[A-Za-z_][\w.'!?]*$|^roadmap:[A-Z][A-Za-z0-9]*(?:\s.*)?$|^target:[\w.]+$"
                     r"|^gap:[A-Za-z0-9][\w.-]*$")
@@ -209,7 +209,8 @@ class DesignLane(Lane):
         if order and ctx.cfg.gates.require_depcheck:
             readmes = {**sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir), job.name: text}
             edges = depgraph.supplier_edges(readmes, set(order), set(ctx.cfg.roadmap.main_extended))
-            problems += [p for p in depgraph.check_order(edges, order, only={job.name}) if not p.startswith("NOT IN ORDER")]
+            problems += [p for p in depgraph.check_order(edges, order, only={job.name}, merged=merged_for(ctx, ws))
+                         if not p.startswith("NOT IN ORDER")]
         return problems
 
 

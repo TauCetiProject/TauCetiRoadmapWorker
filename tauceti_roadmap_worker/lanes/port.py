@@ -18,7 +18,7 @@ from .. import depgraph, gates, gitops
 from ..board import Job
 from ..gh import GHError
 from .base import (PR_MARKER, Context, Lane, LaneError, Workspace, count, dropped_names, ensure_in_order_logged,
-                   load_order, open_roadmap_prs, order_path, repair_order_file, scan_problems, sibling_checkouts,
+                   load_order, merged_for, open_roadmap_prs, order_path, repair_order_file, scan_problems, sibling_checkouts,
                    sibling_readmes)
 from .pr import fresh_worktree, release_branch
 
@@ -123,7 +123,8 @@ class PortLane(Lane):
         order = load_order(repair_order_file(ctx, ws, job.name, *texts, order_path(ctx.cfg, ws.board, ws.content),
                                              carry=True))
         opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
-                                             siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]))
+                                             siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]),
+                                             merged=merged_for(ctx, ws))
         return gates.run_gate(ws.workdir, job.name, opts, base=f"origin/{ctx.cfg.project.branch}",
                               build_cmd=ctx.cfg.gates.build)
 

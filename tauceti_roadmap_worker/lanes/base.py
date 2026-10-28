@@ -338,6 +338,21 @@ def set_aside(checkout: Path, jobs: Path, worker: str, base: str = "main") -> Pa
     return dest
 
 
+def merged_for(ctx: Context, ws: Workspace) -> set[str]:
+    """The roadmaps on the content repository's main (`gates.merged_roadmaps` of the workspace's content
+    checkout, which every round syncs to it), listed once per workspace: suppliers available to every
+    pull request, whose place in the merge order of open pull requests means nothing."""
+    if "merged" not in ws.extra:
+        cfg = ctx.cfg
+        ws.extra["merged"] = gates.merged_roadmaps(ws.content, cfg.roadmap.active_dir, cfg.roadmap.completed_dir,
+                                                   cfg.project.branch)
+    return ws.extra["merged"]
+
+
+def on_main_note(name: str) -> str:
+    return f"{name} is on main; the merge order does not list it"
+
+
 def roadmap_readmes(ctx: Context, ws: Workspace) -> dict[str, str]:
     """The READMEs the merge-order placement reads for consumers: the roadmaps on the content
     repository's main and in its open roadmap pull requests."""
@@ -353,10 +368,14 @@ def move_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: str
     lists `name`, with `name` moved right after its last supplier (its README's, as the dependency check
     reads them, and every `TauCetiRoadmap.<X>` its Lean names) when one of them comes after it, and the
     notes. A move that would put one of its consumers before it is not made: `text` comes back as it is,
-    with a note saying why, and the dependency check reports the UPWARD edge as before."""
+    with a note saying why, and the dependency check reports the UPWARD edge as before. A roadmap on
+    main is never moved, and no roadmap moves after one (`merged_for`)."""
+    merged = merged_for(ctx, ws)
+    if name in merged:
+        return text, []
     order = read_order(text)
     pos = {n: i for i, n in enumerate(order)}
-    suppliers = depgraph.package_suppliers(name, readme, lean, set(order))
+    suppliers = depgraph.package_suppliers(name, readme, lean, set(order)) - merged
     if name not in pos or not any(pos[s] > pos[name] for s in suppliers if s in pos):
         return text, []                 # nothing to move: the other READMEs are not read
     readmes = roadmap_readmes(ctx, ws)
@@ -416,10 +435,15 @@ def ensure_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: s
     A placement that would put a supplier after a consumer raises LaneBlocked. A roadmap listed above
     one of its suppliers is moved right after the last of them (`move_in_order`): in the board
     checkout's file, or, on a board pull request whose roadmap the board's main lists, in a copy of
-    main's that the gate reads (the intake moves it on main)."""
+    main's that the gate reads (the intake moves it on main). A roadmap on the content repository's
+    main is never placed or moved (a pull request that edits it is no new roadmap), and its place in
+    the order never decides another's (`merged_for`)."""
     path = order_path(ctx.cfg, ws.board, ws.content)
     if ctx.cfg.roadmap.merge_order_repo != "packages" or not path.is_file():
         return []
+    merged = merged_for(ctx, ws)
+    if name in merged:
+        return [on_main_note(name)]
     text = path.read_text(encoding="utf-8")
     order = read_order(text)
     if ws.extra.get("board_pr"):
@@ -442,9 +466,9 @@ def ensure_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: s
         return notes
     readmes = roadmap_readmes(ctx, ws)
     known = set(order) | set(readmes)
-    suppliers = depgraph.package_suppliers(name, readme, lean, known)
+    suppliers = depgraph.package_suppliers(name, readme, lean, known) - merged
     edges = depgraph.supplier_edges({**readmes, name: readme}, known | {name})
-    consumers = {c for c, sups in edges.items() if name in sups and c != name}
+    consumers = {c for c, sups in edges.items() if name in sups and c != name and c not in merged}
     try:
         new, notes = depgraph.place_in_order(text, name, suppliers, consumers)
     except depgraph.OrderCycle as exc:
@@ -779,9 +803,11 @@ class Lane:
         design review or design fix) is a candidate: it enters the merge order when its design is
         accepted, so until then the check places it after its last supplier."""
         readme = str(ws.extra.get("readme") or ws.package(ctx.cfg, job.name) / "README.md")
+        content = ("--content", str(ws.content))
         if job.kind in ("target", "design") or board.artefact_of(job.id) == "DESIGN":
-            return ctx.cli("gate", "--candidate", readme, "--only", job.name, "--order", str(order_file))
-        return ctx.cli("gate", "--depcheck", readme, "--name", job.name, "--order", str(order_file), "--movable")
+            return ctx.cli("gate", "--candidate", readme, "--only", job.name, "--order", str(order_file), *content)
+        return ctx.cli("gate", "--depcheck", readme, "--name", job.name, "--order", str(order_file), "--movable",
+                       *content)
 
     def fetch_command(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """The command line an agent runs to fetch a source through the service."""

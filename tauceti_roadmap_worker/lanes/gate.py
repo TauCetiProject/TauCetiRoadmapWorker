@@ -18,7 +18,7 @@ from pathlib import Path
 from .. import gates, gitops, prompts, replies
 from ..board import Job
 from .base import (CONTENT_COMMENT, CONTENT_PUSH, PULL_REQUEST, PUSH, SUBMITTED, Context, Lane, LaneError, Workspace,
-                   dropped_names, ensure_in_order_logged, load_order, open_roadmap_prs, order_path, owe, owes,
+                   dropped_names, ensure_in_order_logged, load_order, merged_for, open_roadmap_prs, order_path, owe, owes,
                    pr_answerers, read_pending, scan_problems, settle, sibling_checkouts, sibling_readmes,
                    submission_started)
 from .fix import worktree_elaboration_problems
@@ -160,7 +160,8 @@ class GateLane(Lane):
             ws.extra["order_notes"] = ensure_in_order_logged(ctx, ws, job.name, *texts)
         order = load_order(order_path(ctx.cfg, ws.board, ws.content))
         opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
-                                             siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]))
+                                             siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]),
+                                             merged=merged_for(ctx, ws))
         found, ws.extra["gate"] = gate_problems(ctx, ws, job.name, job.name, opts)
         return found
 
