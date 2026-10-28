@@ -1191,8 +1191,8 @@ def test_an_incremental_re_review_accounts_for_every_finding_of_the_previous_rep
     assert lane.check(job, ctx, ws) == []
     ws.report.write_text(accounted.replace("- R02 — not repaired: the locator still names no page.\n", ""))
     assert lane.check(job, ctx, ws) == [
-        "incremental re-review: finding R02 of the previous report is not accounted for (write "
-        "`- R02 — repaired | partly repaired | not repaired: <the passage>` under `## Previous findings`)"]
+        ("incremental re-review: finding R02 of the previous report is not accounted for (write "
+         "`- R02 — repaired | partly repaired | not repaired: <the passage>` under `## Previous findings`)")]
     # A full review checks the previous findings too, but the worker does not hold it to a line for each.
     ws.extra["mode"] = "full"
     assert lane.check(job, ctx, ws) == []
