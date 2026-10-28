@@ -393,7 +393,7 @@ read as an instruction.
 | fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
-| prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-approved` label (on once every folder of the head accepts, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json` | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
+| prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-approved` label (on once every folder of the head accepts, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json`; on a pool author's PR, after a review asking changes, the repair pushed onto its branch and the reply | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
 headline theorems the finished roadmap will prove, stated now against the pinned Mathlib and Tau
@@ -612,7 +612,10 @@ one more than that name's earlier reviews), with inputs `folder` (relative to th
 `roadmaps` (all of them), and `rereview`: `false` for the first review of that folder of that pull
 request; `true` for a re-review of a repaired head, with `previous_head` and `previous_job`, the head
 and the job of the review it follows (the latest done one, a superseded job not counting, else the
-latest submitted one). It is filed for a head no review of that folder names yet, while no review
+latest submitted one), and `not_worker` when a reply on the pull request records that a worker
+produced the new head (the answered record of a review's repair or a gate round names the worker
+and the head): that worker does not take the job (`the worker that repaired this head does not
+review it`). A re-review is not filed in a run that cannot read the pull request's comments. It is filed for a head no review of that folder names yet, while no review
 of that folder and no gate round of that pull request is open (a gate round is about to move the
 head). `per_run` counts jobs; a run files every folder of one pull request before the next, so a
 bundle is reviewed as a whole across runs. A review nobody has taken is closed as `superseded` (set
@@ -631,6 +634,7 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 | `max_folders` | `10` | a pull request editing more roadmap folders than this is a chore and not reviewed, unless it adds the README.md of every one of them |
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
+| `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
 
 The review runs on the review models: `[agents.lanes.prreview]` pins them, and without that table the
 lane uses `[agents.lanes.review]`'s. For example
@@ -682,6 +686,31 @@ rule of the report and the verdict is that of a full review. A larger change, a 
 cannot be read, or a previous report not on the board yet gives a full review, with `changes.md`
 offered as context. The first line of an incremental re-review's comment ends `(incremental re-review
 since <sha7>)`, and every review's marker carries `mode`: `incremental` or `full`.
+
+On a pull request whose author is in `[roadmap] pool`, a review that asks for changes goes on to
+repair it in the same job, so that no gate round waits in the queue for it, when `repair_pool` is
+on, the worker's operator is in the pool too, and the run is not a dry run; a rejection or an
+acceptance never does. The repair runs after the review's comment and before the board submission,
+so the job stays claimed throughout, on the same worktree, with the gate lane's own steps: the
+review comment just posted is the review to answer (`scratch/reviews.md`, and `answered.json` in the
+job folder records its version), the agent runs on the `gate` brief and writes its report to
+`repair-report.md` in the job folder (one `## H01 (…) — applied | applied differently | disputed |
+answered` section per point), and the checks are the gate lane's: the report's sections, no
+uncommitted change, the push gate with the targeted build at the repaired head, the elaboration.
+The worker then pushes onto the pull request's branch in its head repository while it is still at
+the head reviewed, posts the finding-by-finding reply (`Fixed in <sha7> (reply to the review): …`)
+whose answered record names the review comment, the worker and the new head, and sets
+awaiting-review. Each step is an effect of the job's record (`repair`, `content-push`,
+`repair-comment`), so an attempt that stopped part-way finishes without running the agent again,
+pushing twice or replying twice. A repair that fails its checks, or whose push or reply is
+refused (the author pushed meanwhile, a token without write access), is not pushed: the worktree
+goes back to the head reviewed, the review is submitted as it is, and the round's summary ends
+`repair not pushed: <why>`. Whatever the repair agent changed in the board checkout is undone, so
+the submission is the review's report and verdict only. While such a review is claimed, `board
+sync` files no gate round for the pull request (`#N: gate round deferred: review PRREVIEW-<Leaf>~k
+is repairing`); if the review is still unanswered at a later sync with no review of the pull request
+claimed, the gate round is filed as usual. The next review of the repaired head is another
+worker's (`not_worker`).
 
 The label means: for every roadmap folder of the pull request, the latest AI review of the current
 head accepted it. The worker adds it when its review accepts the head the pull request still has and

@@ -122,7 +122,7 @@ checkout, submits a PR to the board, and the intake advances the state.
    and comment no reply has acknowledged (not only the latest), run a fix lane, push, reply finding
    by finding, and flip the labels. The reply records the version of every review, review comment
    and issue comment the agent read, and acknowledges those only, so feedback posted or edited
-   during the run stays pending. A roadmap that no port placed in the merge order (an adopted
+   during the run stays pending; the record also names the worker and the head it answers at. A roadmap that no port placed in the merge order (an adopted
    author's) is placed after its last supplier before the dependency check, and the gate's
    submission carries that change. The final merge is a human action.
 9. `errata` — reads the published sources a roadmap cites, at the locators it cites, and records
@@ -160,7 +160,15 @@ checkout, submits a PR to the board, and the intake advances the state.
     accounts for every earlier finding (repaired, partly repaired or not repaired), reviews only the
     changed passages and what depends on them, carries the earlier adversarial rows for untouched
     statements, runs the gate, and says so in its comment and marker; a larger change gets a full
-    review.
+    review. On a pull request whose author is in `[roadmap] pool`, a review that asks for changes
+    (never a rejection), by a pool operator with `[prreview] repair_pool` on (the default), goes on
+    in the same job, after its comment and before its board submission: the gate lane's steps
+    answer that comment on the same worktree (the gate brief, its checks, the push with the lease on
+    the reviewed head, the reply with its answered record, the labels), each an effect of the job's
+    record so a stopped run finishes without a second push or reply. A repair that fails is not
+    pushed and the review is submitted all the same. While the review job is claimed, `board sync`
+    files no gate round for the pull request; the next review of the repaired head is filed as a
+    re-review with `not_worker`, the worker whose reply names that head, which may not take it.
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.
