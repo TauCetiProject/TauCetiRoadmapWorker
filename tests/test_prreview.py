@@ -105,15 +105,18 @@ def test_a_review_delivers_its_report_and_verdict_and_releases_nothing():
 def test_the_prreview_table_defaults_off_and_parses():
     cfg = config.Config()
     assert (cfg.prreview.enabled, cfg.prreview.label, cfg.prreview.per_run, cfg.prreview.authors,
-            cfg.prreview.skip_authors, cfg.prreview.max_folders) == (False, "ai-approved", 3, [], [], 10)
+            cfg.prreview.skip_authors, cfg.prreview.max_folders, cfg.prreview.small_change_lines,
+            cfg.prreview.diff_cap_lines) == (False, "ai-approved", 3, [], [], 10, 150, 2000)
     text = ('[project]\nname = "P"\n[prreview]\nenabled = true\nlabel = "ai-ok"\nper_run = 5\nauthors = ["carol"]\n'
-            'skip_authors = ["dave"]\nmax_folders = 4\n')
+            'skip_authors = ["dave"]\nmax_folders = 4\nsmall_change_lines = 0\ndiff_cap_lines = 300\n')
     parsed = config.parse(text, "x.toml").prreview
     assert (parsed.enabled, parsed.label, parsed.per_run, parsed.authors, parsed.skip_authors,
-            parsed.max_folders) == (True, "ai-ok", 5, ["carol"], ["dave"], 4)
+            parsed.max_folders, parsed.small_change_lines, parsed.diff_cap_lines) == (
+        True, "ai-ok", 5, ["carol"], ["dave"], 4, 0, 300)
     for bad, why in (("per_run = -1", "prreview.per_run"), ('authors = ["not a login"]', "prreview.authors"),
                      ('enabled = true\nlabel = ""', "prreview.label"), ('per_run = "3"', "expected int"),
-                     ("max_folders = 0", "prreview.max_folders")):
+                     ("max_folders = 0", "prreview.max_folders"), ("small_change_lines = -1", "prreview.small_change_lines"),
+                     ("diff_cap_lines = 0", "prreview.diff_cap_lines")):
         with pytest.raises(config.ConfigError, match=re.escape(why)):
             config.parse(f'[project]\nname = "P"\n[prreview]\n{bad}\n', "x.toml")
 
@@ -1000,3 +1003,86 @@ def test_an_archive_pull_request_is_a_chore_by_its_title():
     assert not CHORE_TITLE.match("Archived-torsion Galois representations: a roadmap")
     assert not CHORE_TITLE.match("Roadmap: archive geometry")
 
+
+
+# --- a re-review of a repaired head ------------------------------------------------------------------
+
+REAL_GIT = lane_prreview.gitops.git          # bound before a fixture fakes git
+
+
+def repaired_repo(tmp_path, edited=10):
+    """A content repository whose second commit rewrites `edited` lines of Foo's README and touches a
+    file outside the folder: (repository, the first head, the second head)."""
+    repo = tmp_path / "repo"
+    readme = repo / "TauCetiRoadmap" / "Foo" / "README.md"
+    readme.parent.mkdir(parents=True)
+    sh(tmp_path, "init", "-q", str(repo))
+    readme.write_text("# Foo\n\n" + "".join(f"line {k}\n" for k in range(40)))
+    (repo / "lakefile.toml").write_text('name = "x"\n')
+    sh(repo, "add", "-A")
+    sh(repo, "commit", "-q", "-m", "first")
+    first = sh(repo, "rev-parse", "HEAD")
+    readme.write_text("# Foo\n\n" + "".join(f"line {k}{' (repaired)' if k < edited else ''}\n" for k in range(40)))
+    (repo / "lakefile.toml").write_text('name = "y"\n')
+    sh(repo, "commit", "-q", "-am", "second")
+    return repo, first, sh(repo, "rev-parse", "HEAD")
+
+
+def real_git_in(repo, monkeypatch):
+    """The dry-run context's fake git, except that the change set's commands run in `repo`."""
+    fake = lane_prreview.gitops.git
+
+    def git(cwd, *args, **kw):
+        return REAL_GIT(repo, *args, **kw) if args[0] in ("cat-file", "diff") or args[:2] == ("fetch", "-q") and \
+            len(args) == 4 and re.fullmatch(r"[0-9a-f]{40}", args[3]) else fake(cwd, *args, **kw)
+    monkeypatch.setattr(lane_prreview.gitops, "git", git)
+
+
+def rereview_job(first, second, round_=2):
+    job = new_job(f"PRREVIEW-Foo~{round_}", inputs={"pr": 905, "head": second, "owner": "carol", "name": "Foo",
+                                                    "folder": "Foo", "rereview": True, "previous_head": first,
+                                                    "previous_job": f"PRREVIEW-Foo~{round_ - 1}"})
+    job.number = 8
+    return job
+
+
+@needs_git
+def test_prepare_writes_the_change_since_the_previous_reviewed_head(dry_ctx, tmp_path, monkeypatch):  # noqa: F811
+    repo, first, second = repaired_repo(tmp_path)
+    real_git_in(repo, monkeypatch)
+    job = rereview_job(first, second)
+    ws = lane_for(job).prepare(job, dry_ctx)
+    assert ws.extra["change_lines"] == 20                     # ten lines rewritten: ten insertions, ten deletions
+    text = (ws.scratch / "changes.md").read_text()
+    assert f"# Changes since {first[:7]} (data)" in text and f"this review reads `{second}`" in text
+    assert "`TauCetiRoadmap/Foo/`: 20 changed lines (10 insertions, 10 deletions)." in text
+    assert "TauCetiRoadmap/Foo/README.md | 20" in text and "+line 3 (repaired)" in text and "-line 3\n" in text
+    assert text.endswith("## Files changed outside the folder\n\n- `lakefile.toml`\n") and "Cut at" not in text
+    # The diff is cut at `diff_cap_lines`, with a note naming the command that shows the rest.
+    dry_ctx.cfg.prreview.diff_cap_lines = 5
+    ws = lane_for(job).prepare(job, dry_ctx)
+    text = (ws.scratch / "changes.md").read_text()
+    assert ws.extra["change_lines"] == 20 and "+line 3 (repaired)" not in text
+    assert re.search(rf"Cut at 5 of \d+ lines: read the rest with `git -C \S+ diff {first}\.\.{second} -- "
+                     r"TauCetiRoadmap/Foo`\.", text)
+
+
+@needs_git
+def test_a_previous_head_the_checkout_cannot_read_counts_as_a_large_change(dry_ctx, tmp_path, monkeypatch):  # noqa: F811
+    repo, _first, second = repaired_repo(tmp_path)
+    real_git_in(repo, monkeypatch)
+    job = rereview_job("f" * 40, second)
+    ws = lane_for(job).prepare(job, dry_ctx)
+    assert ws.extra["change_lines"] is None
+    assert "cannot be read in this checkout" in (ws.scratch / "changes.md").read_text()
+    # A first review has no change set.
+    first = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": second, "owner": "carol", "name": "Foo",
+                                              "rereview": False})
+    ws = lane_for(first).prepare(first, dry_ctx)
+    assert ws.extra["change_lines"] is None and not (ws.scratch / "changes.md").exists()
+
+
+def test_the_change_counts_insertions_and_deletions_and_a_fence_holds_any_backticks():
+    assert lane_prreview.numstat_lines("3\t1\tA/README.md\n-\t-\tA/x.png\n2\t0\tA/B.lean\n") == (5, 1)
+    text = "```lean\ntheorem x : True := trivial\n```"
+    assert lane_prreview.fenced(text, "diff").startswith("````diff\n```lean") and lane_prreview.fenced(text).endswith("```\n````")

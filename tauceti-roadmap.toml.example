@@ -230,6 +230,13 @@ skip_authors = []
 # A pull request titled `chore...`, or one that edits more roadmap folders than this, is a chore and
 # is not reviewed, unless it adds the README.md of every one of them (a bundle of new roadmaps).
 max_folders = 10
+# A re-review of a repaired head (a review of that folder of that pull request read an earlier head)
+# is taken before first reviews. When the folder changed by at most `small_change_lines` lines
+# (insertions plus deletions) since that head, the review is incremental: it accounts for every
+# earlier finding and reviews the changed passages and what depends on them; otherwise it is a full
+# review. The reviewer gets the folder's diff since that head, cut at `diff_cap_lines` lines.
+small_change_lines = 150
+diff_cap_lines = 2000
 
 [sources]
 # Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through

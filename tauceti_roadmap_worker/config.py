@@ -264,6 +264,12 @@ class PRReview:
     # A pull request that edits more roadmap folders than this is a chore and is not reviewed, unless
     # it adds the README.md of every one of them (a bundle of new roadmaps).
     max_folders: int = 10
+    # A re-review of a repaired head whose roadmap folder changed by at most this many lines
+    # (insertions plus deletions since the head the previous review read) is incremental: it checks
+    # the previous findings and the changed passages instead of reviewing the folder again in full.
+    small_change_lines: int = 150
+    # Lines of the folder's diff since the previous reviewed head the reviewer is given in changes.md.
+    diff_cap_lines: int = 2000
 
 
 @dataclass
@@ -444,6 +450,10 @@ def validate(cfg: Config) -> None:
         problems.append("prreview.per_run must be >= 0")
     if cfg.prreview.max_folders < 1:
         problems.append("prreview.max_folders must be at least 1")
+    if cfg.prreview.small_change_lines < 0:
+        problems.append("prreview.small_change_lines must be >= 0")
+    if cfg.prreview.diff_cap_lines < 1:
+        problems.append("prreview.diff_cap_lines must be at least 1")
     if cfg.prreview.enabled and not re.fullmatch(r"[^\s,][^,]{0,49}", cfg.prreview.label or ""):
         problems.append("prreview.label must be a GitHub label name (1 to 50 characters, no comma)")
     for key in ("authors", "skip_authors"):
