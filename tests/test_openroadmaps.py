@@ -183,6 +183,46 @@ def test_a_pull_request_with_more_than_a_hundred_files_is_listed_whole(world):
     assert prs[0]["roadmaps"] == ["Big"]
 
 
+def test_the_listing_says_how_each_file_changes_and_main_says_which_folders_hold_a_readme():
+    class GH:
+        def graphql(self, query, **variables):
+            assert "changeType" in query
+            return {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": [
+                {"number": 7, "title": "Targets", "isDraft": False, "headRefOid": "h", "author": {"login": "c"},
+                 "files": {"totalCount": 2, "nodes": [
+                     {"path": "TauCetiRoadmap/Fam/Group/GroupTargets.lean", "changeType": "ADDED"},
+                     {"path": "TauCetiRoadmap/Old/Suggested.lean", "changeType": "DELETED"}]}},
+                {"number": 8, "title": "Docs", "isDraft": False, "headRefOid": "h", "author": {"login": "c"},
+                 "files": {"totalCount": 1, "nodes": [{"path": "docs/x.md", "changeType": "MODIFIED"}]}}]}}}
+
+        def api(self, path, paginate=False):
+            assert path == "repos/o/r/git/trees/main?recursive=1"
+            return {"truncated": False, "tree": [
+                {"path": "TauCetiRoadmap/Fam/README.md", "type": "blob"},
+                {"path": "TauCetiRoadmap/Fam/Group/README.md", "type": "blob"},
+                {"path": "TauCetiRoadmap/Fam/Group", "type": "tree"},
+                {"path": "Completed/Done/README.md", "type": "blob"}, {"path": "README.md", "type": "blob"}]}
+    # Only a pull request with a roadmap file by name is listed by default; `any_file` lists the others
+    # under the directories too, every entry with its files and how each changes.
+    assert [p["pr"] for p in openroadmaps.inventory(GH(), "o/r", ("TauCetiRoadmap",))] == [7]
+    [entry] = openroadmaps.inventory(GH(), "o/r", ("TauCetiRoadmap",), any_file=True)
+    assert entry["roadmaps"] == ["Old"] and entry["files"] == [
+        {"path": "TauCetiRoadmap/Fam/Group/GroupTargets.lean", "change": "added"},
+        {"path": "TauCetiRoadmap/Old/Suggested.lean", "change": "removed"}]
+    assert openroadmaps.readme_folders(GH(), "o/r", "main", "TauCetiRoadmap") == {"Fam", "Fam/Group"}
+
+
+def test_a_long_listing_read_by_rest_names_the_old_path_of_a_renamed_file():
+    class GH:
+        def api(self, path, paginate=False):
+            return [{"filename": "Completed/Foo/README.md", "status": "renamed",
+                     "previous_filename": "TauCetiRoadmap/Foo/README.md"}, {"filename": "x.md", "status": "added"}]
+    pr = {"number": 3, "files": {"totalCount": 101, "nodes": [{"path": "x.md", "changeType": "ADDED"}]}}
+    assert openroadmaps.changed_files(GH(), "o/r", pr) == [
+        {"path": "Completed/Foo/README.md", "change": "renamed", "previous": "TauCetiRoadmap/Foo/README.md"},
+        {"path": "x.md", "change": "added"}]
+
+
 def test_a_name_on_several_lines_is_reported_at_its_first(world):
     cfg, gh = world
     index = openroadmaps.refresh(gh, cfg)

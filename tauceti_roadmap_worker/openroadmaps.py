@@ -34,6 +34,7 @@ import re
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from . import gitops
 
@@ -51,7 +52,7 @@ QUERY = """query($owner: String!, $name: String!, $after: String) {
     pullRequests(states: OPEN, first: 50, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
       nodes { number title isDraft headRefOid author { login } labels(first: 50) { nodes { name } }
-              files(first: 100) { totalCount nodes { path } } }
+              files(first: 100) { totalCount nodes { path changeType } } }
     }
   }
 }"""
@@ -99,32 +100,71 @@ def roadmap_folders(paths: list[str], dirs: tuple[str, ...]) -> dict[str, str]:
     return out
 
 
-def inventory(gh, repo: str, dirs: tuple[str, ...]) -> list[dict]:
+# How a pull request changes a file, in the words of the REST listing (`pulls/N/files`): GraphQL's
+# `PatchStatus`, lower-cased, with DELETED read as `removed`.
+CHANGES = {"ADDED": "added", "DELETED": "removed", "MODIFIED": "modified", "RENAMED": "renamed", "COPIED": "copied",
+           "CHANGED": "changed"}
+
+
+def changed_files(gh, repo: str, pr: dict) -> list[dict]:
+    """A listed pull request's changed files: [{path, change}] (`added`, `removed`, `modified`,
+    `renamed`, ...). The listing gives the first 100; a pull request with more is read from the REST
+    listing (rare), which also names the old path of a renamed file (`previous`)."""
+    files = pr.get("files") or {}
+    nodes = [f for f in files.get("nodes") or [] if isinstance(f, dict)]
+    if int(files.get("totalCount") or 0) <= len(nodes):
+        return [{"path": f.get("path", ""), "change": CHANGES.get(f.get("changeType") or "", "modified")}
+                for f in nodes]
+    out = []
+    for f in gh.api(f"repos/{repo}/pulls/{pr['number']}/files?per_page=100", paginate=True) or []:
+        item = {"path": f.get("filename", ""), "change": f.get("status") or "modified"}
+        if f.get("previous_filename"):
+            item["previous"] = f["previous_filename"]
+        out.append(item)
+    return out
+
+
+def inventory(gh, repo: str, dirs: tuple[str, ...], any_file: bool = False) -> list[dict]:
     """The repository's open pull requests that touch a roadmap folder: number, title, author, head,
-    draft, labels, the roadmap folders they touch."""
+    draft, labels, the roadmap folders they touch (`roadmap_folders`), and every changed file with
+    how it changes (`changed_files`). With `any_file`, also those whose only changes under `dirs` are
+    other files (an extra Lean file of a roadmap).
+
+    One GraphQL request per 50 open pull requests, each with its labels and first 100 changed files.
+    The change of a file is a field of the file nodes the request lists anyway, so it costs nothing:
+    GitHub prices a request by the nodes its connections may return, not by their fields (about one
+    point of the 5,000 an hour per page). A pull request with more than 100 changed files costs one
+    REST read more."""
     owner, name = repo.split("/", 1)
     out, after = [], None
     while True:
         data = gh.graphql(QUERY, owner=owner, name=name, after=after)
         page = ((data.get("repository") or {}).get("pullRequests") or {})
         for pr in page.get("nodes") or []:
-            files = pr.get("files") or {}
-            paths = [f.get("path", "") for f in files.get("nodes") or []]
-            if int(files.get("totalCount") or 0) > len(paths):
-                # The listing gives the first 100 files; the rest come from the REST listing (rare).
-                paths = [f.get("filename", "") for f in gh.api(f"repos/{repo}/pulls/{pr['number']}/files?per_page=100",
-                                                               paginate=True) or []]
+            files = changed_files(gh, repo, pr)
+            paths = [f["path"] for f in files]
             folders = roadmap_folders(paths, dirs)
-            if folders:
+            under = any_file and any(p.startswith(d.rstrip("/") + "/") for p in paths for d in dirs)
+            if folders or under:
                 out.append({"pr": pr["number"], "title": pr.get("title", ""), "head": pr.get("headRefOid", ""),
                             "author": (pr.get("author") or {}).get("login", ""), "draft": bool(pr.get("isDraft")),
                             "labels": [x.get("name", "") for x in ((pr.get("labels") or {}).get("nodes") or [])
                                        if isinstance(x, dict)],
-                            "roadmaps": list(folders), "folders": folders})
+                            "roadmaps": list(folders), "folders": folders, "files": files})
         info = page.get("pageInfo") or {}
         if not info.get("hasNextPage"):
             return out
         after = info.get("endCursor")
+
+
+def readme_folders(gh, repo: str, branch: str, active_dir: str) -> set[str]:
+    """The folders under `active_dir` that hold a README.md on `branch`, relative to it
+    (`RepresentationTheory/CompactGroups`), at any depth: one REST read of the branch's recursive tree
+    (GitHub truncates it past 100,000 entries, far beyond a roadmap repository)."""
+    data = gh.api(f"repos/{repo}/git/trees/{quote(branch, safe='')}?recursive=1") or {}
+    prefix, tail = active_dir.rstrip("/") + "/", "/README.md"
+    paths = (t.get("path", "") for t in data.get("tree") or [] if isinstance(t, dict) and t.get("type") == "blob")
+    return {p[len(prefix):-len(tail)] for p in paths if p.startswith(prefix) and p.endswith(tail)}
 
 
 def _main_ref(branch: str) -> str:
