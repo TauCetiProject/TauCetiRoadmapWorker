@@ -130,6 +130,10 @@ dropped_names_file = ""
 outside_folder_allow = []
 # Run the dependency check against the merge order as part of the gate.
 require_depcheck = true
+# The files a roadmap folder may hold besides `*.lean` files (always allowed) and the folders of nested
+# roadmaps. Anything else in it (SOURCES.md, PROGRESS.md, STATUS.md, notes, scratch) is a `stray-files`
+# hit, which fails the push gate: a roadmap's sources are its README's references.
+roadmap_files = ["README.md", "Suggested.lean", "metadata.toml"]
 
 [redteam]
 # Rounds of red-teaming on the draft pull request. Each round runs every pass below

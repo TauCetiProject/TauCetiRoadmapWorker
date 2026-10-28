@@ -127,6 +127,9 @@ class Gates:
     dropped_names_file: str = ""
     outside_folder_allow: list[str] = field(default_factory=list)
     require_depcheck: bool = True
+    # The files a roadmap folder may hold besides `*.lean` files (always allowed) and the folders of
+    # nested roadmaps; anything else in it is a `stray-files` hit of the push gate.
+    roadmap_files: list[str] = field(default_factory=lambda: ["README.md", "Suggested.lean", "metadata.toml"])
 
 
 @dataclass
@@ -428,6 +431,9 @@ def validate(cfg: Config) -> None:
         problems.append("design.daily_cap must be >= 0")
     if cfg.review.separation not in ("operator", "agent", "family"):
         problems.append("review.separation must be operator, agent or family")
+    if any(not isinstance(f, str) or not re.fullmatch(r"[^/\\\s]+", f) for f in cfg.gates.roadmap_files) \
+            or "README.md" not in cfg.gates.roadmap_files:
+        problems.append("gates.roadmap_files must list plain file names, README.md among them")
     if cfg.prreview.per_run < 0:
         problems.append("prreview.per_run must be >= 0")
     if cfg.prreview.max_folders < 1:

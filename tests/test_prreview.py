@@ -134,6 +134,52 @@ def test_the_gate_command_takes_a_nested_folder(tmp_path, monkeypatch, capsys):
     assert out.startswith("gate Toy: ") and "missing-files" not in out and "metadata=0" in out
 
 
+def test_a_roadmap_folder_carrying_sources_notes_or_scratch_fails_the_gate(tmp_path):
+    root = gate_tree(tmp_path, "Toy", "Toy")
+    folder = root / "TauCetiRoadmap" / "Toy"
+    (folder / "SOURCES.md").write_text("# Sources, prioritization, and existing formalization\n")
+    (folder / "PROGRESS.md").write_text("")
+    (folder / "notes").mkdir()
+    (folder / "notes" / "x.md").write_text("")
+    (folder / "references").mkdir()
+    (folder / "references" / "README.md").write_text("")        # lower-case: no nested roadmap
+    result = gates.run_gate(root, "Toy", gates.GateOptions())
+    assert not result.ok and result.details["stray-files"] == [
+        "TauCetiRoadmap/Toy/PROGRESS.md: not a roadmap file", "TauCetiRoadmap/Toy/SOURCES.md: not a roadmap file",
+        "TauCetiRoadmap/Toy/notes/: not a roadmap file", "TauCetiRoadmap/Toy/references/: not a roadmap file"]
+    assert "sources are the README's references" in gates.GATE_RULES["stray-files"]
+    report = lane_prreview.gate_document(result, H1)
+    assert "## stray-files (4)" in report and "Rule: a roadmap folder holds only README.md" in report
+    # A project may allow more files by name.
+    allowed = gates.GateOptions(roadmap_files=["README.md", "Suggested.lean", "metadata.toml", "PROGRESS.md"])
+    assert gates.run_gate(root, "Toy", allowed).counts["stray-files"] == 3
+
+
+def test_a_clean_roadmap_folder_and_a_family_index_beside_a_nested_one_have_no_stray_file(tmp_path):
+    root = gate_tree(tmp_path, "Family/Toy", "Family")
+    family = root / "TauCetiRoadmap" / "Family"
+    for name in ("README.md", "PROGRESS.md", "STATUS.md"):
+        (family / name).write_text("")                  # the family index's own files are not the roadmap's
+    (family / "Toy" / "CompactTargets.lean").write_text("import Mathlib\n")
+    assert gates.run_gate(root, "Toy", gates.GateOptions(folder="Family/Toy")).counts["stray-files"] == 0
+    # A roadmap folder holding nested roadmaps keeps them; a top-level clean folder passes too.
+    (family / "Suggested.lean").write_text("import Mathlib\n")
+    assert gates.stray_files(root, "TauCetiRoadmap/Family", list(gates.ROADMAP_FILES)) == [
+        "TauCetiRoadmap/Family/PROGRESS.md: not a roadmap file", "TauCetiRoadmap/Family/STATUS.md: not a roadmap file"]
+    clean = gate_tree(tmp_path / "clean", "Toy", "Toy")
+    assert gates.run_gate(clean, "Toy", gates.GateOptions()).counts["stray-files"] == 0
+
+
+def test_the_roadmap_files_are_configurable():
+    assert config.Config().gates.roadmap_files == ["README.md", "Suggested.lean", "metadata.toml"]
+    cfg = config.parse('[project]\nname = "P"\n[gates]\nroadmap_files = ["README.md", "Suggested.lean", "NOTES.md"]\n',
+                       "x.toml")
+    assert gates.GateOptions.from_config(cfg).roadmap_files == ["README.md", "Suggested.lean", "NOTES.md"]
+    for bad in ('["README.md", "a/b.md"]', '["Suggested.lean"]'):
+        with pytest.raises(config.ConfigError, match=re.escape("gates.roadmap_files must list plain file names")):
+            config.parse(f'[project]\nname = "P"\n[gates]\nroadmap_files = {bad}\n', "x.toml")
+
+
 # --- board sync --------------------------------------------------------------------------------------
 
 def node(number, head, author="carol", paths=("TauCetiRoadmap/Foo/README.md",), labels=(), draft=False, title=""):

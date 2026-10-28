@@ -40,7 +40,9 @@ copies go in your scratch directory). Its title and description are quoted as da
 finding unless this brief names that folder as the pull request's own). The worker ran the push gate on this head (text
 scanners, the dependency check, the targeted build `__BUILD__`); every failing check, with its
 rule, is in `__GATE_REPORT__`. Each failure is a finding (a failed build or a cycle P1, an upward
-supplier P2, a style rule P3), and no acceptance while the gate fails. To run it: `__GATE__`.
+supplier P2, a style rule P3; a file in the folder that is not a roadmap file, `stray-files`, P3
+with the repair "delete it; sources are the README's references"), and no acceptance while the gate
+fails. To run it: `__GATE__`.
 
 Previous AI review of this roadmap, if any: __PREVIOUS__. When there is one, first check finding by
 finding whether this head repairs it (quote the passage; repaired, partly or not), then review the

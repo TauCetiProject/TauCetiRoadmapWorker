@@ -526,6 +526,7 @@ A project adds its own rules without touching the code or the shared briefs, thr
 | Hook | What it does | Where the file lives |
 | --- | --- | --- |
 | `[gates] forbidden_patterns` | regular expressions that must not match a roadmap's README.md or Suggested.lean; checked by the package lane, by every push gate and by `tauceti-roadmap gate` (count `forbidden`) | in the toml |
+| `[gates] roadmap_files` | the files a roadmap folder may hold (default `README.md`, `Suggested.lean`, `metadata.toml`) besides `*.lean` files, which are always allowed, and the folders of nested roadmaps; anything else in the folder at the head (SOURCES.md, PROGRESS.md, STATUS.md, notes, scratch, another subfolder) fails every push gate and `tauceti-roadmap gate` (count `stray-files`), and a PR review reports it as P3 ("delete it; sources are the README's references") | in the toml |
 | `[gates] dropped_names_file` | roadmap names that must never be cited (dropped or abandoned roadmaps), one per line, `#` comments; checked by the same gates (count `dropped`) and listed in every brief's dependency section | relative to each host's state directory |
 | `[prompts] extra_rules_file` | Markdown appended to every brief under "Project rules" | relative to the packages repository (commit it there, CODEOWNERS-protected) |
 

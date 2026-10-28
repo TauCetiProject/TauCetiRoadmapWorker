@@ -31,6 +31,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from . import depgraph
+from .board import NAME_RE
 
 
 @dataclass(frozen=True)
@@ -699,6 +700,9 @@ class GateResult:
                 "details": {k: [h.__dict__ if isinstance(h, Hit) else h for h in v] for k, v in self.details.items()}}
 
 
+ROADMAP_FILES = ("README.md", "Suggested.lean", "metadata.toml")     # `[gates] roadmap_files` by default
+
+
 @dataclass
 class GateOptions:
     content_repo: str = "TauCetiProject/TauCetiRoadmap"
@@ -715,6 +719,8 @@ class GateOptions:
     # The roadmap's folder under `active_dir` when it is not `<Name>`: a nested roadmap
     # (`RepresentationTheory/CompactGroups`, module `TauCetiRoadmap.RepresentationTheory.CompactGroups.Suggested`).
     folder: str = ""
+    # The files a roadmap folder may hold besides `*.lean` files and nested roadmap folders.
+    roadmap_files: list[str] = field(default_factory=lambda: list(ROADMAP_FILES))
 
     @classmethod
     def from_config(cls, cfg, order=None, siblings=None, dropped=None, tauceti=None) -> "GateOptions":
@@ -724,7 +730,7 @@ class GateOptions:
                    forbidden_patterns=list(g.forbidden_patterns), dropped_names=list(dropped or []),
                    outside_folder_allow=list(g.outside_folder_allow), order=order if g.require_depcheck else None,
                    sibling_readmes=dict(siblings or {}), main_extended=list(cfg.roadmap.main_extended),
-                   tauceti_sources=tauceti)
+                   tauceti_sources=tauceti, roadmap_files=list(g.roadmap_files))
 
 
 def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateResult:
@@ -793,6 +799,9 @@ GATE_RULES = {
     "long-fences": "no fenced block of more than 40 lines that is neither Lean nor a table: quote a locator, not "
                    "a passage",
     "layer-ids": "a layer heading reads `Layer N: title`: its id, before the colon, is a bare label",
+    "stray-files": "a roadmap folder holds only README.md, Suggested.lean, metadata.toml (`[gates] roadmap_files`), "
+                   "other `*.lean` files and the folders of nested roadmaps: delete anything else (SOURCES.md, "
+                   "PROGRESS.md, STATUS.md, notes, scratch, other subfolders); sources are the README's references",
     "depcheck": "every supplier the README names comes before this roadmap in the merge order (an UPWARD edge or a "
                 "CYCLE is a design defect: break it by moving ownership), and the roadmap is listed there; the "
                 "merge-order file is not yours to edit, so a `NOT IN ORDER` line is the board's to settle: report it",
@@ -826,6 +835,22 @@ def metadata_problems(root: Path, active_dir: str, folder: str) -> list[str]:
     return [f"{folder}/metadata.toml missing"]
 
 
+def stray_files(root: Path, folder: str, allowed: list[str]) -> list[str]:
+    """What sits directly in a roadmap folder of a checkout besides the `allowed` files (`[gates]
+    roadmap_files`) and `*.lean` files: every other file, and every subfolder that is not a nested
+    roadmap (a folder named like a roadmap with a README.md of its own), each as `<path>: not a
+    roadmap file`."""
+    base = Path(root) / folder
+    out = []
+    for path in sorted(base.iterdir()) if base.is_dir() else ():
+        if path.is_dir():
+            if not (re.fullmatch(NAME_RE, path.name) and (path / "README.md").is_file()):
+                out.append(f"{folder}/{path.name}/: not a roadmap file")
+        elif path.name not in allowed and not path.name.endswith(".lean"):
+            out.append(f"{folder}/{path.name}: not a roadmap file")
+    return out
+
+
 def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build_cmd: str = "") -> GateResult:
     """The full gate on a worktree: text scanners, dirty tree, outside-folder diff against the
     merge-base with `base`, and (if given) the targeted build, which must succeed with `sorry` as
@@ -843,6 +868,7 @@ def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build
         opts = _replace(opts, tauceti_sources=tauceti_sources(root))
     r = scan_folder(name, readme_path.read_text(encoding="utf-8", errors="replace"), lean, opts)
     r.add("metadata", metadata_problems(root, opts.active_dir, folder))
+    r.add("stray-files", stray_files(root, folder, opts.roadmap_files))
     material = tree_source_problems(root, folder)
     try:
         r.add("dirty", [line for line in _git(root, "status", "--short").splitlines() if line.strip()])
