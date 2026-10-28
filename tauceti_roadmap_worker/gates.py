@@ -806,8 +806,9 @@ GATE_RULES = {
                    "other `*.lean` files and the folders of nested roadmaps: delete anything else (SOURCES.md, "
                    "PROGRESS.md, STATUS.md, notes, scratch, other subfolders); sources are the README's references",
     "depcheck": "every supplier the README names comes before this roadmap in the merge order (an UPWARD edge or a "
-                "CYCLE is a design defect: break it by moving ownership), and the roadmap is listed there; the "
-                "merge-order file is not yours to edit, so a `NOT IN ORDER` line is the board's to settle: report it",
+                "CYCLE is a design defect: break it by moving ownership), and the roadmap is listed there; a roadmap "
+                "on the content repository's main is a supplier available to all, never upward; the merge-order "
+                "file is not yours to edit, so a `NOT IN ORDER` line is the board's to settle: report it",
 }
 
 

@@ -369,6 +369,17 @@ only where an explicit supplier statement names it (a `*Needs:*` clause, a `### 
 supplier table row or contract bullet, a `### Dependencies` sentence), never from a prose line that
 also says "supplier".
 
+A roadmap on the content repository's main (a folder holding a README.md, at any depth, under the
+active or the completed directory of `origin/<branch>`) is a supplier available to every pull
+request: the dependency check never reads an edge to it as UPWARD, does not check it as a consumer
+(`NOT IN ORDER`, UPWARD), and reports no cycle among such roadmaps alone. The merge order is the
+order of the open pull requests, so one is never placed or moved there (a pull request that edits
+it logs `<Name> is on main; the merge order does not list it`), and where the order lists one never
+decides another roadmap's place or move. The lanes read them from their content checkout, which
+every round syncs to main; `tauceti-roadmap gate <worktree> <Name>` from the worktree's own
+`origin/<branch>` (or `--content <checkout>`), and the agents' `gate --depcheck` from the
+`--content` checkout their brief names.
+
 States are the labels `state:available`, `claimed`, `submitted`, `done`, `blocked` and
 `needs-references`. A job issue carries exactly one: every state change adds the new label first and
 then removes every other `state:` label the issue carries at that moment. `board sync` repairs an
@@ -392,7 +403,7 @@ read as an instruction.
 | redteam | the board PR's head (read-only) | a comment on the board PR in the red-team shape | the agent and model the pass requires | report header, checkout untouched, a pass with no finding has its adversarial table with computed values |
 | fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
-| gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
+| gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build (its dependency check never reads a roadmap on the content repository's main as an upward supplier), head check |
 | prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-approved` label (on once every folder of the head accepts, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json`; on a pool author's PR, after a review asking changes, the repair pushed onto its branch and the reply | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
@@ -801,6 +812,8 @@ tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; on
                                                    # roadmap folder and new head of every open roadmap
                                                    # PR, ai-approved upkeep;
                                                    # the errata register (submitted ERRATA jobs → done)
+tauceti-roadmap --conf $CONF board sync --prune-order --yes   # first remove from the merge order every
+                                                   # roadmap on the content repository's main
 tauceti-roadmap --conf $CONF board intake --yes    # take in submissions (designs and packages stay open
                                                    # for review), answer needs-references jobs, then read
                                                    # the reviews and passes on the board's open PRs
@@ -841,7 +854,18 @@ board's main. Every `board intake` also moves each roadmap the order lists above
 README names (at the head of its open pull request under review, else on main; read by one shallow
 git fetch of the board, no REST request), all in one commit, logged `merge order: <Name> moved in the
 merge order from #a to #b, right after its last supplier <S>` (or `... not moved ...` with the
-reason). A clean order is only read.
+reason). A clean order is only read. Neither repair moves a roadmap on the content repository's
+main, nor anything after one.
+
+`board sync --prune-order` (only when asked; a dry run without `--yes`) first removes from the merge
+order on the board's main every roadmap that is on the content repository's main (its tree read
+once: a folder holding a README.md under the active or the completed directory), in one commit
+`Merge order: remove N roadmaps already on the content repository's main` naming them, the other
+lines kept in their order, and logs `merge order: <Name> removed (on the content repository's
+main)` per name (`... (dry run: not written)` without `--yes`; `it lists no roadmap on the content
+repository's main` when there is none). Gate rounds of pull requests that only edited such roadmaps
+used to place them as if new, which made every consumer listed above them fail its push gate with
+an UPWARD edge; run it once after upgrading.
 
 Every `board` command that writes (`intake`, `sync`, `references`, `stale --release`, `errata seed`
 and `import-explorer`, each with `--yes`) first takes the board lock, a 15-minute lease ref in the
