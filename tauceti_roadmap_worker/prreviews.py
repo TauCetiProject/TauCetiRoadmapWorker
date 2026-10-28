@@ -387,13 +387,25 @@ def pr_review_head(agent: str, model: str, sha: str) -> str:
     return f"\U0001f916 AI review ({agent}, {model}) of {sha}"
 
 
+# An acceptance of one roadmap folder of a pull request that adds or changes several.
+PR_ACCEPTED_ONE_OF = ("The AI review accepts this roadmap folder at this head. The pull request also adds or changes "
+                      "{others} other roadmap folder{s}, each reviewed on its own: it is ready for a human's final "
+                      "approval once every one is accepted. The AI does not approve or merge; a human does.")
+
+
 def render_pr_review(head: str, status: str, report: str, marker: dict, reviewed: str,
-                     validation: str = "", conditional: list[str] | None = None) -> str:
+                     validation: str = "", conditional: list[str] | None = None, *, folder: str = "",
+                     others: int = 0) -> str:
     """A pull-request review's comment: `head` (`pr_review_head`), the verdict line, the head reviewed
-    (`Reviewed head: <sha>`), what the verdict means for the human who approves, the worker's gate at
-    that head (`validation`), then the report's findings and sections (`render`) and the marker
-    `tauceti-roadmap-prreview` ({job, head, verdict, agent, model, worker})."""
-    preamble = [f"Reviewed head: {reviewed}", "", PR_STATUS_LINES.get(status, PR_STATUS_LINES["needs_changes"])]
+    (`Reviewed head: <sha>`), the roadmap folder reviewed (`folder`), what the verdict means for the
+    human who approves (with `others` other roadmap folders in the pull request, an acceptance covers
+    this one only), the worker's gate at that head (`validation`), then the report's findings and
+    sections (`render`) and the marker `tauceti-roadmap-prreview` ({job, head, verdict, agent, model,
+    worker})."""
+    meaning = PR_STATUS_LINES.get(status, PR_STATUS_LINES["needs_changes"])
+    if status == "accepted" and others:
+        meaning = PR_ACCEPTED_ONE_OF.format(others=others, s="s" if others != 1 else "")
+    preamble = [f"Reviewed head: {reviewed}", "", *([f"Roadmap folder: `{folder}/`", ""] if folder else []), meaning]
     if validation:
         preamble += ["", validation]
     return render(head, PR_VERDICTS.get(status, PR_VERDICTS["needs_changes"]), report, marker,

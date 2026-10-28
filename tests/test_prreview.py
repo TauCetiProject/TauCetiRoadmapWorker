@@ -3,6 +3,7 @@
 label honest, and the lane that reviews a head read-only, posts one comment and labels an accepted
 head. The final approval stays a human's."""
 
+import dataclasses
 import json
 import re
 from pathlib import Path
@@ -581,16 +582,18 @@ def finished_ws(tmp_path, ctx, job, status, gate_ok=True):
     """A workspace as the agent left it: the report and verdict in the board checkout, the gate run."""
     board_dir = tmp_path / "board"
     ws = Workspace(job_dir=tmp_path / "job", scratch=tmp_path / "job" / "scratch", board=board_dir,
-                   content=tmp_path / "content", workdir=tmp_path / "wt", report=board_dir / "packages" / "Foo" /
-                   "reports" / f"{job.id}.md", branch="alice-1/PRREVIEW-Foo_r1", job_id=job.id)
+                   content=tmp_path / "content", workdir=tmp_path / "wt", report=board_dir / "packages" / job.name /
+                   "reports" / f"{job.id}.md", branch=f"alice-1/PRREVIEW-{job.name}_r1", job_id=job.id)
     for d in (ws.scratch, ws.workdir, ws.report.parent):
         d.mkdir(parents=True, exist_ok=True)
-    ws.report.write_text(REPORT.format(h7=H1[:7], v=status, findings="" if status == "accepted" else FINDING))
+    report = REPORT.format(h7=H1[:7], v=status, findings="" if status == "accepted" else FINDING)
+    ws.report.write_text(report.replace("# Review of Foo", f"# Review of {job.name}"))
     lane = lane_for(job)
     lane.verdict_file(job, ctx, ws).write_text(json.dumps({"review": {
         "status": status, "reviewer": f"independent-review-{job.id}", "head": H1, "pr": 905, "date": "2026-10-27",
+        "folder": board.prreview_folder(job),
         "findings": 0 if status == "accepted" else 1, "blocking": 0 if status == "accepted" else 1, "notes": "x"}}))
-    gate = gates.GateResult("Foo", counts={"build": 0, "depcheck": 0 if gate_ok else 1, "readme-ids-missing": 0})
+    gate = gates.GateResult(job.name, counts={"build": 0, "depcheck": 0 if gate_ok else 1, "readme-ids-missing": 0})
     ws.extra.update(pr=905, head=H1, owner="carol", gate=gate, readme=ws.workdir / "README.md")
     return lane, ws
 
@@ -681,10 +684,17 @@ def test_the_checks_refuse_what_the_board_would_not_take(review_env, monkeypatch
 def test_a_verdict_must_name_the_pull_request_and_head_of_its_job():
     job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
     good = {"review": {"status": "accepted", "reviewer": "independent-review-PRREVIEW-Foo~1", "head": H1, "pr": 905}}
-    assert lane_prreview.prreview_verdict_problems(good, job) == []
+    assert lane_prreview.prreview_verdict_problems(good, job) == []      # a job filed before folders names none
     bad = {"review": {**good["review"], "head": H2, "pr": 906}}
     assert lane_prreview.prreview_verdict_problems(bad, job) == [f"verdict file: head must be {H1} (the head reviewed)",
                                                                  "verdict file: pr must be 905"]
+    nested = new_job("PRREVIEW-CompactGroups~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "CompactGroups",
+                                                         "folder": "RepresentationTheory/CompactGroups"})
+    record = {"review": {**good["review"], "reviewer": "independent-review-PRREVIEW-CompactGroups~1"}}
+    assert lane_prreview.prreview_verdict_problems(record, nested) == [
+        "verdict file: folder must be RepresentationTheory/CompactGroups (the roadmap folder reviewed)"]
+    record["review"]["folder"] = "RepresentationTheory/CompactGroups"
+    assert lane_prreview.prreview_verdict_problems(record, nested) == []
 
 
 def test_the_intake_takes_a_verdict_naming_its_job_head_and_creates_nothing_after_it():
@@ -703,6 +713,111 @@ def test_the_intake_takes_a_verdict_naming_its_job_head_and_creates_nothing_afte
         f"{path} is missing"]
     assert intake.advance(ctx, job, intake.outcome_for(ctx, job, pr, [job]), [job]) == "created nothing"
     assert ctx.board.created == []
+
+
+# --- a nested roadmap, one folder of several ----------------------------------------------------------
+
+NESTED = {"pr": 905, "head": H1, "owner": "carol", "name": "CompactGroups", "folder": "RepresentationTheory/CompactGroups",
+          "roadmaps": ["Foo", "RepresentationTheory/CompactGroups", "RepresentationTheory/LieGroups"]}
+
+
+def test_the_brief_of_a_nested_roadmap_names_its_folder_module_and_sibling_folders(dry_ctx):  # noqa: F811
+    job = new_job("PRREVIEW-CompactGroups~1", inputs={**NESTED, "head": "abc1234" + "0" * 33})
+    job.number = 7
+    lane = lane_for(job)
+    ws = lane.prepare(job, dry_ctx)
+    folder = ws.workdir / "TauCetiRoadmap" / "RepresentationTheory" / "CompactGroups"
+    assert ws.extra["folder"] == folder and ws.extra["readme"] == folder / "README.md"
+    (folder / "Sub").mkdir(parents=True)
+    for rel in ("Suggested.lean", "AbelianFourierTargets.lean", "Sub/Helper.lean"):
+        (folder / rel).write_text("import Mathlib\n")
+    ws.extra["leans"] = lane_prreview.folder_leans(folder)
+    values = {**lane.common_values(job, dry_ctx, ws), **lane.values(job, dry_ctx, ws)}
+    assert values["FOLDER"] == "TauCetiRoadmap/RepresentationTheory/CompactGroups"
+    assert values["BUILD"] == "lake build TauCetiRoadmap.RepresentationTheory.CompactGroups.Suggested"
+    assert "gate " in values["GATE"] and "--folder RepresentationTheory/CompactGroups" in values["GATE"]
+    files = values["FILES"]
+    assert [line[3:-1] for line in files.split("\n") if line.startswith("- `")] == [
+        str(folder / f) for f in ("README.md", "Suggested.lean", "AbelianFourierTargets.lean", "Sub/Helper.lean")]
+    assert "Lean form rules below apply to each `.lean` file listed" in files
+    assert "`TauCetiRoadmap/Foo/`, `TauCetiRoadmap/RepresentationTheory/LieGroups/`" in files
+    assert "`TauCetiRoadmap/RepresentationTheory/` (the family's index)" in files
+    assert values["OUTSIDE_CHECK"].endswith(
+        "-- . ':!TauCetiRoadmap/RepresentationTheory/CompactGroups' ':!TauCetiRoadmap/Foo' "
+        "':!TauCetiRoadmap/RepresentationTheory/LieGroups' ':(exclude,glob)TauCetiRoadmap/RepresentationTheory/*'")
+    text = prompts.render("prreview", values)
+    assert not re.search(r"__[A-Z][A-Z0-9_]*__", text) and "You review ONE roadmap folder" in text
+    assert ("first line `# Review of CompactGroups (pull request #905 at abc1234)`, then this second line: "
+            "Folder: `TauCetiRoadmap/RepresentationTheory/CompactGroups/`, then") in text
+    assert '"folder": "RepresentationTheory/CompactGroups"' in text and "never approves or merges" in text
+
+
+def test_a_roadmap_with_its_own_readme_below_keeps_that_folder_out_of_its_lean_files(tmp_path):
+    folder = tmp_path / "Foo"
+    (folder / "Inner").mkdir(parents=True)
+    (folder / "Inner" / "README.md").write_text("# Inner\n")
+    (folder / "Inner" / "Suggested.lean").write_text("")
+    (folder / "ATargets.lean").write_text("")
+    assert lane_prreview.folder_leans(folder) == [folder / "Suggested.lean", folder / "ATargets.lean"]
+
+
+def test_the_gate_of_a_nested_review_checks_its_folder_and_takes_the_sibling_folders_as_the_pull_requests(
+        dry_ctx, monkeypatch):  # noqa: F811
+    job = new_job("PRREVIEW-CompactGroups~1", inputs=NESTED)
+    lane = lane_for(job)
+    ws = lane.prepare(job, dry_ctx)
+    seen = {}
+
+    def run_gate(worktree, name, opts, base="", build_cmd=""):
+        seen.update(name=name, opts=opts)
+        return gates.GateResult(name, counts={"build": 0})
+    monkeypatch.setattr(lane_prreview.gates, "run_gate", run_gate)
+    ctx = dataclasses.replace(dry_ctx, dry_run=False)
+    assert lane.review_gate(job, ctx, ws).ok
+    opts = seen["opts"]
+    assert seen["name"] == "CompactGroups" and opts.folder == "RepresentationTheory/CompactGroups"
+    changed = ["TauCetiRoadmap/RepresentationTheory/CompactGroups/README.md", "TauCetiRoadmap/Foo/README.md",
+               "TauCetiRoadmap/RepresentationTheory/LieGroups/X.lean", "TauCetiRoadmap/RepresentationTheory/README.md",
+               "TauCetiRoadmap/RepresentationTheory/Other/README.md", "TauCetiRoadmap/Bar/README.md", "lakefile.toml"]
+    assert gates.outside_folder(changed, "TauCetiRoadmap/RepresentationTheory/CompactGroups", opts.outside_folder_allow) == [
+        "TauCetiRoadmap/RepresentationTheory/Other/README.md", "TauCetiRoadmap/Bar/README.md", "lakefile.toml"]
+
+
+def test_a_nested_review_writes_its_folder_under_the_head_line_and_in_its_verdict(review_env, monkeypatch):
+    monkeypatch.setattr(lane_prreview.gitops, "git", lambda cwd, *args, **kw: H1 + "\n" if args[0] == "rev-parse" else "")
+    ctx = lane_ctx(review_env, gh=LabelGH())
+    job = new_job("PRREVIEW-CompactGroups~1", inputs=NESTED)
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    second = "Folder: `TauCetiRoadmap/RepresentationTheory/CompactGroups/`"
+    assert f"report: the line after the first must be '{second}'" in lane.check(job, ctx, ws)
+    head, rest = ws.report.read_text().split("\n", 1)
+    ws.report.write_text(f"{head}\n{second}\n{rest}")
+    assert lane.check(job, ctx, ws) == []
+    body = lane.comment_body(job, ctx, ws)
+    assert "Roadmap folder: `TauCetiRoadmap/RepresentationTheory/CompactGroups/`" in body and second not in body
+    assert "also adds or changes 2 other roadmap folders, each reviewed on its own" in body
+    # The worker records the folder when the agent left it out of the verdict.
+    path = lane.verdict_file(job, ctx, ws)
+    data = json.loads(path.read_text())
+    del data["review"]["folder"]
+    path.write_text(json.dumps(data))
+    assert path in lane.scrub_outputs(job, ctx, ws)
+    assert json.loads(path.read_text())["review"]["folder"] == "RepresentationTheory/CompactGroups"
+
+
+def test_an_acceptance_labels_the_pull_request_only_once_its_other_folders_accept(review_env):
+    gh = LabelGH()
+    ctx = lane_ctx(review_env, gh=gh)
+    job = new_job("PRREVIEW-CompactGroups~1", inputs={**NESTED, "roadmaps": ["Foo", "RepresentationTheory/CompactGroups"]})
+    foo = review_job(70, 1, 905, H1, "done", folder="Foo")
+    ctx.board = FakeBoard(jobs=[foo, review_job(71, 1, 906, H1, "done", name="Foo", folder="Foo")])
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    assert lane.finish(job, ctx, ws).endswith("labelled later: 1 folder not yet accepted")
+    assert gh.labels == [] and len(gh.comments) == 1
+    gh.files.update(verdict_file(foo, "accepted", H1))
+    assert lane.update_label(job, ctx, 905, H1, "accepted") == "labelled ai-approved" and gh.labels == ["ai-approved"]
+    # One folder asking for changes takes the label off, whatever the others say.
+    assert lane.update_label(job, ctx, 905, H1, "needs_changes") == "ai-approved removed" and gh.labels == []
 
 
 # --- a run that stops after its comment is finished without a second one -----------------------------------

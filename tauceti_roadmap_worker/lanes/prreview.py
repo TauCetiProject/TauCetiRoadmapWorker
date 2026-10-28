@@ -1,17 +1,22 @@
-"""The `prreview` lane: the AI review of a roadmap pull request on the content repository, by any author.
+"""The `prreview` lane: the AI review of one roadmap folder of a pull request on the content
+repository, by any author.
 
-The review is read-only on the pull request. The worker checks the head the job names out in a
-worktree (on a local branch of its own, never the author's branch name), runs the push gate on it
-(text scanners, the dependency check against the merge order, the targeted build) and hands the
-result to the agent as data, with the pull request's title and description quoted as data. The agent
-reviews the roadmap's README and Suggested.lean at that head and writes a report and a verdict record
-into the board checkout; it never commits. The worker then posts the review as one comment on the
-pull request (`prreviews.render_pr_review`: `Verdict: APPROVE` for an acceptance, which no gate round
-reads as a review to answer; a review that asks for changes is one), puts `[prreview] label` on the
-pull request when the review accepts the head it still has, takes the label off when the review
-blocks, and submits the report and the verdict record to the board, where the intake marks the job
-done. An acceptance means the pull request is ready for a human's final approval: the AI never
-approves or merges.
+A job reviews one roadmap folder (`inputs.folder`, relative to the active directory; nested ones
+such as `RepresentationTheory/CompactGroups` included); a pull request that adds or edits several
+has one job per folder, and the other folders are named to the agent as the pull request's own
+(`inputs.roadmaps`). The review is read-only on the pull request. The worker checks the head the job
+names out in a worktree (on a local branch of its own, never the author's branch name), runs the push
+gate on the folder (text scanners, the dependency check against the merge order, the targeted build
+of its Suggested module) and hands the result to the agent as data, with the pull request's title and
+description quoted as data. The agent reviews the folder's README and every Lean file in it at that
+head and writes a report and a verdict record into the board checkout; it never commits. The worker
+then posts the review as one comment on the pull request (`prreviews.render_pr_review`: `Verdict:
+APPROVE` for an acceptance, which no gate round reads as a review to answer; a review that asks for
+changes is one), puts `[prreview] label` on the pull request when the review accepts the head it
+still has and the reviews of its other folders at that head accept too (else the board's sync adds
+it once the last one does), takes the label off when the review blocks, and submits the report and
+the verdict record to the board, where the intake marks the job done. An acceptance means the
+roadmap folder is ready for a human's final approval: the AI never approves or merges.
 
 The reviewer is not the pull request's author: an operator never reviews their own pull request,
 except under `[review] separation = "agent"`, where the review models `[agents.lanes.prreview]` pins
@@ -73,9 +78,41 @@ def report_head(name: str, pr: int, head: str) -> str:
     return f"# Review of {name} (pull request #{pr} at {head[:7]})"
 
 
+def folder_line(active_dir: str, folder: str) -> str:
+    """The second line of the report of a nested roadmap's review: its folder."""
+    return f"Folder: `{active_dir}/{folder}/`"
+
+
+def other_folders(job: Job) -> list[str]:
+    """The other roadmap folders of the job's pull request at its head (`inputs.roadmaps`, relative to
+    the active directory), each reviewed by a job of its own."""
+    own = board.prreview_folder(job)
+    return [f for f in (str(x).strip("/") for x in job.inputs.get("roadmaps") or []) if f and f != own]
+
+
+def family_folders(folder: str) -> list[str]:
+    """The folders above a nested roadmap's under the active directory, nearest last: the family whose
+    index files (README, PROGRESS, STATUS, metadata) sit beside its roadmaps."""
+    parts = folder.strip("/").split("/")
+    return ["/".join(parts[:k]) for k in range(1, len(parts))]
+
+
+def folder_leans(folder: Path) -> list[Path]:
+    """The roadmap's Lean files: Suggested.lean (listed whether or not it exists yet), then every other
+    `*.lean` under the folder outside a subfolder with a README.md of its own."""
+    suggested = folder / "Suggested.lean"
+
+    def own(path: Path) -> bool:
+        return not any((folder / up / "README.md").is_file() for up in path.relative_to(folder).parents
+                       if up != Path("."))
+    extra = sorted(p for p in folder.rglob("*.lean") if p != suggested and own(p)) if folder.is_dir() else []
+    return [suggested, *extra]
+
+
 def prreview_verdict_problems(data, job: Job) -> list[str]:
     """Why a pull-request review's verdict record is not one the board takes: the review verdict's
-    rules (`review.verdict_problems`), and the pull request and head the job names."""
+    rules (`review.verdict_problems`), and the pull request, head and roadmap folder the job names (a
+    job filed before reviews were per folder names none)."""
     problems = verdict_problems(data, job.id)
     review = data.get("review") if isinstance(data, dict) else None
     if not isinstance(review, dict):
@@ -84,6 +121,8 @@ def prreview_verdict_problems(data, job: Job) -> list[str]:
         problems.append(f"verdict file: head must be {job.inputs.get('head')} (the head reviewed)")
     if review.get("pr") != job.inputs.get("pr"):
         problems.append(f"verdict file: pr must be {job.inputs.get('pr')}")
+    if job.inputs.get("folder") and review.get("folder") != board.prreview_folder(job):
+        problems.append(f"verdict file: folder must be {board.prreview_folder(job)} (the roadmap folder reviewed)")
     return problems
 
 
@@ -188,12 +227,13 @@ class PRReviewLane(Lane):
             gitops.git(wt, "checkout", "-q", "-B", branch, recorded)
         ws.workdir = wt
         prs = open_roadmap_prs(ctx)
-        folder = wt / cfg.roadmap.active_dir / job.name
+        folder = wt / cfg.roadmap.active_dir / board.prreview_folder(job)
         owner = str(job.inputs.get("owner") or (data.get("user") or {}).get("login", ""))
+        leans = folder_leans(folder)
         ws.extra.update(pr=number, head=recorded, owner=owner, branch=branch,
                         pr_branch=(data.get("head") or {}).get("ref", ""), prs=prs,
                         siblings=sibling_checkouts(ctx, prs, skip=job.name), folder=folder,
-                        readme=folder / "README.md", lean=folder / "Suggested.lean")
+                        readme=folder / "README.md", lean=leans[0], leans=leans)
         (ws.scratch / PULL_REQUEST_TEXT).write_text(pull_request_document(number, data, owner), encoding="utf-8")
         self.order_for_review(ctx, ws, job.name)
         ws.extra["gate"] = self.review_gate(job, ctx, ws)
@@ -249,9 +289,12 @@ class PRReviewLane(Lane):
         order = load_order(gate_order_file(cfg, ws, job.name))
         opts = gates.GateOptions.from_config(cfg, order=order or None, dropped=dropped_names(cfg),
                                              siblings=sibling_readmes(ctx.state, cfg.roadmap.active_dir, ws.extra["prs"]))
-        # The other roadmap folders a pull request reviewed as one of them carries are its own.
-        opts.outside_folder_allow.extend(rf"^{re.escape(cfg.roadmap.active_dir)}/{re.escape(n)}/"
-                                         for n in job.inputs.get("roadmaps", []) if n != job.name)
+        opts.folder = board.prreview_folder(job)
+        # The pull request's other roadmap folders are its own (each has a review of its own), and so
+        # are the index files of a nested roadmap's family.
+        active = re.escape(cfg.roadmap.active_dir)
+        opts.outside_folder_allow.extend(rf"^{active}/{re.escape(f)}/" for f in other_folders(job))
+        opts.outside_folder_allow.extend(rf"^{active}/{re.escape(f)}/[^/]+$" for f in family_folders(opts.folder))
         result = gates.run_gate(ws.workdir, job.name, opts, base=f"origin/{cfg.project.branch}", build_cmd=cfg.gates.build)
         save_gate(record, head, result)
         return result
@@ -265,11 +308,20 @@ class PRReviewLane(Lane):
         return []
 
     def scrub_outputs(self, job: Job, ctx: Context, ws: Workspace) -> list[Path]:
+        """The base scrub, machine paths out of the verdict record, and the roadmap folder reviewed
+        recorded in it (`folder`) when the agent left it out."""
         changed = super().scrub_outputs(job, ctx, ws)
         path = self.verdict_file(job, ctx, ws)
         if path.is_file():
             text = path.read_text(encoding="utf-8", errors="replace")
             clean = scrub_paths(text, ctx.state, Path.home())
+            try:
+                data = json.loads(clean)
+            except ValueError:
+                data = None
+            if isinstance(data, dict) and isinstance(data.get("review"), dict) and "folder" not in data["review"]:
+                data["review"]["folder"] = board.prreview_folder(job)
+                clean = json.dumps(data, indent=1, ensure_ascii=False) + "\n"
             if clean != text:
                 path.write_text(clean, encoding="utf-8")
                 changed.append(path)
@@ -288,17 +340,26 @@ class PRReviewLane(Lane):
     # -- the brief --
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
         cfg, head = ctx.cfg, ws.extra["head"]
-        readme, lean = ws.extra["readme"], ws.extra["lean"]
+        active, own = cfg.roadmap.active_dir, board.prreview_folder(job)
+        readme, leans = ws.extra["readme"], ws.extra.get("leans") or [ws.extra["lean"]]
         items = sample_items(readme.read_text(encoding="utf-8")) if readme.is_file() else []
         sample = seeded_sample(items, SAMPLE_SIZE, job.id)
-        folder = f"{cfg.roadmap.active_dir}/{job.name}"
-        others = [n for n in job.inputs.get("roadmaps", []) if n != job.name]
-        files = f"- `{readme}`\n- `{lean}`"
+        folder = f"{active}/{own}"
+        others, family = other_folders(job), family_folders(own)
+        files = "\n".join(f"- `{p}`" for p in [readme, *leans])
+        files += ("\n\nThe Lean form rules below apply to each `.lean` file listed; the build is of "
+                  f"`{leans[0].name}`'s module.")
         if others:
-            files += ("\n\nThe pull request also changes the roadmap folders " + ", ".join(f"`{cfg.roadmap.active_dir}/{n}/`"
-                      for n in others) + ": read them where this roadmap relies on them.")
-        build = (cfg.gates.build.format(module=f"{cfg.roadmap.active_dir}.{job.name}.Suggested") if cfg.gates.build
+            files += ("\n\nThe pull request also adds or changes the roadmap folders "
+                      + ", ".join(f"`{active}/{f}/`" for f in others) + " (data: each has a review of its own). They "
+                      "are its own, not changes outside the folder: read them where this roadmap relies on them.")
+        if family:
+            files += (f"\n\nThis roadmap is nested: the files directly in `{active}/{family[-1]}/` (the family's "
+                      "index) are the pull request's own as well.")
+        build = (cfg.gates.build.format(module=gates.roadmap_module(active, own)) if cfg.gates.build
                  else "(no build configured)")
+        excluded = " ".join([f"':!{folder}'", *(f"':!{active}/{f}'" for f in others),
+                             *(f"':(exclude,glob){active}/{f}/*'" for f in family)])
         previous = "none"
         j = board.parse_job_id(job.id)
         if j.round > 1:
@@ -306,13 +367,15 @@ class PRReviewLane(Lane):
             if not path.read_text(encoding="utf-8").startswith("(no report"):
                 previous = f"`{path}`"
         return {"PR": str(ws.extra["pr"]), "HEAD": head, "HEAD7": head[:7], "OWNER": ws.extra.get("owner") or "?",
-                "FILES": files, "FOLDER": folder,
+                "FILES": files, "FOLDER": folder, "FOLDER_REL": own,
+                "FOLDER_LINE": (f", then this second line: {folder_line(active, own)}" if family else ""),
                 "SAMPLE": "; ".join(f"“{s}”" for s in sample)
                           or f"a random sample of {SAMPLE_SIZE} targets (none found by heading)",
                 "BUILD": build,
-                "GATE": ctx.cli("gate", str(ws.workdir), job.name, "--base", f"origin/{cfg.project.branch}"),
+                "GATE": ctx.cli("gate", str(ws.workdir), job.name, *(("--folder", own) if own != job.name else ()),
+                                "--base", f"origin/{cfg.project.branch}"),
                 "GATE_REPORT": str(ws.scratch / GATE_REPORT), "PR_TEXT": str(ws.scratch / PULL_REQUEST_TEXT),
-                "OUTSIDE_CHECK": f"git -C {ws.workdir} diff --stat origin/{cfg.project.branch}...HEAD -- . ':!{folder}'",
+                "OUTSIDE_CHECK": f"git -C {ws.workdir} diff --stat origin/{cfg.project.branch}...HEAD -- . {excluded}",
                 "PREVIOUS": previous, "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)),
                 "ELABORATE": elaborate_line(cfg, dataclasses.replace(ws, content=ws.workdir)),
                 "LIBRARY": library_description(ws.workdir)}
@@ -330,6 +393,11 @@ class PRReviewLane(Lane):
         first = report_head(job.name, pr, head)
         if report and report.split("\n", 1)[0].strip() != first:
             problems.append(f"report: first line must be '{first}'")
+        own = board.prreview_folder(job)
+        if report and family_folders(own):
+            second = folder_line(ctx.cfg.roadmap.active_dir, own)
+            if next((line.strip() for line in report.split("\n")[1:] if line.strip()), "") != second:
+                problems.append(f"report: the line after the first must be '{second}'")
         findings = prreviews.report_findings(report)[0]
         status = self.verdict(job, ctx, ws).get("status")
         if status == "accepted":
@@ -372,11 +440,15 @@ class PRReviewLane(Lane):
         conditional = verdict.get("conditional_gaps")
         marker = {"job": job.id, "head": head, "verdict": status, "agent": ctx.agent, "model": ctx.model,
                   "worker": ctx.worker_id}
+        active, own = ctx.cfg.roadmap.active_dir, board.prreview_folder(job)
+        report = ws.report.read_text(encoding="utf-8") if ws.report.is_file() else ""
+        line = folder_line(active, own)
+        report = "\n".join(x for x in report.split("\n") if x.strip() != line)    # the comment names the folder itself
         return prreviews.render_pr_review(
-            prreviews.pr_review_head(ctx.agent, ctx.model, head), status,
-            ws.report.read_text(encoding="utf-8") if ws.report.is_file() else "", marker, head,
+            prreviews.pr_review_head(ctx.agent, ctx.model, head), status, report, marker, head,
             replies.validation_sentence(head[:7], gate) if gate is not None else "",
-            conditional if isinstance(conditional, list) else None)
+            conditional if isinstance(conditional, list) else None,
+            folder=f"{active}/{own}", others=len(other_folders(job)))
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         repo, pr, head = ctx.cfg.repositories.content, ws.extra["pr"], ws.extra["head"]
@@ -389,16 +461,18 @@ class PRReviewLane(Lane):
             body = self.comment_body(job, ctx, ws)
             self.comment_once(ctx, repo, pr, body, lambda text: same_review(text, job.id, head))
             settle(ctx, job, CONTENT_COMMENT)
-        label = self.update_label(ctx, pr, head, status)
-        summary = review_summary(f"review of #{pr} ({job.name}) at {head[:7]}", verdict,
+        label = self.update_label(job, ctx, pr, head, status)
+        summary = review_summary(f"review of #{pr} ({board.prreview_folder(job)}) at {head[:7]}", verdict,
                                  ws.report.read_text(encoding="utf-8") if ws.report.is_file() else "")
         return summary + (f"; {label}" if label else "")
 
-    def update_label(self, ctx: Context, pr: int, head: str, status: str) -> str:
-        """`[prreview] label` on the pull request when the review accepts the head it still has, off it
-        when the review asks for changes; the awaiting-author and awaiting-review labels are never
-        touched. A label the operator's token cannot change is reported, not raised: the board's sync
-        takes a label off a head no accepted review covers."""
+    def update_label(self, job: Job, ctx: Context, pr: int, head: str, status: str) -> str:
+        """`[prreview] label` on the pull request when the review accepts the head it still has and the
+        latest reviews of its other roadmap folders at that head (their verdicts on the board's main)
+        accept too, off it when the review asks for changes; the awaiting-author and awaiting-review
+        labels are never touched. When another folder's review has not accepted yet, the board's sync
+        adds the label once the last one does. A label the operator's token cannot change, or a verdict
+        GitHub did not answer for, is reported, not raised: the board's sync keeps the label honest."""
         repo, label = ctx.cfg.repositories.content, ctx.cfg.prreview.label
         try:
             have = {x.get("name") for x in ctx.gh.api(f"repos/{repo}/issues/{pr}/labels") or [] if isinstance(x, dict)}
@@ -406,6 +480,9 @@ class PRReviewLane(Lane):
                 live = pr_head(ctx, repo, pr)
                 if live != head:
                     return f"not labelled {label}: #{pr} moved to {live[:7] or '?'}"
+                pending = self.folders_not_accepted(job, ctx, pr, head)
+                if pending:
+                    return f"labelled later: {pending} folder{'s' if pending != 1 else ''} not yet accepted"
                 if label in have:
                     return f"{label} kept"
                 ctx.gh.write("POST", f"repos/{repo}/issues/{pr}/labels", {"labels": [label]})
@@ -416,3 +493,19 @@ class PRReviewLane(Lane):
             return ""
         except GHError as exc:
             return f"{label} not changed ({str(exc).splitlines()[0][:160]})"
+
+    def folders_not_accepted(self, job: Job, ctx: Context, pr: int, head: str) -> int:
+        """How many of the pull request's other roadmap folders no finished review of `head` accepts:
+        the latest verdict of each, read from the board's main (`intake.latest_verdict`)."""
+        others = other_folders(job)
+        if not others:
+            return 0
+        from ..intake import latest_verdict  # here: the intake imports the lanes
+
+        mine = [j for j in ctx.board.kind_jobs("prreview") if str(j.inputs.get("pr")) == str(pr)]
+        count = 0
+        for folder in others:
+            verdict = latest_verdict(ctx, [j for j in mine if board.prreview_folder(j) == folder], head)
+            if not verdict or verdict.get("status") != "accepted" or verdict.get("head") != head:
+                count += 1
+        return count
