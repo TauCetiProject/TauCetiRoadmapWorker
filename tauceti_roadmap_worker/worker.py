@@ -2,8 +2,8 @@
 
 Order (`rank`, configurable under `[board]`): jobs whose roadmap descends from a target a human filed
 before imported ones (`human_first`), then by stage closest to delivery first (`priority`: GATE, PORT,
-FIX-RT, PRREVIEW, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET, ERRATA), then the
-oldest issue. A lease is renewed by a heartbeat while the agent runs, so a long run is not mistaken
+FIX-RT, PRREVIEW, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET, ERRATA; within
+PRREVIEW, the re-reviews of a repaired head first), then the oldest issue. A lease is renewed by a heartbeat while the agent runs, so a long run is not mistaken
 for a dead one; once the heartbeat loses it, the round writes nothing more to GitHub and keeps its
 run for the next attempt. The lease is released when the round ends, whatever the outcome (a
 submitted job is then held by its pull request, a parked one by its request). A round that stops
@@ -108,17 +108,20 @@ def rank(jobs: list[Job], order: list[str] | None = None, priority: list[str] | 
          human_first: bool = True, known: dict[str, str] | None = None) -> list[Job]:
     """The jobs in the order a worker takes them: those whose roadmap descends from a target a human
     filed first (`human_first`), then imported ones (an unknown origin counts as imported); within
-    each, by stage in `priority` (closest to delivery first, unlisted stages after), then the errata
-    of a roadmap in a pull request before those of one on main (the former can still be repaired),
-    then oldest first. `order` (the merge order) is no longer a key; it is accepted for callers that
-    pass it."""
+    each, by stage in `priority` (closest to delivery first, unlisted stages after), then the
+    re-reviews of a repaired head before the other reviews of roadmap pull requests (`rereview`), the
+    errata of a roadmap in a pull request before those of one on main (the former can still be
+    repaired), then oldest first. `order` (the merge order) is no longer a key; it is accepted for
+    callers that pass it."""
     known = known if known is not None else board.origins(jobs)
     stage = {s: i for i, s in enumerate(priority)}
 
     def key(j: Job):
         human = board.origin_of(j, known).startswith("target:")
+        first_review = j.kind == "prreview" and not j.inputs.get("rereview")
         on_main = j.kind == "errata" and not j.inputs.get("pr")
-        return (0 if human or not human_first else 1, stage.get(board.stage_of(j.id), len(stage)), on_main, j.number)
+        return (0 if human or not human_first else 1, stage.get(board.stage_of(j.id), len(stage)), first_review,
+                on_main, j.number)
     return sorted(jobs, key=key)
 
 

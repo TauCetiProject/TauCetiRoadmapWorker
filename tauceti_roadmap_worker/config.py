@@ -91,7 +91,8 @@ class Board:
     # Empty: the target filers and the operators.
     reference_answerers: list[str] = field(default_factory=list)
     # The order in which a worker takes jobs: first those whose roadmap descends from a target a human
-    # filed (`human_first`), then imported ones; within each, by stage in this order, then oldest first.
+    # filed (`human_first`), then imported ones; within each, by stage in this order (within PRREVIEW,
+    # the re-reviews of a repaired head first), then oldest first.
     # After every round that submitted, parked, blocked or released a job, the worker asks GitHub to
     # run the board workflow now (`gh workflow run <dispatch_workflow>`, needs a token that may dispatch
     # it; the workflow's concurrency group collapses bursts): GitHub's schedule is unreliable.

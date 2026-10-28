@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tauceti_roadmap_worker import board, cli, config, gates, intake, prompts, prreviews, replies
+from tauceti_roadmap_worker import board, cli, config, gates, intake, prompts, prreviews, replies, worker
 from tauceti_roadmap_worker.board import Outcome, new_job
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes import Context, LaneError, lane_for
@@ -47,6 +47,44 @@ def test_the_job_id_round_trips_with_an_explicit_round_and_ranks_after_the_fixes
         j.number = n
     assert [j.id for j in rank(jobs, human_first=False)] == ["GATE-Baz~1", "FIX-RT-Foo~1", "PRREVIEW-Bar~1",
                                                               "RT-Foo~1a", "REV-PKG-Qux"]
+
+
+class SeenLane:
+    """A lane every job is ineligible for: the worker's log then lists the jobs in the order it tries them."""
+
+    def eligible(self, job, ctx):
+        return "seen"
+
+
+def test_a_worker_takes_the_re_reviews_of_a_repaired_head_first_within_the_review_stage(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+
+    def job(jid, number, origin="explorer:EXPLORE-1", **inputs):
+        made = new_job(jid, inputs={"origin": origin, **inputs})
+        made.number, made.state = number, "available"
+        return made
+    jobs = [job("ERRATA-Eee", 1), job("PRREVIEW-Aaa~1", 2, rereview=False), job("RT-Foo~1a", 3, pr=905),
+            job("PRREVIEW-Bbb~2", 4, rereview=True, previous_head=H1, previous_job="PRREVIEW-Bbb~1"),
+            job("PRREVIEW-Ccc~1", 5), job("GATE-Foo~2", 6, pr=905),
+            job("PRREVIEW-Ddd~3", 7, rereview=True, previous_head=H2, previous_job="PRREVIEW-Ddd~2"),
+            job("PRREVIEW-Hhh~1", 8, origin="target:9", rereview=False), job("FIX-RT-Foo~1", 9, pr=905),
+            job("PRREVIEW-Iii~2", 10, origin="target:9", rereview=True, previous_head=H1, previous_job="PRREVIEW-Iii~1")]
+    fake = FakeBoard(jobs=jobs)
+    ctx = Context(cfg=example_config(), gh=None, board=fake, claims=None, worker_id="w1", operator="alice",
+                  agent="codex", model="m", dry_run=True)
+    monkeypatch.setattr(worker, "lane_for", lambda j: SeenLane())
+    lines = []
+    assert worker.work_once(ctx, None, log=lines.append).status == "idle"
+    # The human-filed tier first, the stages in their order, and within PRREVIEW the re-reviews first.
+    assert [line.split()[1].rstrip(":") for line in lines] == [
+        "PRREVIEW-Iii~2", "PRREVIEW-Hhh~1", "GATE-Foo~2", "FIX-RT-Foo~1", "PRREVIEW-Bbb~2", "PRREVIEW-Ddd~3",
+        "PRREVIEW-Aaa~1", "PRREVIEW-Ccc~1", "RT-Foo~1a", "ERRATA-Eee"]
+    # Without the re-reviews the order of the other kinds is what it was.
+    plain = [j for j in jobs if not j.inputs.get("rereview")]
+    assert [j.id for j in rank(plain)] == ["PRREVIEW-Hhh~1", "GATE-Foo~2", "FIX-RT-Foo~1", "PRREVIEW-Aaa~1",
+                                           "PRREVIEW-Ccc~1", "RT-Foo~1a", "ERRATA-Eee"]
+    flat = [j.id for j in rank(jobs, human_first=False)]
+    assert flat[2:6] == ["PRREVIEW-Bbb~2", "PRREVIEW-Ddd~3", "PRREVIEW-Iii~2", "PRREVIEW-Aaa~1"]
 
 
 def test_a_review_delivers_its_report_and_verdict_and_releases_nothing():
