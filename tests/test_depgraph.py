@@ -187,3 +187,30 @@ def test_an_explicit_supplier_statement_counts_for_a_declared_consumer():
     the edge, and check_order reports the cycle as before."""
     text = "*Needs:* Gamma §2.\n\n## Downstream consumers\n\n- **Gamma**: uses layer 3.\n"
     assert set(supplier_edges({"Beta": text}, {"Gamma"})["Beta"]) == {"Gamma"}
+
+
+# --- roadmaps on the content repository's main ----------------------------------------------------
+
+def test_a_roadmap_on_main_is_never_an_upward_supplier_nor_a_checked_consumer():
+    from tauceti_roadmap_worker.depgraph import remove_from_order, repair_upward
+    readmes = {"Alpha": "*Needs:* Gamma §3, Beta §1.\n", "Gamma": "*Needs:* Delta §2.\n", "Beta": "# Roadmap: beta\n",
+               "Epsilon": "*Needs:* Beta §1.\n"}
+    order = ORDER + ["Delta"]
+    edges = supplier_edges(readmes, set(order))
+    assert check_order(edges, order) == ["UPWARD: Alpha (#1) -> Beta (#2) at README lines [1]",
+                                         "UPWARD: Alpha (#1) -> Gamma (#3) at README lines [1]",
+                                         "UPWARD: Gamma (#3) -> Delta (#4) at README lines [1]",
+                                         "NOT IN ORDER: Epsilon (insert it after its last supplier)"]
+    # Gamma is on main: no edge to it is upward, and it is not checked as a consumer; nor is Epsilon.
+    assert check_order(edges, order, merged={"Gamma", "Epsilon"}) == [
+        "UPWARD: Alpha (#1) -> Beta (#2) at README lines [1]"]
+    assert check_order(edges, order, only={"Alpha"}, merged={"Gamma", "Beta"}) == []
+    # A cycle among roadmaps on main alone is not reported; one through an open roadmap still is.
+    loop = supplier_edges({"Alpha": "*Needs:* Beta §1.\n", "Beta": "*Needs:* Alpha §2.\n"}, set(ORDER))
+    assert check_order(loop, ORDER, merged={"Alpha", "Beta"}) == []
+    assert check_order(loop, ORDER, merged={"Beta"}) == ["CYCLE among: Alpha, Beta"]
+    # The order's repair moves nothing after a roadmap on main, and never moves one.
+    text = "# suppliers first\nAlpha\nBeta\nGamma\n"
+    assert repair_upward(text, readmes, merged={"Gamma"})[0] == "# suppliers first\nBeta\nAlpha\nGamma\n"
+    assert repair_upward(text, readmes, merged={"Gamma", "Beta"}) == (text, {})
+    assert remove_from_order("# suppliers first\nAlpha  # x\nBeta\nGamma\n", {"Alpha", "Gamma"}) == "# suppliers first\nBeta\n"

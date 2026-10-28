@@ -16,7 +16,11 @@ functions over README texts (no /tmp lists, no hard-coded pull requests or bundl
   clause, a `### From` heading, a supplier table or contract bullet, a `### Dependencies`
   sentence), never by a mention in a prose line that happens to say "supplier".
 * `check_order(edges, order, ...)` reports UPWARD edges (a supplier later in the merge order),
-  CYCLEs and roadmaps missing from the order: every one is a design defect.
+  CYCLEs and roadmaps missing from the order: every one is a design defect. A roadmap already on the
+  content repository's main (`merged`) is a supplier available to every pull request: an edge to it
+  is never UPWARD, it is not checked as a consumer, and a cycle among such roadmaps alone is not
+  reported. The merge order is the order of the open pull requests; where it lists a roadmap on
+  main means nothing.
 * `move_after_suppliers(...)` and `repair_upward(...)` repair an UPWARD edge of a listed roadmap by
   moving it right after its last supplier, unless one of its consumers comes no later than that
   supplier (the move would put a supplier after a consumer).
@@ -250,29 +254,39 @@ def strongly_connected(adj: dict[str, set[str]]) -> list[list[str]]:
     return comps
 
 
-def check_order(edges: dict[str, dict[str, set[int]]], order: list[str], only: set[str] | None = None) -> list[str]:
+def check_order(edges: dict[str, dict[str, set[int]]], order: list[str], only: set[str] | None = None,
+                merged: set[str] | frozenset = frozenset()) -> list[str]:
     """Problems with the supplier graph: NOT IN ORDER, UPWARD and CYCLE lines (empty = clean).
-    `only` restricts the per-roadmap lines, and the cycles reported, to those involving those roadmaps."""
+    `only` restricts the per-roadmap lines, and the cycles reported, to those involving those roadmaps.
+    `merged`: the roadmaps on the content repository's main, never an UPWARD supplier, never checked
+    as consumers, and a cycle among them alone not reported."""
     pos = {name: i for i, name in enumerate(order)}
     problems = []
     for consumer in sorted(edges, key=lambda n: pos.get(n, len(pos))):
-        if only and consumer not in only:
+        if (only and consumer not in only) or consumer in merged:
             continue
         if consumer not in pos:
             problems.append(f"NOT IN ORDER: {consumer} (insert it after its last supplier)")
             continue
         for supplier, lines in sorted(edges[consumer].items()):
-            if supplier in pos and pos[supplier] > pos[consumer]:
+            if supplier in pos and supplier not in merged and pos[supplier] > pos[consumer]:
                 problems.append(f"UPWARD: {consumer} (#{pos[consumer] + 1}) -> {supplier} (#{pos[supplier] + 1}) "
                                 f"at README lines {sorted(lines)[:6]}")
     adj = {a: set(b) for a, b in edges.items()}
     for comp in strongly_connected(adj):
         # With `only`, a cycle elsewhere in the graph is another roadmap's defect (2026-10-27: one
         # author's cycles failed every other roadmap's gate once their pull requests were managed).
-        if only and not (set(comp) & only):
+        if (only and not (set(comp) & only)) or set(comp) <= set(merged):
             continue
         problems.append("CYCLE among: " + ", ".join(comp))
     return problems
+
+
+def remove_from_order(text: str, names: set[str]) -> str:
+    """The merge-order file without the lines that list `names`; comments and the other lines kept in
+    their order."""
+    lines = [line for line in text.splitlines() if line.split("#", 1)[0].strip() not in names]
+    return "\n".join(lines) + "\n"
 
 
 def merge_chain(name: str, edges: dict[str, dict[str, set[int]]], order: list[str], open_names: set[str]) -> list[str]:
@@ -489,14 +503,17 @@ def move_after_suppliers(text: str, name: str, suppliers: set[str],
 
 
 def repair_upward(text: str, readmes: dict[str, str], main_extended: set[str] | frozenset = frozenset(),
-                  only: set[str] | None = None) -> tuple[str, dict[str, str]]:
+                  only: set[str] | None = None, merged: set[str] | frozenset = frozenset()) -> tuple[str, dict[str, str]]:
     """The merge-order file with every roadmap of `readmes` (or of `only`) that it lists above a
     supplier its README names moved right after its last supplier (`move_after_suppliers`), until no
     such move is left; and name -> what happened to it (moved, or why not: a move that would put one
-    of its consumers among `readmes` before it is not made). Idempotent: a clean order is returned as
-    it is, with no notes."""
+    of its consumers among `readmes` before it is not made). A roadmap on the content repository's
+    main (`merged`) is neither moved nor a supplier anything moves after. Idempotent: a clean order is
+    returned as it is, with no notes."""
     order = read_order(text)
     edges = supplier_edges(readmes, set(order) | set(readmes), main_extended)
+    edges = {c: {s: lines for s, lines in sups.items() if s not in merged}
+             for c, sups in edges.items() if c not in merged}
     consumers: dict[str, set[str]] = defaultdict(set)
     for c, sups in edges.items():
         for s in sups:

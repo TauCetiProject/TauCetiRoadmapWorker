@@ -409,3 +409,48 @@ def test_target_ids():
     assert gates.scan_target_ids("# Roadmap\n\nNo layers here.\n") == []
     r = scan_folder("Toy", CLEAN_README.replace("### 1.1", "### T1.1"), CLEAN_LEAN, opts())
     assert r.counts["target-ids"] >= 1 and not r.ok, r.details
+
+
+# --- roadmaps on the content repository's main are never upward suppliers ---------------------------
+
+def content_clone(tmp_path):
+    """A clone of a content repository whose main holds the roadmaps Later and, nested, Family/Deep,
+    an archived one under Completed/, and a references folder; the clone adds Toy, which cites Later."""
+    import subprocess
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
+
+    def git(cwd, *args):
+        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env={**__import__("os").environ, **env})
+    origin, seed, wt = tmp_path / "origin.git", tmp_path / "seed", tmp_path / "wt"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
+    for rel in ("TauCetiRoadmap/Later/README.md", "TauCetiRoadmap/Family/README.md", "TauCetiRoadmap/Family/Deep/README.md",
+                "Completed/Old/README.md", "TauCetiRoadmap/Later/references/README.md", "TauCetiRoadmap/README.md"):
+        (seed / rel).parent.mkdir(parents=True, exist_ok=True)
+        (seed / rel).write_text("# Roadmap\n")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-q", "-m", "main")
+    git(seed, "push", "-q", str(origin), "HEAD:refs/heads/main")
+    subprocess.run(["git", "clone", "-q", str(origin), str(wt)], check=True)
+    toy = wt / "TauCetiRoadmap" / "Toy"
+    toy.mkdir(parents=True)
+    (toy / "README.md").write_text(CLEAN_README + "\n*Needs:* Later §2.\n")
+    (toy / "Suggested.lean").write_text(CLEAN_LEAN)
+    (toy / "metadata.toml").write_text('topic = "math.GR"\n')
+    git(wt, "add", "-A")
+    git(wt, "commit", "-q", "-m", "Toy")
+    return wt
+
+
+def test_the_gate_takes_a_roadmap_on_main_as_a_supplier_whatever_the_order_says(tmp_path):
+    wt = content_clone(tmp_path)
+    merged = gates.merged_roadmaps(wt, "TauCetiRoadmap", "Completed", "main")
+    assert merged == {"Later", "Family", "Deep", "Old"}
+    assert gates.merged_roadmaps(tmp_path, "TauCetiRoadmap", "Completed") == set()        # not a checkout
+    sib = {"Later": "# Roadmap: later\n"}
+    stale = opts(order=["Toy", "Later"], sibling_readmes=sib)
+    assert gates.run_gate(wt, "Toy", stale).details["depcheck"][0].startswith("UPWARD: Toy (#1) -> Later (#2)")
+    assert gates.run_gate(wt, "Toy", opts(order=["Toy", "Later"], sibling_readmes=sib, merged=merged)).counts["depcheck"] == 0
+    cfg = example_config()
+    assert GateOptions.from_config(cfg, order=["Toy"], merged=merged).merged == merged
+    assert GateOptions.from_config(cfg).merged == set()

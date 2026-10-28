@@ -721,16 +721,19 @@ class GateOptions:
     folder: str = ""
     # The files a roadmap folder may hold besides `*.lean` files and nested roadmap folders.
     roadmap_files: list[str] = field(default_factory=lambda: list(ROADMAP_FILES))
+    # The roadmaps on the content repository's main (`merged_roadmaps`): suppliers available to every
+    # pull request, never UPWARD, whatever the merge order of open pull requests says of them.
+    merged: set[str] = field(default_factory=set)
 
     @classmethod
-    def from_config(cls, cfg, order=None, siblings=None, dropped=None, tauceti=None) -> "GateOptions":
+    def from_config(cls, cfg, order=None, siblings=None, dropped=None, tauceti=None, merged=None) -> "GateOptions":
         g = cfg.gates
         return cls(content_repo=cfg.repositories.content, active_dir=cfg.roadmap.active_dir,
                    max_lean_lines=g.max_lean_lines, forbid_mathlib_subimports=g.forbid_mathlib_subimports,
                    forbidden_patterns=list(g.forbidden_patterns), dropped_names=list(dropped or []),
                    outside_folder_allow=list(g.outside_folder_allow), order=order if g.require_depcheck else None,
                    sibling_readmes=dict(siblings or {}), main_extended=list(cfg.roadmap.main_extended),
-                   tauceti_sources=tauceti, roadmap_files=list(g.roadmap_files))
+                   tauceti_sources=tauceti, roadmap_files=list(g.roadmap_files), merged=set(merged or ()))
 
 
 def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateResult:
@@ -761,7 +764,7 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
         readmes = dict(opts.sibling_readmes)
         readmes[name] = readme
         edges = depgraph.supplier_edges(readmes, set(opts.order), set(opts.main_extended))
-        r.add("depcheck", depgraph.check_order(edges, opts.order, only={name}))
+        r.add("depcheck", depgraph.check_order(edges, opts.order, only={name}, merged=opts.merged))
     return r
 
 
@@ -819,6 +822,31 @@ def _git(worktree: Path, *args: str) -> str:
     if out.returncode != 0:
         raise RuntimeError(f"git {' '.join(args[:2])}: {out.stderr.strip()[:200]}")
     return out.stdout
+
+
+def roadmap_names(paths, dirs) -> set[str]:
+    """The roadmaps among repository `paths`: the name (last component) of every folder below one of
+    `dirs`, at any depth, that holds a README.md and is named like a roadmap."""
+    roots = [d.strip("/") + "/" for d in dirs if d and d.strip("/")]
+    out = set()
+    for path in paths:
+        root = next((r for r in roots if path.startswith(r)), None)
+        parts = path[len(root):].split("/") if root else []
+        if len(parts) >= 2 and parts[-1] == "README.md" and re.fullmatch(NAME_RE, parts[-2]):
+            out.add(parts[-2])
+    return out
+
+
+def merged_roadmaps(checkout: Path, active_dir: str, completed_dir: str, branch: str = "main") -> set[str]:
+    """The roadmaps on `origin/<branch>` of a content checkout (or a worktree of one), under the active
+    and the completed directories (`roadmap_names`): suppliers available to every pull request. Empty
+    when the checkout cannot list that branch."""
+    try:
+        listing = _git(Path(checkout), "ls-tree", "-r", "--name-only", f"origin/{branch}", "--",
+                       *(d for d in (active_dir, completed_dir) if d))
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return set()
+    return roadmap_names(listing.splitlines(), (active_dir, completed_dir))
 
 
 def roadmap_module(active_dir: str, folder: str) -> str:
