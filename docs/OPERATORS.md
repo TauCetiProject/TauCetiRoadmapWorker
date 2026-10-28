@@ -385,7 +385,7 @@ read as an instruction.
 | fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
-| prreview | a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head | one comment on the roadmap PR, the `ai-approved` label (on or off); on the board its report and `reports/PRREVIEW-<Name>~k.json` | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR and head, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched |
+| prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head | one comment on the roadmap PR, the `ai-approved` label (on once every folder of the head accepts, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json` | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
 headline theorems the finished roadmap will prove, stated now against the pinned Mathlib and Tau
@@ -575,24 +575,48 @@ restarts, since the configuration is loaded once per start.
 
 ## AI review of every roadmap pull request
 
-With `[prreview] enabled`, every open roadmap pull request of the content repository gets an AI
-review of each head it reaches, whoever opened it. `board sync` (right after the pull-request labels)
-lists the open pull requests that touch a roadmap folder, in one GraphQL request, and files
-`PRREVIEW-<Name>~k` (`k` one more than the roadmap's earlier reviews) for a head no review names yet,
-while no review or gate round of that pull request is open (a gate round is about to move the head).
-A review nobody has taken is closed as `superseded` (set done, with a comment `Superseded: #N is at
-<head7>` or `Closed: #N is closed`) when its pull request moves on or closes; a claimed or submitted
-one finishes. The log reads `#N: PRREVIEW-<Name>~1 created`, `#N: PRREVIEW-<Name>~1 superseded`,
-`#N: ai-approved removed (head moved)`.
+With `[prreview] enabled`, every roadmap folder an open pull request of the content repository adds
+or edits gets an AI review of each head the pull request reaches, whoever opened it; chores and
+progress reports do not. `board sync` (right after the pull-request labels) lists the open pull
+requests with their changed files, in one GraphQL request, reads main's tree once (which folders
+hold a README.md), and works out each pull request's roadmap folders:
+
+- A roadmap folder is a folder under `[roadmap] active_dir`, at any depth, named like a roadmap
+  (`references/` is not one), that holds a README.md at the head: one the pull request adds or
+  changes, or one on main it leaves alone. Nested roadmaps count: a pull request editing
+  `TauCetiRoadmap/RepresentationTheory/CompactGroups/README.md` or a `*Targets.lean` beside it is a
+  review of `RepresentationTheory/CompactGroups`. A family's index folder (one with roadmap folders
+  below it, such as `RepresentationTheory/`) is not a roadmap.
+- Each changed file belongs to the nearest roadmap folder above it. A folder is reviewed when its
+  README.md or a Lean file in it changes; one whose only changes are other files (`PROGRESS.md`,
+  `STATUS.md`, `metadata.toml`, `sources.toml`, notes) is not, nor one whose changes are all
+  removals (a roadmap archived or deleted). Everything under `[roadmap] completed_dir` (`Completed/`)
+  and outside the active directory is ignored.
+- A chore is not reviewed, and the log says `#N: not reviewed (chore: 43 roadmap folders)` or
+  `#N: not reviewed (chore by its title)`: a pull request titled as a conventional-commit chore
+  (`chore: ...`, `chore(Name): ...`), or one that edits more than `max_folders` roadmap folders,
+  unless it adds the README.md of every one of them (a bundle of new roadmaps is reviewed).
+
+Each roadmap folder gets its own job, `PRREVIEW-<Leaf>~k` (`<Leaf>` the folder's last component, `k`
+one more than that name's earlier reviews), with inputs `folder` (relative to the active directory),
+`pr`, `head`, `owner`, `name` (the leaf) and, when the pull request has several roadmap folders,
+`roadmaps` (all of them). It is filed for a head no review of that folder names yet, while no review
+of that folder and no gate round of that pull request is open (a gate round is about to move the
+head). `per_run` counts jobs; a run files every folder of one pull request before the next, so a
+bundle is reviewed as a whole across runs. A review nobody has taken is closed as `superseded` (set
+done, with a comment `Superseded: #N is at <head7>` or `Closed: #N is closed`) when its pull request
+moves on or closes; a claimed or submitted one finishes. The log reads `#N: PRREVIEW-<Leaf>~1
+created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N: ai-approved removed
+(head moved)`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | file and retire review jobs and keep the label (nothing is read while off) |
 | `label` | `"ai-approved"` | the label an accepted head carries on the content repository |
-| `per_run` | `3` | new review jobs per `board sync` run, oldest pull request first |
+| `per_run` | `3` | new review jobs (one per roadmap folder) per `board sync` run, oldest pull request first |
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
 | `skip_authors` | `[]` | never these authors' pull requests |
-| `require_single_folder` | `true` | skip a pull request that touches several roadmap folders (false: review it as the first `TauCetiRoadmap/<Name>/` folder, the others named in the brief) |
+| `max_folders` | `10` | a pull request editing more roadmap folders than this is a chore and not reviewed, unless it adds the README.md of every one of them |
 
 The review runs on the review models: `[agents.lanes.prreview]` pins them, and without that table the
 lane uses `[agents.lanes.review]`'s. For example
@@ -606,30 +630,42 @@ codex_model = "gpt-6-astra"
 claude_model = "fable"
 ```
 
-The lane checks the head the job names out read-only, runs the push gate with the targeted build on
-it, and gives the agent the gate's result and the pull request's title and description as data. The
-agent reviews the roadmap as a package review does and writes its report and verdict
-(`packages/<Name>/reports/PRREVIEW-<Name>~k.md` and `.json`, the head and pull request named in the
-verdict); an acceptance needs the adversarial table, no P1 or P2 finding and a passing gate. The
-worker posts one comment on the pull request, first line `🤖 AI review (<agent>, <model>) of
-<sha>`, then `Verdict: APPROVE` (an acceptance), `Verdict: CHANGES NEEDED` or `Verdict: REJECT`,
-`Reviewed head: <sha>`, the gate's outcome and the findings, with a `tauceti-roadmap-prreview` marker.
+The lane reviews one roadmap folder. It checks the head the job names out read-only, runs the push
+gate on that folder with the targeted build of its Suggested module (`TauCetiRoadmap.<folder,
+dotted>.Suggested`; a nested roadmap may share its family's `metadata.toml`), and gives the agent the
+gate's result and the pull request's title and description as data. The agent reviews the folder's
+README and every Lean file in it (Suggested.lean and any `*Targets.lean`) as a package review does;
+the pull request's other roadmap folders, and a nested roadmap's family index files, are named as
+its own, not as changes outside the folder. It writes its report (first line `# Review of <Leaf>
+(pull request #N at <head7>)`, then `Folder: <path>/` for a nested roadmap) and verdict
+(`packages/<Leaf>/reports/PRREVIEW-<Leaf>~k.md` and `.json`, the head, pull request and `folder`
+named in the verdict); an acceptance needs the adversarial table, no P1 or P2 finding and a passing
+gate. The worker posts one comment on the pull request per folder, first line `🤖 AI review (<agent>,
+<model>) of <sha>`, then `Verdict: APPROVE` (an acceptance), `Verdict: CHANGES NEEDED` or `Verdict:
+REJECT`, `Reviewed head: <sha>`, `Roadmap folder: <path>/`, the gate's outcome and the findings, with
+a `tauceti-roadmap-prreview` marker.
 An acceptance never reads as a review to answer; a review that asks for changes does, so on a pull
 request the board manages it brings a gate round like any other review. A pull request whose author
 is the worker's operator is left to another operator, except under `[review] separation = "agent"`.
 
-The label means: the latest AI review of the current head accepted it. The worker adds it when its
-review accepts the head the pull request still has and removes it when its review blocks; `board sync`
-removes it from a pull request whose current head no accepted review covers (the head moved, a
-later review of that head blocks, or it was added by hand), and keeps it while a review of the
-current head is being finished. A human still approves and merges; the AI never does, and the
-awaiting-author and awaiting-review labels are left to the gate lane and `board sync`.
+The label means: for every roadmap folder of the pull request, the latest AI review of the current
+head accepted it. The worker adds it when its review accepts the head the pull request still has and
+the latest reviews of the other folders at that head (their verdicts on the board's main) accept too;
+otherwise its summary says `labelled later: N folders not yet accepted`. It removes the label when its
+review blocks. `board sync` applies the same rule: it adds the label when the last folder's verdict
+lands, and removes it from a pull request one of whose folders no accepted review of the current
+head covers (the head moved, a later review of that head blocks, a folder is not reviewed yet, the
+pull request is a chore, or the label was added by hand); it leaves the label alone while a review
+of the current head is being finished. Verdicts are read only for a pull request whose every folder
+has a finished review of its head, the most recent first, stopping at the first that does not
+accept. A human still approves and merges; the AI never does, and the awaiting-author and
+awaiting-review labels are left to the gate lane and `board sync`.
 
 The comment and the label are written with the operator's own token, which needs write access to
 the content repository (triage at least, for labels); a token without it reports `ai-approved not
 changed (...)` in the round's summary and the review is still submitted to the board. The hosted
 board workflow's token can usually not write there, so its runs report `ai-approved on <repo> not
-removed (...)`; a maintainer's `board sync --yes` does it. GitHub creates a label the first time it
+added (...)` or `not removed (...)`; a maintainer's `board sync --yes` does it. GitHub creates a label the first time it
 is added; create `ai-approved` on the content repository, and `kind:prreview` and `superseded` on the
 jobs repository, beforehand to give them a colour and a description.
 
@@ -696,8 +732,9 @@ tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; on
                                                    # GATE jobs when humans await a reply;
                                                    # the pinned "Review queue" issue;
                                                    # held PRs back to draft;
-                                                   # with [prreview] enabled: a PRREVIEW job per new
-                                                   # head of every open roadmap PR, ai-approved upkeep;
+                                                   # with [prreview] enabled: a PRREVIEW job per
+                                                   # roadmap folder and new head of every open roadmap
+                                                   # PR, ai-approved upkeep;
                                                    # the errata register (submitted ERRATA jobs → done)
 tauceti-roadmap --conf $CONF board intake --yes    # take in submissions (designs and packages stay open
                                                    # for review), answer needs-references jobs, then read
@@ -820,8 +857,8 @@ repository: `board intake` reads it to wait for a worker that holds a review (an
 for a `reviewing` comment), `board sync` to mirror live leases and release expired ones, and
 `board stale` to spare a claim whose lease is live; without access they see no leases (the claim is
 still made on the issue, and `board stale` falls back to the issue's inactivity). And the roadmap
-repository: `board sync` flips its pull requests' labels (the awaiting ones, and `ai-approved` that no
-accepted AI review covers) and keeps held ones as drafts only with a token that can write there, so a maintainer's own runs (or a token with that access) cover those;
+repository: `board sync` flips its pull requests' labels (the awaiting ones, and `ai-approved`, on
+exactly while accepted AI reviews cover every roadmap folder of the head) and keeps held ones as drafts only with a token that can write there, so a maintainer's own runs (or a token with that access) cover those;
 the workflow notes what it skipped. Team membership for `[board] target_filers` comes from
 `board/filers.json`, which every run with a maintainer's token keeps current.
 

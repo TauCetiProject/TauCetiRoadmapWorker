@@ -128,20 +128,31 @@ checkout, submits a PR to the board, and the intake advances the state.
 9. `errata` — reads the published sources a roadmap cites, at the locators it cites, and records
    their misprints, errors and gaps in the board's errata register (`board errata seed` makes one
    job per roadmap whose sources no errata cover yet).
-10. `prreview` — the AI review of a roadmap pull request on the content repository, whoever opened
-    it (an operator, a worker's port, a contributor outside the project). With `[prreview] enabled`,
-    `board sync` files `PRREVIEW-<Name>~k` for every head of an open roadmap pull request that no
-    review names yet, while no review or gate round of that pull request is open, and closes a review
-    nobody took once its pull request moves on or closes. The lane is read-only on the pull request:
-    it runs the push gate with the targeted build on the head, an agent on the review models reviews
-    the roadmap there as a package review does (seeded source sample, adversarial pass, duplication,
-    supplier order, shape, headline theorems), and the worker posts one comment (`Verdict: APPROVE`,
-    `CHANGES NEEDED` or `REJECT`) and records the verdict on the board. An accepted head carries the
-    `ai-approved` label until the head moves or a later review blocks; a review that asks for changes
-    reads, to the gate lane, as a review to answer. It never commits, pushes, approves or merges, and
-    it never touches the awaiting-author and awaiting-review labels: the final approval and the merge
-    stay a human's. The author's operator does not review their own pull request (except under
-    `[review] separation = "agent"`, where the pinned review models differ from the authoring ones).
+10. `prreview` — the AI review of every roadmap folder a pull request on the content repository adds
+    or edits, whoever opened it (an operator, a worker's port, a contributor outside the project).
+    A roadmap folder is a folder under the active directory, at any depth, named like a roadmap, that
+    holds a README.md at the head; a nested roadmap (`RepresentationTheory/CompactGroups`, module
+    `TauCetiRoadmap.RepresentationTheory.CompactGroups.Suggested`) is one, a family's index folder
+    above nested roadmaps is not. A folder counts when the pull request changes its README.md or a
+    Lean file in it; `Completed/`, progress reports (`PROGRESS.md`, `STATUS.md`, metadata) and a
+    roadmap only removed or archived do not. With `[prreview] enabled`, `board sync` files one
+    `PRREVIEW-<Leaf>~k` per roadmap folder and head that no review names yet, while no review of that
+    folder and no gate round of that pull request is open, and closes a review nobody took once its
+    pull request moves on or closes. A chore is not reviewed: a pull request titled `chore`, or one
+    that edits more than `[prreview] max_folders` roadmap folders without adding every one of them.
+    The lane reviews one folder and is read-only on the pull request: it runs the push gate with the
+    targeted build of that folder's Suggested module on the head, an agent on the review models
+    reviews the folder's README and Lean files there as a package review does (seeded source sample,
+    adversarial pass, duplication, supplier order, shape, headline theorems), with the pull request's
+    other roadmap folders named as its own, and the worker posts one comment per folder (`Verdict:
+    APPROVE`, `CHANGES NEEDED` or `REJECT`) and records the verdict on the board. The pull request
+    carries the `ai-approved` label exactly while an accepted review of its current head covers every
+    one of its roadmap folders (the lane adds it when the last folder accepts, `board sync` otherwise);
+    a review that asks for changes reads, to the gate lane, as a review to answer. It never commits,
+    pushes, approves or merges, and it never touches the awaiting-author and awaiting-review labels:
+    the final approval and the merge stay a human's. The author's operator does not review their own
+    pull request (except under `[review] separation = "agent"`, where the pinned review models differ
+    from the authoring ones).
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.
