@@ -708,13 +708,15 @@ class PRReviewLane(Lane):
             return self.repair_steps(job, ctx, ws)
         except (gitops.GitError, GHError, LaneError) as exc:
             why = scrub_paths((str(exc).strip().splitlines() or [type(exc).__name__])[0], ctx.state, Path.home())[:300]
+            pushed = not owes(ctx, job, CONTENT_PUSH) and repaired_head(ctx, job) not in ("", ws.extra["head"])
             for effect in REPAIR_EFFECTS:
                 settle(ctx, job, effect)
             if not repaired_head(ctx, job):
                 gitops.git(ws.workdir, "reset", "-q", "--hard", ws.extra["head"], check=False)
                 gitops.git(ws.workdir, "clean", "-qfd", check=False)
-            self.note(ws, f"repair not pushed: {why}")
-            return f"repair not pushed: {why}"
+            line = f"repair pushed, not answered: {why}" if pushed else f"repair not pushed: {why}"
+            self.note(ws, line)
+            return line
 
     def repair_steps(self, job: Job, ctx: Context, ws: Workspace) -> str:
         head, report = ws.extra["head"], ws.job_dir / REPAIR_REPORT

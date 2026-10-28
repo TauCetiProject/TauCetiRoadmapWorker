@@ -705,7 +705,8 @@ awaiting-review. Each step is an effect of the job's record (`repair`, `content-
 pushing twice or replying twice. A repair that fails its checks, or whose push or reply is
 refused (the author pushed meanwhile, a token without write access), is not pushed: the worktree
 goes back to the head reviewed, the review is submitted as it is, and the round's summary ends
-`repair not pushed: <why>`. Whatever the repair agent changed in the board checkout is undone, so
+`repair not pushed: <why>` (`repair pushed, not answered: <why>` when only the reply failed: the
+review then stays unanswered and the next sync files a gate round for it). Whatever the repair agent changed in the board checkout is undone, so
 the submission is the review's report and verdict only. While such a review is claimed, `board
 sync` files no gate round for the pull request (`#N: gate round deferred: review PRREVIEW-<Leaf>~k
 is repairing`); if the review is still unanswered at a later sync with no review of the pull request
