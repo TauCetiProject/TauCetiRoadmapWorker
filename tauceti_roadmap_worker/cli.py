@@ -15,7 +15,7 @@
     tauceti-roadmap sources check <sources.toml> | classify <url> | request <needs-references.toml> --job ID
     tauceti-roadmap sources fetch <DOI | arXiv id | URL | "Authors, Title, Year"> [--manifest sources.toml] [--id KEY]
     tauceti-roadmap sources cache <sources.toml> | ocr <file.pdf>
-    tauceti-roadmap board intake [--pr N] | references | sync | stale [--release]   (board bot / maintainer; --yes to write)
+    tauceti-roadmap board intake [--pr N] | references | sync [--prune-order] | stale [--release]   (board bot / maintainer; --yes to write)
     tauceti-roadmap board errata seed [--limit N] [--yes]
     tauceti-roadmap board import-explorer --from <explorer checkout> [--kinds package,design,target] [--names A,B] [--yes]
     tauceti-roadmap targets file-many --from <targets.toml | targets.jsonl> [--yes]
@@ -840,6 +840,8 @@ def board_cmd(args) -> int:
     """A board maintenance run, ending with the REST requests it made and the token's budget."""
     if args.step and args.action != "errata":
         raise SystemExit(f"board {args.action}: unexpected argument {args.step!r}")
+    if args.prune_order and args.action != "sync":
+        raise SystemExit("--prune-order goes with `board sync`")
     cfg = _load(args)
     ctx = _bot_context(args, cfg, dry=args.dry_run or not args.yes)
     try:
@@ -945,6 +947,8 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
                  ("gap registry", lambda: intake.note_gap_registry_blocks(ctx)),
                  ("review queue", lambda: boardpr.review_queue(ctx, yes=write)),
                  ("errata", lambda: errata.sync_errata(ctx, shared))]
+        if args.prune_order:      # only when asked: a deliberate, one-off clean-up of the merge order
+            steps.insert(0, ("merge order prune", lambda: intake.prune_order(ctx, yes=write)))
         failed = []
         for name, step in steps:      # one step's GitHub trouble never stops the others
             try:
@@ -1092,6 +1096,9 @@ def parser() -> argparse.ArgumentParser:
     b.add_argument("--limit", type=int, default=0, help="errata seed: at most this many jobs per run (0: all)")
     b.add_argument("--yes", action="store_true")
     b.add_argument("--release", action="store_true")
+    b.add_argument("--prune-order", action="store_true",
+                   help="sync: first remove from the merge order every roadmap on the content repository's main "
+                        "(dry run unless --yes)")
     return ap
 
 

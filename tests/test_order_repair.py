@@ -23,12 +23,15 @@ PS = ("# Periods and special values\n\n## Layer PS.6\n\n*Needs:* SelmerIwasawaCo
 class OrderGH:
     """The board's merge-order file through the contents API, and its open pull requests."""
 
-    def __init__(self, order, pulls=()):
+    def __init__(self, order, pulls=(), main=()):
         self.files, self.pulls, self.writes = {ORDER: order}, list(pulls), []
+        self.main = list(main)          # the content repository's main: its files
 
     def api(self, path, paginate=False):
         if "/pulls?state=open" in path:
             return list(self.pulls)
+        if path == "repos/TauCetiProject/TauCetiRoadmap/git/trees/main?recursive=1":
+            return {"truncated": False, "tree": [{"path": f, "type": "blob"} for f in self.main]}
         if path.endswith(f"/contents/{ORDER}"):
             return {"sha": f"blob{len(self.writes)}", "content": base64.b64encode(self.files[ORDER].encode()).decode()}
         raise AssertionError(path)
@@ -126,3 +129,34 @@ def test_the_board_readmes_come_from_main_and_from_the_heads_of_the_open_pull_re
     expected = {"Alpha": "Alpha on main\n", "Beta": "Beta's design\n", "Gamma": "Gamma at the head of #7\n"}
     assert intake.board_readmes(ctx, pulls) == expected
     assert intake.board_readmes(ctx, pulls) == expected            # a second run fetches into the same checkout
+
+
+def test_nothing_moves_after_a_roadmap_on_the_content_main(tmp_path, monkeypatch):
+    gh = OrderGH(LIVE, main=["TauCetiRoadmap/GanGrossPrasadUnitaryGroups/README.md", "TauCetiRoadmap/README.md"])
+    monkeypatch.setattr(intake, "board_readmes", lambda ctx, pulls: {"PeriodsAndSpecialValues": PS})
+    ctx = bot(tmp_path, gh)
+    assert intake.main_roadmaps(ctx) == {"GanGrossPrasadUnitaryGroups"}
+    moved = ("merge order: PeriodsAndSpecialValues moved in the merge order from #2 to #4, right after its last "
+             "supplier SelmerIwasawaCohomologyPartII (MotivesAndAlgebraicCycles also came after it)")
+    assert intake.replace_upward_roadmaps(ctx, yes=True) == [moved]
+
+
+def test_the_prune_removes_every_roadmap_on_the_content_main_and_keeps_the_rest_in_order(tmp_path):
+    main = ["TauCetiRoadmap/MotivesAndAlgebraicCycles/README.md", "TauCetiRoadmap/Family/ShimuraData/README.md",
+            "Completed/SchemeAndStackFoundations/README.md", "TauCetiRoadmap/Other/README.md",
+            "TauCetiRoadmap/Other/references/README.md"]
+    gh = OrderGH(LIVE, main=main)
+    ctx = bot(tmp_path, gh)
+    dry = intake.prune_order(ctx, yes=False)
+    assert dry == [f"merge order: {n} removed (on the content repository's main) (dry run: not written)"
+                   for n in ("SchemeAndStackFoundations", "MotivesAndAlgebraicCycles", "ShimuraData")]
+    assert gh.writes == []
+    assert intake.prune_order(ctx, yes=True) == [line.removesuffix(" (dry run: not written)") for line in dry]
+    [(method, path, payload)] = gh.writes
+    assert (method, path, payload["sha"]) == ("PUT", f"repos/TauCetiProject/TauCetiRoadmapJobs/contents/{ORDER}", "blob0")
+    assert payload["message"] == ("Merge order: remove 3 roadmaps already on the content repository's main\n\n"
+                                  "SchemeAndStackFoundations, MotivesAndAlgebraicCycles, ShimuraData")
+    assert gh.files[ORDER] == ("# Merge order: suppliers before consumers, one roadmap per line.\n"
+                               "PeriodsAndSpecialValues\nSelmerIwasawaCohomologyPartII\nGanGrossPrasadUnitaryGroups\n")
+    assert intake.prune_order(ctx, yes=True) == ["merge order: it lists no roadmap on the content repository's main"]
+    assert len(gh.writes) == 1

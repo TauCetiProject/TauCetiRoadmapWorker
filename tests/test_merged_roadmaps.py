@@ -100,3 +100,25 @@ def test_the_gate_command_takes_the_roadmaps_on_main_from_the_worktree_or_conten
                                                              worker_id="w1", operator="alice", agent="codex", model="m"),
                                                 ws, order)
     assert command.endswith(f"--movable --content {ws.content}")
+
+
+def test_board_sync_prunes_the_merge_order_only_when_asked(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+    calls = []
+
+    def step(name):
+        return lambda *a, **k: calls.append((name, k.get("yes"))) or [f"{name} ran"]
+    fake = SimpleNamespace(**{n: step(n) for n in (
+        "sync_targets", "sync_states", "sync_expired", "sync_leases", "sync_pull_requests", "sync_pr_reviews",
+        "repark_capped", "sync_origins", "note_gap_registry_blocks", "prune_order")})
+    for module, name in ((cli.filers, "refresh"), (cli.boardpr, "review_queue"), (cli.errata, "sync_errata")):
+        monkeypatch.setattr(module, name, step(name))
+    cfg = example_config()
+    cfg.repositories.claims = ""
+    for argv, pruned in ((["board", "sync"], False), (["board", "sync", "--prune-order"], True)):
+        calls.clear()
+        args = cli.parser().parse_args(argv)
+        assert cli._board_steps(args, cfg, SimpleNamespace(), fake, write=False) == 0
+        assert (calls[0] == ("prune_order", False)) is pruned and len(calls) == 12 + pruned
+    with pytest.raises(SystemExit, match="--prune-order goes with `board sync`"):
+        cli.board_cmd(cli.parser().parse_args(["board", "intake", "--prune-order"]))

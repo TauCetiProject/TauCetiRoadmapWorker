@@ -40,7 +40,7 @@ import socket
 import subprocess
 from urllib.parse import quote
 
-from . import board, boardpr, claims, depgraph, explorer, filers, gitops, openroadmaps, prreviews, replies
+from . import board, boardpr, claims, depgraph, explorer, filers, gates, gitops, openroadmaps, prreviews, replies
 from .board import Job, Outcome
 from .gh import GHError, transient
 from .lanes.base import open_roadmap_prs, pr_answerers
@@ -1032,14 +1032,27 @@ def board_readmes(ctx, pulls: list[dict]) -> dict[str, str]:
     return {name: gitops.git(dest, "show", f"{ref}:{rel}") for name, (ref, rel) in found.items()}
 
 
+def main_roadmaps(ctx) -> set[str]:
+    """The roadmaps on the content repository's main, under the active and the completed directories
+    (`gates.roadmap_names` of its tree: one REST read): suppliers available to every pull request,
+    whose place in the merge order of open pull requests means nothing."""
+    cfg = ctx.cfg
+    data = ctx.gh.api(f"repos/{cfg.repositories.content}/git/trees/{quote(cfg.project.branch, safe='')}"
+                      "?recursive=1") or {}
+    paths = [t.get("path", "") for t in data.get("tree") or [] if isinstance(t, dict) and t.get("type") == "blob"]
+    return gates.roadmap_names(paths, (cfg.roadmap.active_dir, cfg.roadmap.completed_dir))
+
+
 def reorder(ctx, readmes: dict[str, str], only: set[str] | None = None, yes: bool = True,
-            current: tuple[str, str | None] | None = None) -> dict[str, str]:
+            current: tuple[str, str | None] | None = None, merged: set[str] | None = None) -> dict[str, str]:
     """`depgraph.repair_upward` on the merge order of the board's main (`current`: its text and blob
-    sha, when in hand), written in one commit when anything moved. Returns name -> what happened (a
-    move, or why it was not made)."""
+    sha, when in hand), written in one commit when anything moved; a roadmap on the content
+    repository's main (`merged`, else `main_roadmaps`) is neither moved nor moved after. Returns name
+    -> what happened (a move, or why it was not made)."""
     cfg = ctx.cfg
     text, sha = current or read_merge_order(ctx)
-    new, notes = depgraph.repair_upward(text, readmes, set(cfg.roadmap.main_extended), only)
+    merged = main_roadmaps(ctx) if merged is None else merged
+    new, notes = depgraph.repair_upward(text, readmes, set(cfg.roadmap.main_extended), only, merged)
     if new == text:
         return notes
     moved = [n for n in depgraph.read_order(text) if n in notes and " moved in the merge order " in notes[n]]
@@ -1074,13 +1087,14 @@ def move_listed(ctx, name: str) -> str:
                 raise
     if readme is None or name not in order:
         return ""
+    merged = main_roadmaps(ctx)
     pos = {n: i for i, n in enumerate(order)}
     suppliers = depgraph.supplier_edges({name: readme}, set(order), set(cfg.roadmap.main_extended)).get(name, {})
-    if not any(pos[s] > pos[name] for s in suppliers if s in pos):
+    if name in merged or not any(pos[s] > pos[name] for s in suppliers if s in pos and s not in merged):
         return ""
     pulls = ctx.gh.api(f"repos/{cfg.repositories.packages_repo()}/pulls?state=open&per_page=100", paginate=True) or []
     readmes = {**board_readmes(ctx, pulls), name: readme}
-    return reorder(ctx, readmes, only={name}, current=(text, sha)).get(name, "")
+    return reorder(ctx, readmes, only={name}, current=(text, sha), merged=merged).get(name, "")
 
 
 def replace_upward_roadmaps(ctx, yes: bool = False) -> list[str]:
@@ -1096,6 +1110,30 @@ def replace_upward_roadmaps(ctx, yes: bool = False) -> list[str]:
     pulls = ctx.gh.api(f"repos/{cfg.repositories.packages_repo()}/pulls?state=open&per_page=100", paginate=True) or []
     notes = reorder(ctx, board_readmes(ctx, pulls), yes=yes)
     return [f"merge order: {line}" for _name, line in sorted(notes.items())]
+
+
+def prune_order(ctx, yes: bool = False) -> list[str]:
+    """`board sync --prune-order`: every roadmap the merge order on the board's main lists that is on
+    the content repository's main (`main_roadmaps`) is removed from it, in one commit through the
+    contents API, as the intake writes its insertions; the other lines stay as they are, in their
+    order. Written with `yes` only. One line per name removed."""
+    cfg = ctx.cfg
+    if cfg.roadmap.merge_order_repo != "packages":
+        return [f"merge order: not pruned ({NOT_KEPT})"]
+    merged = main_roadmaps(ctx)
+    text, sha = read_merge_order(ctx)
+    gone = [n for n in depgraph.read_order(text) if n in merged]
+    if not gone:
+        return ["merge order: it lists no roadmap on the content repository's main"]
+    if yes:
+        payload = {"message": (f"Merge order: remove {len(gone)} roadmap{'s' if len(gone) != 1 else ''} already on "
+                               "the content repository's main\n\n" + ", ".join(gone)),
+                   "content": base64.b64encode(depgraph.remove_from_order(text, set(gone)).encode()).decode()}
+        if sha:
+            payload["sha"] = sha
+        ctx.gh.write("PUT", f"repos/{cfg.repositories.packages_repo()}/contents/{cfg.roadmap.merge_order_file}", payload)
+    return [f"merge order: {n} removed (on the content repository's main)" + ("" if yes else " (dry run: not written)")
+            for n in gone]
 
 
 def _held(ctx, pr: int) -> bool:
