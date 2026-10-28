@@ -5,6 +5,7 @@ head. The final approval stays a human's."""
 
 import json
 import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -83,6 +84,45 @@ def test_the_lane_runs_on_the_review_models_unless_its_own_table_pins_others():
     cfg.agents.lanes["prreview"] = config.LaneAgent(codex_model="astra-x", claude_model="fable-x")
     assert cfg.lane_models("prreview") == {"codex": "astra-x", "claude": "fable-x"}
     assert config.Config().lane_models("prreview") == {}           # nothing hardcoded without a table
+
+
+# --- the gate on a nested roadmap's folder -----------------------------------------------------------
+
+def gate_tree(tmp_path, folder, metadata_at=None):
+    root = tmp_path / "wt"
+    path = root / "TauCetiRoadmap" / folder
+    path.mkdir(parents=True)
+    (path / "README.md").write_text("# Toy\n")
+    (path / "Suggested.lean").write_text("import Mathlib\n")
+    if metadata_at is not None:
+        (root / "TauCetiRoadmap" / metadata_at / "metadata.toml").write_text('topic = "math.GR"\n')
+    return root
+
+
+@pytest.mark.parametrize("folder,metadata_at,module,missing", [
+    ("", "Toy", "TauCetiRoadmap.Toy.Suggested", 0),                        # every other lane: unchanged
+    ("", None, "TauCetiRoadmap.Toy.Suggested", 1),
+    ("Family/Toy", "Family", "TauCetiRoadmap.Family.Toy.Suggested", 0),    # a family's metadata covers its roadmaps
+    ("Family/Toy", None, "TauCetiRoadmap.Family.Toy.Suggested", 1),
+])
+def test_the_gate_reads_a_nested_folder_when_told_and_builds_its_dotted_module(tmp_path, monkeypatch, folder, metadata_at,
+                                                                               module, missing):
+    root = gate_tree(tmp_path, folder or "Toy", metadata_at)
+    built = []
+    monkeypatch.setattr(gates, "build_problems", lambda worktree, command, timeout=0: built.append(command) or [])
+    result = gates.run_gate(root, "Toy", gates.GateOptions(folder=folder), build_cmd="lake build {module}")
+    assert built == [f"lake build {module}"] and result.counts["metadata"] == missing
+    assert "missing-files" not in result.counts
+    assert gates.GateOptions().folder == "" and gates.roadmap_module("TauCetiRoadmap", "Toy") == "TauCetiRoadmap.Toy.Suggested"
+
+
+def test_the_gate_command_takes_a_nested_folder(tmp_path, monkeypatch, capsys):
+    root = gate_tree(tmp_path, "Family/Toy", "Family")
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    conf = str(Path(__file__).resolve().parent.parent / "tauceti-roadmap.toml.example")
+    cli.main(["--conf", conf, "gate", str(root), "Toy", "--folder", "Family/Toy"])
+    out = capsys.readouterr().out
+    assert out.startswith("gate Toy: ") and "missing-files" not in out and "metadata=0" in out
 
 
 # --- board sync --------------------------------------------------------------------------------------

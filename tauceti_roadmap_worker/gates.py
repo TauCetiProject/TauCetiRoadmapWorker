@@ -2,7 +2,8 @@
 
 Port of the maintainer's gate.sh (with the mechanical checks of mech_check.py and readthrough.py),
 plus the dependency check and merge chain from depgraph.py. `run_gate` reads
-`<worktree>/<active_dir>/<Name>/{README.md,Suggested.lean}`, runs every scanner, and returns a
+`<worktree>/<active_dir>/<Name>/{README.md,Suggested.lean}` (or a nested roadmap's folder,
+`GateOptions.folder`), runs every scanner, and returns a
 `GateResult` whose `ok` is False on any non-zero count. The CLI (`tauceti-roadmap gate`) exits 1
 in that case: run it directly, never through a pipe that hides its exit status.
 
@@ -711,6 +712,9 @@ class GateOptions:
     sibling_readmes: dict[str, str] = field(default_factory=dict)
     main_extended: list[str] = field(default_factory=list)
     tauceti_sources: Path | None = None      # the pinned Tau Ceti's sources, when a wired checkout holds them
+    # The roadmap's folder under `active_dir` when it is not `<Name>`: a nested roadmap
+    # (`RepresentationTheory/CompactGroups`, module `TauCetiRoadmap.RepresentationTheory.CompactGroups.Suggested`).
+    folder: str = ""
 
     @classmethod
     def from_config(cls, cfg, order=None, siblings=None, dropped=None, tauceti=None) -> "GateOptions":
@@ -808,11 +812,25 @@ def _git(worktree: Path, *args: str) -> str:
     return out.stdout
 
 
+def roadmap_module(active_dir: str, folder: str) -> str:
+    """The Lean module of a roadmap's Suggested.lean: `<active_dir>.<folder, dotted>.Suggested`."""
+    return f"{active_dir}.{folder.strip('/').replace('/', '.')}.Suggested"
+
+
+def metadata_problems(root: Path, active_dir: str, folder: str) -> list[str]:
+    """A roadmap folder has its metadata.toml; a nested roadmap may share its family's, in a folder
+    above it under the active directory (`RepresentationTheory/metadata.toml`)."""
+    rel = folder.removeprefix(active_dir.rstrip("/") + "/").strip("/").split("/")
+    if any((root / active_dir / Path(*rel[:k]) / "metadata.toml").is_file() for k in range(len(rel), 0, -1)):
+        return []
+    return [f"{folder}/metadata.toml missing"]
+
+
 def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build_cmd: str = "") -> GateResult:
     """The full gate on a worktree: text scanners, dirty tree, outside-folder diff against the
     merge-base with `base`, and (if given) the targeted build, which must succeed with `sorry` as
-    the only warning."""
-    folder = f"{opts.active_dir}/{name}"
+    the only warning. The roadmap is `<active_dir>/<name>/`, or `<active_dir>/<opts.folder>/`."""
+    folder = f"{opts.active_dir}/{opts.folder.strip('/') or name}"
     root = Path(worktree)
     readme_path, lean_path = root / folder / "README.md", root / folder / "Suggested.lean"
     missing = [str(p.relative_to(root)) for p in (readme_path, lean_path) if not p.is_file()]
@@ -824,7 +842,7 @@ def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build
     if opts.tauceti_sources is None:
         opts = _replace(opts, tauceti_sources=tauceti_sources(root))
     r = scan_folder(name, readme_path.read_text(encoding="utf-8", errors="replace"), lean, opts)
-    r.add("metadata", [] if (root / folder / "metadata.toml").is_file() else [f"{folder}/metadata.toml missing"])
+    r.add("metadata", metadata_problems(root, opts.active_dir, folder))
     material = tree_source_problems(root, folder)
     try:
         r.add("dirty", [line for line in _git(root, "status", "--short").splitlines() if line.strip()])
@@ -839,7 +857,7 @@ def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build
         r.add("git", [str(exc)])
     r.add("source-material", material)
     if build_cmd:
-        built = build_problems(root, build_cmd.format(module=f"{opts.active_dir}.{name}.Suggested"))
+        built = build_problems(root, build_cmd.format(module=roadmap_module(opts.active_dir, opts.folder or name)))
         r.add("build", explain_build_problems(lean, built, opts.tauceti_sources))
     return r
 

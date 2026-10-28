@@ -545,6 +545,7 @@ def gate(args) -> int:
     if not args.worktree or not args.name_pos:
         raise SystemExit("usage: gate <worktree> <Name> [--base REF] | gate --depcheck README --name Name")
     opts = gates.GateOptions.from_config(cfg, order=order, siblings=siblings, dropped=dropped_names(cfg))
+    opts.folder = args.folder
     result = gates.run_gate(Path(args.worktree), args.name_pos, opts, base=args.base,
                             build_cmd=cfg.gates.build if args.build else "")
     if args.out:
@@ -981,6 +982,9 @@ def parser() -> argparse.ArgumentParser:
     g.add_argument("worktree", nargs="?")
     g.add_argument("name_pos", nargs="?", metavar="Name")
     g.add_argument("--base", default="", help="merge-base reference for the outside-folder diff, e.g. origin/main")
+    g.add_argument("--folder", default="", metavar="PATH",
+                   help="the roadmap's folder under the active directory when it is nested, e.g. "
+                        "RepresentationTheory/CompactGroups (default: Name)")
     g.add_argument("--build", action="store_true", help="also run the configured targeted build")
     g.add_argument("--json", action="store_true")
     g.add_argument("--out", default="")
