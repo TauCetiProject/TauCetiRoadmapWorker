@@ -44,11 +44,13 @@ supplier P2, a style rule P3; a file in the folder that is not a roadmap file, `
 with the repair "delete it; sources are the README's references"), and no acceptance while the gate
 fails. To run it: `__GATE__`.
 
-Previous AI review of this roadmap, if any: __PREVIOUS__. When there is one, first check finding by
-finding whether this head repairs it (quote the passage; repaired, partly or not), then review the
-whole roadmap as below. Context, read-only: the roadmap repository at its main branch `__CONTENT__`;
-open roadmap pull requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned
-libraries: __LIBRARY__.
+Previous AI review of this roadmap folder, if any: __PREVIOUS__. The change since the head it read
+(data): __CHANGES__.
+
+__MODE__
+
+Context, read-only: the roadmap repository at its main branch `__CONTENT__`; open roadmap pull
+requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
 
 ## The review, in this order
 

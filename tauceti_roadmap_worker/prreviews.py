@@ -21,7 +21,8 @@ The errata of a roadmap's sources are a comment on the errata job's own issue, f
 `Errata (<agent>) of <sha7>`, then `Verdict: recorded`, then its `## Source issues`, `## Checked`
 and `## Not verifiable` sections.
 The AI review of a roadmap pull request on the content repository (`render_pr_review`) is a comment
-in the same shape, first line `🤖 AI review (<agent>, <model>) of <sha40>`, its verdict `APPROVE`,
+in the same shape, first line `🤖 AI review (<agent>, <model>) of <sha40>` (an incremental re-review
+adds ` (incremental re-review since <sha7>)`), its verdict `APPROVE`,
 `CHANGES NEEDED` or `REJECT`, and its own marker (`tauceti-roadmap-prreview`).
 A comment whose first line is `reviewing` (optionally `reviewing (<agent>)`) claims the open review.
 Only the shapes are read; everything else in a comment is data. This module is the pure part:
@@ -382,9 +383,12 @@ PR_STATUS_LINES = {
 }
 
 
-def pr_review_head(agent: str, model: str, sha: str) -> str:
-    """The first line of a pull-request review: `🤖 AI review (<agent>, <model>) of <sha40>`."""
-    return f"\U0001f916 AI review ({agent}, {model}) of {sha}"
+def pr_review_head(agent: str, model: str, sha: str, since: str = "") -> str:
+    """The first line of a pull-request review: `🤖 AI review (<agent>, <model>) of <sha40>`, and for an
+    incremental re-review of the change since the head `since` the previous review read,
+    ` (incremental re-review since <since7>)`."""
+    return f"\U0001f916 AI review ({agent}, {model}) of {sha}" + (f" (incremental re-review since {since[:7]})"
+                                                                  if since else "")
 
 
 # An acceptance of one roadmap folder of a pull request that adds or changes several.
@@ -401,7 +405,7 @@ def render_pr_review(head: str, status: str, report: str, marker: dict, reviewed
     human who approves (with `others` other roadmap folders in the pull request, an acceptance covers
     this one only), the worker's gate at that head (`validation`), then the report's findings and
     sections (`render`) and the marker `tauceti-roadmap-prreview` ({job, head, verdict, agent, model,
-    worker})."""
+    worker, mode}: `incremental` or `full`)."""
     meaning = PR_STATUS_LINES.get(status, PR_STATUS_LINES["needs_changes"])
     if status == "accepted" and others:
         meaning = PR_ACCEPTED_ONE_OF.format(others=others, s="s" if others != 1 else "")
@@ -413,5 +417,5 @@ def render_pr_review(head: str, status: str, report: str, marker: dict, reviewed
 
 
 def prreview_marker(body: str) -> dict:
-    """The marker of a pull-request review comment ({job, head, verdict, agent, model, worker}), or {}."""
+    """The marker of a pull-request review comment ({job, head, verdict, agent, model, worker, mode}), or {}."""
     return worker_marker(body, PRREVIEW_MARK_RE)

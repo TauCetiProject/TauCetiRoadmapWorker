@@ -728,7 +728,8 @@ def test_an_acceptance_is_one_comment_with_the_approve_line_and_the_label(review
     assert lines[0] == f"\U0001f916 AI review (codex, gpt-x) of {H1}" and lines[2] == "Verdict: APPROVE"
     assert f"Reviewed head: {H1}" in lines[:6] and "the targeted build succeeded" in comment["body"]
     assert prreviews.prreview_marker(comment["body"]) == {"job": job.id, "head": H1, "verdict": "accepted",
-                                                          "agent": "codex", "model": "gpt-x", "worker": "alice-1"}
+                                                          "agent": "codex", "model": "gpt-x", "worker": "alice-1",
+                                                          "mode": "full"}
     assert gh.labels == ["awaiting-review", "ai-approved"]               # the awaiting-* labels are not touched
     assert summary.endswith("labelled ai-approved") and "accepted" in summary
     assert lane_base.read_pending(ctx, job)["done"] == ["content-comment"]
@@ -1086,3 +1087,86 @@ def test_the_change_counts_insertions_and_deletions_and_a_fence_holds_any_backti
     assert lane_prreview.numstat_lines("3\t1\tA/README.md\n-\t-\tA/x.png\n2\t0\tA/B.lean\n") == (5, 1)
     text = "```lean\ntheorem x : True := trivial\n```"
     assert lane_prreview.fenced(text, "diff").startswith("````diff\n```lean") and lane_prreview.fenced(text).endswith("```\n````")
+
+
+PREVIOUS_REPORT = ("# Review of Foo (pull request #905 at 1111111)\n\n**Verdict:** needs changes\n\n"
+                   "## R01 (P1) — the hypothesis on p is missing\n\nLocation: README line 4.\n\n"
+                   "## R02 (P3) — a locator names no page\n\nLocation: README line 9.\n\n"
+                   "```text\n## R09 (P1) — quoted, not a finding\n```\n\n## Verified sound\n\n" + ADVERSARIAL)
+
+
+def rereview_ctx(dry_ctx, head, small=150):  # noqa: F811
+    gh = ContentGH(pulls={905: {"number": 905, "state": "open", "head": {"sha": head}}},
+                   files={"packages/Foo/reports/PRREVIEW-Foo~1.md": PREVIOUS_REPORT})
+    ctx = dataclasses.replace(dry_ctx, gh=gh)
+    ctx.cfg.prreview.small_change_lines = small
+    return ctx
+
+
+@needs_git
+@pytest.mark.parametrize("small,mode", [(20, "incremental"), (19, "full")])
+def test_the_mode_follows_the_threshold_and_the_brief_renders_it(dry_ctx, tmp_path, monkeypatch, small, mode):  # noqa: F811
+    repo, first, second = repaired_repo(tmp_path)
+    real_git_in(repo, monkeypatch)
+    job = rereview_job(first, second)
+    ctx = rereview_ctx(dry_ctx, second, small)
+    lane = lane_for(job)
+    ws = lane.prepare(job, ctx)
+    assert ws.extra["change_lines"] == 20 and ws.extra["mode"] == mode
+    assert ws.extra["previous_report"].read_text() == PREVIOUS_REPORT
+    values = {**lane.common_values(job, ctx, ws), **lane.values(job, ctx, ws)}
+    assert prompts.placeholders("prreview") <= set(values)
+    text = prompts.render("prreview", values)
+    assert not re.search(r"__[A-Z][A-Z0-9_]*__", text)
+    assert f"if any: `{ws.extra['previous_report']}`. The change since the head it read\n(data): `{ws.scratch / 'changes.md'}`." in text
+    assert "## Verified sound" in text and "## Not verifiable" in text and "## Source issues" in text
+    if mode == "incremental":
+        assert "**An incremental re-review.**" in text and "**A full review.**" not in text
+        assert f"read `{first[:7]}`; since then the folder changed by 20 lines (at most `[prreview] small_change_lines` = 20)" in text
+        assert f'"incremental re-review of 20 changed lines\n   since {first[:7]}"' in text and "## Previous findings" in text
+    else:
+        assert "**An incremental re-review.**" not in text
+        assert ("**A full review.** This re-review of a repaired head is not incremental: the folder changed by 20 lines "
+                f"since `{first[:7]}`, the head the previous review read (more than `[prreview] small_change_lines` = 19). "
+                "First check finding by finding") in text
+        assert f"The change set `{ws.scratch / 'changes.md'}` is context" in text
+
+
+@needs_git
+def test_a_re_review_without_the_previous_report_on_the_board_is_a_full_review(dry_ctx, tmp_path, monkeypatch):  # noqa: F811
+    repo, first, second = repaired_repo(tmp_path)
+    real_git_in(repo, monkeypatch)
+    job = rereview_job(first, second)
+    lane = lane_for(job)
+    ws = lane.prepare(job, dry_ctx)                          # no GitHub: no previous report
+    assert ws.extra["change_lines"] == 20 and ws.extra["previous_report"] is None and ws.extra["mode"] == "full"
+    text = prompts.render("prreview", {**lane.common_values(job, dry_ctx, ws), **lane.values(job, dry_ctx, ws)})
+    assert "not incremental: the previous review's report is not on the board. Review the whole roadmap folder" in text
+
+
+def test_the_brief_of_a_first_review_is_a_full_review_without_a_change_set(dry_ctx):  # noqa: F811
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": "abc1234" + "0" * 33, "owner": "carol", "name": "Foo",
+                                            "rereview": False})
+    lane = lane_for(job)
+    ws = lane.prepare(job, dry_ctx)
+    assert ws.extra["mode"] == "full" and ws.extra["changes"] is None
+    text = prompts.render("prreview", {**lane.common_values(job, dry_ctx, ws), **lane.values(job, dry_ctx, ws)})
+    assert "if any: none. The change since the head it read\n(data): none.\n\n**A full review.** Review the whole" in text
+
+
+def test_an_incremental_re_review_says_so_in_its_head_line_and_its_marker(review_env):
+    ctx = lane_ctx(review_env, gh=LabelGH())
+    job = rereview_job(H2, H1)
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    ws.extra["mode"] = "incremental"
+    body = lane.comment_body(job, ctx, ws)
+    assert body.split("\n")[0] == f"\U0001f916 AI review (codex, gpt-x) of {H1} (incremental re-review since {H2[:7]})"
+    assert prreviews.prreview_marker(body)["mode"] == "incremental" and same_review_ok(body, job)
+    ws.extra["mode"] = "full"
+    body = lane.comment_body(job, ctx, ws)
+    assert body.split("\n")[0] == f"\U0001f916 AI review (codex, gpt-x) of {H1}"
+    assert prreviews.prreview_marker(body)["mode"] == "full"
+
+
+def same_review_ok(body, job):
+    return lane_prreview.same_review(body, job.id, H1)

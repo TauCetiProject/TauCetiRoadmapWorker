@@ -18,6 +18,14 @@ it once the last one does), takes the label off when the review blocks, and subm
 the verdict record to the board, where the intake marks the job done. An acceptance means the
 roadmap folder is ready for a human's final approval: the AI never approves or merges.
 
+A re-review of a repaired head (`inputs.rereview`: an earlier review of that folder of that pull
+request read `inputs.previous_head`) gets the change since that head (`changes.md`: the folder's
+diff, cut at `[prreview] diff_cap_lines`, and the files changed outside it). When the folder changed
+by at most `[prreview] small_change_lines` lines and the previous report is on the board, the review
+is incremental: the agent accounts for every finding of the previous report and reviews the changed
+passages and what depends on them; otherwise it reviews the folder in full. The comment's first line
+and its marker name the mode.
+
 The reviewer is not the pull request's author: an operator never reviews their own pull request,
 except under `[review] separation = "agent"`, where the review models `[agents.lanes.prreview]` pins
 (by default those of `[agents.lanes.review]`) differ from the authoring models. A pull request's
@@ -215,6 +223,65 @@ def change_set(wt: Path, previous: str, head: str, folder: str, cap: int) -> tup
     return "\n".join(lines) + "\n", added + removed
 
 
+def review_mode(job: Job, cfg, extra: dict) -> str:
+    """`incremental` for a re-review of a repaired head (`inputs.rereview`) whose roadmap folder changed
+    by at most `[prreview] small_change_lines` lines since the head the previous review read
+    (`extra["change_lines"]`), with that review's report on the board (`extra["previous_report"]`);
+    `full` otherwise."""
+    lines = extra.get("change_lines")
+    small = lines is not None and lines <= cfg.prreview.small_change_lines
+    return "incremental" if job.inputs.get("rereview") and small and extra.get("previous_report") else "full"
+
+
+INCREMENTAL = """**An incremental re-review.** The previous review of this roadmap folder (`{previous}`) read \
+`{since}`; since then the folder changed by {lines} lines (at most `[prreview] small_change_lines` = {small}), \
+set out in `{changes}`: the summary, the diff and the files changed outside the folder. Do not redo the \
+full review: check that the updates are correct.
+
+1. **The previous findings.** For each finding of the previous report (R01, R02, …), verify whether this
+   head repairs it and whether the repair introduced a new problem. Account for every one under
+   `## Previous findings` (after this report's own findings, before `## Verified sound`), one bullet
+   each: `- R01 — repaired | partly repaired | not repaired: <the passage at this head, at most 40
+   words>`. A finding partly or not repaired that still blocks is written again as a finding of this
+   report; a new problem a repair introduced is a new finding.
+2. **The changed passages.** Review in full, by the steps below, only the passages the diff adds or
+   changes and anything that cites or depends on them: the names, section numbers and suppliers they
+   mention or that mention them, and the Lean statements touched. The seeded sample is checked where
+   it falls in them; a file changed outside the folder is checked as in a full review.
+3. **The gate and the elaboration** run as in a full review.
+4. **The adversarial table** carries forward the previous report's rows for the statements the diff
+   leaves untouched, each citing the previous report, and adds a row with computed values for every
+   changed statement.
+5. **The verdict.** Accept when no blocking finding remains (new, or carried from the previous report)
+   and the gate passes; the verdict file's `notes` say "incremental re-review of {lines} changed lines
+   since {since}", then what was checked.
+
+Every deliverable below is the same as in a full review."""
+
+
+def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
+    """The brief's MODE: what the review covers, an incremental re-review (`INCREMENTAL`) or a full
+    review, saying why a re-review is not incremental and offering the change set as context."""
+    previous, changes, lines = extra.get("previous_report"), extra.get("changes"), extra.get("change_lines")
+    since, small = str(job.inputs.get("previous_head") or "")[:7], cfg.prreview.small_change_lines
+    if mode == "incremental":
+        return INCREMENTAL.format(previous=previous, since=since, lines=lines, small=small, changes=changes)
+    text = "**A full review.**"
+    if job.inputs.get("rereview"):
+        why = (f"the head the previous review read, `{since}`, cannot be compared with this one" if lines is None
+               else f"the folder changed by {lines} lines since `{since}`, the head the previous review read (more "
+                    f"than `[prreview] small_change_lines` = {small})" if lines > small
+               else "the previous review's report is not on the board")
+        text += f" This re-review of a repaired head is not incremental: {why}."
+    text += (" First check finding by finding whether this head repairs the previous review's findings (quote the "
+             "passage; repaired, partly or not), then review the whole roadmap as below." if previous
+             else " Review the whole roadmap folder as below.")
+    if changes:
+        text += (f" The change set `{changes}` is context: it shows where the author worked, and every passage is "
+                 "reviewed, changed or not.")
+    return text
+
+
 def save_gate(path: Path, head: str, result: gates.GateResult) -> None:
     data = {"head": head, "name": result.name, "counts": result.counts, "notes": result.notes,
             "details": {k: [f"line {h.line}: {h.text}" if getattr(h, "line", 0) else str(getattr(h, "text", h))
@@ -290,6 +357,8 @@ class PRReviewLane(Lane):
                         readme=folder / "README.md", lean=leans[0], leans=leans)
         (ws.scratch / PULL_REQUEST_TEXT).write_text(pull_request_document(number, data, owner), encoding="utf-8")
         self.write_changes(job, ctx, ws)
+        ws.extra["previous_report"] = self.previous_report(job, ctx, ws)
+        ws.extra["mode"] = review_mode(job, cfg, ws.extra)
         self.order_for_review(ctx, ws, job.name)
         ws.extra["gate"] = self.review_gate(job, ctx, ws)
         (ws.scratch / GATE_REPORT).write_text(gate_document(ws.extra["gate"], recorded), encoding="utf-8")
@@ -299,8 +368,9 @@ class PRReviewLane(Lane):
     def write_changes(self, job: Job, ctx: Context, ws: Workspace) -> Path | None:
         """For a job that names the head the previous review read (`inputs.previous_head`), the change
         since it (`change_set`) in the scratch folder, and the folder's changed lines in
-        `ws.extra["change_lines"]` (None without a previous head, or when it cannot be read)."""
-        ws.extra["change_lines"] = None
+        `ws.extra["change_lines"]` (None without a previous head, or when it cannot be read), its path
+        in `ws.extra["changes"]`."""
+        ws.extra["change_lines"] = ws.extra["changes"] = None
         previous = str(job.inputs.get("previous_head") or "")
         if not previous:
             return None
@@ -308,8 +378,21 @@ class PRReviewLane(Lane):
         text, changed = change_set(ws.workdir, previous, ws.extra["head"], folder, ctx.cfg.prreview.diff_cap_lines)
         path = ws.scratch / CHANGES
         path.write_text(text, encoding="utf-8")
-        ws.extra["change_lines"] = changed
+        ws.extra.update(change_lines=changed, changes=path)
         return path
+
+    def previous_report(self, job: Job, ctx: Context, ws: Workspace) -> Path | None:
+        """The previous review's report, fetched from the board's main into the scratch folder: that of
+        the review the job follows (`inputs.previous_job`), else of the name's previous round; None when
+        there is none on the board."""
+        previous = str(job.inputs.get("previous_job") or "")
+        if not previous:
+            j = board.parse_job_id(job.id)
+            if j.round <= 1:
+                return None
+            previous = board.make_id("prreview", job.name, j.round - 1)
+        [path] = board_reports(ctx, ws, job.name, [previous], "previous")
+        return None if path.read_text(encoding="utf-8").startswith("(no report") else path
 
     def order_for_review(self, ctx: Context, ws: Workspace, name: str) -> Path:
         """The merge-order file the gate and the agent's dependency check read: the board's, with the
@@ -430,12 +513,8 @@ class PRReviewLane(Lane):
                  else "(no build configured)")
         excluded = " ".join([f"':!{folder}'", *(f"':!{active}/{f}'" for f in others),
                              *(f"':(exclude,glob){active}/{f}/*'" for f in family)])
-        previous = "none"
-        j = board.parse_job_id(job.id)
-        if j.round > 1:
-            [path] = board_reports(ctx, ws, job.name, [board.make_id("prreview", job.name, j.round - 1)], "previous")
-            if not path.read_text(encoding="utf-8").startswith("(no report"):
-                previous = f"`{path}`"
+        previous, changes = ws.extra.get("previous_report"), ws.extra.get("changes")
+        mode = ws.extra.get("mode") or "full"
         return {"PR": str(ws.extra["pr"]), "HEAD": head, "HEAD7": head[:7], "OWNER": ws.extra.get("owner") or "?",
                 "FILES": files, "FOLDER": folder, "FOLDER_REL": own,
                 "FOLDER_LINE": (f", then this second line: {folder_line(active, own)}" if family else ""),
@@ -446,7 +525,8 @@ class PRReviewLane(Lane):
                                 "--base", f"origin/{cfg.project.branch}"),
                 "GATE_REPORT": str(ws.scratch / GATE_REPORT), "PR_TEXT": str(ws.scratch / PULL_REQUEST_TEXT),
                 "OUTSIDE_CHECK": f"git -C {ws.workdir} diff --stat origin/{cfg.project.branch}...HEAD -- . {excluded}",
-                "PREVIOUS": previous, "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)),
+                "PREVIOUS": f"`{previous}`" if previous else "none", "CHANGES": f"`{changes}`" if changes else "none",
+                "MODE": mode_text(mode, job, cfg, ws.extra), "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)),
                 "ELABORATE": elaborate_line(cfg, dataclasses.replace(ws, content=ws.workdir)),
                 "LIBRARY": library_description(ws.workdir)}
 
@@ -508,14 +588,16 @@ class PRReviewLane(Lane):
         status = verdict.get("status") if verdict.get("status") in prreviews.PR_VERDICTS else "needs_changes"
         gate = ws.extra.get("gate")
         conditional = verdict.get("conditional_gaps")
+        mode = ws.extra.get("mode") or "full"
         marker = {"job": job.id, "head": head, "verdict": status, "agent": ctx.agent, "model": ctx.model,
-                  "worker": ctx.worker_id}
+                  "worker": ctx.worker_id, "mode": mode}
+        since = str(job.inputs.get("previous_head") or "") if mode == "incremental" else ""
         active, own = ctx.cfg.roadmap.active_dir, board.prreview_folder(job)
         report = ws.report.read_text(encoding="utf-8") if ws.report.is_file() else ""
         line = folder_line(active, own)
         report = "\n".join(x for x in report.split("\n") if x.strip() != line)    # the comment names the folder itself
         return prreviews.render_pr_review(
-            prreviews.pr_review_head(ctx.agent, ctx.model, head), status, report, marker, head,
+            prreviews.pr_review_head(ctx.agent, ctx.model, head, since), status, report, marker, head,
             replies.validation_sentence(head[:7], gate) if gate is not None else "",
             conditional if isinstance(conditional, list) else None,
             folder=f"{active}/{own}", others=len(other_folders(job)))
