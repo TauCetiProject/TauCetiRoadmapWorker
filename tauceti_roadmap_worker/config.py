@@ -271,6 +271,11 @@ class Worker:
     # operator's GitHub quota. After a failure, and once the board answers a job the worker parked
     # for references, the next poll comes within a minute whatever this says.
     idle_seconds: int = 600
+    # GitHub content writes (comments, issues, pull requests, labels, merges) this host may make per
+    # minute and per hour, across every worker, timer and script that writes as the operator: GitHub's
+    # secondary rate limit blocks the account after bursts of about 80 a minute or 500 an hour. 0 = no cap.
+    writes_per_minute: int = 20
+    writes_per_hour: int = 400
 
 
 @dataclass
@@ -446,6 +451,8 @@ def validate(cfg: Config) -> None:
             problems.append(f"prreview.{key} must list GitHub logins")
     if cfg.worker.idle_seconds < 30:
         problems.append("worker.idle_seconds must be at least 30")
+    if cfg.worker.writes_per_minute < 0 or cfg.worker.writes_per_hour < 0:
+        problems.append("worker.writes_per_minute and writes_per_hour must be 0 or more")
     if not 30 <= cfg.claims.renew_seconds < cfg.claims.job_ttl_seconds:
         problems.append("claims.renew_seconds must be at least 30 and below claims.job_ttl_seconds")
     if cfg.roadmap.merge_order_repo not in ("packages", "content", "local"):

@@ -55,7 +55,7 @@ from . import (
     prompts,
     references,
     sources,
-    watch,
+    watch, throttle
 )
 from . import targets as target_files
 from . import usage as usage_mod
@@ -67,9 +67,20 @@ OK, WARN, FAIL = "ok", "warn", "FAIL"
 
 def _load(args) -> config.Config:
     try:
-        return config.load(args.conf, overlay=getattr(args, "overlay", None))
+        cfg = config.load(args.conf, overlay=getattr(args, "overlay", None))
     except config.ConfigError as exc:
         raise SystemExit(f"configuration: {exc}") from exc
+    GH.throttle = throttle.for_config(cfg)      # every GH in this process shares the host's write throttle
+    return cfg
+
+
+def throttle_cmd(args) -> int:
+    """Take one of the host's GitHub content-write slots (waiting for it), for scripts that write with
+    `gh` themselves; prints the seconds waited."""
+    cfg = _load(args)
+    t = throttle.for_config(cfg)
+    print(f"{t.wait():.1f}" if t else "0.0")
+    return 0
 
 
 def _local_conf(args, cfg: config.Config) -> str:
@@ -1030,6 +1041,8 @@ def parser() -> argparse.ArgumentParser:
     tl.add_argument("--worker-id", required=True)
     tl.add_argument("--job", default="", help="follow this job (default: the one the worker started last)")
 
+    sub.add_parser("throttle", help="wait for one of this host's GitHub content-write slots ([worker] writes_per_minute, "
+                                    "writes_per_hour), for scripts that write with gh themselves")
     st = sub.add_parser("status", help="the board's jobs by state, with their ages and claimants")
     st.add_argument("--all", action="store_true", help="include done jobs and closed issues")
 
@@ -1073,7 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     handlers = {"doctor": doctor, "targets": targets, "work": work, "gate": gate, "merge-order": merge_order,
                 "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd,
-                "usage": usage_cmd, "roadmaps": roadmaps_cmd}
+                "usage": usage_cmd, "roadmaps": roadmaps_cmd, "throttle": throttle_cmd}
     try:
         return handlers[args.command](args)
     except GHRateLimited as exc:

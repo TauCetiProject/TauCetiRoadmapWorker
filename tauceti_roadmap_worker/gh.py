@@ -75,6 +75,9 @@ def check_fence(gh) -> None:
 @dataclass
 class GH:
     dry_run: bool = False
+    # The host-wide throttle on content writes (`throttle.WriteThrottle`), set once per process by the
+    # CLI from the configuration; None writes unthrottled (tests, dry runs, hosted runs without a state dir).
+    throttle = None
     timeout: int = 120
     read_delays: tuple = READ_DELAYS
     sleep: object = time.sleep
@@ -164,6 +167,8 @@ class GH:
         if self.dry_run:
             print(f"[dry-run] {method} {path} {json.dumps(payload or {})[:300]}")
             return None
+        if self.throttle is not None:
+            self.throttle.wait()
         out = self._run(["api", "-X", method, path, "--input", "-"], stdin=json.dumps(payload or {}))
         return json.loads(out) if out.strip() else None
 
@@ -174,6 +179,8 @@ class GH:
         if self.dry_run:
             print("[dry-run] gh " + " ".join(args))
             return ""
+        if self.throttle is not None:
+            self.throttle.wait()
         return self._run(list(args))
 
     def rate_limit(self, repo: str) -> dict:

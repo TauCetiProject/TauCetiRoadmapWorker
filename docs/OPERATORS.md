@@ -147,6 +147,13 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
 * A one-shot round's exit status names its outcome, so a supervisor that starts rounds itself (and
   paces them) needs no log parsing:
 
+  GitHub blocks an account's content creation (comments, issues, pull requests, labels, merges) after
+  bursts of about 80 writes a minute or 500 an hour (its secondary rate limit), and every worker, timer
+  and script on a host writes as the same operator. `[worker] writes_per_minute` (default 20) and
+  `writes_per_hour` (default 400) cap the host's content writes in one shared token bucket
+  (`<state>/gh-writes.json`): a write past the cap waits for a slot. Scripts that write with `gh`
+  themselves take a slot with `tauceti-roadmap throttle`. 0 for both turns the cap off.
+
   | status | outcome |
   |---|---|
   | 0 | submitted, parked (`needs-references`) or blocked |
