@@ -377,10 +377,15 @@ def test_completed_progress_reports_and_archives_are_not_reviewed():
     notes = node(754, H3, paths=("TauCetiRoadmap/GeometricTopology/references/README.md",))
     out, fake = sync(ContentGH([archive, progress, notes], tree=TREE))
     assert fake.created == [] and out == []
-    # A roadmap's README edited beside an archive is reviewed, unless the pull request is a chore by its title.
+    # A roadmap's README edited beside an archive is reviewed, unless the pull request is a chore by its title
+    # (a conventional-commit chore, or an "Archive X …" pull request).
     archive["files"]["nodes"].append({"path": "TauCetiRoadmap/BelyiMaps/README.md", "changeType": "MODIFIED"})
+    archive["title"] = "Move ConformalMapping to the completed directory"
     _out, fake = sync(ContentGH([archive], tree=TREE))
     assert created(fake) == [("PRREVIEW-BelyiMaps~1", "BelyiMaps")]
+    archive["title"] = "Archive ConformalMapping after its consumers merge"
+    out, fake = sync(ContentGH([archive], tree=TREE))
+    assert fake.created == [] and out == ["#752: not reviewed (chore by its title)"]
     archive["title"] = "chore(ConformalMapping): archive the finished roadmap"
     out, fake = sync(ContentGH([archive], tree=TREE))
     assert fake.created == [] and out == ["#752: not reviewed (chore by its title)"]
