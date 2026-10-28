@@ -594,7 +594,7 @@ hold a README.md), and works out each pull request's roadmap folders:
   removals (a roadmap archived or deleted). Everything under `[roadmap] completed_dir` (`Completed/`)
   and outside the active directory is ignored.
 - A chore is not reviewed, and the log says `#N: not reviewed (chore: 43 roadmap folders)` or
-  `#N: not reviewed (chore by its title)`: a pull request titled as a conventional-commit chore
+  `#N: not reviewed (chore by its title)`: a pull request titled as a conventional-commit chore or as an archive (`Archive X after …`: housekeeping that only touches the consumers of a roadmap moved to the completed directory)
   (`chore: ...`, `chore(Name): ...`), or one that edits more than `max_folders` roadmap folders,
   unless it adds the README.md of every one of them (a bundle of new roadmaps is reviewed).
 

@@ -1433,7 +1433,7 @@ OPEN_ROUND = ("available", "claimed", "submitted")     # a review or gate round 
 
 
 # A pull request whose title is a conventional-commit chore (`chore: ...`, `chore(Name): ...`) is one.
-CHORE_TITLE = re.compile(r"^\s*chore\b", re.IGNORECASE)
+CHORE_TITLE = re.compile(r"^\s*(?:chore|archive)\b", re.IGNORECASE)
 
 
 def review_folders(entry: dict, active_dir: str, completed_dir: str, on_main: set[str]) -> dict[str, str]:

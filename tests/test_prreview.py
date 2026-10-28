@@ -928,3 +928,12 @@ def test_a_review_whose_run_stopped_after_its_comment_is_submitted_without_a_sec
     [opened] = rh.opened
     assert "PRREVIEW-Foo~1" in opened["body"] and ctx.board.states == [(job.id, "submitted")]
     assert lane_base.read_pending(ctx, job) is None
+
+
+def test_an_archive_pull_request_is_a_chore_by_its_title():
+    from tauceti_roadmap_worker.intake import CHORE_TITLE
+    assert CHORE_TITLE.match("Archive GlobalNumberFields after ray-class naturality lands")
+    assert CHORE_TITLE.match("chore: bump TauCeti to ab00ba392")
+    assert not CHORE_TITLE.match("Archived-torsion Galois representations: a roadmap")
+    assert not CHORE_TITLE.match("Roadmap: archive geometry")
+
