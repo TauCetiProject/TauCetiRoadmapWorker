@@ -337,8 +337,8 @@ class Config:
 
 # --- loading -------------------------------------------------------------------------------------
 
-# Keys a newer worker no longer reads, with what replaced them: a file that still sets one loads, with
-# this warning instead of "unknown key".
+# Keys this worker does not read, each with what took its place: a file that sets one loads, with this
+# warning instead of "unknown key".
 RETIRED = {"prreview.require_single_folder": "every roadmap folder of a pull request gets its own review; "
                                              "see prreview.max_folders"}
 

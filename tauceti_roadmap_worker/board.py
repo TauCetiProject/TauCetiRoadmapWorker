@@ -607,8 +607,8 @@ def prreview_verdict_path(packages_dir: str, job: Job) -> str:
 
 def prreview_folder(job: Job) -> str:
     """The roadmap folder a pull-request review reviews, relative to the active directory
-    (`RepresentationTheory/CompactGroups`): its `folder` input, else (a job filed before reviews were
-    per folder) `<Name>`."""
+    (`RepresentationTheory/CompactGroups`): its `folder` input, else `<Name>` (a job without one
+    reviews `<active_dir>/<Name>/`)."""
     return str(job.inputs.get("folder") or job.name).strip("/")
 
 

@@ -112,7 +112,7 @@ def folder_leans(folder: Path) -> list[Path]:
 def prreview_verdict_problems(data, job: Job) -> list[str]:
     """Why a pull-request review's verdict record is not one the board takes: the review verdict's
     rules (`review.verdict_problems`), and the pull request, head and roadmap folder the job names (a
-    job filed before reviews were per folder names none)."""
+    job without a `folder` input names no folder)."""
     problems = verdict_problems(data, job.id)
     review = data.get("review") if isinstance(data, dict) else None
     if not isinstance(review, dict):
