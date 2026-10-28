@@ -16,6 +16,7 @@ from tauceti_roadmap_worker.board import Outcome, new_job
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes import Context, LaneError, lane_for
 from tauceti_roadmap_worker.lanes import base as lane_base
+from tauceti_roadmap_worker.lanes import pr as lane_pr
 from tauceti_roadmap_worker.lanes import prreview as lane_prreview
 from tauceti_roadmap_worker.lanes.base import Workspace
 from tauceti_roadmap_worker.worker import rank
@@ -1198,3 +1199,187 @@ def test_an_incremental_re_review_accounts_for_every_finding_of_the_previous_rep
     assert lane.check(job, ctx, ws) == []
     assert lane_prreview.unaccounted_findings(PREVIOUS_REPORT, "| R01 | partly | x |\nR02: unrepaired") == []
     assert lane_prreview.unaccounted_findings(PREVIOUS_REPORT, "R01 — the hypothesis\nR012 repaired") == ["R01", "R02"]
+
+
+# --- the repair of a pool author's pull request -----------------------------------------------------
+
+class RepairHub(ReviewHub):
+    """The review hub, with the content pull request's (empty) reviews and inline comments, label
+    removal, and the time of each comment."""
+
+    def api(self, path, paginate=False):
+        if path.split("?")[0] in (f"repos/{CONTENT}/pulls/905/reviews", f"repos/{CONTENT}/pulls/905/comments"):
+            return []
+        return super().api(path, paginate)
+
+    def write(self, method, path, payload=None):
+        if method == "DELETE" and f"repos/{CONTENT}/issues/905/labels/" in path:
+            self.labels.remove(path.rsplit("/", 1)[1])
+            return {}
+        stamp = f"2026-10-28T10:00:{len(self.comments[905]):02d}Z"
+        made = super().write(method, path, payload)
+        if path.endswith("/issues/905/comments"):
+            made["created_at"] = stamp
+        return made
+
+
+def repair_setup(local, monkeypatch, tmp_path, gate_fails=False):
+    """The `hub` fixture's GitHub as a RepairHub, the author's branch ignoring `.lake/`, the gates faked
+    (the review's passes; the repair's fails with `gate_fails`), and the review job of its head."""
+    rh = RepairHub.__new__(RepairHub)
+    rh.__dict__.update(local.__dict__, labels=[])
+    work = tmp_path / "author"
+    sh(tmp_path, "clone", "-q", "-b", ROADMAP_BRANCH, str(rh.content), str(work))
+    (work / ".gitignore").write_text(".lake/\n")
+    sh(work, "add", "-A")
+    sh(work, "commit", "-q", "-m", "ignore the Lake folder")
+    sh(work, "push", "-q", "origin", f"HEAD:refs/heads/{ROADMAP_BRANCH}")
+    passing = gates.GateResult("Foo", counts={"build": 0, "depcheck": 0, "readme-ids-missing": 0})
+    failing = gates.GateResult("Foo", counts={"build": 1, "depcheck": 0, "readme-ids-missing": 0})
+    calls = []
+
+    def run_gate(*a, **k):
+        calls.append(a)
+        return failing if gate_fails and len(calls) > 1 else passing
+    monkeypatch.setattr(lane_prreview.gates, "run_gate", run_gate)
+    monkeypatch.setattr(lane_prreview, "open_roadmap_prs", lambda ctx: [])
+    job = new_job("PRREVIEW-Foo~2", inputs={"pr": 905, "head": rh.head(905), "owner": "carol", "name": "Foo",
+                                            "folder": "Foo", "rereview": False})
+    job.number = 62
+    return rh, rh.head(905), job
+
+
+def pool_ctx(rh, pool=("alice", "carol")):
+    ctx = process(rh)
+    ctx.cfg.roadmap.pool = list(pool)
+    return ctx
+
+
+def reviewed(lane, job, ctx, head, status="needs_changes"):
+    """The review as its agent left it: the report and the verdict in the board checkout."""
+    ws = lane.prepare(job, ctx)
+    ws.report.write_text(REPORT.format(h7=head[:7], v=status, findings=FINDING))
+    lane.verdict_file(job, ctx, ws).write_text(json.dumps({"review": {
+        "status": status, "reviewer": f"independent-review-{job.id}", "head": head, "pr": 905, "folder": "Foo",
+        "date": "2026-10-28", "findings": 1, "blocking": 1, "notes": "x"}}))
+    assert lane.validate(job, ctx, ws) == []
+    return ws
+
+
+REPAIR_LINE = "## H01 (AI review PRREVIEW-Foo~2) — applied\nThe README now states the hypothesis on p.\n"
+
+
+def repair_agent(monkeypatch, briefs, report=REPAIR_LINE, edit=True, stray=False):
+    def run_agent(self, ctx, ws, brief, label=""):
+        briefs.append((label, brief, (ws.scratch / "reviews.md").read_text()))
+        if edit:
+            (ws.workdir / "TauCetiRoadmap" / "Foo" / "README.md").write_text("# Foo\n\nFor every odd prime p.\n")
+            sh(ws.workdir, "commit", "-q", "-am", "Foo: review repairs (the hypothesis on p)")
+        if stray:
+            (ws.board / "packages" / "Foo" / "stray.md").write_text("not a deliverable\n")
+        (ws.job_dir / lane_prreview.REPAIR_REPORT).write_text(report)
+        return SimpleNamespace(exit_code=0, limited=False, seconds=1.0, timed_out=False)
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", run_agent)
+
+
+@needs_git
+def test_a_review_asking_changes_of_a_pool_author_repairs_and_answers_in_the_same_job(
+        hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    briefs = []
+    repair_agent(monkeypatch, briefs, stray=True)
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    result = lane.deliver(job, ctx, ws)
+    new = rh.head(905)
+    assert result.status == "submitted", result.detail
+    assert new != head and sh(rh.content, "rev-parse", f"{new}^") == head
+    assert f"repaired at {new[:7]} and answered the review (awaiting-review)" in result.detail
+    # The repair ran the gate brief on the review comment just posted, as the review to answer.
+    [(label, brief, reviews)] = briefs
+    review, reply = rh.comments[905]
+    assert label == "repair" and brief.startswith("# Answering human review — job PRREVIEW-Foo~2")
+    assert "roadmap folder\n`TauCetiRoadmap/Foo/`" in brief and str(ws.job_dir / "repair-report.md") in brief
+    assert "## AI review PRREVIEW-Foo~2 at 2026-10-28T10:00:00Z" in reviews and "CHANGES NEEDED" in reviews
+    # The reply answers that comment, names the worker and the head, and the labels follow.
+    assert reply["body"].startswith(f"Fixed in `{new[:7]}` (reply to the review):\n\n- **H01** (applied)")
+    assert replies.answered_record(reply["body"]) == {
+        "job": job.id, "answered": {f"comment-{review['id']}": replies.text_version(review["body"])},
+        "worker": "alice-1", "head": new}
+    events = lane_pr.events_from_api([], rh.comments[905])
+    assert replies.unanswered(events, {"alice", "carol"}, config.Config().replies.review_markers,
+                              config.Config().replies.housekeeping_prefixes, owner="carol") == []
+    assert rh.labels == ["awaiting-review"]
+    # The board gets the review alone, whatever the repair agent left in the board checkout.
+    [opened] = rh.opened
+    assert "Files: `packages/Foo/reports/PRREVIEW-Foo~2.json`, `packages/Foo/reports/PRREVIEW-Foo~2.md`" in opened["body"]
+    assert ctx.board.states == [(job.id, "submitted")] and lane_base.read_pending(ctx, job) is None
+
+
+@needs_git
+def test_a_repair_that_fails_the_gate_leaves_the_review_submitted(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path, gate_fails=True)
+    repair_agent(monkeypatch, [])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert result.status == "submitted", result.detail
+    assert "; repair not pushed: its checks failed: build=1" in result.detail
+    assert rh.head(905) == head and len(rh.comments[905]) == 1 and rh.labels == []
+    assert ctx.board.states == [(job.id, "submitted")] and lane_base.read_pending(ctx, job) is None
+
+
+@needs_git
+def test_a_repair_stopped_after_its_push_is_finished_without_a_second_push_or_reply(
+        hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [])
+    rh.fail("/issues/905/comments", None, "crash")             # the reply is posted, then the process dies
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    with pytest.raises(KeyboardInterrupt):
+        lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    new = rh.head(905)
+    record = lane_base.read_pending(ctx, job)
+    assert record["done"] == ["content-comment", "repair", "content-push"] and record["repair"] == {"sha": new}
+    assert record["outstanding"] == ["repair-comment", "push", "pull-request", "submitted"]
+
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", lambda *a, **k: pytest.fail("the agent ran again"))
+    ctx = pool_ctx(rh)
+    result = lane_for(job).run(job, ctx)
+    assert result.status == "submitted", result.detail
+    assert rh.head(905) == new and len(rh.comments[905]) == 2 and rh.labels == ["awaiting-review"]
+    assert ctx.board.states == [(job.id, "submitted")] and lane_base.read_pending(ctx, job) is None
+
+
+@pytest.mark.parametrize("change,repairs", [
+    ({}, True),
+    ({"status": "rejected"}, False), ({"status": "accepted"}, False), ({"dry_run": True}, False),
+    ({"pool": ["alice"]}, False),                       # the author is not in the pool
+    ({"pool": ["carol"]}, False),                       # the operator is not
+    ({"repair_pool": False}, False), ({"head_repo": ""}, False),
+])
+def test_only_a_review_asking_changes_of_a_pool_author_by_a_pool_operator_repairs(tmp_path, change, repairs):
+    ctx = lane_ctx(tmp_path, dry_run=change.get("dry_run", False))
+    ctx.cfg.roadmap.pool = change.get("pool", ["alice", "carol"])
+    ctx.cfg.prreview.repair_pool = change.get("repair_pool", True)
+    ws = SimpleNamespace(extra={"owner": "carol", "pr_branch": "roadmap/foo",
+                                "head_repo": change.get("head_repo", "TauCetiProject/TauCetiRoadmap")})
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    assert lane_for(job).repairs(job, ctx, ws, change.get("status", "needs_changes")) is repairs
+    assert config.Config().prreview.repair_pool is True
+
+
+def test_a_review_of_a_pool_author_in_a_dry_run_or_a_rejection_never_repairs(review_env, monkeypatch):
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", lambda *a, **k: pytest.fail("the repair ran"))
+    for status, dry_run in (("rejected", False), ("needs_changes", True)):
+        gh = LabelGH()
+        ctx = lane_ctx(review_env, gh=gh, dry_run=dry_run)
+        ctx.cfg.roadmap.pool = ["alice", "carol"]
+        job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+        lane, ws = finished_ws(review_env, ctx, job, status)
+        ws.extra.update(pr_branch="roadmap/foo", head_repo="TauCetiProject/TauCetiRoadmap")
+        summary = lane.finish(job, ctx, ws)
+        assert "repair" not in summary and len(gh.comments) == (0 if dry_run else 1)
+        lane_base.clear_pending(ctx, job)

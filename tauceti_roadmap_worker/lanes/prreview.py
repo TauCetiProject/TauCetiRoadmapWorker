@@ -26,6 +26,14 @@ is incremental: the agent accounts for every finding of the previous report and 
 passages and what depends on them; otherwise it reviews the folder in full. The comment's first line
 and its marker name the mode.
 
+A review that asks for changes (never a rejection) on a pull request whose author is in the pool, run
+by a pool operator with `[prreview] repair_pool` on, goes on in the same job, before the board
+submission, so the job stays claimed meanwhile: the gate lane's steps (`lanes.gate`) answer the
+review comment just posted on the same worktree, check the repair (push gate, elaboration, a clean
+worktree), push it onto the pull request's branch while that is still at the head reviewed, and post
+the finding-by-finding reply whose record names what it answers, the worker and the new head. A
+repair that fails is not pushed and the review is submitted all the same.
+
 The reviewer is not the pull request's author: an operator never reviews their own pull request,
 except under `[review] separation = "agent"`, where the review models `[agents.lanes.prreview]` pins
 (by default those of `[agents.lanes.review]`) differ from the authoring models. A pull request's
@@ -47,6 +55,7 @@ from ..gh import GHError
 from .base import (
     COMMENT_LIMIT,
     CONTENT_COMMENT,
+    CONTENT_PUSH,
     PULL_REQUEST,
     PUSH,
     SUBMITTED,
@@ -58,11 +67,13 @@ from .base import (
     dropped_names,
     elaborate_line,
     gate_order_file,
+    kept_commit,
     library_description,
     load_order,
     open_roadmap_prs,
     owe,
     owes,
+    pr_answerers,
     pr_head,
     read_pending,
     repair_order_file,
@@ -72,6 +83,7 @@ from .base import (
     sibling_checkouts,
     sibling_readmes,
 )
+from .gate import ANSWERED, answer_problems, answer_values, gate_problems, push_and_reply, reviews_document
 from .pr import pr_branch_worktree
 from .review import SAMPLE_SIZE, review_summary, sample_items, seeded_sample, verdict_problems
 
@@ -80,6 +92,12 @@ CANDIDATE_ORDER = "merge-order-candidate.txt"
 PULL_REQUEST_TEXT = "pull-request.md"
 GATE_REPORT = "gate.md"
 CHANGES = "changes.md"                    # in the scratch folder: the change since the previous reviewed head
+# The repair of a pool author's pull request after a review that asks for changes: its effects, in
+# order, between the review's comment and the board submission (`PRReviewLane.repair`).
+REPAIR, REPAIR_COMMENT = "repair", "repair-comment"
+REPAIR_EFFECTS = (REPAIR, CONTENT_PUSH, REPAIR_COMMENT)
+REPAIR_REPORT = "repair-report.md"        # in the job folder: the repair's report, H01… per finding
+REPAIR_GATE = "repair-gate.json"          # in the job folder: the gate's result at the repaired head
 
 
 def report_head(name: str, pr: int, head: str) -> str:
@@ -291,6 +309,27 @@ def unaccounted_findings(previous: str, report: str) -> list[str]:
             if not re.search(rf"\b{re.escape(fid)}\b[^\n]*{status}", report, re.IGNORECASE)]
 
 
+def repaired_head(ctx: Context, job: Job) -> str:
+    """The head the job's repair committed and checked, from its record ('' before one is)."""
+    return str(kept_commit(read_pending(ctx, job) or {}, "repair").get("sha") or "")
+
+
+def board_snapshot(job: Job, ctx: Context, ws: Workspace) -> dict[str, bytes]:
+    """The job's deliverables in the board checkout, as the review wrote them."""
+    allowed = board.allowed_paths(job, ctx.cfg.board.packages_dir, board.order_file(ctx.cfg))
+    return {rel: (ws.board / rel).read_bytes() for rel in sorted(allowed) if (ws.board / rel).is_file()}
+
+
+def restore_board(ws: Workspace, kept: dict[str, bytes]) -> None:
+    """The board checkout back to its main with the deliverables `kept` (`board_snapshot`): whatever
+    else a later agent run changed there is gone, so the review's submission is the review's."""
+    gitops.git(ws.board, "checkout", "-q", "--", ".", check=False)
+    gitops.git(ws.board, "clean", "-qfd", check=False)
+    for rel, data in kept.items():
+        (ws.board / rel).parent.mkdir(parents=True, exist_ok=True)
+        (ws.board / rel).write_bytes(data)
+
+
 def save_gate(path: Path, head: str, result: gates.GateResult) -> None:
     data = {"head": head, "name": result.name, "counts": result.counts, "notes": result.notes,
             "details": {k: [f"line {h.line}: {h.text}" if getattr(h, "line", 0) else str(getattr(h, "text", h))
@@ -361,7 +400,9 @@ class PRReviewLane(Lane):
         owner = str(job.inputs.get("owner") or (data.get("user") or {}).get("login", ""))
         leans = folder_leans(folder)
         ws.extra.update(pr=number, head=recorded, owner=owner, branch=branch,
-                        pr_branch=(data.get("head") or {}).get("ref", ""), prs=prs,
+                        pr_branch=(data.get("head") or {}).get("ref", ""),
+                        head_repo=(((data.get("head") or {}).get("repo") or {}).get("full_name") or ""),
+                        answerers=sorted(pr_answerers(cfg, owner)), prs=prs,
                         siblings=sibling_checkouts(ctx, prs, skip=job.name), folder=folder,
                         readme=folder / "README.md", lean=leans[0], leans=leans)
         (ws.scratch / PULL_REQUEST_TEXT).write_text(pull_request_document(number, data, owner), encoding="utf-8")
@@ -448,18 +489,24 @@ class PRReviewLane(Lane):
         if kept is not None:
             return kept
         cfg = ctx.cfg
+        result = gates.run_gate(ws.workdir, job.name, self.gate_options(job, ctx, ws), base=f"origin/{cfg.project.branch}",
+                                build_cmd=cfg.gates.build)
+        save_gate(record, head, result)
+        return result
+
+    def gate_options(self, job: Job, ctx: Context, ws: Workspace) -> gates.GateOptions:
+        """The push gate's options for the roadmap folder reviewed: the review's merge order, the folder,
+        and the pull request's other roadmap folders and a nested roadmap's family index files taken as
+        the pull request's own (each other folder has a review of its own)."""
+        cfg = ctx.cfg
         order = load_order(gate_order_file(cfg, ws, job.name))
         opts = gates.GateOptions.from_config(cfg, order=order or None, dropped=dropped_names(cfg),
                                              siblings=sibling_readmes(ctx.state, cfg.roadmap.active_dir, ws.extra["prs"]))
         opts.folder = board.prreview_folder(job)
-        # The pull request's other roadmap folders are its own (each has a review of its own), and so
-        # are the index files of a nested roadmap's family.
         active = re.escape(cfg.roadmap.active_dir)
         opts.outside_folder_allow.extend(rf"^{active}/{re.escape(f)}/" for f in other_folders(job))
         opts.outside_folder_allow.extend(rf"^{active}/{re.escape(f)}/[^/]+$" for f in family_folders(opts.folder))
-        result = gates.run_gate(ws.workdir, job.name, opts, base=f"origin/{cfg.project.branch}", build_cmd=cfg.gates.build)
-        save_gate(record, head, result)
-        return result
+        return opts
 
     def missing_references(self, job: Job, ctx: Context, ws: Workspace) -> list[references.MissingReference]:
         """A pull-request review is never parked for references: the texts it could not read are listed
@@ -577,22 +624,23 @@ class PRReviewLane(Lane):
             problems += [f"incremental re-review: finding {fid} of the previous report is not accounted for (write "
                          f"`- {fid} — repaired | partly repaired | not repaired: <the passage>` under `## Previous findings`)"
                          for fid in unaccounted_findings(Path(previous).read_text(encoding="utf-8"), report)]
-        problems += self.checkout_problems(ws)
+        problems += self.checkout_problems(ws, repaired_head(ctx, job))
         if not problems and len(self.comment_body(job, ctx, ws)) > COMMENT_LIMIT:
             problems.append(f"report: too long to post as one pull-request comment (the limit is {COMMENT_LIMIT:,} "
                             "characters): keep every finding and the sampled rows of the adversarial table, and cut the "
                             "per-target ledgers and the restated roadmap content")
         return problems
 
-    def checkout_problems(self, ws: Workspace) -> list[str]:
-        """A review leaves the pull request's checkout as it found it: no change, no commit."""
+    def checkout_problems(self, ws: Workspace, repaired: str = "") -> list[str]:
+        """A review leaves the pull request's checkout as it found it: no change, no commit (the commit
+        of its own repair, `repaired`, which a kept run puts back, aside)."""
         out = []
         dirty = gitops.git(ws.workdir, "status", "--short", check=False).strip()
         if dirty:
             out.append("the review changed the pull request's checkout (a review is read-only; restore it): "
                        + "; ".join(dirty.splitlines()[:5]))
         now = gitops.git(ws.workdir, "rev-parse", "HEAD", check=False).strip()
-        if now and now != ws.extra["head"]:
+        if now and now not in (ws.extra["head"], repaired):
             out.append(f"the checkout is at {now[:7]}, not the head reviewed {ws.extra['head'][:7]}: a review never commits")
         return out
 
@@ -622,15 +670,106 @@ class PRReviewLane(Lane):
         status = verdict.get("status") or "needs_changes"
         if ctx.dry_run:
             return f"[dry-run] would comment on #{pr} ({status})"
-        owe(ctx, job, ws, (CONTENT_COMMENT, PUSH, PULL_REQUEST, SUBMITTED))
+        repairing = self.repairs(job, ctx, ws, status)
+        owe(ctx, job, ws, (CONTENT_COMMENT, *(REPAIR_EFFECTS if repairing else ()), PUSH, PULL_REQUEST, SUBMITTED))
         if owes(ctx, job, CONTENT_COMMENT):
             body = self.comment_body(job, ctx, ws)
-            self.comment_once(ctx, repo, pr, body, lambda text: same_review(text, job.id, head))
+            ws.extra["review_comment"] = self.comment_once(ctx, repo, pr, body, lambda text: same_review(text, job.id, head))
             settle(ctx, job, CONTENT_COMMENT)
         label = self.update_label(job, ctx, pr, head, status)
         summary = review_summary(f"review of #{pr} ({board.prreview_folder(job)}) at {head[:7]}", verdict,
                                  ws.report.read_text(encoding="utf-8") if ws.report.is_file() else "")
-        return summary + (f"; {label}" if label else "")
+        # The record decides: an attempt that finishes a kept run carries on with the repair it began.
+        repair = self.repair(job, ctx, ws) if any(owes(ctx, job, e) for e in REPAIR_EFFECTS) else ""
+        return summary + "".join(f"; {x}" for x in (label, repair) if x)
+
+    # -- the repair of a pool author's pull request --
+    def repairs(self, job: Job, ctx: Context, ws: Workspace, status: str) -> bool:
+        """Whether the review goes on to repair the pull request in the same job: `[prreview]
+        repair_pool` is on, the verdict asks for changes (never a rejection), the author and the
+        operator are in the pool (`[roadmap] pool`), the pull request names its branch and head
+        repository, and the run is not a dry run."""
+        pool = set(ctx.cfg.roadmap.pool)
+        return bool(ctx.cfg.prreview.repair_pool and status == "needs_changes" and not ctx.dry_run
+                    and ws.extra.get("owner") in pool and ctx.operator in pool
+                    and ws.extra.get("pr_branch") and ws.extra.get("head_repo"))
+
+    def repair(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        """After the review's comment, before the board submission (the job stays claimed meanwhile, so
+        the board files no gate round for the review): the gate lane's answer to the review just posted,
+        on the same worktree (`answer_values`, `answer_problems`, `gate_problems`, `push_and_reply`).
+        Each step is an effect of the job's record (REPAIR, CONTENT_PUSH, REPAIR_COMMENT), so a run that
+        stops part-way is finished without a second push or reply. A repair that fails its checks, or
+        whose push or reply GitHub refuses, is not pushed: the review stands and is submitted, and the
+        line says why. Returns the summary's line."""
+        try:
+            return self.repair_steps(job, ctx, ws)
+        except (gitops.GitError, GHError, LaneError) as exc:
+            why = scrub_paths((str(exc).strip().splitlines() or [type(exc).__name__])[0], ctx.state, Path.home())[:300]
+            for effect in REPAIR_EFFECTS:
+                settle(ctx, job, effect)
+            if not repaired_head(ctx, job):
+                gitops.git(ws.workdir, "reset", "-q", "--hard", ws.extra["head"], check=False)
+                gitops.git(ws.workdir, "clean", "-qfd", check=False)
+            self.note(ws, f"repair not pushed: {why}")
+            return f"repair not pushed: {why}"
+
+    def repair_steps(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        head, report = ws.extra["head"], ws.job_dir / REPAIR_REPORT
+        if owes(ctx, job, REPAIR):
+            self.run_repair(job, ctx, ws, report)
+        new = repaired_head(ctx, job)
+        gate = load_gate(ws.job_dir / REPAIR_GATE, new)
+        if not new or gate is None or not report.is_file():
+            raise LaneError("the repair's record is incomplete")
+        answered = json.loads((ws.job_dir / ANSWERED).read_text(encoding="utf-8"))
+        label = push_and_reply(self, ctx, job, ws, report.read_text(encoding="utf-8"), answered, gate,
+                               branch=ws.extra["pr_branch"], base=head, moved=new != head, reply=REPAIR_COMMENT)
+        return (f"repaired at {new[:7]} and answered the review ({label})" if new != head
+                else f"answered the review, no change needed ({label})")
+
+    def run_repair(self, job: Job, ctx: Context, ws: Workspace, report: Path) -> None:
+        """The repair agent on the gate brief, given the review comment as the review to answer (its
+        record in `answered.json`), then the gate lane's checks; the repaired head goes into the job's
+        record. The board checkout is put back as the review left it, whatever the agent touched."""
+        head, folder = ws.extra["head"], board.prreview_folder(job)
+        comment = ws.extra.get("review_comment") or self.posted_review(job, ctx, ws)
+        if not comment.get("id"):
+            raise LaneError("the review's comment is not on the pull request")
+        body = comment.get("body") or ""
+        event = replies.Event(comment.get("created_at") or "", f"AI review {job.id}", body,
+                              ref=f"comment-{comment['id']}", version=replies.text_version(body))
+        reviews = ws.scratch / "reviews.md"
+        reviews.write_text(reviews_document([event]), encoding="utf-8")
+        (ws.job_dir / ANSWERED).write_text(json.dumps(replies.versions([event]), indent=1, sort_keys=True) + "\n",
+                                           encoding="utf-8")
+        report.unlink(missing_ok=True)
+        values = {**self.common_values(job, ctx, ws), **answer_values(ctx, ws, job.name, folder, reviews, report)}
+        brief = prompts.render("gate", values)
+        (ws.job_dir / "brief-repair.md").write_text(brief, encoding="utf-8")
+        kept = board_snapshot(job, ctx, ws)
+        result = self.run_agent(ctx, ws, brief, "repair")
+        restore_board(ws, kept)
+        if result.limited or result.exit_code != 0:
+            raise LaneError("the repair agent " + ("hit a usage limit" if result.limited else f"exited {result.exit_code}"))
+        problems = ([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report)
+        if not problems:
+            problems, gate = gate_problems(ctx, ws, job.name, folder, self.gate_options(job, ctx, ws))
+        if problems:
+            raise LaneError("its checks failed: " + "; ".join(problems[:3]))
+        new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
+        save_gate(ws.job_dir / REPAIR_GATE, new, gate)
+        owe(ctx, job, ws, (), content={"sha": new, "base": head, "branch": ws.extra["branch"]})
+        settle(ctx, job, REPAIR, repair={"sha": new})
+
+    def posted_review(self, job: Job, ctx: Context, ws: Workspace) -> dict:
+        """The review's comment on the pull request, as an earlier attempt posted it ({} when none is)."""
+        repo, pr, head = ctx.cfg.repositories.content, ws.extra["pr"], ws.extra["head"]
+        for c in reversed(ctx.gh.api(f"repos/{repo}/issues/{pr}/comments?per_page=100", paginate=True) or []):
+            if (c.get("user") or {}).get("login", "").lower() == ctx.operator.lower() and same_review(
+                    c.get("body") or "", job.id, head):
+                return c
+        return {}
 
     def update_label(self, job: Job, ctx: Context, pr: int, head: str, status: str) -> str:
         """`[prreview] label` on the pull request when the review accepts the head it still has and the

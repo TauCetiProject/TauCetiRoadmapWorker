@@ -237,6 +237,12 @@ max_folders = 10
 # review. The reviewer gets the folder's diff since that head, cut at `diff_cap_lines` lines.
 small_change_lines = 150
 diff_cap_lines = 2000
+# A review that asks for changes on a pull request whose author is in `[roadmap] pool`, run by a pool
+# operator, goes on in the same job to repair it as a gate round would: the repair agent answers the
+# review just posted, the gate must pass, the branch is pushed and a reply recording what it answers
+# is posted (a repair that fails is not pushed; the review stands). The board files no gate round
+# while the review job is claimed, and the next review of the repaired head is another worker's.
+repair_pool = true
 
 [sources]
 # Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through

@@ -270,6 +270,10 @@ class PRReview:
     small_change_lines: int = 150
     # Lines of the folder's diff since the previous reviewed head the reviewer is given in changes.md.
     diff_cap_lines: int = 2000
+    # A review that asks for changes on a pull request by a pool author (`[roadmap] pool`), run by a
+    # pool operator, goes on in the same job to repair it as a gate round would (push onto its branch,
+    # reply finding by finding); the next review of the repaired head is another worker's.
+    repair_pool: bool = True
 
 
 @dataclass
