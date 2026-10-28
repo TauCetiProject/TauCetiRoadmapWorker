@@ -259,12 +259,24 @@ def scan_pr_numbers(readme: str) -> list[Hit]:
     return _hits(r"pull request #\d+|\bPR\s*#?\d{2,}|#\d{3,5}\)", readme)
 
 
-PROCESS_WORDS = (r"\(removed\)|\bpacket\b|\bcheckpoint\b|\bhandoff\b|lean-check|\bcatalogue\b|\bstand-in\b|\bso far\b|"
+PROCESS_WORDS = (r"\(removed\)|\bcheckpoint\b|\bhandoff\b|lean-check|\bcatalogue\b|\bstand-in\b|\bso far\b|"
                  r"to be checked|<a id=|\bTODO\b|\bXXX\b|\*\*T\d{3,4}\*\*|\bjob id\b|\breview round\b")
 
 
+# Process words that are also terms of the mathematics (L-packets, the LMFDB's packets of p-adic
+# fields): residue only in prose, outside a hyphenated compound, in a README that does not define them
+# in bold.
+PROCESS_TERMS = ("packet",)
+
+
 def scan_process_residue(readme: str) -> list[Hit]:
-    return _hits(PROCESS_WORDS, readme, re.I)
+    hits = _hits(PROCESS_WORDS, readme, re.I)
+    prose, lines = strip_markdown_code(readme), readme.split("\n")
+    for term in PROCESS_TERMS:
+        if not re.search(rf"\*\*{term}s?\*\*", readme, re.I):
+            hits += [Hit(h.line, lines[h.line - 1].strip()[:160])
+                     for h in _hits(rf"(?<![\w-]){term}\b", prose, re.I)]
+    return sorted(hits, key=lambda h: h.line)
 
 
 # --- the one residue repaired mechanically: HTML anchor tags ----------------------------------------
@@ -778,9 +790,10 @@ GATE_RULES = {
     "prnum": "no pull-request numbers in the README",
     "sorry-data": "no `sorry` in the body of a `def`, `abbrev`, `instance` or `opaque`",
     "sorry-examples": "every `example` is proved: an admitted example tests nothing",
-    "residue": "no process residue: in the README none of `(removed)`, packet, checkpoint, handoff, lean-check, "
-               "catalogue, stand-in, so far, to be checked, `<a id=` anchor tags, TODO, XXX, bold job numbers like "
-               "`**T123**`, job id, review round; in Suggested.lean no `#print axioms`, `#eval`, `#synth`, `lemma`, "
+    "residue": "no process residue: in the README none of `(removed)`, packet (except in code, in a compound such "
+               "as L-packet, or in a README that defines it in bold), checkpoint, handoff, lean-check, catalogue, "
+               "stand-in, so far, to be checked, `<a id=` anchor tags, TODO, XXX, bold job numbers like `**T123**`, "
+               "job id, review round; in Suggested.lean no `#print axioms`, `#eval`, `#synth`, `lemma`, "
                "`: True :=` or `: Prop := sorry`",
     "private-paths": "no machine paths (home directories, temporary folders) in the README or Suggested.lean",
     "imports": "Suggested.lean imports `Mathlib` first, then only the individual `TauCeti.*` modules it uses, each "

@@ -74,6 +74,12 @@ def test_process_residue_and_pr_numbers():
     assert gates.scan_process_residue("Analytic continuation of L(s, χ).") == []
 
 
+def test_packet_as_a_term():
+    assert [h.line for h in gates.scan_process_residue("Intro.\nSee the packet.\n")] == [2]
+    assert gates.scan_process_residue("Its L-packet.\nThe knowl `lf.packet`.\n") == []
+    assert gates.scan_process_residue("Define the **packet** of K.\nEach packet is finite.\n") == []
+
+
 def test_latex_only_outside_code():
     text = "Prose with $x^2$ and \\(y\\).\n\n```text\n$ok$ \\(ok\\)\n```\n\nCode `f $ x` and `x_{i}`.\n\n    $indented code$\n"
     hits = gates.scan_latex(text)
