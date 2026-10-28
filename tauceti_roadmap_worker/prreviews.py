@@ -319,6 +319,16 @@ def source_issues(body: str) -> list[dict]:
 def report_findings(report: str) -> tuple[list[tuple[str, str, list[str]]], list[str]]:
     """A worker report's `## R01 (P1) — title` blocks as (severity, title, body lines), and the
     rest (other sections), outside code fences."""
+    findings, rest = _report_blocks(report)
+    return [(severity, title, body) for _fid, severity, title, body in findings], rest
+
+
+def report_finding_ids(report: str) -> list[str]:
+    """The ids (`R01`, `S02`, ...) of the findings `report_findings` reads, in order."""
+    return [fid for fid, _severity, _title, _body in _report_blocks(report)[0]]
+
+
+def _report_blocks(report: str) -> tuple[list[tuple[str, str, str, list[str]]], list[str]]:
     findings, rest, current, fenced = [], [], None, False
     for line in (report or "").split("\n"):
         if re.match(r"^\s*(```|~~~)", line):
@@ -326,7 +336,7 @@ def report_findings(report: str) -> tuple[list[tuple[str, str, list[str]]], list
         m = None if fenced else REPORT_FINDING.match(line)
         if m:
             current = []
-            findings.append((m.group(3), m.group(4).strip(), current))
+            findings.append((m.group(1) + m.group(2), m.group(3), m.group(4).strip(), current))
         elif not fenced and line.startswith("## "):
             current = None
             rest.append(line)

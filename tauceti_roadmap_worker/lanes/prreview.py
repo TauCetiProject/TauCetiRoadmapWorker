@@ -282,6 +282,14 @@ def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
     return text
 
 
+def unaccounted_findings(previous: str, report: str) -> list[str]:
+    """The findings of the previous report (`prreviews.report_finding_ids`) an incremental re-review's
+    report does not account for: each must be named on a line that says it is repaired, partly
+    repaired or not repaired."""
+    return [fid for fid in prreviews.report_finding_ids(previous)
+            if not re.search(rf"\b{re.escape(fid)}\b[^\n]*\b(?:repaired|unrepaired|partly)\b", report, re.I)]
+
+
 def save_gate(path: Path, head: str, result: gates.GateResult) -> None:
     data = {"head": head, "name": result.name, "counts": result.counts, "notes": result.notes,
             "details": {k: [f"line {h.line}: {h.text}" if getattr(h, "line", 0) else str(getattr(h, "text", h))
@@ -563,6 +571,11 @@ class PRReviewLane(Lane):
                                 f"see {ws.scratch / GATE_REPORT}): report each failure as a finding")
         elif status in ("needs_changes", "rejected") and not findings:
             problems.append("report: a verdict that asks for changes writes each finding as `## R01 (P1) — <short title>`")
+        previous = ws.extra.get("previous_report")
+        if report and ws.extra.get("mode") == "incremental" and previous is not None:
+            problems += [f"incremental re-review: finding {fid} of the previous report is not accounted for (write "
+                         f"`- {fid} — repaired | partly repaired | not repaired: <the passage>` under `## Previous findings`)"
+                         for fid in unaccounted_findings(Path(previous).read_text(encoding="utf-8"), report)]
         problems += self.checkout_problems(ws)
         if not problems and len(self.comment_body(job, ctx, ws)) > COMMENT_LIMIT:
             problems.append(f"report: too long to post as one pull-request comment (the limit is {COMMENT_LIMIT:,} "

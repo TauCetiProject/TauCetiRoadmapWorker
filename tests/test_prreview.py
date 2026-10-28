@@ -1170,3 +1170,31 @@ def test_an_incremental_re_review_says_so_in_its_head_line_and_its_marker(review
 
 def same_review_ok(body, job):
     return lane_prreview.same_review(body, job.id, H1)
+
+
+def test_an_incremental_re_review_accounts_for_every_finding_of_the_previous_report(review_env, monkeypatch):
+    monkeypatch.setattr(lane_prreview.gitops, "git", lambda cwd, *args, **kw: H1 + "\n" if args[0] == "rev-parse" else "")
+    ctx = lane_ctx(review_env, gh=LabelGH())
+    job = rereview_job(H2, H1)
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    previous = review_env / "previous.md"
+    previous.write_text(PREVIOUS_REPORT)
+    ws.extra.update(previous_report=previous, mode="incremental")
+    assert prreviews.report_finding_ids(PREVIOUS_REPORT) == ["R01", "R02"]          # R09 sits in a code fence
+    assert [p.split(" (write")[0] for p in lane.check(job, ctx, ws)] == [
+        "incremental re-review: finding R01 of the previous report is not accounted for",
+        "incremental re-review: finding R02 of the previous report is not accounted for"]
+    accounted = ws.report.read_text().replace("## Verified sound", (
+        "## Previous findings\n\n- R01 — repaired: README line 4 now assumes p odd.\n"
+        "- R02 — not repaired: the locator still names no page.\n\n## Verified sound"))
+    ws.report.write_text(accounted)
+    assert lane.check(job, ctx, ws) == []
+    ws.report.write_text(accounted.replace("- R02 — not repaired: the locator still names no page.\n", ""))
+    assert lane.check(job, ctx, ws) == [
+        "incremental re-review: finding R02 of the previous report is not accounted for (write "
+        "`- R02 — repaired | partly repaired | not repaired: <the passage>` under `## Previous findings`)"]
+    # A full review checks the previous findings too, but the worker does not hold it to a line for each.
+    ws.extra["mode"] = "full"
+    assert lane.check(job, ctx, ws) == []
+    assert lane_prreview.unaccounted_findings(PREVIOUS_REPORT, "| R01 | partly | x |\nR02: unrepaired") == []
+    assert lane_prreview.unaccounted_findings(PREVIOUS_REPORT, "R01 — the hypothesis\nR012 repaired") == ["R01", "R02"]
