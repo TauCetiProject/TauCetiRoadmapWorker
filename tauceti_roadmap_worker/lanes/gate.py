@@ -13,6 +13,7 @@ mk-reply.py, post_fix.sh and label-sync.sh.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from .. import gates, gitops, prompts, replies
 from ..board import Job
@@ -31,6 +32,76 @@ def reviews_document(events: list[replies.Event]) -> str:
     for e in events:
         parts += [f"## {e.user} at {e.t}", "", "```text", prompts.quote_untrusted(e.body), "```", ""]
     return "\n".join(parts)
+
+
+# --- answering reviews on a pull request branch: the gate lane's steps, shared with the review lane's repair ---
+
+def answer_values(ctx: Context, ws: Workspace, name: str, folder: str, reviews: Path, report: Path | None = None) -> dict:
+    """The `gate` brief's own values: answer the reviews quoted in `reviews` on the pull request checked
+    out in `ws.workdir` (`ws.extra` `pr` and `head`), in the roadmap folder `folder` (relative to the
+    active directory) of the roadmap `name`; with `report`, the report is written there rather than to
+    the job's report on the board."""
+    cfg, path = ctx.cfg, f"{ctx.cfg.roadmap.active_dir}/{folder}"
+    build = (cfg.gates.build.format(module=gates.roadmap_module(cfg.roadmap.active_dir, folder)) if cfg.gates.build
+             else "(no build configured)")
+    values = {"PR": str(ws.extra["pr"]), "HEAD": ws.extra["head"][:7], "REVIEWS": str(reviews), "FOLDER": path,
+              "FILES": f"{path}/README.md` and `{path}/Suggested.lean", "BUILD": build,
+              "GATE": ctx.cli("gate", str(ws.workdir), name, *(("--folder", folder) if folder != name else ()),
+                              "--base", f"origin/{cfg.project.branch}"),
+              "COMMIT": (f"If you changed anything: `git add {path} && git commit -m \"{name}: review repairs "
+                         "(<your summary, at most 15 words>)\"`. Do not push.")}
+    return {**values, "REPORT": str(report)} if report is not None else values
+
+
+def answer_problems(ws: Workspace, report: Path) -> list[str]:
+    """Why an answer to reviews is not finished: its report has no H01… sections, or the worktree holds
+    uncommitted changes."""
+    problems = []
+    if report.is_file() and not replies.parse_findings(report.read_text(encoding="utf-8")):
+        problems.append("report: no H01… sections in the required heading style")
+    if gitops.git(ws.workdir, "status", "--short").strip():
+        problems.append("uncommitted changes left in the worktree")
+    return problems
+
+
+def gate_problems(ctx: Context, ws: Workspace, name: str, folder: str,
+                  opts: gates.GateOptions) -> tuple[list[str], gates.GateResult]:
+    """(the problems, the result) of the push gate with the targeted build on the worktree, and of the
+    elaboration of the folder's Suggested.lean when no build is configured."""
+    result = gates.run_gate(ws.workdir, name, opts, base=f"origin/{ctx.cfg.project.branch}", build_cmd=ctx.cfg.gates.build)
+    return scan_problems(result) + worktree_elaboration_problems(ctx, ws, folder), result
+
+
+def push_and_reply(lane: Lane, ctx: Context, job: Job, ws: Workspace, report: str, answered: dict[str, str],
+                   gate: gates.GateResult, *, branch: str, base: str, moved: bool, push: str = CONTENT_PUSH,
+                   reply: str = CONTENT_COMMENT) -> str:
+    """The answer on the pull request (`ws.extra` `pr`, `head_repo`, `owner`, `answerers`), effect by
+    effect as the job's record still owes them: the worktree's HEAD pushed onto `branch` of the pull
+    request's head repository (the operator's fork when it names none) while that branch is still at
+    `base` (effect `push`, when the answer `moved` the head), the finding-by-finding reply from
+    `report` with the record of what it answers (`answered`), the worker and the head (effect
+    `reply`), and the awaiting-* labels. Returns the label now wanted."""
+    cfg, pr, repo = ctx.cfg, ws.extra["pr"], ctx.cfg.repositories.content
+    new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
+    if moved and owes(ctx, job, push):
+        # The branch lives in the pull request's head repository: the operator's fork for a port,
+        # the content repository itself for an adopted author's branch (2026-10-27).
+        fork = ws.extra.get("head_repo") or gitops.ensure_fork(ctx.gh, repo, ctx.operator)
+        lane.push(lambda: gitops.push(ws.workdir, fork, branch, expected=base))
+        settle(ctx, job, push, content={"repo": fork})
+    if moved:
+        lane.await_pr_head(ctx, repo, pr, new, then="not replying")
+    intro = "reply to the review" if moved else "reply to the review, no change needed"
+    text = replies.build_reply(new[:7], report, replies.validation_sentence(new[:7], gate), intro,
+                               cfg.replies.review_markers)
+    if not replies.reply_is_safe(text, cfg.replies.review_markers):
+        raise LaneError("the reply would read as a review; not posting")
+    text += replies.answered_marker(job.id, answered, worker=ctx.worker_id, head=new) + "\n"
+    if owes(ctx, job, reply):
+        lane.comment_once(ctx, repo, pr, text, lambda body: body.strip() == text.strip())
+        settle(ctx, job, reply)
+    return flip_labels(ctx, pr, timeline(ctx, pr) + inline_comments(ctx, pr), new, ws.extra["owner"],
+                       ws.extra.get("answerers") or ())
 
 
 class GateLane(Lane):
@@ -75,20 +146,10 @@ class GateLane(Lane):
         return ws
 
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
-        cfg, folder = ctx.cfg, f"{ctx.cfg.roadmap.active_dir}/{job.name}"
-        build = cfg.gates.build.format(module=f"{cfg.roadmap.active_dir}.{job.name}.Suggested") if cfg.gates.build else "(no build configured)"
-        return {"PR": str(ws.extra["pr"]), "HEAD": ws.extra["head"][:7], "REVIEWS": str(ws.scratch / "reviews.md"),
-                "FILES": f"{folder}/README.md` and `{folder}/Suggested.lean", "BUILD": build,
-                "GATE": ctx.cli("gate", str(ws.workdir), job.name, "--base", f"origin/{cfg.project.branch}"),
-                "COMMIT": (f"If you changed anything: `git add {folder} && git commit -m \"{job.name}: review repairs "
-                           "(<your summary, at most 15 words>)\"`. Do not push.")}
+        return answer_values(ctx, ws, job.name, job.name, ws.scratch / "reviews.md")
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
-        problems = super().check(job, ctx, ws)
-        if ws.report.is_file() and not replies.parse_findings(ws.report.read_text(encoding="utf-8")):
-            problems.append("report: no H01… sections in the required heading style")
-        if gitops.git(ws.workdir, "status", "--short").strip():
-            problems.append("uncommitted changes left in the worktree")
+        problems = super().check(job, ctx, ws) + answer_problems(ws, ws.report)
         if problems:
             return problems
         folder = ws.workdir / ctx.cfg.roadmap.active_dir / job.name
@@ -100,13 +161,11 @@ class GateLane(Lane):
         order = load_order(order_path(ctx.cfg, ws.board, ws.content))
         opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
                                              siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]))
-        result = gates.run_gate(ws.workdir, job.name, opts, base=f"origin/{ctx.cfg.project.branch}",
-                                build_cmd=ctx.cfg.gates.build)
-        ws.extra["gate"] = result
-        return problems + scan_problems(result) + worktree_elaboration_problems(ctx, ws, job.name)
+        found, ws.extra["gate"] = gate_problems(ctx, ws, job.name, job.name, opts)
+        return found
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
-        cfg, pr, repo = ctx.cfg, ws.extra["pr"], ctx.cfg.repositories.content
+        pr = ws.extra["pr"]
         new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
         moved = new != ws.extra["head"]
         if ctx.dry_run:
@@ -114,23 +173,6 @@ class GateLane(Lane):
         base = ws.extra.get("push_base") or ws.extra["head"]
         owe(ctx, job, ws, ((CONTENT_PUSH,) if moved else ()) + (CONTENT_COMMENT, PUSH, PULL_REQUEST, SUBMITTED),
             content={"sha": new, "base": base, "branch": ws.extra["branch"], "pr": pr})
-        if moved and owes(ctx, job, CONTENT_PUSH):
-            # The branch lives in the pull request's head repository: the operator's fork for a port,
-            # the content repository itself for an adopted author's branch (2026-10-27).
-            fork = ws.extra.get("head_repo") or gitops.ensure_fork(ctx.gh, repo, ctx.operator)
-            self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"], expected=base))
-            settle(ctx, job, CONTENT_PUSH, content={"repo": fork})
-        if moved:
-            self.await_pr_head(ctx, repo, pr, new, then="not replying")
-        intro = "reply to the review" if moved else "reply to the review, no change needed"
-        text = replies.build_reply(new[:7], ws.report.read_text(encoding="utf-8"),
-                                   replies.validation_sentence(new[:7], ws.extra["gate"]), intro, cfg.replies.review_markers)
-        if not replies.reply_is_safe(text, cfg.replies.review_markers):
-            raise LaneError("the reply would read as a review; not posting")
-        text += replies.answered_marker(job.id, ws.extra["answered"]) + "\n"
-        if owes(ctx, job, CONTENT_COMMENT):
-            self.comment_once(ctx, repo, pr, text, lambda body: body.strip() == text.strip())
-            settle(ctx, job, CONTENT_COMMENT)
-        label = flip_labels(ctx, pr, timeline(ctx, pr) + inline_comments(ctx, pr), new, ws.extra["owner"],
-                            ws.extra.get("answerers") or ())
+        label = push_and_reply(self, ctx, job, ws, ws.report.read_text(encoding="utf-8"), ws.extra["answered"],
+                               ws.extra["gate"], branch=ws.extra["branch"], base=base, moved=moved)
         return f"answered the review on #{pr} at {new[:7]} ({label})"

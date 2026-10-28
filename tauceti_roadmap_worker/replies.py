@@ -179,21 +179,33 @@ def versions(events: list[Event]) -> dict[str, str]:
     return {e.ref: e.version for e in events if e.ref}
 
 
-def answered_marker(job: str, answered: dict[str, str]) -> str:
-    """The record a reply carries of the exact reviews and comments it answers (`versions`)."""
-    return f"<!-- {ANSWERED_MARK} {json.dumps({'job': job, 'answered': answered}, sort_keys=True)} -->"
+def answered_marker(job: str, answered: dict[str, str], worker: str = "", head: str = "") -> str:
+    """The record a reply carries of the exact reviews and comments it answers (`versions`), and of the
+    worker that wrote it and the head it answers at, when given."""
+    data = {"job": job, "answered": answered, **({"worker": worker} if worker else {}), **({"head": head} if head else {})}
+    return f"<!-- {ANSWERED_MARK} {json.dumps(data, sort_keys=True)} -->"
 
 
-def answered_by(body: str) -> dict[str, str] | None:
-    """ref -> version from a reply's record (the last one: the worker appends it after the agent's text),
-    {} for a record that does not parse, None for a reply without one."""
+def answered_record(body: str) -> dict | None:
+    """A reply's whole record (the last one: the worker appends it after the agent's text): {job,
+    answered, worker, head}; {} for a record that does not parse, None for a reply without one."""
     found = ANSWERED_RE.findall(body or "")
     if not found:
         return None
     try:
-        answered = json.loads(found[-1].strip()).get("answered")
-    except (ValueError, AttributeError):
+        record = json.loads(found[-1].strip())
+    except ValueError:
         return {}
+    return record if isinstance(record, dict) else {}
+
+
+def answered_by(body: str) -> dict[str, str] | None:
+    """ref -> version from a reply's record (`answered_record`), {} for a record that does not parse,
+    None for a reply without one."""
+    record = answered_record(body)
+    if record is None:
+        return None
+    answered = record.get("answered")
     return {str(k): str(v) for k, v in answered.items()} if isinstance(answered, dict) else {}
 
 

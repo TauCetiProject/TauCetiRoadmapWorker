@@ -268,3 +268,15 @@ def test_a_hand_reply_in_reply_form_counts_after_a_recorded_one():
     assert pending(events([old, later], [recorded, by_hand])) == []
     note = comment(804, "2026-10-21T11:00:00Z", "Rebased on main; the merge order is unchanged.", user=OWNER)
     assert pending(events([old, later], [recorded, note])) == ["review-61"]
+
+
+def test_a_reply_records_the_worker_that_wrote_it_and_the_head_it_answers_at(worker):
+    gh = PullGH(reviews=[REVIEW_A])
+    job = gate_job()
+    ws = prepare(worker(gh), job)
+    finish(worker(gh), job, ws)
+    assert replies.answered_record(gh.comments[-1]["body"]) == {
+        "job": "GATE-Foo~1", "answered": {"review-71": replies.text_version(REVIEW_A["body"])}, "worker": "w1",
+        "head": SHA}
+    assert replies.answered_record("Fixed in `abc1234`.") is None
+    assert replies.answered_marker("GATE-Foo~1", {}) == '<!-- tauceti-roadmap-answered {"answered": {}, "job": "GATE-Foo~1"} -->'
