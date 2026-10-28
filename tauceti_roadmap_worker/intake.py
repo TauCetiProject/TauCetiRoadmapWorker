@@ -11,7 +11,9 @@
 * `sync()`: target issues become TARGET jobs; an issue carrying several `state:` labels keeps one
   (the board's invariant: exactly one); live leases are mirrored as `state:claimed`;
   roadmap pull requests get their awaiting-author / awaiting-review labels, and a GATE job is
-  created for the branch owner when humans are waiting for a reply; held pull requests stay drafts;
+  created for the branch owner when humans are waiting for a reply, except while a review of a pool
+  author's pull request is claimed (it repairs the pull request itself: `repairing_review`); held
+  pull requests stay drafts;
   with `[prreview] enabled`, every roadmap folder an open pull request adds or edits gets a PRREVIEW
   job per new head, and the pull request carries the AI-approved label exactly while an accepted AI
   review of its head covers every one of those folders (`sync_pr_reviews`).
@@ -1378,6 +1380,16 @@ def sync_leases(ctx, shared: claims.Claims | None) -> list[str]:
     return out
 
 
+def repairing_review(cfg, jobs: list[Job], number: int, owner: str) -> Job | None:
+    """The review of pull request #number that is claimed while its author is in the pool and
+    `[prreview] repair_pool` is on: a review that asks for changes goes on to repair the pull request
+    in the same job, so no gate round is filed for it meanwhile; None when there is none."""
+    if not cfg.prreview.repair_pool or owner not in set(cfg.roadmap.pool):
+        return None
+    return next((j for j in jobs if j.kind == "prreview" and j.state == "claimed"
+                 and str(j.inputs.get("pr")) == str(number)), None)
+
+
 def sync_pull_requests(ctx) -> list[str]:
     cfg, out = ctx.cfg, []
     repo = cfg.repositories.content
@@ -1417,7 +1429,11 @@ def sync_pull_requests(ctx) -> list[str]:
             out.append(f"#{number}: labels on {repo} not changed ({exc})")
         if want == r.awaiting_author:
             mine = [j for j in jobs if j.kind == "gate" and j.name == p["name"]]
-            if not any(j.state in ("available", "claimed", "submitted", "blocked") for j in mine):
+            open_round = any(j.state in ("available", "claimed", "submitted", "blocked") for j in mine)
+            repairing = None if open_round else repairing_review(cfg, jobs, number, p["owner"])
+            if repairing is not None:
+                out.append(f"#{number}: gate round deferred: review {repairing.id} is repairing")
+            elif not open_round:
                 operator = p.get("operator", p["owner"])
                 gate = board.new_job(board.make_id("gate", p["name"], len(mine) + 1), requires_operator=operator,
                                      inputs={"pr": number, "operator": operator, "owner": p["owner"]})

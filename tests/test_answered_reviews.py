@@ -280,3 +280,30 @@ def test_a_reply_records_the_worker_that_wrote_it_and_the_head_it_answers_at(wor
         "head": SHA}
     assert replies.answered_record("Fixed in `abc1234`.") is None
     assert replies.answered_marker("GATE-Foo~1", {}) == '<!-- tauceti-roadmap-answered {"answered": {}, "job": "GATE-Foo~1"} -->'
+
+
+def test_no_gate_round_is_filed_while_a_review_of_a_pool_authors_pull_request_repairs_it(tmp_path):
+    ai_review = comment(950, "2026-10-28T10:00:00Z", f"\U0001f916 AI review (codex, m) of {SHA}\n\nVerdict: CHANGES "
+                        "NEEDED\n\n1. **F01** (P1) the hypothesis on p is missing\n", user="bob")
+    gh = PullGH(comments=[ai_review])
+    review_job = new_job("PRREVIEW-Foo~2", inputs={"pr": 905, "head": SHA, "owner": OWNER, "name": "Foo"})
+    review_job.number, review_job.state = 61, "claimed"
+    cfg = example_config()
+    cfg.roadmap.pool = [OWNER, "bob"]
+
+    def sync_pool():
+        board = FakeBoard(jobs=[review_job])
+        return intake.sync_pull_requests(SimpleNamespace(cfg=cfg, gh=gh, board=board, state=tmp_path)), board
+    out, board = sync_pool()
+    assert "#905: gate round deferred: review PRREVIEW-Foo~2 is repairing" in out and board.created == []
+    assert "#905 Foo: awaiting-author" in out
+    # The next sync, the review no longer claimed and still unanswered: the gate round.
+    review_job.state = "submitted"
+    out, board = sync_pool()
+    assert "#905: GATE-Foo~1 created for @alice" in out and [j.id for j, _s, _p in board.created] == ["GATE-Foo~1"]
+    # Without the repair, or for an author outside the pool, a claimed review defers nothing.
+    review_job.state = "claimed"
+    for pool, repair in (([OWNER, "bob"], False), (["bob"], True)):
+        cfg.roadmap.pool, cfg.prreview.repair_pool = pool, repair
+        out, board = sync_pool()
+        assert [j.id for j, _s, _p in board.created] == ["GATE-Foo~1"] and not any("deferred" in line for line in out)
