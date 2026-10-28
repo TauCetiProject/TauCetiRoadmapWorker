@@ -1551,6 +1551,17 @@ def rereview_inputs(jobs: list[Job]) -> dict:
     return {"previous_head": str(before.inputs["head"]), "previous_job": before.id, "rereview": True}
 
 
+def head_worker(comments: list[dict], head: str) -> str:
+    """The worker whose reply on a pull request records `head` as the head it answered at (its
+    answered record, `replies.answered_record`: a gate round's, or a review's repair), the latest such
+    reply's; '' when none does."""
+    for c in reversed(comments):
+        record = replies.answered_record(c.get("body") or "")
+        if record and record.get("head") == head and record.get("worker"):
+            return str(record["worker"])
+    return ""
+
+
 def supersede(ctx, job: Job, note: str) -> bool:
     """Close a PRREVIEW job nobody has taken as done, its issue labelled `superseded` with `note`: it
     stays a job of the board (its round and head count), and is never taken. False when a worker took
@@ -1620,7 +1631,9 @@ def sync_pr_reviews(ctx) -> list[str]:
       jobs; inputs `folder`, `pr`, `head`, `owner`, `name`, `roadmaps`, every folder of the pull
       request, when it has several, and `rereview`: after an earlier review of that folder of that
       pull request, a re-review of the repaired head, with that review's `previous_head` and
-      `previous_job` (`rereview_inputs`)) is filed for each roadmap folder of a pull request whose authors
+      `previous_job` (`rereview_inputs`), and `not_worker`, the worker whose reply records that it
+      produced this head (`head_worker`), which may not take it) is filed for each roadmap folder of a
+      pull request whose authors
       `[prreview] authors` and `skip_authors` admit, unless a review of that folder of that pull
       request names this head or is open, or a gate round of the pull request is open (it is about to
       move the head): at most `[prreview] per_run` jobs per run, oldest pull request first, every
@@ -1691,7 +1704,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             out.append(f"#{number}: {p.label} on {repo} not {'added' if accepted else 'removed'} "
                        f"({str(exc).splitlines()[0][:160]})")
 
-    made, waiting = 0, 0
+    made, waiting, threads = 0, 0, {}
     for entry in listed:
         number, head, author = int(entry["pr"]), entry.get("head", ""), entry.get("author", "")
         folders, why = plans[number]
@@ -1715,6 +1728,19 @@ def sync_pr_reviews(ctx) -> list[str]:
             if len(folders) > 1:
                 inputs["roadmaps"] = list(folders)
             inputs.update(rereview_inputs(ours))
+            if inputs["rereview"]:
+                if number not in threads:
+                    try:
+                        threads[number] = ctx.gh.api(f"repos/{repo}/issues/{number}/comments?per_page=100",
+                                                     paginate=True) or []
+                    except GHError as exc:
+                        threads[number] = None
+                        out.append(f"#{number}: not filed this run (its comments could not be read: "
+                                   f"{str(exc).splitlines()[0][:160]})")
+                if threads[number] is None:
+                    continue
+                if worker := head_worker(threads[number], head):
+                    inputs["not_worker"] = worker
             job = board.new_job(board.make_id("prreview", leaf, 1 + sum(1 for j in reviews if j.name == leaf)),
                                 inputs=inputs)
             issue = ctx.board.create(job)

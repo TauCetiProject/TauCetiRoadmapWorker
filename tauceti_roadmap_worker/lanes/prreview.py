@@ -364,6 +364,8 @@ class PRReviewLane(Lane):
         owner = str(job.inputs.get("owner") or "")
         if owner and owner.lower() == (ctx.operator or "").lower() and ctx.cfg.review.separation != "agent":
             return "the author does not review their own pull request"
+        if job.inputs.get("not_worker") and str(job.inputs["not_worker"]) == ctx.worker_id:
+            return "the worker that repaired this head does not review it"
         return ""
 
     # -- the workspace --

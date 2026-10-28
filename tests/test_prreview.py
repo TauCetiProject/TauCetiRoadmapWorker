@@ -238,8 +238,9 @@ class ContentGH:
     REST, main's tree (`tree`: the folders under TauCetiRoadmap/ holding a README.md), the board's main
     (verdict records), and every write; label writes fail with `refuse`."""
 
-    def __init__(self, nodes=(), pulls=None, files=None, refuse=False, tree=()):
+    def __init__(self, nodes=(), pulls=None, files=None, refuse=False, tree=(), comments=None, unreadable=False):
         self.nodes, self.pulls, self.files, self.refuse = list(nodes), dict(pulls or {}), dict(files or {}), refuse
+        self.comments, self.unreadable = dict(comments or {}), unreadable   # pull request -> its issue comments
         self.tree = [f"TauCetiRoadmap/{d}/README.md" for d in tree]
         self.writes, self.listings, self.dry_run, self.fence = [], 0, False, None
 
@@ -251,6 +252,9 @@ class ContentGH:
         m = re.fullmatch(r"repos/[^/]+/[^/]+/pulls/(\d+)", path)
         if m and int(m.group(1)) in self.pulls:
             return self.pulls[int(m.group(1))]
+        m = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)/comments\?per_page=100", path)
+        if m and not self.unreadable:
+            return list(self.comments.get(int(m.group(1)), []))
         if re.fullmatch(r"repos/[^/]+/[^/]+/git/trees/main\?recursive=1", path):
             return {"truncated": False, "tree": [{"path": t, "type": "blob"} for t in self.tree]}
         raise GHError(f"GET {path}: 404")
@@ -323,6 +327,29 @@ def test_a_new_round_is_a_re_review_of_the_head_the_latest_done_review_read():
     later = review_job(44, 6, 12, H2, "done")
     assert intake.rereview_inputs([first, later, submitted]) == {"previous_head": H2, "previous_job": "PRREVIEW-Foo~6",
                                                                  "rereview": True}
+
+
+def test_the_re_review_of_a_head_a_worker_repaired_is_left_to_another_worker(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    reply = {"id": 9, "user": {"login": "alice"},
+             "body": "Fixed in `2222222` (reply to the review):\n\n- **H01** (applied) — done.\n"
+                     + replies.answered_marker("PRREVIEW-Foo~1", {"comment-8": "abc"}, worker="alice-1", head=H2)}
+    done = review_job(40, 1, 12, H1, "done")
+    _out, fake = sync(ContentGH([node(12, H2)], comments={12: [reply]}), [done])
+    [(job, _s, _p)] = fake.created
+    assert job.inputs["rereview"] is True and job.inputs["not_worker"] == "alice-1"
+    lane = lane_for(job)
+    assert lane.eligible(job, lane_ctx(tmp_path)) == "the worker that repaired this head does not review it"
+    assert lane.eligible(job, dataclasses.replace(lane_ctx(tmp_path), worker_id="alice-2")) == ""
+    # A head no reply records (the author pushed it) names no worker; a first review reads no comments.
+    _out, fake = sync(ContentGH([node(12, H3)], comments={12: [reply]}), [done])
+    assert "not_worker" not in fake.created[0][0].inputs
+    _out, fake = sync(ContentGH([node(12, H2)], unreadable=True))
+    assert fake.created[0][0].inputs == {"pr": 12, "head": H2, "owner": "carol", "name": "Foo", "folder": "Foo",
+                                         "rereview": False}
+    # Comments that cannot be read leave the re-review to the next run.
+    out, fake = sync(ContentGH([node(12, H2)], unreadable=True), [done])
+    assert fake.created == [] and out[0].startswith("#12: not filed this run (its comments could not be read")
 
 
 @pytest.mark.parametrize("open_job", [review_job(41, 1, 12, H1, "claimed"), review_job(41, 1, 12, H1, "submitted"),
