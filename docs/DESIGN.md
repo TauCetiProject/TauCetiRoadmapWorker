@@ -152,7 +152,15 @@ checkout, submits a PR to the board, and the intake advances the state.
     pushes, approves or merges, and it never touches the awaiting-author and awaiting-review labels:
     the final approval and the merge stay a human's. The author's operator does not review their own
     pull request (except under `[review] separation = "agent"`, where the pinned review models differ
-    from the authoring ones).
+    from the authoring ones). A review filed after an earlier one of the same folder of the same pull
+    request is a re-review of a repaired head (`rereview`, with the `previous_head` and
+    `previous_job` it follows): workers take it before first reviews, and its agent gets the change
+    since that head (`changes.md`, the folder's diff cut at `[prreview] diff_cap_lines`). When the
+    folder changed by at most `[prreview] small_change_lines` lines, the re-review is incremental: it
+    accounts for every earlier finding (repaired, partly repaired or not repaired), reviews only the
+    changed passages and what depends on them, carries the earlier adversarial rows for untouched
+    statements, runs the gate, and says so in its comment and marker; a larger change gets a full
+    review.
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.

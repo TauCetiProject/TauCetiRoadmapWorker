@@ -122,8 +122,9 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   errata, prreview`); without it the worker takes whatever is most useful: first the jobs whose
   roadmap descends from a target a human filed (origin `target:<issue>`), then imported ones
   (`explorer:<job>`; an unknown origin counts as imported), each by stage closest to delivery (GATE,
-  PORT, FIX-RT, PRREVIEW, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET, ERRATA),
-  then the oldest issue. `[board] human_first`
+  PORT, FIX-RT, PRREVIEW, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET, ERRATA;
+  within PRREVIEW, the re-reviews of a repaired head before first reviews), then the oldest issue.
+  `[board] human_first`
   and `[board] priority` change that order; `board sync` records the origin on jobs that lack it,
   and `status` prints it.
 * `--agent` pins the agent family. Without it, each job runs on its lane's configured agent
@@ -392,7 +393,7 @@ read as an instruction.
 | fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build, head check |
-| prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head | one comment on the roadmap PR, the `ai-approved` label (on once every folder of the head accepts, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json` | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched |
+| prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-approved` label (on once every folder of the head accepts, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json` | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
 headline theorems the finished roadmap will prove, stated now against the pinned Mathlib and Tau
@@ -607,8 +608,11 @@ hold a README.md), and works out each pull request's roadmap folders:
 
 Each roadmap folder gets its own job, `PRREVIEW-<Leaf>~k` (`<Leaf>` the folder's last component, `k`
 one more than that name's earlier reviews), with inputs `folder` (relative to the active directory),
-`pr`, `head`, `owner`, `name` (the leaf) and, when the pull request has several roadmap folders,
-`roadmaps` (all of them). It is filed for a head no review of that folder names yet, while no review
+`pr`, `head`, `owner`, `name` (the leaf), when the pull request has several roadmap folders,
+`roadmaps` (all of them), and `rereview`: `false` for the first review of that folder of that pull
+request; `true` for a re-review of a repaired head, with `previous_head` and `previous_job`, the head
+and the job of the review it follows (the latest done one, a superseded job not counting, else the
+latest submitted one). It is filed for a head no review of that folder names yet, while no review
 of that folder and no gate round of that pull request is open (a gate round is about to move the
 head). `per_run` counts jobs; a run files every folder of one pull request before the next, so a
 bundle is reviewed as a whole across runs. A review nobody has taken is closed as `superseded` (set
@@ -625,6 +629,8 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
 | `skip_authors` | `[]` | never these authors' pull requests |
 | `max_folders` | `10` | a pull request editing more roadmap folders than this is a chore and not reviewed, unless it adds the README.md of every one of them |
+| `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
+| `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
 
 The review runs on the review models: `[agents.lanes.prreview]` pins them, and without that table the
 lane uses `[agents.lanes.review]`'s. For example
@@ -655,6 +661,27 @@ a `tauceti-roadmap-prreview` marker.
 An acceptance never reads as a review to answer; a review that asks for changes does, so on a pull
 request the board manages it brings a gate round like any other review. A pull request whose author
 is the worker's operator is left to another operator, except under `[review] separation = "agent"`.
+
+A re-review of a repaired head (`rereview`) comes first: a worker takes it before every first
+review, within the PRREVIEW stage (the stage order and `[board] human_first` are unchanged). The
+worker reads the head the previous review read (fetched when the checkout lacks it) and writes
+`changes.md` in the job's scratch folder: the folder's `git diff --stat` since that head, its diff
+cut at `diff_cap_lines` (with a note naming the command that shows the rest), and the names of the
+files changed outside the folder. When the folder changed by at most `small_change_lines` lines and
+the previous report is on the board's main, the review is incremental: the agent does not redo the
+full review but checks the updates. It accounts for every finding of the previous report under
+`## Previous findings` (`- R01 — repaired | partly repaired | not repaired: <passage>`; a repair
+that introduced a problem is a new finding), reviews in full only the passages the diff adds or
+changes and what cites or depends on them (names, section numbers, suppliers, the Lean statements
+touched), runs the gate and the elaboration, carries the previous report's adversarial rows for the
+statements left untouched and adds rows for every changed one, and accepts when no blocking finding
+remains and the gate passes, its verdict notes saying `incremental re-review of <N> changed lines
+since <sha7>`. The worker refuses a report that leaves an earlier finding unaccounted for
+(`incremental re-review: finding R03 of the previous report is not accounted for`). Every other
+rule of the report and the verdict is that of a full review. A larger change, a previous head that
+cannot be read, or a previous report not on the board yet gives a full review, with `changes.md`
+offered as context. The first line of an incremental re-review's comment ends `(incremental re-review
+since <sha7>)`, and every review's marker carries `mode`: `incremental` or `full`.
 
 The label means: for every roadmap folder of the pull request, the latest AI review of the current
 head accepted it. The worker adds it when its review accepts the head the pull request still has and
