@@ -140,11 +140,13 @@ def test_repair_upward_refuses_a_real_cycle_and_a_rider_it_did_not_read():
                "Motives": "*Needs:* RankinSelberg §4.\n",
                "Shimura": "*Needs:* Motives §1.\n"}          # Motives -> RankinSelberg -> Shimura -> Motives
     text, notes = depgraph.repair_upward(PS_ORDER, readmes)
-    assert depgraph.read_order(text) == ["SchemeAndStackFoundations", "Motives", "SelmerIwasawaCohomologyPartII",
-                                         "Shimura", "GanGrossPrasadUnitaryGroups", "PeriodsAndSpecialValues",
+    # PeriodsAndSpecialValues' two suppliers are pulled up before it (a block of 2) rather than moving it
+    # down with Motives and Shimura, which consume it through RankinSelberg (a block of 3).
+    assert depgraph.read_order(text) == ["SchemeAndStackFoundations", "SelmerIwasawaCohomologyPartII",
+                                         "GanGrossPrasadUnitaryGroups", "PeriodsAndSpecialValues", "Motives", "Shimura",
                                          "RankinSelberg"]
     assert notes["Motives"] == ("Motives not moved in the merge order: Motives consumes RankinSelberg (#7) and is "
-                                "consumed by Shimura (#4), which comes first; Motives lies on a dependency cycle with "
+                                "consumed by Shimura (#6), which comes first; Motives lies on a dependency cycle with "
                                 "Shimura, RankinSelberg, so no move repairs the order: a cycle through Motives")
     # A consumer whose README was not read cannot ride along: the move is refused and says so.
     with pytest.raises(depgraph.OrderCycle, match="consumed by Shimura \\(#5\\), which comes first and whose README "
@@ -175,8 +177,7 @@ def test_the_port_lane_moves_a_listed_roadmap_after_its_last_supplier(ctx):  # n
     (gamma / "README.md").write_text("*Needs:* Foo §1.\n")
     ws = lane_for(job).prepare(job, ctx)
     assert order.read_text() == "Alpha\nBeta\nFoo\nGamma\n"
-    assert ws.extra["order_notes"] == ["Foo moved in the merge order from #2 to #4, right after its last supplier Beta; "
-                                       "its consumer Gamma moved with it"]
+    assert ws.extra["order_notes"] == ["Beta moved in the merge order up before Foo (supplier of it listed after it)"]
 
 
 def test_a_gate_reads_the_order_moved_in_place_when_the_submission_carries_it_else_in_a_copy(ctx):  # noqa: F811

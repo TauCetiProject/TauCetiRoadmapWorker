@@ -511,7 +511,7 @@ def depcheck_lines(name: str, readme: str, siblings: dict[str, str], order: list
     lines = []
     if movable and name in order and name not in merged:
         try:
-            text, note = depgraph.move_with_riders("\n".join(order) + "\n", name, set(edges.get(name, {})), edges, merged)
+            text, note = depgraph.repair_edge("\n".join(order) + "\n", name, set(edges.get(name, {})), edges, merged)
         except depgraph.OrderCycle as exc:
             lines.append(f"not movable: {exc}")
         else:

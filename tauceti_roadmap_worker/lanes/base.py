@@ -402,7 +402,7 @@ def move_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: str
     readmes = roadmap_readmes(ctx, ws)
     edges = depgraph.supplier_edges({**readmes, name: readme}, set(order) | set(readmes) | {name})
     try:
-        new, note = depgraph.move_with_riders(text, name, suppliers, edges, merged)
+        new, note = depgraph.repair_edge(text, name, suppliers, edges, merged)
     except depgraph.OrderCycle as exc:
         return text, [f"merge order: {name} not moved after its last supplier: {exc}"]
     return new, [note] if note else []

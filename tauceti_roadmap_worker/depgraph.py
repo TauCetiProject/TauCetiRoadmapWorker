@@ -517,6 +517,99 @@ def move_after_suppliers(text: str, name: str, suppliers: set[str],
     return "\n".join(ln for ln, _n in kept) + "\n", note
 
 
+def pull_suppliers_up(text: str, name: str, suppliers: set[str], edges: dict[str, dict[str, set[int]]],
+                      merged: set[str] | frozenset = frozenset()) -> tuple[str, str]:
+    """The other repair of an UPWARD edge: every listed supplier of `name` that comes after it, with the
+    open roadmaps it (transitively) consumes that come after `name` too, moved as one block to right
+    before `name` (relative order kept). Unchanged with no note when no supplier comes after `name`;
+    OrderCycle when `name` itself is among what a supplier consumes (a real cycle). A roadmap on main
+    (`merged`) is never moved or consumed through. (2026-10-29: roadmaps adopted into the order were
+    placed at its end, so a consumer early in the order faced a move past 200 roadmaps when moving
+    the supplier up by one block would do.)"""
+    order = read_order(text)
+    if name not in order:
+        return text, ""
+    pos = {n: i for i, n in enumerate(order)}
+    below = sorted((s for s in suppliers if s in pos and s != name and s not in merged and pos[s] > pos[name]), key=pos.get)
+    if not below:
+        return text, ""
+    open_edges = {c: {s for s in sups if s not in merged} for c, sups in edges.items() if c not in merged}
+    sc = closure(open_edges)
+    block: set[str] = set()
+    for s in below:
+        chain = sc.get(s, set()) | {s}
+        if name in chain:
+            raise OrderCycle(f"{name} consumes {s} (#{pos[s] + 1}), which consumes {name}: a cycle through {name}")
+        block |= {x for x in chain if x in pos and pos[x] > pos[name]}
+    moving = sorted(block, key=pos.get)
+    lines = text.splitlines()
+    names = [line.split("#", 1)[0].strip() for line in lines]
+    first_line = {}
+    for i, n in enumerate(names):
+        if n in block and n not in first_line:
+            first_line[n] = lines[i]
+    kept = [(ln, n) for ln, n in zip(lines, names, strict=True) if n not in block]
+    at = next(i for i, (_ln, n) in enumerate(kept) if n == name)
+    for k, n in enumerate(moving):
+        kept.insert(at + k, (first_line[n], n))
+    chain_only = [n for n in moving if n not in below]
+    note = (f"{', '.join(n for n in moving if n in below)} moved in the merge order up before {name}"
+            f" (supplier{'s' if len(below) > 1 else ''} of it listed after it)"
+            + (f"; {', '.join(chain_only)} moved with {'them' if len(below) > 1 else 'it'}" if chain_only else ""))
+    return "\n".join(ln for ln, _n in kept) + "\n", note
+
+
+def _open_graph(edges: dict[str, dict[str, set[int]]], merged) -> dict[str, set[str]]:
+    return {c: {s for s in sups if s not in merged} for c, sups in edges.items() if c not in merged}
+
+
+def pull_block(order: list[str], name: str, suppliers: set[str], edges: dict[str, dict[str, set[int]]],
+               merged: set[str] | frozenset = frozenset()) -> set[str]:
+    """What `pull_suppliers_up` moves: the listed suppliers of `name` after it and the open roadmaps
+    they consume that are listed after `name` (empty when nothing is to pull)."""
+    pos = {n: i for i, n in enumerate(order)}
+    if name not in pos:
+        return set()
+    below = [s for s in suppliers if s in pos and s != name and s not in merged and pos[s] > pos[name]]
+    sc = closure(_open_graph(edges, merged))
+    return {x for s in below for x in (sc.get(s, set()) | {s}) if x in pos and pos[x] > pos[name]}
+
+
+def ride_block(order: list[str], name: str, suppliers: set[str], edges: dict[str, dict[str, set[int]]],
+               merged: set[str] | frozenset = frozenset()) -> set[str]:
+    """What `move_with_riders` moves: `name` and the open roadmaps that consume it (transitively) and
+    are listed no later than its last supplier (empty when nothing is to move)."""
+    pos = {n: i for i, n in enumerate(order)}
+    below = [s for s in suppliers if s in pos and s != name and s not in merged and pos[s] > pos[name]]
+    if name not in pos or not below:
+        return set()
+    last = max(pos[s] for s in below)
+    consumers: dict[str, set[str]] = defaultdict(set)
+    for c, sups in _open_graph(edges, merged).items():
+        for sup in sups:
+            consumers[sup].add(c)
+    riders = {r for r in closure(dict(consumers)).get(name, set()) if r in pos and pos[r] <= last}
+    return riders | {name}
+
+
+def repair_edge(text: str, name: str, suppliers: set[str], edges: dict[str, dict[str, set[int]]],
+                merged: set[str] | frozenset = frozenset()) -> tuple[str, str]:
+    """The repair of `name`'s UPWARD edges that moves the smaller block: its suppliers pulled up before
+    it (`pull_suppliers_up`) or it moved down after them with its consumers (`move_with_riders`); the
+    ride wins a tie. OrderCycle when neither is possible (the ride's, which names the cycle)."""
+    order = read_order(text)
+    pull = len(pull_block(order, name, suppliers, edges, merged))
+    ride = len(ride_block(order, name, suppliers, edges, merged))
+    movers = [pull_suppliers_up, move_with_riders] if pull < ride else [move_with_riders, pull_suppliers_up]
+    errors = []
+    for mover in movers:
+        try:
+            return mover(text, name, suppliers, edges, merged)
+        except OrderCycle as exc:
+            errors.append(exc)
+    raise next((e for e in errors if "lies on a dependency cycle" in str(e)), errors[0])
+
+
 def move_with_riders(text: str, name: str, suppliers: set[str], edges: dict[str, dict[str, set[int]]],
                      merged: set[str] | frozenset = frozenset()) -> tuple[str, str]:
     """`move_after_suppliers` for one roadmap with the consumers that must ride along: the closures
@@ -538,31 +631,22 @@ def move_with_riders(text: str, name: str, suppliers: set[str], edges: dict[str,
 
 def repair_upward(text: str, readmes: dict[str, str], main_extended: set[str] | frozenset = frozenset(),
                   only: set[str] | None = None, merged: set[str] | frozenset = frozenset()) -> tuple[str, dict[str, str]]:
-    """The merge-order file with every roadmap of `readmes` (or of `only`) that it lists above a
-    supplier its README names moved right after its last supplier (`move_after_suppliers`), until no
-    such move is left; and name -> what happened to it (moved, or why not: a move that would put one
-    of its consumers among `readmes` before it is not made). A roadmap on the content repository's
+    """The merge-order file with every UPWARD edge of the roadmaps of `readmes` (or of `only`) repaired
+    (`repair_edge`: the supplier pulled up before the consumer, or the consumer moved down after it
+    with its consumers, whichever disturbs fewer roadmaps), until no such move is left; and name ->
+    what happened to it (moved, or why not: a cycle). A roadmap on the content repository's
     main (`merged`) is neither moved nor a supplier anything moves after. Idempotent: a clean order is
     returned as it is, with no notes."""
     order = read_order(text)
     edges = supplier_edges(readmes, set(order) | set(readmes), main_extended)
     edges = {c: {s: lines for s, lines in sups.items() if s not in merged}
              for c, sups in edges.items() if c not in merged}
-    consumers: dict[str, set[str]] = defaultdict(set)
-    for c, sups in edges.items():
-        for s in sups:
-            consumers[s].add(c)
-    consumer_closure = closure(dict(consumers))
-    supplier_closure = closure({c: set(sups) for c, sups in edges.items()})
-    movable = set(edges)
     notes: dict[str, str] = {}
     for _ in range(len(order) + 1):
         moved = False
         for name in [n for n in read_order(text) if n in edges and (only is None or n in only)]:
             try:
-                new, note = move_after_suppliers(text, name, set(edges[name]), consumers[name],
-                                                 consumer_closure=consumer_closure,
-                                                 supplier_closure=supplier_closure, movable=movable)
+                new, note = repair_edge(text, name, set(edges[name]), edges)
             except OrderCycle as exc:
                 notes[name] = f"{name} not moved in the merge order: {exc}"
                 continue

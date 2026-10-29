@@ -235,3 +235,26 @@ def test_move_with_riders_carries_the_consumer_and_refuses_a_cycle():
     loop = supplier_edges({"Alpha": "*Needs:* Toy §1.\n", "Toy": "*Needs:* Alpha §2.\n"}, {"Alpha", "Toy"})
     with pytest.raises(OrderCycle):
         move_with_riders("Alpha\nToy\n", "Alpha", set(loop["Alpha"]), loop)
+
+
+def test_a_late_supplier_is_pulled_up_with_its_chain_when_that_moves_fewer():
+    from tauceti_roadmap_worker.depgraph import OrderCycle, pull_suppliers_up, repair_edge
+    # Alpha (#1) consumes Late (#5); Late consumes Chain (#4); Beta and Gamma consume Alpha.
+    text = "Alpha\nBeta\nGamma\nChain\nLate\n"
+    edges = supplier_edges({"Alpha": "*Needs:* Late §1.\n", "Beta": "*Needs:* Alpha §1.\n", "Gamma": "*Needs:* Beta §1.\n",
+                            "Late": "*Needs:* Chain §2.\n", "Chain": "x\n"}, {"Alpha", "Beta", "Gamma", "Chain", "Late"})
+    new, note = pull_suppliers_up(text, "Alpha", set(edges["Alpha"]), edges)
+    assert new == "Chain\nLate\nAlpha\nBeta\nGamma\n"
+    assert note == "Late moved in the merge order up before Alpha (supplier of it listed after it); Chain moved with it"
+    # The pull moves 2 roadmaps, the ride-along 3: the pull wins (a tie goes to the ride).
+    assert repair_edge(text, "Alpha", set(edges["Alpha"]), edges)[0] == new
+    # A leaf consumer with a long supplier chain moves down instead.
+    text2 = "Leaf\nA\nB\nC\nD\n"
+    edges2 = supplier_edges({"Leaf": "*Needs:* D §1.\n", "D": "*Needs:* C §1.\n", "C": "*Needs:* B §1.\n",
+                             "B": "*Needs:* A §1.\n", "A": "x\n"}, {"Leaf", "A", "B", "C", "D"})
+    assert repair_edge(text2, "Leaf", set(edges2["Leaf"]), edges2)[0] == "A\nB\nC\nD\nLeaf\n"
+    # Late on main: nothing to pull.
+    assert pull_suppliers_up(text, "Alpha", set(edges["Alpha"]), edges, merged={"Late"}) == (text, "")
+    loop = supplier_edges({"Alpha": "*Needs:* Toy §1.\n", "Toy": "*Needs:* Alpha §2.\n"}, {"Alpha", "Toy"})
+    with pytest.raises(OrderCycle):
+        repair_edge("Alpha\nToy\n", "Alpha", set(loop["Alpha"]), loop)

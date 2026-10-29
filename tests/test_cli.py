@@ -160,5 +160,5 @@ def test_depcheck_movable_checks_a_listed_roadmap_as_moved_after_its_last_suppli
     # A consumer listed before the supplier rides along instead of blocking the move.
     lines, problems = cli.depcheck_lines("Alpha", "*Needs:* Toy §1.\n", {"Beta": "*Needs:* Alpha §2.\n", "Toy": "x\n"},
                                          ["Alpha", "Beta", "Toy"], set(), movable=True)
-    assert lines[0].startswith("moved: Alpha moved in the merge order from #1 to #3, right after its last supplier Toy; "
-                               "its consumer Beta moved with it") and problems == []
+    assert lines[0].startswith("moved: Toy moved in the merge order up before Alpha (supplier of it listed after it); "
+                               "checked as moved") and problems == []
