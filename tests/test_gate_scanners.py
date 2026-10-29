@@ -454,3 +454,65 @@ def test_the_gate_takes_a_roadmap_on_main_as_a_supplier_whatever_the_order_says(
     cfg = example_config()
     assert GateOptions.from_config(cfg, order=["Toy"], merged=merged).merged == merged
     assert GateOptions.from_config(cfg).merged == set()
+
+
+# --- a stacked pull request is gated against its own base ---------------------------------------------
+
+def stacked_clone(tmp_path):
+    """A content repository whose branch roadmap/parent adds the roadmap Parent and roadmap/child, on top
+    of it, adds Child; a clone of the child branch that has not fetched roadmap/parent."""
+    import os
+    import subprocess
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@x"}
+
+    def git(cwd, *args):
+        return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True, env=env).stdout
+
+    def roadmap(root, name):
+        folder = root / "TauCetiRoadmap" / name
+        folder.mkdir(parents=True)
+        (folder / "README.md").write_text(CLEAN_README)
+        (folder / "Suggested.lean").write_text(CLEAN_LEAN)
+        (folder / "metadata.toml").write_text('topic = "math.GR"\n')
+    origin, seed, wt = tmp_path / "origin.git", tmp_path / "seed", tmp_path / "wt"
+    subprocess.run(["git", "init", "-q", "--bare", "--initial-branch=main", str(origin)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
+    roadmap(seed, "Other")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-q", "-m", "main")
+    roadmap(seed, "Parent")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-q", "-m", "Parent")
+    git(seed, "push", "-q", str(origin), "HEAD~1:refs/heads/main", "HEAD:refs/heads/roadmap/parent")
+    roadmap(seed, "Child")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-q", "-m", "Child")
+    git(seed, "push", "-q", str(origin), "HEAD:refs/heads/roadmap/child")
+    subprocess.run(["git", "clone", "-q", "-b", "roadmap/child", str(origin), str(wt)], check=True, capture_output=True)
+    git(wt, "update-ref", "-d", "refs/remotes/origin/roadmap/parent")
+    return wt
+
+
+def test_a_stacked_pull_request_changes_only_its_own_folder_against_its_base(tmp_path, monkeypatch):
+    from tauceti_roadmap_worker.lanes import Context
+    from tauceti_roadmap_worker.lanes import base as lane_base
+    from tauceti_roadmap_worker.lanes import gate as lane_gate
+    from tauceti_roadmap_worker.lanes.base import Workspace
+
+    from .fakes import FakeBoard
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    wt = stacked_clone(tmp_path)
+    against_main = gates.run_gate(wt, "Child", opts(), base="origin/main")
+    assert against_main.counts["outside-folder"] == 3 and all(
+        "TauCetiRoadmap/Parent/" in str(h) for h in against_main.details["outside-folder"])
+    cfg = example_config()
+    cfg.gates.build = cfg.gates.elaborate = ""
+    ctx = Context(cfg=cfg, gh=None, board=FakeBoard(), claims=None, worker_id="w1", operator="alice", agent="codex",
+                  model="m")
+    ws = Workspace(job_dir=tmp_path / "job", scratch=tmp_path / "job" / "s", board=tmp_path / "board", content=wt,
+                   workdir=wt, report=tmp_path / "r.md", branch="b", extra={"base_ref": "roadmap/parent"})
+    assert lane_base.pr_base(ctx, ws) == "origin/roadmap/parent"
+    problems, result = lane_gate.gate_problems(ctx, ws, "Child", "Child", opts())    # fetches the base first
+    assert result.counts["outside-folder"] == 0 and not any(p.startswith("outside-folder") for p in problems)
+    assert lane_base.pr_base(ctx, Workspace(**{**ws.__dict__, "extra": {}})) == "origin/main"

@@ -380,6 +380,14 @@ every round syncs to main; `tauceti-roadmap gate <worktree> <Name>` from the wor
 `origin/<branch>` (or `--content <checkout>`), and the agents' `gate --depcheck` from the
 `--content` checkout their brief names.
 
+The outside-folder check diffs a pull request's branch against the merge base with the branch it
+merges into. For most that is the project branch; a stacked pull request, whose base is another
+roadmap pull request's branch (`roadmap/<parent>`), carries the parent's folder relative to main, so
+it is checked against `origin/<its base branch>`, which the worker fetches first. The PR-review lane
+(its review gate and its repair), the gate lane and their briefs' gate commands read the base from
+the pull request (`base.ref`); `tauceti-roadmap gate <worktree> <Name> --base origin/roadmap/<parent>`
+does the same by hand. The dependency check still reads the board's merge order.
+
 States are the labels `state:available`, `claimed`, `submitted`, `done`, `blocked` and
 `needs-references`. A job issue carries exactly one: every state change adds the new label first and
 then removes every other `state:` label the issue carries at that moment. `board sync` repairs an

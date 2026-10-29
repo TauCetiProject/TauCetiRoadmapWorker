@@ -1410,3 +1410,32 @@ def test_a_review_of_a_pool_author_in_a_dry_run_or_a_rejection_never_repairs(rev
         summary = lane.finish(job, ctx, ws)
         assert "repair" not in summary and len(gh.comments) == (0 if dry_run else 1)
         lane_base.clear_pending(ctx, job)
+
+
+def test_a_stacked_pull_request_is_reviewed_against_its_own_base(dry_ctx):  # noqa: F811
+    head = "abc1234" + "0" * 33
+    gh = ContentGH(pulls={905: {"number": 905, "state": "open", "head": {"sha": head, "ref": "roadmap/child"},
+                                "base": {"ref": "roadmap/diamonds-and-v-stacks"}}})
+    ctx = dataclasses.replace(dry_ctx, gh=gh)
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": head, "owner": "carol", "name": "Foo"})
+    lane = lane_for(job)
+    ws = lane.prepare(job, ctx)
+    assert ws.extra["base_ref"] == "roadmap/diamonds-and-v-stacks"
+    values = lane.values(job, ctx, ws)
+    assert values["GATE"].endswith("--base origin/roadmap/diamonds-and-v-stacks")
+    assert values["OUTSIDE_CHECK"].startswith(f"git -C {ws.workdir} diff --stat origin/roadmap/diamonds-and-v-stacks...HEAD")
+    ws = lane.prepare(job, dry_ctx)                           # nothing read: the project branch
+    assert lane.values(job, dry_ctx, ws)["GATE"].endswith("--base origin/main")
+
+
+def test_the_managed_pull_requests_name_their_base(tmp_path):
+    marker = '<!-- tauceti-roadmap-pr {"roadmap": "PerfectoidTowers"} -->'
+    pulls = [{"number": 816, "labels": [{"name": "roadmap-worker"}], "body": marker, "user": {"login": "alice"},
+              "head": {"sha": H1, "ref": "roadmap/perfectoid-towers", "repo": {"full_name": "TauCetiProject/TauCetiRoadmap"}},
+              "base": {"ref": "roadmap/diamonds-and-v-stacks"}},
+             {"number": 817, "labels": [{"name": "roadmap-worker"}], "body": marker.replace("PerfectoidTowers", "Other"),
+              "user": {"login": "alice"}, "head": {"sha": H2, "ref": "roadmap/other", "repo": None}}]
+    ctx = SimpleNamespace(cfg=example_config(), gh=SimpleNamespace(api=lambda path, paginate=False: pulls),
+                          state=tmp_path)
+    assert [(p["pr"], p["base"]) for p in lane_base.open_roadmap_prs(ctx)] == [
+        (816, "roadmap/diamonds-and-v-stacks"), (817, "main")]

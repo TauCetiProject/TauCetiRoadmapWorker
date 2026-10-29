@@ -1008,7 +1008,9 @@ def parser() -> argparse.ArgumentParser:
     g = sub.add_parser("gate", help="run the push gates on a roadmap folder (exit 1 on any failure)")
     g.add_argument("worktree", nargs="?")
     g.add_argument("name_pos", nargs="?", metavar="Name")
-    g.add_argument("--base", default="", help="merge-base reference for the outside-folder diff, e.g. origin/main")
+    g.add_argument("--base", default="",
+                   help="merge-base reference for the outside-folder diff: origin/<the branch the pull request merges "
+                        "into>, e.g. origin/main, or a stacked pull request's base, origin/roadmap/<parent>")
     g.add_argument("--folder", default="", metavar="PATH",
                    help="the roadmap's folder under the active directory when it is nested, e.g. "
                         "RepresentationTheory/CompactGroups (default: Name)")

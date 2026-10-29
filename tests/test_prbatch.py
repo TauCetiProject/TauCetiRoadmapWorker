@@ -25,7 +25,7 @@ def rest_sample(number=905):
     pull = {"number": number, "draft": True, "state": "open", "merged": False, "user": {"login": "alice"},
             "labels": [{"name": "awaiting-author", "color": "fff"}, {"name": "roadmap-worker"}],
             "head": {"sha": SHA, "ref": "roadmap/foo", "repo": {"full_name": "alice/TauCetiRoadmap"}},
-            "html_url": f"https://github.com/{REPO}/pull/{number}"}
+            "base": {"ref": "roadmap/parent", "sha": "f" * 40}, "html_url": f"https://github.com/{REPO}/pull/{number}"}
     reviews = [
         {"id": 71, "user": {"login": "kim"}, "state": "CHANGES_REQUESTED", "commit_id": SHA,
          "submitted_at": "2026-10-24T10:00:00Z", "body": "Changes needed: the hypothesis on p is missing.\r\n",
@@ -63,7 +63,7 @@ def graphql_node(pull, reviews, comments, inline, more=()):
         return {"hasNextPage": key in more}
     return {
         "number": pull["number"], "isDraft": pull["draft"], "state": "MERGED" if pull.get("merged") else pull["state"].upper(),
-        "headRefOid": pull["head"]["sha"], "headRefName": pull["head"]["ref"],
+        "headRefOid": pull["head"]["sha"], "headRefName": pull["head"]["ref"], "baseRefName": pull["base"]["ref"],
         "headRepository": {"nameWithOwner": pull["head"]["repo"]["full_name"]} if pull["head"]["repo"] else None,
         "author": actor(pull["user"]["login"]),
         "labels": {"pageInfo": page("labels"), "nodes": [{"name": x["name"]} for x in pull["labels"]]},
@@ -124,6 +124,7 @@ def test_a_pull_request_read_by_graphql_has_the_shapes_of_its_rest_reads():
     # What the label, draft and gate code reads of the pull request.
     for key in ("number", "draft", "state", "user", "head"):
         assert got.pull[key] == pull[key], key
+    assert got.pull["base"]["ref"] == pull["base"]["ref"] == "roadmap/parent"            # a stacked pull request
     assert [x["name"] for x in got.pull["labels"]] == [x["name"] for x in pull["labels"]]
     # Every field the timeline reads, list for list, the bot's and the deleted account's logins included.
     for mine, theirs, keys in ((got.reviews, reviews, ("id", "user", "state", "commit_id", "submitted_at", "body")),

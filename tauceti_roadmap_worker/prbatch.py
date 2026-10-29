@@ -9,7 +9,7 @@ has its own hourly budget, and such a query costs a few points of it), and hands
 shapes the REST reads give (`PullData`): the dicts `lanes.pr.events_from_api` and the label and
 draft code read, field for field (`id`, `user.login`, `submitted_at`, `commit_id`, `created_at`,
 `body`, `state`, `pull_request_review_id`, `path`, `line`, `original_line`; `draft`, `labels[].name`,
-`head.sha`, `head.ref`, `head.repo.full_name`), so nothing downstream changes.
+`head.sha`, `head.ref`, `head.repo.full_name`, `base.ref`), so nothing downstream changes.
 
 A pull request with more than a page of anything (`REVIEWS` reviews, `REVIEW_COMMENTS` inline
 comments in one review, `COMMENTS` issue comments, `LABELS` labels) is read by REST, as is every pull
@@ -31,7 +31,7 @@ REVIEWS, REVIEW_COMMENTS, COMMENTS, LABELS = 50, 50, 60, 100
 
 FRAGMENT = f"""
 fragment PullFields on PullRequest {{
-  number isDraft state headRefOid headRefName
+  number isDraft state headRefOid headRefName baseRefName
   headRepository {{ nameWithOwner }}
   author {{ __typename login }}
   labels(first: {LABELS}) {{ pageInfo {{ hasNextPage }} nodes {{ name }} }}
@@ -99,7 +99,8 @@ def from_node(node: dict) -> PullData:
             "user": login(node.get("author")),
             "labels": [{"name": x.get("name", "")} for x in (node.get("labels") or {}).get("nodes") or []],
             "head": {"sha": node.get("headRefOid") or "", "ref": node.get("headRefName") or "",
-                     "repo": {"full_name": repo["nameWithOwner"]} if repo else None}}
+                     "repo": {"full_name": repo["nameWithOwner"]} if repo else None},
+            "base": {"ref": node.get("baseRefName") or ""}}
     reviews, inline = [], []
     for r in (node.get("reviews") or {}).get("nodes") or []:
         reviews.append({"id": r.get("databaseId"), "user": login(r.get("author")), "state": r.get("state"),

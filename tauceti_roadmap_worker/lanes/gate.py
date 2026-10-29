@@ -18,9 +18,9 @@ from pathlib import Path
 from .. import gates, gitops, prompts, replies
 from ..board import Job
 from .base import (CONTENT_COMMENT, CONTENT_PUSH, PULL_REQUEST, PUSH, SUBMITTED, Context, Lane, LaneError, Workspace,
-                   dropped_names, ensure_in_order_logged, load_order, merged_for, open_roadmap_prs, order_path, owe, owes,
-                   pr_answerers, read_pending, scan_problems, settle, sibling_checkouts, sibling_readmes,
-                   submission_started)
+                   dropped_names, ensure_in_order_logged, fetch_pr_base, load_order, merged_for, open_roadmap_prs,
+                   order_path, owe, owes, pr_answerers, pr_base, read_pending, scan_problems, settle, sibling_checkouts,
+                   sibling_readmes, submission_started)
 from .fix import worktree_elaboration_problems
 from .pr import flip_labels, inline_comments, pr_branch_worktree, timeline
 
@@ -47,7 +47,7 @@ def answer_values(ctx: Context, ws: Workspace, name: str, folder: str, reviews: 
     values = {"PR": str(ws.extra["pr"]), "HEAD": ws.extra["head"][:7], "REVIEWS": str(reviews), "FOLDER": path,
               "FILES": f"{path}/README.md` and `{path}/Suggested.lean", "BUILD": build,
               "GATE": ctx.cli("gate", str(ws.workdir), name, *(("--folder", folder) if folder != name else ()),
-                              "--base", f"origin/{cfg.project.branch}"),
+                              "--base", pr_base(ctx, ws)),
               "COMMIT": (f"If you changed anything: `git add {path} && git commit -m \"{name}: review repairs "
                          "(<your summary, at most 15 words>)\"`. Do not push.")}
     return {**values, "REPORT": str(report)} if report is not None else values
@@ -66,9 +66,10 @@ def answer_problems(ws: Workspace, report: Path) -> list[str]:
 
 def gate_problems(ctx: Context, ws: Workspace, name: str, folder: str,
                   opts: gates.GateOptions) -> tuple[list[str], gates.GateResult]:
-    """(the problems, the result) of the push gate with the targeted build on the worktree, and of the
-    elaboration of the folder's Suggested.lean when no build is configured."""
-    result = gates.run_gate(ws.workdir, name, opts, base=f"origin/{ctx.cfg.project.branch}", build_cmd=ctx.cfg.gates.build)
+    """(the problems, the result) of the push gate with the targeted build on the worktree, its
+    outside-folder check against the pull request's own base (`fetch_pr_base`), and of the elaboration
+    of the folder's Suggested.lean when no build is configured."""
+    result = gates.run_gate(ws.workdir, name, opts, base=fetch_pr_base(ctx, ws), build_cmd=ctx.cfg.gates.build)
     return scan_problems(result) + worktree_elaboration_problems(ctx, ws, folder), result
 
 
@@ -142,6 +143,7 @@ class GateLane(Lane):
         ws.workdir = wt
         ws.extra.update(prs=prs, siblings=sibling_checkouts(ctx, prs, skip=job.name), pr=pr, branch=mine["branch"],
                         head=head, owner=mine["owner"], answerers=sorted(authors),
+                        base_ref=mine.get("base") or ctx.cfg.project.branch,
                         head_repo=mine.get("head_repo") or "", readme=wt / ctx.cfg.roadmap.active_dir / job.name / "README.md")
         return ws
 

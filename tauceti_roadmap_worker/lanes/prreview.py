@@ -66,6 +66,7 @@ from .base import (
     board_reports,
     dropped_names,
     elaborate_line,
+    fetch_pr_base,
     gate_order_file,
     kept_commit,
     library_description,
@@ -76,6 +77,7 @@ from .base import (
     owe,
     owes,
     pr_answerers,
+    pr_base,
     pr_head,
     read_pending,
     repair_order_file,
@@ -406,6 +408,7 @@ class PRReviewLane(Lane):
         ws.extra.update(pr=number, head=recorded, owner=owner, branch=branch,
                         pr_branch=(data.get("head") or {}).get("ref", ""),
                         head_repo=(((data.get("head") or {}).get("repo") or {}).get("full_name") or ""),
+                        base_ref=(data.get("base") or {}).get("ref") or cfg.project.branch,
                         answerers=sorted(pr_answerers(cfg, owner)), prs=prs,
                         siblings=sibling_checkouts(ctx, prs, skip=job.name), folder=folder,
                         readme=folder / "README.md", lean=leans[0], leans=leans)
@@ -497,7 +500,7 @@ class PRReviewLane(Lane):
         if kept is not None:
             return kept
         cfg = ctx.cfg
-        result = gates.run_gate(ws.workdir, job.name, self.gate_options(job, ctx, ws), base=f"origin/{cfg.project.branch}",
+        result = gates.run_gate(ws.workdir, job.name, self.gate_options(job, ctx, ws), base=fetch_pr_base(ctx, ws),
                                 build_cmd=cfg.gates.build)
         save_gate(record, head, result)
         return result
@@ -587,9 +590,9 @@ class PRReviewLane(Lane):
                           or f"a random sample of {SAMPLE_SIZE} targets (none found by heading)",
                 "BUILD": build,
                 "GATE": ctx.cli("gate", str(ws.workdir), job.name, *(("--folder", own) if own != job.name else ()),
-                                "--base", f"origin/{cfg.project.branch}"),
+                                "--base", pr_base(ctx, ws)),
                 "GATE_REPORT": str(ws.scratch / GATE_REPORT), "PR_TEXT": str(ws.scratch / PULL_REQUEST_TEXT),
-                "OUTSIDE_CHECK": f"git -C {ws.workdir} diff --stat origin/{cfg.project.branch}...HEAD -- . {excluded}",
+                "OUTSIDE_CHECK": f"git -C {ws.workdir} diff --stat {pr_base(ctx, ws)}...HEAD -- . {excluded}",
                 "PREVIOUS": f"`{previous}`" if previous else "none", "CHANGES": f"`{changes}`" if changes else "none",
                 "MODE": mode_text(mode, job, cfg, ws.extra), "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)),
                 "ELABORATE": elaborate_line(cfg, dataclasses.replace(ws, content=ws.workdir)),

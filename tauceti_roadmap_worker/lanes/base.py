@@ -142,7 +142,8 @@ def pr_operator(cfg, owner: str) -> str:
 
 def open_roadmap_prs(ctx: Context) -> list[dict]:
     """Open pull requests the port lane opened (label `roadmap.pr_label`, marker in the body):
-    [{pr, name, head, branch, owner}], cached in the state directory for the gate CLI."""
+    [{pr, name, head, branch, owner, head_repo, operator, base}], `base` the branch it merges into
+    (another roadmap pull request's for a stacked one), cached in the state directory for the gate CLI."""
     repo = ctx.cfg.repositories.content
     items = ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True)
     out = []
@@ -159,7 +160,8 @@ def open_roadmap_prs(ctx: Context) -> list[dict]:
             out.append({"pr": pr["number"], "name": data["roadmap"], "head": pr["head"]["sha"],
                         "branch": pr["head"]["ref"], "owner": owner,
                         "head_repo": ((pr.get("head") or {}).get("repo") or {}).get("full_name") or "",
-                        "operator": pr_operator(ctx.cfg, owner)})
+                        "operator": pr_operator(ctx.cfg, owner),
+                        "base": (pr.get("base") or {}).get("ref") or ctx.cfg.project.branch})
     (ctx.state / "prs.json").parent.mkdir(parents=True, exist_ok=True)
     (ctx.state / "prs.json").write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8")
     return out
@@ -336,6 +338,24 @@ def set_aside(checkout: Path, jobs: Path, worker: str, base: str = "main") -> Pa
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(checkout / rel, dest / rel)
     return dest
+
+
+def pr_base(ctx: Context, ws: Workspace) -> str:
+    """What a gate diffs a pull request's branch against (the outside-folder check): `origin/<the
+    branch it merges into>` (`ws.extra["base_ref"]`, the project branch when it names none). A stacked
+    pull request, whose base is another roadmap pull request's branch, carries that roadmap's folder
+    relative to main: against its own base it changes only its own."""
+    return f"origin/{ws.extra.get('base_ref') or ctx.cfg.project.branch}"
+
+
+def fetch_pr_base(ctx: Context, ws: Workspace) -> str:
+    """`pr_base`, with a base other than the project branch (which every round syncs) fetched afresh
+    into the worktree's repository first: a stale copy would put the parent's newer commits in the
+    diff."""
+    ref = ws.extra.get("base_ref") or ctx.cfg.project.branch
+    if ref != ctx.cfg.project.branch:
+        gitops.git(ws.workdir, "fetch", "-q", "origin", f"+refs/heads/{ref}:refs/remotes/origin/{ref}", check=False)
+    return f"origin/{ref}"
 
 
 def merged_for(ctx: Context, ws: Workspace) -> set[str]:
