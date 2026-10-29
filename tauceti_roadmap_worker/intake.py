@@ -56,7 +56,7 @@ from . import (
 )
 from .board import Job, Outcome
 from .gh import GHError, transient
-from .lanes.base import open_roadmap_prs, pr_answerers
+from .lanes.base import open_roadmap_prs, pr_answerers, sibling_readmes
 from .lanes.port import pr_number_from_report
 from .lanes.pr import events_from_api
 from .lanes.target import parse_triage
@@ -1112,8 +1112,9 @@ def move_listed(ctx, name: str) -> str:
 
 def replace_upward_roadmaps(ctx, yes: bool = False) -> list[str]:
     """`board intake`'s catch-up of the merge order (idempotent: a clean order is only read): every
-    roadmap the order on the board's main lists above a supplier its board README names (at the head
-    of its open pull request, else on main) is moved right after the last of them, all in one commit,
+    roadmap the order on the board's main lists above a supplier its README names (its board README at
+    the head of its open pull request, else on main; else the snapshot of its content pull request) is
+    moved right after the last of them, all in one commit,
     unless that would put one of its consumers before it (logged, left as it is). It repairs roadmaps
     placed by a README that named its suppliers under names the dependency check did not know, which
     a later fix repointed. One line per roadmap moved or left."""
@@ -1121,7 +1122,11 @@ def replace_upward_roadmaps(ctx, yes: bool = False) -> list[str]:
     if cfg.roadmap.merge_order_repo != "packages":
         return []
     pulls = ctx.gh.api(f"repos/{cfg.repositories.packages_repo()}/pulls?state=open&per_page=100", paginate=True) or []
-    notes = reorder(ctx, board_readmes(ctx, pulls), yes=yes)
+    # The content repository's open roadmap pull requests too (their README snapshots in the state
+    # directory, as the lanes read them): a pool pull request has no board package, and its review-lane
+    # repair gates against a moved copy that only this catch-up lands on main (2026-10-29).
+    readmes = {**sibling_readmes(ctx.state, cfg.roadmap.active_dir), **board_readmes(ctx, pulls)}
+    notes = reorder(ctx, readmes, yes=yes)
     return [f"merge order: {line}" for _name, line in sorted(notes.items())]
 
 

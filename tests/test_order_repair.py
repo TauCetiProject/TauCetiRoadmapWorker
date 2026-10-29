@@ -160,3 +160,18 @@ def test_the_prune_removes_every_roadmap_on_the_content_main_and_keeps_the_rest_
                                "PeriodsAndSpecialValues\nSelmerIwasawaCohomologyPartII\nGanGrossPrasadUnitaryGroups\n")
     assert intake.prune_order(ctx, yes=True) == ["merge order: it lists no roadmap on the content repository's main"]
     assert len(gh.writes) == 1
+
+
+def test_a_content_pull_request_snapshot_moves_too(tmp_path, monkeypatch):
+    import json
+    gh = OrderGH(LIVE)
+    monkeypatch.setattr(intake, "board_readmes", lambda ctx, pulls: {})
+    ctx = bot(tmp_path, gh)
+    snap = ctx.state / "rev" / "851" / ctx.cfg.roadmap.active_dir / "PeriodsAndSpecialValues"
+    snap.mkdir(parents=True)
+    (snap / "README.md").write_text(PS)
+    (ctx.state / "prs.json").write_text(json.dumps([{"pr": 851, "name": "PeriodsAndSpecialValues", "head": "a" * 40,
+                                                     "branch": "roadmap/ps", "owner": "carol"}]))
+    lines = intake.replace_upward_roadmaps(ctx, yes=True)
+    assert len(lines) == 1 and lines[0].startswith("merge order: PeriodsAndSpecialValues moved in the merge order from #2 to #6")
+    assert depgraph.read_order(gh.files[ORDER])[-2:] == ["GanGrossPrasadUnitaryGroups", "PeriodsAndSpecialValues"]
