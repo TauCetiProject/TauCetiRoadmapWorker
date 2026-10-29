@@ -805,7 +805,10 @@ run unless `--yes` is given.
 tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; one state label per job;
                                                    # expired leases released, live ones → state:claimed;
                                                    # PR labels;
-                                                   # GATE jobs when humans await a reply;
+                                                   # GATE jobs when humans await a reply (none while
+                                                   # a round of that roadmap is open or waits for
+                                                   # references); of a roadmap's rounds waiting for
+                                                   # references, all but the newest superseded;
                                                    # the pinned "Review queue" issue;
                                                    # held PRs back to draft;
                                                    # with [prreview] enabled: a PRREVIEW job per
@@ -866,6 +869,15 @@ main)` per name (`... (dry run: not written)` without `--yes`; `it lists no road
 repository's main` when there is none). Gate rounds of pull requests that only edited such roadmaps
 used to place them as if new, which made every consumer listed above them fail its push gate with
 an UPWARD edge; run it once after upgrading.
+
+A gate round is filed for a roadmap pull request whose review awaits a reply only while no round of
+that roadmap is open (available, claimed, submitted, blocked) or parked for references: a parked
+round answers the review once its references come, and another would wait on the same references
+(logged `#N: gate round not filed: GATE-<Name>~k is waiting for references`). Every `board sync`
+also keeps only the newest of a roadmap's open rounds parked for references: each older one is set
+done, labelled `superseded` and closed with `Superseded by GATE-<Name>~k, which waits on the same
+references` (logged `GATE-<Name>~j: superseded by GATE-<Name>~k (waits on the same references)`;
+`; dry run: not written` without `--yes`). A round a worker took meanwhile is left alone.
 
 `board sync` reads the open roadmap pull requests by GraphQL, `[board] graphql_batch` (default 15)
 per query: each with its draft flag, labels, head, reviews, inline review comments and issue

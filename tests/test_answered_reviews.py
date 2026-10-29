@@ -307,3 +307,38 @@ def test_no_gate_round_is_filed_while_a_review_of_a_pool_authors_pull_request_re
         cfg.roadmap.pool, cfg.prreview.repair_pool = pool, repair
         out, board = sync_pool()
         assert [j.id for j, _s, _p in board.created] == ["GATE-Foo~1"] and not any("deferred" in line for line in out)
+
+
+def gate_round(n: int, state: str, name: str = "Foo"):
+    job = new_job(f"GATE-{name}~{n}", inputs={"pr": 905, "operator": OWNER})
+    job.number, job.state = 40 + n, state
+    return job
+
+
+def test_a_gate_round_waiting_for_references_stops_the_next_one(tmp_path):
+    gh = PullGH(reviews=[REVIEW_A])
+    out, board = sync(tmp_path, gh, [gate_round(1, "done"), gate_round(2, "needs-references")])
+    assert "#905: gate round not filed: GATE-Foo~2 is waiting for references" in out and board.created == []
+    assert "#905 Foo: awaiting-author" in out
+    # Once it is answered and done, the next review gets its round.
+    out, board = sync(tmp_path, gh, [gate_round(1, "done"), gate_round(2, "done")])
+    assert "#905: GATE-Foo~3 created for @alice" in out
+
+
+def test_board_sync_keeps_the_newest_of_the_rounds_waiting_on_the_same_references():
+    jobs = [gate_round(n, "needs-references") for n in (1, 3, 2)] + [gate_round(4, "done"),
+                                                                       gate_round(1, "needs-references", "Bar"),
+                                                                       gate_round(5, "available")]
+    board = FakeBoard(jobs=jobs)
+    ctx = SimpleNamespace(cfg=example_config(), board=board)
+    expected = ["GATE-Foo~1: superseded by GATE-Foo~3 (waits on the same references)",
+                "GATE-Foo~2: superseded by GATE-Foo~3 (waits on the same references)"]
+    assert intake.supersede_waiting_gates(ctx, yes=False) == [
+        line.replace(")", "; dry run: not written)") for line in expected]
+    assert board.states == [] and board.posted == []
+    assert intake.supersede_waiting_gates(ctx, yes=True) == expected
+    assert board.states == [("GATE-Foo~1", "done"), ("GATE-Foo~2", "done")]
+    closed = "Superseded by GATE-Foo~3, which waits on the same references. This round is no longer needed; closed by the board."
+    assert board.posted == [(41, closed), (42, closed)]
+    assert board.labels == [("GATE-Foo~1", "superseded"), ("GATE-Foo~2", "superseded")]
+    assert intake.supersede_waiting_gates(ctx, yes=True) == []          # done: nothing left to supersede

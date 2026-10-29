@@ -941,7 +941,9 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
     if args.action == "sync":
         steps = [("filers", lambda: filers.refresh(ctx)), ("targets", lambda: intake.sync_targets(ctx)),
                  ("states", lambda: intake.sync_states(ctx, shared)), ("expired", lambda: intake.sync_expired(ctx, shared)),
-                 ("leases", lambda: intake.sync_leases(ctx, shared)), ("pull requests", lambda: intake.sync_pull_requests(ctx)),
+                 ("leases", lambda: intake.sync_leases(ctx, shared)),
+                 ("waiting gate rounds", lambda: intake.supersede_waiting_gates(ctx, yes=write)),
+                 ("pull requests", lambda: intake.sync_pull_requests(ctx)),
                  ("pull-request reviews", lambda: intake.sync_pr_reviews(ctx)),
                  ("max rounds", lambda: intake.repark_capped(ctx)), ("origins", lambda: intake.sync_origins(ctx)),
                  ("gap registry", lambda: intake.note_gap_registry_blocks(ctx)),

@@ -1431,6 +1431,35 @@ def sync_leases(ctx, shared: claims.Claims | None) -> list[str]:
     return out
 
 
+GATE_OPEN = ("available", "claimed", "submitted", "blocked")     # a gate round under way (or a human's)
+
+
+def round_key(job: Job) -> tuple[int, int]:
+    """A job's place among the rounds of its roadmap: its round, then its issue."""
+    return board.parse_job_id(job.id).round, job.number or 0
+
+
+def supersede_waiting_gates(ctx, yes: bool = False) -> list[str]:
+    """`board sync`: of the open gate rounds of one roadmap parked for references
+    (`needs-references`), the newest stays and every other is closed as superseded (`supersede`):
+    they wait on the same references, which answer one round. Written with `yes` only; one line per
+    round."""
+    parked: dict[str, list[Job]] = {}
+    for job in ctx.board.kind_jobs("gate", "open"):
+        if job.state == "needs-references":
+            parked.setdefault(job.name, []).append(job)
+    out = []
+    for _name, rounds in sorted(parked.items()):
+        newest = max(rounds, key=round_key)
+        for job in sorted((j for j in rounds if j is not newest), key=round_key):
+            note = f"Superseded by {newest.id}, which waits on the same references"
+            if not yes:
+                out.append(f"{job.id}: superseded by {newest.id} (waits on the same references; dry run: not written)")
+            elif supersede(ctx, job, note, expect="needs-references", closing="This round is no longer needed"):
+                out.append(f"{job.id}: superseded by {newest.id} (waits on the same references)")
+    return out
+
+
 def repairing_review(cfg, jobs: list[Job], number: int, owner: str) -> Job | None:
     """The review of pull request #number that is claimed while its author is in the pool and
     `[prreview] repair_pool` is on: a review that asks for changes goes on to repair the pull request
@@ -1485,9 +1514,16 @@ def sync_pull_requests(ctx) -> list[str]:
             out.append(f"#{number}: labels on {repo} not changed ({exc})")
         if want == r.awaiting_author:
             mine = [j for j in jobs if j.kind == "gate" and j.name == p["name"]]
-            open_round = any(j.state in ("available", "claimed", "submitted", "blocked") for j in mine)
+            open_round = any(j.state in GATE_OPEN for j in mine)
+            # A round parked for references answers the review once they come: another round would
+            # wait on the same references.
+            waiting = None if open_round else max((j for j in mine if j.state == "needs-references"),
+                                                  key=round_key, default=None)
+            open_round = open_round or waiting is not None
             repairing = None if open_round else repairing_review(cfg, jobs, number, p["owner"])
-            if repairing is not None:
+            if waiting is not None:
+                out.append(f"#{number}: gate round not filed: {waiting.id} is waiting for references")
+            elif repairing is not None:
                 out.append(f"#{number}: gate round deferred: review {repairing.id} is repairing")
             elif not open_round:
                 operator = p.get("operator", p["owner"])
@@ -1644,13 +1680,14 @@ def head_worker(comments: list[dict], head: str) -> str:
     return ""
 
 
-def supersede(ctx, job: Job, note: str) -> bool:
-    """Close a PRREVIEW job nobody has taken as done, its issue labelled `superseded` with `note`: it
-    stays a job of the board (its round and head count), and is never taken. False when a worker took
-    it meanwhile (it is left to finish)."""
-    if not ctx.board.set_state(job, "done", expect="available"):
+def supersede(ctx, job: Job, note: str, expect: str = "available",
+              closing: str = "This review is no longer needed") -> bool:
+    """Close a job nobody has taken (still in state `expect`) as done, its issue labelled `superseded`
+    with `note` and `closing`: it stays a job of the board (its round and head count), and is never
+    taken. False when a worker took it meanwhile (it is left to finish)."""
+    if not ctx.board.set_state(job, "done", expect=expect):
         return False
-    ctx.board.close(job, f"{note}. This review is no longer needed; closed by the board.", board.SUPERSEDED_LABEL)
+    ctx.board.close(job, f"{note}. {closing}; closed by the board.", board.SUPERSEDED_LABEL)
     return True
 
 
