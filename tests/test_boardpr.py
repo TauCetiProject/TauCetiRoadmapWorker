@@ -391,8 +391,8 @@ def test_a_package_listed_above_its_supplier_moves_after_it_when_its_port_is_cre
     ctx, _board, gh = last_red_team_fix({ORDER: order, "packages/Foo/README.md": "# Foo\n\n*Needs:* Gamma §2.\n"})
     monkeypatch.setattr(intake, "board_readmes", lambda ctx, pulls: {"Beta": "*Needs:* Foo §1.\n"})
     out = boardpr.scan(ctx, yes=True)
-    assert out[0].endswith("Foo already in the merge order; Foo moved in the merge order from #2 to #4, right after "
-                           "its last supplier Gamma; its consumer Beta moved with it")
+    assert out[0].endswith("Foo already in the merge order; Gamma moved in the merge order up before Foo (supplier of "
+                           "it listed after it)")       # a block of 1, against Foo and Beta moving down
     assert gh.files[ORDER] == "# Merge order\nAlpha\nGamma\nFoo  # imported\nBeta\n"
     # A real cycle (Gamma reads Foo too) is not moved, and the line says why.
     ctx, _board, gh = last_red_team_fix({ORDER: order, "packages/Foo/README.md": "# Foo\n\n*Needs:* Gamma §2.\n"})

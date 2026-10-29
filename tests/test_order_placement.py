@@ -120,13 +120,14 @@ def test_repair_upward_moves_every_roadmap_it_can_and_says_why_not_for_the_rest(
                "Motives": "*Needs:* RankinSelberg §4.\n",            # consumed by Shimura, which comes first
                "Shimura": "*Needs:* Motives §1.\n"}
     text, notes = depgraph.repair_upward(PS_ORDER, readmes)
-    # Motives sits above RankinSelberg, and Shimura (its consumer) above both: Shimura rides along.
+    # Each upward edge is repaired by the smaller move: the two suppliers of PeriodsAndSpecialValues are
+    # pulled up before it, then RankinSelberg before Motives (rather than Motives and Shimura moving down).
     assert depgraph.read_order(text) == ["SchemeAndStackFoundations", "SelmerIwasawaCohomologyPartII",
                                          "GanGrossPrasadUnitaryGroups", "PeriodsAndSpecialValues", "RankinSelberg",
                                          "Motives", "Shimura"]
-    assert notes["PeriodsAndSpecialValues"].startswith("PeriodsAndSpecialValues moved in the merge order from #2 to #6")
-    assert notes["Motives"] == ("Motives moved in the merge order from #2 to #7, right after its last supplier "
-                                "RankinSelberg; its consumer Shimura moved with it")
+    assert notes["PeriodsAndSpecialValues"] == ("SelmerIwasawaCohomologyPartII, GanGrossPrasadUnitaryGroups moved in the "
+                                                "merge order up before PeriodsAndSpecialValues (suppliers of it listed after it)")
+    assert notes["Motives"] == "RankinSelberg moved in the merge order up before Motives (supplier of it listed after it)"
     assert set(notes) == {"PeriodsAndSpecialValues", "Motives"}
     assert depgraph.repair_upward(text, readmes) == (text, {})
     assert depgraph.repair_upward(text, {"PeriodsAndSpecialValues": readmes["PeriodsAndSpecialValues"]}) == (text, {})

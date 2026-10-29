@@ -249,10 +249,11 @@ def test_a_late_supplier_is_pulled_up_with_its_chain_when_that_moves_fewer():
     # The pull moves 2 roadmaps, the ride-along 3: the pull wins (a tie goes to the ride).
     assert repair_edge(text, "Alpha", set(edges["Alpha"]), edges)[0] == new
     # A leaf consumer with a long supplier chain moves down instead.
-    text2 = "Leaf\nA\nB\nC\nD\n"
-    edges2 = supplier_edges({"Leaf": "*Needs:* D §1.\n", "D": "*Needs:* C §1.\n", "C": "*Needs:* B §1.\n",
-                             "B": "*Needs:* A §1.\n", "A": "x\n"}, {"Leaf", "A", "B", "C", "D"})
-    assert repair_edge(text2, "Leaf", set(edges2["Leaf"]), edges2)[0] == "A\nB\nC\nD\nLeaf\n"
+    text2 = "Leaf\nOne\nTwo\nThree\nFour\n"
+    edges2 = supplier_edges({"Leaf": "*Needs:* Four §1.\n", "Four": "*Needs:* Three §1.\n", "Three": "*Needs:* Two §1.\n",
+                             "Two": "*Needs:* One §1.\n", "One": "x\n"}, {"Leaf", "One", "Two", "Three", "Four"})
+    assert set(edges2["Leaf"]) == {"Four"}
+    assert repair_edge(text2, "Leaf", set(edges2["Leaf"]), edges2)[0] == "One\nTwo\nThree\nFour\nLeaf\n"
     # Late on main: nothing to pull.
     assert pull_suppliers_up(text, "Alpha", set(edges["Alpha"]), edges, merged={"Late"}) == (text, "")
     loop = supplier_edges({"Alpha": "*Needs:* Toy §1.\n", "Toy": "*Needs:* Alpha §2.\n"}, {"Alpha", "Toy"})
