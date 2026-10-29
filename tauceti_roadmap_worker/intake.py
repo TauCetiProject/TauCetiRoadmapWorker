@@ -40,7 +40,20 @@ import socket
 import subprocess
 from urllib.parse import quote
 
-from . import board, boardpr, claims, depgraph, explorer, filers, gates, gitops, openroadmaps, prreviews, replies
+from . import (
+    board,
+    boardpr,
+    claims,
+    depgraph,
+    explorer,
+    filers,
+    gates,
+    gitops,
+    openroadmaps,
+    prbatch,
+    prreviews,
+    replies,
+)
 from .board import Job, Outcome
 from .gh import GHError, transient
 from .lanes.base import open_roadmap_prs, pr_answerers
@@ -1429,6 +1442,11 @@ def repairing_review(cfg, jobs: list[Job], number: int, owner: str) -> Job | Non
 
 
 def sync_pull_requests(ctx) -> list[str]:
+    """The awaiting-author / awaiting-review labels of every open roadmap pull request the workers
+    manage (`open_roadmap_prs`), a GATE job when a review waits for a reply (none while a pool
+    review repairs it: `repairing_review`), and held pull requests back to draft. Each pull request,
+    its reviews, issue comments and inline comments are read `[board] graphql_batch` at a time by
+    GraphQL (`prbatch.PullReader`; REST for the rest)."""
     cfg, out = ctx.cfg, []
     repo = cfg.repositories.content
     r = cfg.replies
@@ -1438,19 +1456,19 @@ def sync_pull_requests(ctx) -> list[str]:
         held = set((ctx.state / "hold-draft.txt").read_text(encoding="utf-8").split())
     except OSError:
         pass
-    for p in open_roadmap_prs(ctx):
+    prs = open_roadmap_prs(ctx)
+    reader = prbatch.PullReader(ctx.gh, repo, [p["pr"] for p in prs], cfg.board.graphql_batch)
+    for p in prs:
         number = p["pr"]
-        data = ctx.gh.api(f"repos/{repo}/pulls/{number}")
+        pulled = reader.get(number)
+        data = pulled.pull
         if str(number) in held and not data.get("draft"):
             try:
                 ctx.gh.cli_write("pr", "ready", str(number), "--undo", "-R", repo)
                 out.append(f"#{number}: held, converted back to draft")
             except GHError as exc:
                 out.append(f"#{number}: held, but not converted back to draft ({exc})")
-        reviews = ctx.gh.api(f"repos/{repo}/pulls/{number}/reviews?per_page=100", paginate=True)
-        comments = ctx.gh.api(f"repos/{repo}/issues/{number}/comments?per_page=100", paginate=True)
-        inline = ctx.gh.api(f"repos/{repo}/pulls/{number}/comments?per_page=100", paginate=True)
-        events = events_from_api(reviews, comments, inline)
+        events = events_from_api(pulled.reviews, pulled.comments, pulled.inline)
         want, drop = replies.wanted_label(events, pr_answerers(cfg, p["owner"]), p["head"], markers=r.review_markers,
                                           housekeeping=r.housekeeping_prefixes, approvers=r.approvers,
                                           ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,
@@ -1478,6 +1496,8 @@ def sync_pull_requests(ctx) -> list[str]:
                 ctx.board.create(gate)
                 out.append(f"#{number}: {gate.id} created for " + (f"@{operator}" if operator else "the pool"))
         out.append(f"#{number} {p['name']}: {want or 'approved'}")
+    if prs and (reader.queries or reader.rest_reads):
+        out.append(reader.summary())
     return out
 
 
@@ -1559,11 +1579,13 @@ def author_reviewed(p, author: str) -> bool:
     return who not in {a.lower() for a in p.skip_authors}
 
 
-def prreview_verdicts(ctx, name: str, jobs: list[Job] | None = None, head: str = "") -> dict[str, dict]:
+def prreview_verdicts(ctx, name: str, jobs: list[Job] | None = None, head: str = "",
+                      texts: dict[str, str | None] | None = None) -> dict[str, dict]:
     """The verdicts of the roadmap's merged pull-request reviews, read from the board's main: job id
     -> its `review` object ({status, head, pr, ...}). Only the done PRREVIEW jobs of `name` (among
-    `jobs`, else the board's) are read, and with `head` only those that reviewed it: one read each. A
-    verdict that is not there counts as none; a read GitHub did not answer raises (a label is never
+    `jobs`, else the board's) are read, and with `head` only those that reviewed it: one read each,
+    unless `texts` (path -> text, None for a file that is not there: `prbatch.verdict_texts`) has it.
+    A verdict that is not there counts as none; a read GitHub did not answer raises (a label is never
     taken off for a blip)."""
     jobs = ctx.board.kind_jobs("prreview") if jobs is None else jobs
     repo, out = ctx.cfg.repositories.packages_repo(), {}
@@ -1572,8 +1594,14 @@ def prreview_verdicts(ctx, name: str, jobs: list[Job] | None = None, head: str =
             continue
         if head and job.inputs.get("head") != head:
             continue
+        path = board.prreview_verdict_path(ctx.cfg.board.packages_dir, job)
         try:
-            data = json.loads(ctx.gh.raw_file(repo, board.prreview_verdict_path(ctx.cfg.board.packages_dir, job)))
+            if texts is not None and path in texts:
+                if texts[path] is None:
+                    continue
+                data = json.loads(texts[path])
+            else:
+                data = json.loads(ctx.gh.raw_file(repo, path))
         except GHError as exc:
             if transient(exc):
                 raise
@@ -1626,20 +1654,26 @@ def supersede(ctx, job: Job, note: str) -> bool:
     return True
 
 
-def latest_verdict(ctx, jobs: list[Job], head: str) -> dict | None:
-    """The verdict of the latest finished review of `head` among `jobs` (one roadmap folder's reviews
-    of a pull request), read from the board's main newest round first, one read each until one is
-    there; None when none is."""
-    done = [j for j in jobs
+def finished_reviews(jobs: list[Job], head: str) -> list[Job]:
+    """The done reviews of `head` among `jobs` (a superseded job reviewed nothing)."""
+    return [j for j in jobs
             if j.state == "done" and j.inputs.get("head") == head and board.SUPERSEDED_LABEL not in j.labels]
+
+
+def latest_verdict(ctx, jobs: list[Job], head: str, texts: dict[str, str | None] | None = None) -> dict | None:
+    """The verdict of the latest finished review of `head` among `jobs` (one roadmap folder's reviews
+    of a pull request), read from the board's main newest round first (`texts`: those already read),
+    one read each until one is there; None when none is."""
+    done = finished_reviews(jobs, head)
     for job in sorted(done, key=lambda j: board.parse_job_id(j.id).round, reverse=True):
-        found = prreview_verdicts(ctx, job.name, [job], head)
+        found = prreview_verdicts(ctx, job.name, [job], head, texts)
         if job.id in found:
             return found[job.id]
     return None
 
 
-def folders_accepted(ctx, folders, jobs: list[Job], head: str) -> tuple[bool, str]:
+def folders_accepted(ctx, folders, jobs: list[Job], head: str,
+                     texts: dict[str, str | None] | None = None) -> tuple[bool, str]:
     """(whether an AI review of `head` accepts every roadmap folder of a pull request, '' or why not).
     `jobs`: the pull request's PRREVIEW jobs. Verdicts are read only once every folder has a finished
     review of `head`, the most recent first, and no further than the first that does not accept."""
@@ -1656,7 +1690,7 @@ def folders_accepted(ctx, folders, jobs: list[Job], head: str) -> tuple[bool, st
     if missing:
         return False, f"{len(missing)} of {len(finished)} roadmap folders not reviewed at {head[:7]}"
     for folder in sorted(finished, key=lambda f: max(j.number for j in finished[f]), reverse=True):
-        verdict = latest_verdict(ctx, finished[folder], head)
+        verdict = latest_verdict(ctx, finished[folder], head, texts)
         if not verdict or verdict.get("status") != "accepted" or verdict.get("head") != head:
             which = f" ({folder})" if len(finished) > 1 else ""
             return False, f"the AI review of {head[:7]} does not accept it{which}"
@@ -1715,13 +1749,16 @@ def sync_pr_reviews(ctx) -> list[str]:
         except (TypeError, ValueError):
             return 0
 
-    for job in [j for j in reviews if j.state == "available"]:
+    batch = cfg.board.graphql_batch
+    available = [j for j in reviews if j.state == "available"]
+    unlisted = prbatch.PullReader(ctx.gh, repo, {pr_of(j) for j in available if pr_of(j) not in live}, batch)
+    for job in available:
         number, entry = pr_of(job), live.get(pr_of(job))
         if entry is not None:
             head, state = entry.get("head", ""), "open"
         else:
             try:     # not in the listing: closed, or no longer touching a roadmap folder
-                data = ctx.gh.api(f"repos/{repo}/pulls/{number}") or {}
+                data = unlisted.pull(number)
             except GHError as exc:
                 out.append(f"#{number}: {job.id} not checked ({str(exc).splitlines()[0][:160]})")
                 continue
@@ -1735,6 +1772,10 @@ def sync_pr_reviews(ctx) -> list[str]:
         if supersede(ctx, job, note):
             out.append(f"#{number}: {job.id} superseded")
 
+    # The verdicts the label rule may read, all at once (`prbatch.verdict_texts`; REST for the rest).
+    texts = prbatch.verdict_texts(ctx.gh, cfg.repositories.packages_repo(), [
+        board.prreview_verdict_path(cfg.board.packages_dir, j) for entry in listed if plans[int(entry["pr"])][0]
+        for j in finished_reviews([j for j in reviews if pr_of(j) == int(entry["pr"])], entry.get("head", ""))], batch)
     for entry in listed:
         number, head = int(entry["pr"]), entry.get("head", "")
         labelled = p.label in entry.get("labels", [])
@@ -1744,7 +1785,7 @@ def sync_pr_reviews(ctx) -> list[str]:
         mine = [j for j in reviews if pr_of(j) == number]
         if any(j.state in ("claimed", "submitted") and j.inputs.get("head") == head for j in mine):
             continue             # being finished: its lane labels, or a later run does
-        accepted, reason = (folders_accepted(ctx, folders, mine, head) if folders
+        accepted, reason = (folders_accepted(ctx, folders, mine, head, texts) if folders
                             else (False, f"not reviewed: {why}" if why else "no roadmap folder to review"))
         try:
             if accepted and not labelled:
@@ -1785,8 +1826,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             if inputs["rereview"]:
                 if number not in threads:
                     try:
-                        threads[number] = ctx.gh.api(f"repos/{repo}/issues/{number}/comments?per_page=100",
-                                                     paginate=True) or []
+                        threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
                     except GHError as exc:
                         threads[number] = None
                         out.append(f"#{number}: not filed this run (its comments could not be read: "

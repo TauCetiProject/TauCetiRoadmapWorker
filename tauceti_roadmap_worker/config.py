@@ -100,6 +100,11 @@ class Board:
     dispatch_workflow: str = "board.yml"
     human_first: bool = True
     priority: list[str] = field(default_factory=lambda: list(STAGE_ORDER))
+    # `board sync` reads the open roadmap pull requests (each with its reviews, issue comments and inline
+    # comments) and the verdicts of finished reviews by GraphQL, this many pull requests per query,
+    # instead of four REST requests per pull request (0: by REST, as before). REST still reads a pull
+    # request with more than a page of anything, and every one of a query that fails.
+    graphql_batch: int = 15
 
 
 @dataclass
@@ -440,6 +445,8 @@ def validate(cfg: Config) -> None:
             problems.append(f"redteam.passes: agent must be one of {AGENTS}")
     if cfg.board.max_rounds < 1:
         problems.append("board.max_rounds must be at least 1")
+    if cfg.board.graphql_batch < 0:
+        problems.append("board.graphql_batch must be 0 or more")
     unknown = [x for x in cfg.board.priority if x not in STAGE_ORDER]
     if unknown:
         problems.append(f"board.priority: unknown stage(s) {', '.join(unknown)} (stages: {', '.join(STAGE_ORDER)})")

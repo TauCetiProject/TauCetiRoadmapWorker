@@ -85,6 +85,12 @@ dispatch_workflow = "board.yml"
 human_first = true
 priority = ["GATE", "PORT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN",
             "DESIGN", "TARGET", "ERRATA"]
+# `board sync` reads the open roadmap pull requests (each with its reviews, issue comments and inline
+# comments) and the verdicts of finished pull-request reviews by GraphQL, this many pull requests per
+# query, from GraphQL's own hourly budget rather than four REST requests per pull request. A pull
+# request with more than a page of anything (50 reviews, 50 inline comments in a review, 60 issue
+# comments) and every one of a query that fails are read by REST. 0: everything by REST.
+graphql_batch = 15
 
 [roadmap]
 # Active roadmap folders in the content repository, and where completed ones live.

@@ -867,6 +867,17 @@ repository's main` when there is none). Gate rounds of pull requests that only e
 used to place them as if new, which made every consumer listed above them fail its push gate with
 an UPWARD edge; run it once after upgrading.
 
+`board sync` reads the open roadmap pull requests by GraphQL, `[board] graphql_batch` (default 15)
+per query: each with its draft flag, labels, head, reviews, inline review comments and issue
+comments, handed to the label, gate and review code in the shapes the REST reads give. A pull request
+with more than a page of anything (50 reviews, 50 inline comments in one review, 60 issue comments,
+100 labels), and every one of a query that fails, is read by REST (four requests). The verdicts the
+`ai-approved` rule reads are read the same way, as blobs of the board's main, 60 per query, and the
+pull requests of review jobs the listing no longer shows (closed ones) too. The `pull requests` step
+ends with `pull requests read: N by GraphQL in Q queries, M by REST`. GraphQL has its own hourly
+budget of 5,000 points; a query of 15 pull requests costs about eight. `graphql_batch = 0` reads
+everything by REST, as before.
+
 Every `board` command that writes (`intake`, `sync`, `references`, `stale --release`, `errata seed`
 and `import-explorer`, each with `--yes`) first takes the board lock, a 15-minute lease ref in the
 board repository (the workers' lease mechanism; the hosted workflow's token and a maintainer can
