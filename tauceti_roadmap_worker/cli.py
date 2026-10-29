@@ -510,10 +510,8 @@ def depcheck_lines(name: str, readme: str, siblings: dict[str, str], order: list
     edges = depgraph.supplier_edges(readmes, set(order) | {name}, main_extended)
     lines = []
     if movable and name in order and name not in merged:
-        consumers = {c for c, sup in edges.items() if name in sup and c != name and c not in merged}
         try:
-            text, note = depgraph.move_after_suppliers("\n".join(order) + "\n", name,
-                                                       set(edges.get(name, {})) - set(merged), consumers)
+            text, note = depgraph.move_with_riders("\n".join(order) + "\n", name, set(edges.get(name, {})), edges, merged)
         except depgraph.OrderCycle as exc:
             lines.append(f"not movable: {exc}")
         else:

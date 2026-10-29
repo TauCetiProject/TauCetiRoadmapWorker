@@ -327,7 +327,7 @@ def test_the_package_gate_checks_a_package_fix_with_the_roadmap_moved_after_its_
     assert copy.read_text() == "Base\nLater\nFoo\n"
     assert (ctx.wdir / "board" / "merge-order" / "ORDER.txt").read_text() == "Base\nFoo\nLater\n"  # not a deliverable
     assert lane_fix.GATE_HEADING not in brief and f"--order {copy} --movable" in brief
-    # A consumer listed before that supplier: no move, and the UPWARD edge is a gate failure as before.
+    # A consumer listed before that supplier rides along: the moved copy carries both, no UPWARD edge.
     put_package(ctx, readme=LATER_README, manifest=MANIFEST, order="Base\nFoo\nBar\nLater\n")
     rev = ctx.state / "rev" / "906" / ctx.cfg.roadmap.active_dir / "Bar"      # an open roadmap PR that reads Foo
     rev.mkdir(parents=True)
@@ -335,5 +335,5 @@ def test_the_package_gate_checks_a_package_fix_with_the_roadmap_moved_after_its_
     (ctx.state / "prs.json").write_text(f'[{{"pr": 906, "name": "Bar", "head": "{SHA}", "branch": "roadmap/bar", '
                                         '"owner": "bob"}]')
     brief = brief_of(ctx, "FIX-PKG-Foo~3", {"review": "REV-PKG-Foo~2"})
-    assert "- depcheck=1: UPWARD: Foo (#2) -> Later (#4)" in brief
-    assert not (ctx.wdir / "jobs" / "FIX-PKG-Foo_r3" / "scratch" / lane_base.MOVED_ORDER_COPY).exists()
+    copy = ctx.wdir / "jobs" / "FIX-PKG-Foo_r3" / "scratch" / lane_base.MOVED_ORDER_COPY
+    assert "UPWARD: Foo" not in brief and copy.read_text() == "Base\nLater\nFoo\nBar\n"

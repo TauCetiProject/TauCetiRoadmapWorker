@@ -387,8 +387,9 @@ def move_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: str
     """The repair of an UPWARD edge of the roadmap being submitted: the merge-order file `text`, which
     lists `name`, with `name` moved right after its last supplier (its README's, as the dependency check
     reads them, and every `TauCetiRoadmap.<X>` its Lean names) when one of them comes after it, and the
-    notes. A move that would put one of its consumers before it is not made: `text` comes back as it is,
-    with a note saying why, and the dependency check reports the UPWARD edge as before. A roadmap on
+    notes. A consumer of it listed before that supplier rides along (`depgraph.move_with_riders`); a move
+    that closes a cycle is not made: `text` comes back as it is, with a note saying why, and the
+    dependency check reports the UPWARD edge as before. A roadmap on
     main is never moved, and no roadmap moves after one (`merged_for`)."""
     merged = merged_for(ctx, ws)
     if name in merged:
@@ -400,9 +401,8 @@ def move_in_order(ctx: Context, ws: Workspace, name: str, readme: str, lean: str
         return text, []                 # nothing to move: the other READMEs are not read
     readmes = roadmap_readmes(ctx, ws)
     edges = depgraph.supplier_edges({**readmes, name: readme}, set(order) | set(readmes) | {name})
-    consumers = {c for c, sups in edges.items() if name in sups and c != name}
     try:
-        new, note = depgraph.move_after_suppliers(text, name, suppliers, consumers)
+        new, note = depgraph.move_with_riders(text, name, suppliers, edges, merged)
     except depgraph.OrderCycle as exc:
         return text, [f"merge order: {name} not moved after its last supplier: {exc}"]
     return new, [note] if note else []

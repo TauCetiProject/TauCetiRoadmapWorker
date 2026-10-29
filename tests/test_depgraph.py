@@ -1,5 +1,7 @@
 import textwrap
 
+import pytest
+
 from tauceti_roadmap_worker.depgraph import (check_order, declared_consumers, read_order, strongly_connected,
                                             supplier_edges, units)
 
@@ -219,3 +221,17 @@ def test_a_roadmap_on_main_is_never_an_upward_supplier_nor_a_checked_consumer():
     assert repair_upward(text, readmes, merged={"Gamma"})[0] == "# suppliers first\nBeta\nAlpha\nGamma\n"
     assert repair_upward(text, readmes, merged={"Gamma", "Beta"}) == (text, {})
     assert remove_from_order("# suppliers first\nAlpha  # x\nBeta\nGamma\n", {"Alpha", "Gamma"}) == "# suppliers first\nBeta\n"
+
+
+def test_move_with_riders_carries_the_consumer_and_refuses_a_cycle():
+    from tauceti_roadmap_worker.depgraph import OrderCycle, move_with_riders
+    text = "Alpha\nBeta\nGamma\nToy\n"
+    edges = supplier_edges({"Alpha": "*Needs:* Toy §1.\n", "Beta": "*Needs:* Alpha §2.\n", "Gamma": "*Needs:* Beta §1.\n",
+                            "Toy": "x\n"}, {"Alpha", "Beta", "Gamma", "Toy"})
+    new, note = move_with_riders(text, "Alpha", set(edges["Alpha"]), edges)
+    assert new == "Toy\nAlpha\nBeta\nGamma\n" and "its consumers Beta, Gamma moved with it" in note
+    # Toy on main: nothing moves after it.
+    assert move_with_riders(text, "Alpha", set(edges["Alpha"]), edges, merged={"Toy"}) == (text, "")
+    loop = supplier_edges({"Alpha": "*Needs:* Toy §1.\n", "Toy": "*Needs:* Alpha §2.\n"}, {"Alpha", "Toy"})
+    with pytest.raises(OrderCycle):
+        move_with_riders("Alpha\nToy\n", "Alpha", set(loop["Alpha"]), loop)

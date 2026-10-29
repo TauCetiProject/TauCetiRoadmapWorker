@@ -517,6 +517,25 @@ def move_after_suppliers(text: str, name: str, suppliers: set[str],
     return "\n".join(ln for ln, _n in kept) + "\n", note
 
 
+def move_with_riders(text: str, name: str, suppliers: set[str], edges: dict[str, dict[str, set[int]]],
+                     merged: set[str] | frozenset = frozenset()) -> tuple[str, str]:
+    """`move_after_suppliers` for one roadmap with the consumers that must ride along: the closures
+    come from `edges` (every roadmap whose README was read; those on main, `merged`, dropped as
+    consumers and as suppliers), so a consumer listed before the last supplier moves with `name`
+    instead of refusing the move (2026-10-29: the agents' check and the submit-time move refused every
+    move a consumer stood in the way of, while the intake's repair made it)."""
+    edges = {c: {s: lines for s, lines in sups.items() if s not in merged}
+             for c, sups in edges.items() if c not in merged}
+    consumers: dict[str, set[str]] = defaultdict(set)
+    for c, sups in edges.items():
+        for sup in sups:
+            consumers[sup].add(c)
+    return move_after_suppliers(text, name, set(suppliers) - set(merged), consumers.get(name, set()),
+                                consumer_closure=closure(dict(consumers)),
+                                supplier_closure=closure({c: set(sups) for c, sups in edges.items()}),
+                                movable=set(edges))
+
+
 def repair_upward(text: str, readmes: dict[str, str], main_extended: set[str] | frozenset = frozenset(),
                   only: set[str] | None = None, merged: set[str] | frozenset = frozenset()) -> tuple[str, dict[str, str]]:
     """The merge-order file with every roadmap of `readmes` (or of `only`) that it lists above a

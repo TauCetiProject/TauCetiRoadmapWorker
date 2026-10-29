@@ -152,8 +152,13 @@ def test_depcheck_movable_checks_a_listed_roadmap_as_moved_after_its_last_suppli
     out = capsys.readouterr().out
     assert out.startswith("moved: Alpha moved in the merge order from #1 to #2, right after its last supplier Toy; "
                           "checked as moved (the worker moves it there when it submits)\n") and "UPWARD" not in out
-    # A consumer of it in between: the UPWARD line stands, with why it cannot move.
+    # A real cycle: the UPWARD line stands, with why it cannot move.
     lines, problems = cli.depcheck_lines("Alpha", "*Needs:* Toy §1.\n", {"Toy": "*Needs:* Alpha §2.\n"},
                                          ["Alpha", "Toy"], set(), movable=True)
-    assert lines[0].startswith("not movable: Alpha consumes Toy (#2) and is consumed by Toy (#2)")
+    assert lines[0].startswith("not movable: Alpha consumes Toy (#2) and is consumed by Toy (#2)") and "cycle" in lines[0]
     assert "UPWARD: Alpha (#1) -> Toy (#2) at README lines [1]" in problems
+    # A consumer listed before the supplier rides along instead of blocking the move.
+    lines, problems = cli.depcheck_lines("Alpha", "*Needs:* Toy §1.\n", {"Beta": "*Needs:* Alpha §2.\n", "Toy": "x\n"},
+                                         ["Alpha", "Beta", "Toy"], set(), movable=True)
+    assert lines[0].startswith("moved: Alpha moved in the merge order from #1 to #3, right after its last supplier Toy; "
+                               "its consumer Beta moved with it") and problems == []

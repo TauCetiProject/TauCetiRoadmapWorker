@@ -168,16 +168,15 @@ def test_the_port_lane_moves_a_listed_roadmap_after_its_last_supplier(ctx):  # n
     assert depgraph.read_order(order.read_text()) == ["Alpha", "Beta", "Foo", "Gamma"]      # the submission carries it
     note = "Foo moved in the merge order from #2 to #3, right after its last supplier Beta"
     assert ws.extra["order_notes"] == [note] and note in (ws.job_dir / "requests.log").read_text()
-    # A consumer of Foo between it and its supplier (a roadmap on the content repository's main): not moved.
+    # A consumer of Foo listed between it and its supplier rides along with it.
     order.write_text("Alpha\nFoo\nGamma\nBeta\n")
     gamma = ctx.wdir / "content" / ctx.cfg.roadmap.active_dir / "Gamma"
     gamma.mkdir(parents=True)
     (gamma / "README.md").write_text("*Needs:* Foo §1.\n")
     ws = lane_for(job).prepare(job, ctx)
-    assert order.read_text() == "Alpha\nFoo\nGamma\nBeta\n"
-    assert ws.extra["order_notes"] == [("merge order: Foo not moved after its last supplier: Foo consumes Beta (#4) "
-                                        "and is consumed by Gamma (#3), which comes first: moving Foo after Beta would "
-                                        "put a supplier after a consumer, a cycle through Foo")]
+    assert order.read_text() == "Alpha\nBeta\nFoo\nGamma\n"
+    assert ws.extra["order_notes"] == ["Foo moved in the merge order from #2 to #4, right after its last supplier Beta; "
+                                       "its consumer Gamma moved with it"]
 
 
 def test_a_gate_reads_the_order_moved_in_place_when_the_submission_carries_it_else_in_a_copy(ctx):  # noqa: F811
