@@ -258,12 +258,24 @@ def check_order(edges: dict[str, dict[str, set[int]]], order: list[str], only: s
                 merged: set[str] | frozenset = frozenset()) -> list[str]:
     """Problems with the supplier graph: NOT IN ORDER, UPWARD and CYCLE lines (empty = clean).
     `only` restricts the per-roadmap lines, and the cycles reported, to those involving those roadmaps.
-    `merged`: the roadmaps on the content repository's main, never an UPWARD supplier, never checked
-    as consumers, and a cycle among them alone not reported."""
+    `merged`: the roadmaps on the content repository's main, never an UPWARD supplier, not checked as
+    consumers (an open revision of one is checked only as the roadmap under check, where an open
+    supplier is UPWARD of main), and a cycle among them alone, or through another pull request's
+    revision of one, not reported."""
     pos = {name: i for i, name in enumerate(order)}
     problems = []
+    # A roadmap on main appears as a consumer only through an open revision of it (the readmes are
+    # the open pull requests'); that revision is checked when it is the roadmap under check (`only`),
+    # where a supplier still open is upward of main itself, and is nobody else's defect otherwise.
+    revised = {c for c in edges if c in merged and only and c in only}
     for consumer in sorted(edges, key=lambda n: pos.get(n, len(pos))):
-        if (only and consumer not in only) or consumer in merged:
+        if (only and consumer not in only) or (consumer in merged and consumer not in revised):
+            continue
+        if consumer in revised:
+            for supplier, lines in sorted(edges[consumer].items()):
+                if supplier in pos and supplier not in merged:
+                    problems.append(f"UPWARD: {consumer} (on main) -> {supplier} (#{pos[supplier] + 1}) "
+                                    f"at README lines {sorted(lines)[:6]}")
             continue
         if consumer not in pos:
             problems.append(f"NOT IN ORDER: {consumer} (insert it after its last supplier)")
@@ -272,7 +284,10 @@ def check_order(edges: dict[str, dict[str, set[int]]], order: list[str], only: s
             if supplier in pos and supplier not in merged and pos[supplier] > pos[consumer]:
                 problems.append(f"UPWARD: {consumer} (#{pos[consumer] + 1}) -> {supplier} (#{pos[supplier] + 1}) "
                                 f"at README lines {sorted(lines)[:6]}")
-    adj = {a: set(b) for a, b in edges.items()}
+    # Edges out of another pull request's revision of a roadmap on main make no cycle here (2026-10-29:
+    # a revision of a merged supplier citing the roadmap under check failed its gate with a two-node
+    # cycle that main does not have).
+    adj = {a: set(b) for a, b in edges.items() if a not in merged or a in revised}
     for comp in strongly_connected(adj):
         # With `only`, a cycle elsewhere in the graph is another roadmap's defect (2026-10-27: one
         # author's cycles failed every other roadmap's gate once their pull requests were managed).

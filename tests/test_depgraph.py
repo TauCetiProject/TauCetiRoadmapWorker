@@ -205,10 +205,15 @@ def test_a_roadmap_on_main_is_never_an_upward_supplier_nor_a_checked_consumer():
     assert check_order(edges, order, merged={"Gamma", "Epsilon"}) == [
         "UPWARD: Alpha (#1) -> Beta (#2) at README lines [1]"]
     assert check_order(edges, order, only={"Alpha"}, merged={"Gamma", "Beta"}) == []
-    # A cycle among roadmaps on main alone is not reported; one through an open roadmap still is.
+    # A cycle among roadmaps on main alone is not reported. Beta is on main and its open revision
+    # consumes Alpha: no cycle for Alpha's gate (the revision is another pull request's business), but
+    # the revision's own gate sees its open supplier as upward of main, and the cycle.
     loop = supplier_edges({"Alpha": "*Needs:* Beta §1.\n", "Beta": "*Needs:* Alpha §2.\n"}, set(ORDER))
     assert check_order(loop, ORDER, merged={"Alpha", "Beta"}) == []
-    assert check_order(loop, ORDER, merged={"Beta"}) == ["CYCLE among: Alpha, Beta"]
+    assert check_order(loop, ORDER, merged={"Beta"}) == []
+    assert check_order(loop, ORDER, only={"Alpha"}, merged={"Beta"}) == []
+    assert check_order(loop, ORDER, only={"Beta"}, merged={"Beta"}) == [
+        "UPWARD: Beta (on main) -> Alpha (#1) at README lines [1]", "CYCLE among: Alpha, Beta"]
     # The order's repair moves nothing after a roadmap on main, and never moves one.
     text = "# suppliers first\nAlpha\nBeta\nGamma\n"
     assert repair_upward(text, readmes, merged={"Gamma"})[0] == "# suppliers first\nBeta\nAlpha\nGamma\n"
