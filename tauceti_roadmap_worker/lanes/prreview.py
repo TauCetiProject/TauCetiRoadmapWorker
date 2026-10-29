@@ -647,6 +647,9 @@ class PRReviewLane(Lane):
         """A review leaves the pull request's checkout as it found it: no change, no commit (the commit
         of its own repair, `repaired`, which a kept run puts back, aside)."""
         out = []
+        top = gitops.git(ws.workdir, "rev-parse", "--show-toplevel", check=False).strip()
+        if not top or Path(top).resolve() != Path(ws.workdir).resolve():
+            return out       # not a checkout of its own (git would read an enclosing repository)
         dirty = gitops.git(ws.workdir, "status", "--short", check=False).strip()
         if dirty:
             out.append("the review changed the pull request's checkout (a review is read-only; restore it): "
