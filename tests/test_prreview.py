@@ -1296,12 +1296,13 @@ def reviewed(lane, job, ctx, head, status="needs_changes"):
 REPAIR_LINE = "## H01 (AI review PRREVIEW-Foo~2) — applied\nThe README now states the hypothesis on p.\n"
 
 
-def repair_agent(monkeypatch, briefs, report=REPAIR_LINE, edit=True, stray=False):
+def repair_agent(monkeypatch, briefs, report=REPAIR_LINE, edit=True, stray=False, forget_commit_once=False):
     def run_agent(self, ctx, ws, brief, label=""):
         briefs.append((label, brief, (ws.scratch / "reviews.md").read_text()))
         if edit:
             (ws.workdir / "TauCetiRoadmap" / "Foo" / "README.md").write_text("# Foo\n\nFor every odd prime p.\n")
-            sh(ws.workdir, "commit", "-q", "-am", "Foo: review repairs (the hypothesis on p)")
+            if not (forget_commit_once and len(briefs) == 1) and sh(ws.workdir, "status", "--short").strip():
+                sh(ws.workdir, "commit", "-q", "-am", "Foo: review repairs (the hypothesis on p)")
         if stray:
             (ws.board / "packages" / "Foo" / "stray.md").write_text("not a deliverable\n")
         (ws.job_dir / lane_prreview.REPAIR_REPORT).write_text(report)
@@ -1342,6 +1343,20 @@ def test_a_review_asking_changes_of_a_pool_author_repairs_and_answers_in_the_sam
     [opened] = rh.opened
     assert "Files: `packages/Foo/reports/PRREVIEW-Foo~2.json`, `packages/Foo/reports/PRREVIEW-Foo~2.md`" in opened["body"]
     assert ctx.board.states == [(job.id, "submitted")] and lane_base.read_pending(ctx, job) is None
+
+
+@needs_git
+def test_a_repair_that_fails_the_checks_gets_a_second_pass_with_them(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    briefs = []
+    repair_agent(monkeypatch, briefs, forget_commit_once=True)
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert result.status == "submitted", result.detail
+    assert [label for label, _b, _r in briefs] == ["repair", "repair-2"]
+    assert "## The worker's checks failed" in briefs[1][1] and "- uncommitted changes left in the worktree" in briefs[1][1]
+    assert rh.head(905) != head and "repaired at" in result.detail
 
 
 @needs_git

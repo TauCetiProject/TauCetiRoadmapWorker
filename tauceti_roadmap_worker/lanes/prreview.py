@@ -764,14 +764,26 @@ class PRReviewLane(Lane):
         values = {**self.common_values(job, ctx, ws), **answer_values(ctx, ws, job.name, folder, reviews, report)}
         brief = prompts.render("gate", values)
         (ws.job_dir / "brief-repair.md").write_text(brief, encoding="utf-8")
-        kept = board_snapshot(job, ctx, ws)
-        result = self.run_agent(ctx, ws, brief, "repair")
-        restore_board(ws, kept)
-        if result.limited or result.exit_code != 0:
-            raise LaneError("the repair agent " + ("hit a usage limit" if result.limited else f"exited {result.exit_code}"))
-        problems = ([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report)
-        if not problems:
-            problems, gate = gate_problems(ctx, ws, job.name, folder, self.gate_options(job, ctx, ws))
+        gate, problems = None, []
+        for label in ("repair", "repair-2"):
+            if problems:
+                # A second pass with the worker's own findings (2026-10-29: a repair that left the gate
+                # failing was thrown away, and the next round's repair failed the same way).
+                brief = (brief + "\n\n## The worker's checks failed\n\nYour previous run of this repair is in the "
+                         "worktree (committed); the worker's checks then reported:\n\n"
+                         + "\n".join(f"- {p}" for p in problems[:12])
+                         + "\n\nRepair these too, commit, and rewrite the report (every H section, as before).\n")
+                (ws.job_dir / f"brief-{label}.md").write_text(brief, encoding="utf-8")
+            kept = board_snapshot(job, ctx, ws)
+            result = self.run_agent(ctx, ws, brief, label)
+            restore_board(ws, kept)
+            if result.limited or result.exit_code != 0:
+                raise LaneError("the repair agent " + ("hit a usage limit" if result.limited else f"exited {result.exit_code}"))
+            problems = ([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report)
+            if not problems:
+                problems, gate = gate_problems(ctx, ws, job.name, folder, self.gate_options(job, ctx, ws))
+            if not problems:
+                break
         if problems:
             raise LaneError("its checks failed: " + "; ".join(problems[:3]))
         new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()

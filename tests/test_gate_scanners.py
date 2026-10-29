@@ -67,11 +67,14 @@ def test_blob_links():
 
 
 def test_process_residue_and_pr_numbers():
-    text = "Layer 2 (removed).\nThe packet says so far nothing.\nAs in pull request #812 and (#813).\n"
+    text = "Layer 2 (removed).\nThe explorer's packet says so far nothing.\nAs in pull request #812 and (#813).\n"
     residue = gates.scan_process_residue(text)
     assert [h.line for h in residue] == [1, 2, 2]
     assert len(gates.scan_pr_numbers(text)) == 2
     assert gates.scan_process_residue("Analytic continuation of L(s, χ).") == []
+    # Packets of representations are mathematics; the explorer's packets are process.
+    assert gates.scan_process_residue("Arthur packets, the tempered packet of φ and wave-packets of Eisenstein series.") == []
+    assert len(gates.scan_process_residue("made from the sources packet; see packets/Alpha.json")) == 2
 
 
 def test_latex_only_outside_code():

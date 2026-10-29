@@ -259,7 +259,10 @@ def scan_pr_numbers(readme: str) -> list[Hit]:
     return _hits(r"pull request #\d+|\bPR\s*#?\d{2,}|#\d{3,5}\)", readme)
 
 
-PROCESS_WORDS = (r"\(removed\)|\bpacket\b|\bcheckpoint\b|\bhandoff\b|lean-check|\bcatalogue\b|\bstand-in\b|\bso far\b|"
+# "packet" only in the process sense (the explorer's source packets, hand-off packets): Arthur packets,
+# tempered packets and wave-packets are mathematics (2026-10-29: 29 false hits on one automorphic README).
+PROCESS_WORDS = (r"\(removed\)|\b(?:explorer'?s?|sources?|handoff|hand-off|review|fix|repair|context) packets?\b|"
+                 r"\bpackets?/|packet\.json|\bcheckpoint\b|\bhandoff\b|lean-check|\bcatalogue\b|\bstand-in\b|\bso far\b|"
                  r"to be checked|<a id=|\bTODO\b|\bXXX\b|\*\*T\d{3,4}\*\*|\bjob id\b|\breview round\b")
 
 
