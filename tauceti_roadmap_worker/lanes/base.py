@@ -23,15 +23,28 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import (agents, board, claims, depgraph, fetcher, gates, gitops, openroadmaps, prompts, prreviews, references,
-               signatures, sources, usage)
+from .. import (
+    agents,
+    board,
+    claims,
+    depgraph,
+    fetcher,
+    gates,
+    gitops,
+    openroadmaps,
+    prompts,
+    prreviews,
+    references,
+    signatures,
+    sources,
+    usage,
+)
 from ..board import Board, Job
 from ..config import Config
 from ..depgraph import read_order
 from ..gh import GH, GHError, check_fence, transient
 from ..paths import sanitize_worker_id
-from .lake import (MIN_FREE_GB_BUILD, MIN_FREE_GB_WARN, LakeSetup, free_gb, prepare_lake,  # noqa: F401 (re-exports)
-                   wire_packages)
+from .lake import MIN_FREE_GB_BUILD, MIN_FREE_GB_WARN, LakeSetup, free_gb, prepare_lake, wire_packages  # noqa: F401 (re-exports)
 
 PR_MARKER = "tauceti-roadmap-pr"
 
@@ -150,7 +163,7 @@ def open_roadmap_prs(ctx: Context) -> list[dict]:
     for pr in items:
         if ctx.cfg.roadmap.pr_label not in {label["name"] for label in pr.get("labels", [])}:
             continue
-        marker = re.search(r"<!--\s*" + PR_MARKER + r"\s*(\{.*?\})\s*-->", pr.get("body") or "", re.S)
+        marker = re.search(r"<!--\s*" + PR_MARKER + r"\s*(\{.*?\})\s*-->", pr.get("body") or "", re.DOTALL)
         try:
             data = json.loads(marker.group(1)) if marker else {}
         except ValueError:
@@ -167,7 +180,7 @@ def open_roadmap_prs(ctx: Context) -> list[dict]:
     return out
 
 
-def board_package_index(ctx: Context, ws: "Workspace") -> Path:
+def board_package_index(ctx: Context, ws: Workspace) -> Path:
     """A file in the job's scratch directory listing every package under review on the board (name,
     board pull request, branch, head) with the command that fetches its README. The board checkout
     sits on ONE pull request's branch, forked from the board's main when that package was imported,
@@ -225,11 +238,26 @@ def sibling_checkouts(ctx: Context, prs: list[dict], skip: str = "") -> list[tup
 
 
 def sibling_readmes(state: Path, active_dir: str, prs: list[dict] | None = None) -> dict[str, str]:
+    """The README of every managed pull request's roadmap at its snapshot, by roadmap name. A nested
+    roadmap (`RepresentationTheory/SchurWeyl`) is found below the active directory whatever name the
+    pull request was adopted under; a pull request adopted under its family's name contributes the
+    nested roadmaps it touches (2026-10-30: cycles through SmoothBanachRepresentations were invisible
+    because the family index README stood in for the nested roadmap's)."""
     out = {}
     for p in prs if prs is not None else cached_prs(state):
-        path = rev_dir(state, p["pr"]) / active_dir / p["name"] / "README.md"
-        if path.is_file():
-            out[p["name"]] = path.read_text(encoding="utf-8", errors="replace")
+        root = rev_dir(state, p["pr"]) / active_dir
+        name = p["name"]
+        direct = root / name / "README.md"
+        found = [direct] if direct.is_file() else sorted(root.glob(f"**/{name}/README.md")) if root.is_dir() else []
+        for path in found:
+            folder = path.parent
+            nested = [q for q in folder.glob("*/README.md") if q.parent != folder]
+            if nested and (folder / "metadata.toml").is_file() and not (folder / "Suggested.lean").is_file():
+                # a family index: its nested roadmaps are the siblings (the pull request's own folder among them)
+                for q in nested:
+                    out.setdefault(q.parent.name, q.read_text(encoding="utf-8", errors="replace"))
+            else:
+                out.setdefault(folder.name, path.read_text(encoding="utf-8", errors="replace"))
     return out
 
 

@@ -165,3 +165,24 @@ def test_a_gate_round_on_a_family_or_nested_name_works_in_the_nested_roadmap_fol
     assert nested_folder("SchurWeyl", [], readmes, "TauCetiRoadmap") == "RepresentationTheory/SchurWeyl"
     assert nested_folder("Foo", ["TauCetiRoadmap/Foo/README.md"], readmes, "TauCetiRoadmap") == "Foo"
     assert nested_folder("Bar", [], readmes, "TauCetiRoadmap") == "Bar"
+
+
+def test_sibling_readmes_find_nested_roadmaps_and_a_family_index_contributes_its_members(tmp_path):
+    from tauceti_roadmap_worker.lanes.base import sibling_readmes
+    state = tmp_path / "state"
+    fam = state / "rev" / "1145" / "TauCetiRoadmap" / "RepresentationTheory"
+    (fam / "SmoothBanachRepresentations").mkdir(parents=True)
+    (fam / "SchurWeyl").mkdir()
+    (fam / "README.md").write_text("# index\n")
+    (fam / "metadata.toml").write_text('topic = "math.RT"\n')
+    (fam / "SmoothBanachRepresentations" / "README.md").write_text("*Needs:* Alpha §1.\n")
+    (fam / "SchurWeyl" / "README.md").write_text("x\n")
+    plain = state / "rev" / "7" / "TauCetiRoadmap" / "Alpha"
+    plain.mkdir(parents=True)
+    (plain / "README.md").write_text("alpha\n")
+    prs = [{"pr": 1145, "name": "RepresentationTheory"}, {"pr": 7, "name": "Alpha"}, {"pr": 8, "name": "SchurWeyl"}]
+    (state / "rev" / "8" / "TauCetiRoadmap" / "RepresentationTheory" / "SchurWeyl").mkdir(parents=True)
+    (state / "rev" / "8" / "TauCetiRoadmap" / "RepresentationTheory" / "SchurWeyl" / "README.md").write_text("sw8\n")
+    out = sibling_readmes(state, "TauCetiRoadmap", prs)
+    assert out["SmoothBanachRepresentations"] == "*Needs:* Alpha §1.\n" and out["Alpha"] == "alpha\n"
+    assert out["SchurWeyl"] == "x\n" and "RepresentationTheory" not in out      # the family's member wins over the later snapshot
