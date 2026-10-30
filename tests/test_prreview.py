@@ -741,6 +741,7 @@ def finished_ws(tmp_path, ctx, job, status, gate_ok=True):
 @pytest.fixture
 def review_env(tmp_path, monkeypatch):
     monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     monkeypatch.setattr(lane_base.Lane, "sleep", staticmethod(lambda s: None))
     return tmp_path
 
