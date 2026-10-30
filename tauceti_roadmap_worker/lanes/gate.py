@@ -66,8 +66,8 @@ def answer_values(ctx: Context, ws: Workspace, name: str, folder: str, reviews: 
     active directory) of the roadmap `name`; with `report`, the report is written there rather than to
     the job's report on the board."""
     cfg, path = ctx.cfg, f"{ctx.cfg.roadmap.active_dir}/{folder}"
-    build = (cfg.gates.build.format(module=gates.roadmap_module(cfg.roadmap.active_dir, folder)) if cfg.gates.build
-             else "(no build configured)")
+    build = (cfg.gates.build.format(module=gates.build_targets(ws.workdir, cfg.roadmap.active_dir, folder))
+             if cfg.gates.build else "(no build configured)")
     values = {"PR": str(ws.extra["pr"]), "HEAD": ws.extra["head"][:7], "REVIEWS": str(reviews), "FOLDER": path,
               "FILES": f"{path}/README.md` and `{path}/Suggested.lean", "BUILD": build,
               "GATE": ctx.cli("gate", str(ws.workdir), name, *(("--folder", folder) if folder != name else ()),

@@ -110,7 +110,7 @@ class PortLane(Lane):
         return ws
 
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
-        module = f"{ctx.cfg.roadmap.active_dir}.{job.name}.Suggested"
+        module = gates.build_targets(ws.workdir, ctx.cfg.roadmap.active_dir, job.name)
         build = ctx.cfg.gates.build.format(module=module) if ctx.cfg.gates.build else "(no build configured: skip)"
         return {"BASE": ws.extra["base"][:7], "BRANCH": ws.extra["branch"], "BUILD": build,
                 "GATE": ctx.cli("gate", str(ws.workdir), job.name, "--base", f"origin/{ctx.cfg.project.branch}")}

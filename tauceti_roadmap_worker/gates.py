@@ -858,6 +858,32 @@ def roadmap_module(active_dir: str, folder: str) -> str:
     return f"{active_dir}.{folder.strip('/').replace('/', '.')}.Suggested"
 
 
+def consumer_modules(root: Path, active_dir: str, folder: str) -> list[str]:
+    """The Lean modules under `active_dir` outside the roadmap folder that import one of its modules
+    (`<active_dir>.<folder, dotted>` or a module below it): the roadmap's consumers in the tree. Their
+    build is part of the roadmap's: a change that passes its own targeted build can still rename or
+    drop a declaration a sibling roadmap imports, and the main branch breaks on merge."""
+    prefix = re.escape(f"{active_dir}.{folder.strip('/').replace('/', '.')}")
+    pattern = re.compile(rf"^[ \t]*(?:public\s+)?import\s+{prefix}(?:\.[\w«».]+)?\s*$", re.M)
+    base, own = Path(root) / active_dir, Path(root) / active_dir / folder.strip("/")
+    out = []
+    for path in sorted(base.rglob("*.lean")) if base.is_dir() else []:
+        if own in path.parents or ".lake" in path.parts:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if pattern.search(strip_lean_comments(text)):
+            out.append(".".join(path.relative_to(root).with_suffix("").parts))
+    return out
+
+
+def build_targets(root: Path, active_dir: str, folder: str) -> str:
+    """What the roadmap's targeted build builds: its own module, then its consumers in the tree."""
+    return " ".join([roadmap_module(active_dir, folder), *consumer_modules(root, active_dir, folder)])
+
+
 def metadata_problems(root: Path, active_dir: str, folder: str) -> list[str]:
     """A roadmap folder has its metadata.toml; a nested roadmap may share its family's, in a folder
     above it under the active directory (`RepresentationTheory/metadata.toml`)."""
@@ -915,7 +941,7 @@ def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build
         r.add("git", [str(exc)])
     r.add("source-material", material)
     if build_cmd:
-        built = build_problems(root, build_cmd.format(module=roadmap_module(opts.active_dir, opts.folder or name)))
+        built = build_problems(root, build_cmd.format(module=build_targets(root, opts.active_dir, opts.folder or name)))
         r.add("build", explain_build_problems(lean, built, opts.tauceti_sources))
     return r
 

@@ -279,7 +279,7 @@ class RedTeamFixLane(Lane):
                     if (pkg / f).is_file():
                         shutil.copy2(pkg / f, folder / f)
                 problems += gates.build_problems(
-                    wt, cfg.gates.build.format(module=f"{cfg.roadmap.active_dir}.{job.name}.Suggested"))
+                    wt, cfg.gates.build.format(module=gates.build_targets(wt, cfg.roadmap.active_dir, job.name)))
             finally:
                 remove_worktree(ws.content, wt)
         return problems
@@ -315,7 +315,8 @@ class RedTeamFixLane(Lane):
         cfg, folder = ctx.cfg, f"{ctx.cfg.roadmap.active_dir}/{job.name}"
         reports = ws.package(cfg, job.name) / "reports"
         reviews = "\n".join(f"- `{reports / (r + '.md')}`" for r in job.inputs.get("reviews", []))
-        build = cfg.gates.build.format(module=f"{cfg.roadmap.active_dir}.{job.name}.Suggested") if cfg.gates.build else ""
+        build = (cfg.gates.build.format(module=gates.build_targets(ws.workdir, cfg.roadmap.active_dir, job.name))
+                 if cfg.gates.build else "")
         gate = ctx.cli("gate", str(ws.workdir), job.name, "--base", f"origin/{cfg.project.branch}")
         return {"REVIEWS": reviews + "\n\nThese are internal adversarial red-team reviews by different agents; treat "
                 "them exactly like an external review, including disputing findings whose witness does not hold."

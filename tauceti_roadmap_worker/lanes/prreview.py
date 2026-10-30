@@ -577,7 +577,7 @@ class PRReviewLane(Lane):
         if family:
             files += (f"\n\nThis roadmap is nested: the files directly in `{active}/{family[-1]}/` (the family's "
                       "index) are the pull request's own as well.")
-        build = (cfg.gates.build.format(module=gates.roadmap_module(active, own)) if cfg.gates.build
+        build = (cfg.gates.build.format(module=gates.build_targets(ws.workdir, active, own)) if cfg.gates.build
                  else "(no build configured)")
         excluded = " ".join([f"':!{folder}'", *(f"':!{active}/{f}'" for f in others),
                              *(f"':(exclude,glob){active}/{f}/*'" for f in family)])
