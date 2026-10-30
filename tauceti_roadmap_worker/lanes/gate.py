@@ -17,10 +17,34 @@ from pathlib import Path
 
 from .. import gates, gitops, prompts, replies
 from ..board import Job
-from .base import (CONTENT_COMMENT, CONTENT_PUSH, PULL_REQUEST, PUSH, SUBMITTED, Context, Lane, LaneError, Workspace,
-                   dropped_names, ensure_in_order_logged, fetch_pr_base, load_order, merged_for, open_roadmap_prs,
-                   order_path, owe, owes, pr_answerers, pr_base, read_pending, scan_problems, settle, sibling_checkouts,
-                   sibling_readmes, submission_started)
+from .base import (
+    CONTENT_COMMENT,
+    CONTENT_PUSH,
+    PULL_REQUEST,
+    PUSH,
+    SUBMITTED,
+    Context,
+    Lane,
+    LaneError,
+    Workspace,
+    dropped_names,
+    ensure_in_order_logged,
+    fetch_pr_base,
+    load_order,
+    merged_for,
+    open_roadmap_prs,
+    order_path,
+    owe,
+    owes,
+    pr_answerers,
+    pr_base,
+    read_pending,
+    scan_problems,
+    settle,
+    sibling_checkouts,
+    sibling_readmes,
+    submission_started,
+)
 from .fix import worktree_elaboration_problems
 from .pr import flip_labels, inline_comments, pr_branch_worktree, timeline
 
@@ -105,6 +129,49 @@ def push_and_reply(lane: Lane, ctx: Context, job: Job, ws: Workspace, report: st
                        ws.extra.get("answerers") or ())
 
 
+def nested_folder(name: str, changed: list[str], readme_folders: set[str], active_dir: str) -> str:
+    """The roadmap folder (relative to `active_dir`) a gate round for the roadmap `name` works in.
+    `readme_folders` are the folders under `active_dir` holding a README.md at the head; a folder with
+    a roadmap folder below it is a family's index (`RepresentationTheory/`), never the answer. A plain
+    roadmap is its own folder. For a family (2026-10-30: adopted pull requests on the nested roadmaps
+    of RepresentationTheory carried the family's name, so their gate rounds built the index's absent
+    Suggested.lean and the agents invented an empty one) or a nested roadmap named without its family,
+    the folder is the deepest non-index roadmap folder the pull request changes, else the one named
+    `name` anywhere below the active directory."""
+    active = active_dir.strip("/") + "/"
+    index = {d for d in readme_folders if any(o.startswith(d + "/") for o in readme_folders)}
+    if name in readme_folders and name not in index:
+        return name
+    touched = []
+    for path in changed:
+        if not path.startswith(active):
+            continue
+        parts = path[len(active):].split("/")[:-1]
+        while parts and "/".join(parts) not in readme_folders:
+            parts.pop()
+        folder = "/".join(parts)
+        if folder and folder not in index and folder not in touched:
+            touched.append(folder)
+    named = [f for f in touched if f.rsplit("/", 1)[-1] == name]
+    if named:
+        return named[0]
+    if len(touched) == 1:
+        return touched[0]
+    below = sorted(f for f in readme_folders - index if f.rsplit("/", 1)[-1] == name)
+    return below[0] if below else name
+
+
+def roadmap_folder_for(ctx: Context, wt: Path, name: str, base_ref: str) -> str:
+    """`nested_folder` for the checked-out pull request branch at `wt`: its README folders at the head
+    and the files it changes against `origin/<base_ref>`."""
+    active = ctx.cfg.roadmap.active_dir
+    root = wt / active
+    readmes = {str(p.parent.relative_to(root)) for p in root.rglob("README.md")} if root.is_dir() else set()
+    base = gitops.git(wt, "merge-base", f"origin/{base_ref}", "HEAD", check=False).strip()
+    changed = gitops.git(wt, "diff", "--name-only", base, "HEAD", check=False).splitlines() if base else []
+    return nested_folder(name, changed, readmes, active)
+
+
 class GateLane(Lane):
     kind = "gate"
     prompt = "gate"
@@ -141,20 +208,21 @@ class GateLane(Lane):
         ws.extra["answered"] = json.loads(record.read_text(encoding="utf-8"))
         wt, head = pr_branch_worktree(ctx, ws.content, job.name, pr, mine["branch"], ws)
         ws.workdir = wt
+        base_ref = mine.get("base") or ctx.cfg.project.branch
+        folder = roadmap_folder_for(ctx, wt, job.name, base_ref)
         ws.extra.update(prs=prs, siblings=sibling_checkouts(ctx, prs, skip=job.name), pr=pr, branch=mine["branch"],
-                        head=head, owner=mine["owner"], answerers=sorted(authors),
-                        base_ref=mine.get("base") or ctx.cfg.project.branch,
-                        head_repo=mine.get("head_repo") or "", readme=wt / ctx.cfg.roadmap.active_dir / job.name / "README.md")
+                        head=head, owner=mine["owner"], answerers=sorted(authors), base_ref=base_ref, folder=folder,
+                        head_repo=mine.get("head_repo") or "", readme=wt / ctx.cfg.roadmap.active_dir / folder / "README.md")
         return ws
 
     def values(self, job: Job, ctx: Context, ws: Workspace) -> dict:
-        return answer_values(ctx, ws, job.name, job.name, ws.scratch / "reviews.md")
+        return answer_values(ctx, ws, job.name, ws.extra.get("folder") or job.name, ws.scratch / "reviews.md")
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws) + answer_problems(ws, ws.report)
         if problems:
             return problems
-        folder = ws.workdir / ctx.cfg.roadmap.active_dir / job.name
+        folder = ws.workdir / ctx.cfg.roadmap.active_dir / (ws.extra.get("folder") or job.name)
         if job.name not in load_order(order_path(ctx.cfg, ws.board, ws.content)):
             # An adopted author's new roadmap was never placed by the port lane: place it after its last
             # supplier now (in the board checkout, so the submission carries the change).
@@ -164,7 +232,7 @@ class GateLane(Lane):
         opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
                                              siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]),
                                              merged=merged_for(ctx, ws))
-        found, ws.extra["gate"] = gate_problems(ctx, ws, job.name, job.name, opts)
+        found, ws.extra["gate"] = gate_problems(ctx, ws, job.name, ws.extra.get("folder") or job.name, opts)
         return found
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:

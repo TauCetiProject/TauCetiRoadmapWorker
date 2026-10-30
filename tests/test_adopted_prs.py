@@ -152,3 +152,16 @@ def test_another_pool_members_own_words_are_a_review_not_a_reply():
     own = _event("2026-10-20T04:08:24Z", AUTHOR, "Moved the code to Suggested.lean and fixed the citation.", 3)
     assert replies.unanswered([theirs, own], ours, r.review_markers, r.housekeeping_prefixes, owner=AUTHOR) == []
     assert replies.unanswered([theirs], ours, r.review_markers, r.housekeeping_prefixes) == []
+
+
+def test_a_gate_round_on_a_family_or_nested_name_works_in_the_nested_roadmap_folder():
+    from tauceti_roadmap_worker.lanes.gate import nested_folder
+    readmes = {"RepresentationTheory", "RepresentationTheory/SemisimpleAlgebras", "RepresentationTheory/SchurWeyl", "Foo"}
+    changed = ["TauCetiRoadmap/RepresentationTheory/SemisimpleAlgebras/README.md",
+               "TauCetiRoadmap/RepresentationTheory/SemisimpleAlgebras/Suggested.lean",
+               "TauCetiRoadmap/RepresentationTheory/Suggested.lean"]      # the index's stray file belongs to no roadmap
+    assert nested_folder("RepresentationTheory", changed, readmes, "TauCetiRoadmap") == "RepresentationTheory/SemisimpleAlgebras"
+    assert nested_folder("SemisimpleAlgebras", changed, readmes, "TauCetiRoadmap") == "RepresentationTheory/SemisimpleAlgebras"
+    assert nested_folder("SchurWeyl", [], readmes, "TauCetiRoadmap") == "RepresentationTheory/SchurWeyl"
+    assert nested_folder("Foo", ["TauCetiRoadmap/Foo/README.md"], readmes, "TauCetiRoadmap") == "Foo"
+    assert nested_folder("Bar", [], readmes, "TauCetiRoadmap") == "Bar"
