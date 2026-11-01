@@ -878,7 +878,7 @@ def ocr_pdf_pages(path: Path, dpi: int = 300, first: int = 1, last: int | None =
     """OCR of PDF pages first..last (1-based, inclusive): render with pypdfium2, recognise with RapidOCR."""
     numpy, pdfium, RapidOCR = _ocr_modules()
     pdf = pdfium.PdfDocument(str(path))
-    engine = RapidOCR()
+    engine = ocr_engine(RapidOCR)
     pages = []
     for i in range(first - 1, min(last or len(pdf), len(pdf))):
         image = pdf[i].render(scale=dpi / 72).to_pil().convert("RGB")
