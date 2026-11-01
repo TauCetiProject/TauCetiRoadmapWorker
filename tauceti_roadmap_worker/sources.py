@@ -545,7 +545,7 @@ def gs_ocr_pages(path: Path, dpi: int = 300) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([exe, "-q", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pnggray", f"-r{dpi}",
                         f"-sOutputFile={tmp}/page-%04d.png", str(path)], capture_output=True, timeout=3600, check=True)
-        engine = RapidOCR()
+        engine = ocr_engine(RapidOCR)
         return ["\n".join(group_ocr_lines(_ocr_items(engine(numpy.array(Image.open(png).convert("RGB")))),
                                             scale=dpi / 300))
                 for png in sorted(Path(tmp).glob("page-*.png"))]
@@ -817,6 +817,20 @@ def _ocr_modules():
     if failure is not None:
         raise _load_failure(failure) from failure
     raise OcrUnavailable(f"OCR is not installed (rapidocr_onnxruntime is missing). {OCR_HINT}")
+
+
+OCR_THREADS = 4     # onnxruntime takes every core by default; a shared host runs many workers (TAUCETI_OCR_THREADS)
+
+
+def ocr_engine(RapidOCR):
+    """A RapidOCR engine capped at OCR_THREADS onnxruntime threads (rapidocr_onnxruntime takes the
+    thread counts as keywords; a RapidOCR that does not gets the default). One worker's OCR of a scanned
+    source otherwise runs twenty cores at once, and eight workers run on the same host."""
+    threads = int(os.environ.get("TAUCETI_OCR_THREADS", OCR_THREADS) or OCR_THREADS)
+    try:
+        return RapidOCR(intra_op_num_threads=threads, inter_op_num_threads=1)
+    except TypeError:
+        return RapidOCR()
 
 
 def ocr_status() -> str:
