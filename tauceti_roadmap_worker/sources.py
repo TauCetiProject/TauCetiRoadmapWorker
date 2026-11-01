@@ -798,6 +798,10 @@ def _load_failure(exc: BaseException) -> OcrUnavailable:
 def _ocr_modules():
     """numpy, pypdfium2 and RapidOCR (rapidocr_onnxruntime, else rapidocr 2), or OcrUnavailable
     saying whether they are missing or fail to load, with the import error's text."""
+    # numpy's BLAS and onnxruntime's OpenMP build size their pools from the core count unless told
+    # otherwise; set before numpy is first imported (a fresh `sources fetch` process)
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ.setdefault(var, str(int(os.environ.get("TAUCETI_OCR_THREADS", OCR_THREADS) or OCR_THREADS)))
     try:
         numpy = importlib.import_module("numpy")
         pypdfium2 = importlib.import_module("pypdfium2")
