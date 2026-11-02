@@ -160,7 +160,7 @@ def test_the_gate_reads_a_nested_folder_when_told_and_builds_its_dotted_module(t
                                                                                module, missing):
     root = gate_tree(tmp_path, folder or "Toy", metadata_at)
     built = []
-    monkeypatch.setattr(gates, "build_problems", lambda worktree, command, timeout=0: built.append(command) or [])
+    monkeypatch.setattr(gates, "build_problems", lambda worktree, command, timeout=0, folder="": built.append(command) or [])
     result = gates.run_gate(root, "Toy", gates.GateOptions(folder=folder), build_cmd="lake build {module}")
     assert built == [f"lake build {module}"] and result.counts["metadata"] == missing
     assert "missing-files" not in result.counts

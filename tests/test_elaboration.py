@@ -31,7 +31,7 @@ def fake_elaboration(monkeypatch, problems=()):
     """`gates.build_problems` recorded instead of run: (cwd, command) pairs."""
     calls = []
 
-    def build_problems(worktree, command, timeout=3600):
+    def build_problems(worktree, command, timeout=3600, folder=""):
         calls.append((Path(worktree), command))
         return list(problems)
     monkeypatch.setattr(gates, "build_problems", build_problems)

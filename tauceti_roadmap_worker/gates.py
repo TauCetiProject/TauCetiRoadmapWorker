@@ -941,7 +941,8 @@ def run_gate(worktree: Path, name: str, opts: GateOptions, base: str = "", build
         r.add("git", [str(exc)])
     r.add("source-material", material)
     if build_cmd:
-        built = build_problems(root, build_cmd.format(module=build_targets(root, opts.active_dir, opts.folder or name)))
+        built = build_problems(root, build_cmd.format(module=build_targets(root, opts.active_dir, opts.folder or name)),
+                               folder=folder)
         r.add("build", explain_build_problems(lean, built, opts.tauceti_sources))
     return r
 
@@ -958,10 +959,12 @@ def build_output(worktree: Path, command: str, timeout: int = BUILD_TIMEOUT) -> 
     return out.stdout + out.stderr, out.returncode, ""
 
 
-def build_problems(worktree: Path, command: str, timeout: int = BUILD_TIMEOUT) -> list[str]:
-    """Run the targeted build; problems are a failure or any warning other than `sorry`."""
+def build_problems(worktree: Path, command: str, timeout: int = BUILD_TIMEOUT, folder: str = "") -> list[str]:
+    """Run the targeted build; problems are a failure or any warning other than `sorry`. With `folder`
+    (the roadmap folder, relative to the worktree) a warning in a file outside it is not a problem: the
+    build includes the roadmap's consumers, and their own lint debt is theirs, while an error anywhere is."""
     text, code, failure = build_output(worktree, command, timeout)
-    return [failure] if failure else build_output_problems(text, code)
+    return [failure] if failure else build_output_problems(text, code, folder=folder)
 
 
 DIAGNOSTIC = re.compile(r"^\s*(?:\S.*?\.lean:\d+:\d+:\s*)?(?P<severity>error|warning)\b")
@@ -998,11 +1001,15 @@ def build_diagnostics(text: str) -> list[tuple[str, str, str]]:
     return result
 
 
-def build_output_problems(text: str, returncode: int) -> list[str]:
+def build_output_problems(text: str, returncode: int, folder: str = "") -> list[str]:
     """The problems a build reports, each whole. With an error present the warnings are left out
-    (they return once the errors are gone); the first error of every file survives the cap."""
+    (they return once the errors are gone); the first error of every file survives the cap. With
+    `folder`, warnings in files outside it (consumer modules built alongside) are left out."""
     problems = [] if returncode == 0 else [f"build exited {returncode}"]
     diagnostics = build_diagnostics(text)
+    if folder:
+        prefix = folder.strip("/") + "/"
+        diagnostics = [d for d in diagnostics if d[0] == "error" or not d[1] or d[1].lstrip("./").startswith(prefix)]
     errors = [d for d in diagnostics if d[0] == "error"]
     shown = errors or diagnostics
     if len(shown) > MAX_DIAGNOSTICS:

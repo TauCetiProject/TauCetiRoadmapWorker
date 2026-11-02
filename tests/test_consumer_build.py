@@ -52,3 +52,17 @@ def test_build_targets_lead_with_the_roadmap_module(tmp_path):
     assert gates.build_targets(tmp_path / "missing", "TauCetiRoadmap", "X") == "TauCetiRoadmap.X.Suggested"
     assert "lake build {module}".format(module=gates.build_targets(root, "TauCetiRoadmap", "LocalFields")).startswith(
         "lake build TauCetiRoadmap.LocalFields.Suggested TauCetiRoadmap.")
+
+
+def test_consumer_warnings_are_not_the_roadmaps_problem():
+    text = ("warning: TauCetiRoadmap/ProfiniteCohomology/Suggested.lean:567:0: unused section variable\n"
+            "warning: TauCetiRoadmap/LocalFields/Suggested.lean:12:0: unused variable `x`\n"
+            "warning: TauCetiRoadmap/LocalFields/Suggested.lean:20:8: declaration uses `sorry`\n"
+            "error: TauCetiRoadmap/MassFormula/Suggested.lean:30:2: unknown identifier `normGroup`\n")
+    out = gates.build_output_problems(text, 0, folder="TauCetiRoadmap/LocalFields")
+    assert any("normGroup" in p for p in out) and not any("unused section" in p for p in out)
+    # without an error, only the roadmap's own warning survives
+    out = gates.build_output_problems("\n".join(text.splitlines()[:3]), 0, folder="TauCetiRoadmap/LocalFields")
+    assert out == [p for p in out if "LocalFields" in p] and len(out) == 1
+    # no folder: the old behaviour
+    assert len(gates.build_output_problems("\n".join(text.splitlines()[:3]), 0)) == 2
