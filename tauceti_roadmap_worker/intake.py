@@ -1674,6 +1674,18 @@ def rereview_inputs(jobs: list[Job]) -> dict:
     return {"previous_head": str(before.inputs["head"]), "previous_job": before.id, "rereview": True}
 
 
+def dispute_pending(jobs: list[Job], comments: list[dict], head: str, verdict: dict | None) -> bool:
+    """Whether the reviews of `head` among `jobs` (one folder's, all finished) ended in a dispute that
+    no round has re-examined: the latest verdict of `head` does not accept, and a reply on the pull
+    request records `head` itself as the head it answered at (`replies.answered_record`), so nothing
+    was pushed in answer. A head moved by its repair is re-reviewed by the ordinary filing."""
+    if not jobs or any(j.state in OPEN_ROUND for j in jobs):
+        return False
+    if not verdict or verdict.get("status") == "accepted":
+        return False
+    return bool(head_worker(comments, head))
+
+
 def head_worker(comments: list[dict], head: str) -> str:
     """The worker whose reply on a pull request records `head` as the head it answered at (its
     answered record, `replies.answered_record`: a gate round's, or a review's repair), the latest such
@@ -1818,6 +1830,7 @@ def sync_pr_reviews(ctx) -> list[str]:
     texts = prbatch.verdict_texts(ctx.gh, cfg.repositories.packages_repo(), [
         board.prreview_verdict_path(cfg.board.packages_dir, j) for entry in listed if plans[int(entry["pr"])][0]
         for j in finished_reviews([j for j in reviews if pr_of(j) == int(entry["pr"])], entry.get("head", ""))], batch)
+    accepted_prs: set[int] = set()
     for entry in listed:
         number, head = int(entry["pr"]), entry.get("head", "")
         labelled = p.label in entry.get("labels", [])
@@ -1829,6 +1842,8 @@ def sync_pr_reviews(ctx) -> list[str]:
             continue             # being finished: its lane labels, or a later run does
         accepted, reason = (folders_accepted(ctx, folders, mine, head, texts) if folders
                             else (False, f"not reviewed: {why}" if why else "no roadmap folder to review"))
+        if accepted:
+            accepted_prs.add(number)
         try:
             if accepted and not labelled:
                 ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [p.label]})
@@ -1844,6 +1859,7 @@ def sync_pr_reviews(ctx) -> list[str]:
     made, waiting, threads = 0, 0, {}
     for entry in listed:
         number, head, author = int(entry["pr"]), entry.get("head", ""), entry.get("author", "")
+        settled = number in accepted_prs or p.label in entry.get("labels", [])     # an accepted head: no dispute
         folders, why = plans[number]
         if why:
             out.append(f"#{number}: not reviewed ({why})")
@@ -1855,8 +1871,28 @@ def sync_pr_reviews(ctx) -> list[str]:
         mine = [j for j in reviews if pr_of(j) == number]
         for folder in folders:
             ours = [j for j in mine if board.prreview_folder(j) == folder]
-            if any(j.inputs.get("head") == head for j in ours) or any(j.state in OPEN_ROUND for j in ours):
+            if any(j.state in OPEN_ROUND for j in ours):
                 continue
+            same = [j for j in ours if j.inputs.get("head") == head]
+            dispute = False
+            if same and settled:
+                continue
+            if same:
+                # 2026-11-02: a review answered without moving the head (the reply's answered record names the
+                # reviewed head: a dispute) gets one more round, a full review by another worker; a head whose
+                # reply moved it is re-reviewed by the ordinary path, and a head reviewed twice is settled
+                if any(j.inputs.get("dispute_rereview") for j in same):
+                    continue
+                if number not in threads:
+                    try:
+                        threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
+                    except GHError as exc:
+                        out.append(f"#{number}: comments not read ({str(exc).splitlines()[0][:160]})")
+                        continue
+                verdict = latest_verdict(ctx, same, head, texts)
+                if not dispute_pending(same, threads[number], head, verdict):
+                    continue
+                dispute = True
             if made >= p.per_run:
                 waiting += 1
                 continue
@@ -1865,7 +1901,9 @@ def sync_pr_reviews(ctx) -> list[str]:
             if len(folders) > 1:
                 inputs["roadmaps"] = list(folders)
             inputs.update(rereview_inputs(ours))
-            if inputs["rereview"]:
+            if dispute:
+                inputs.update({"rereview": False, "dispute_rereview": True})
+            if inputs["rereview"] or dispute:
                 if number not in threads:
                     try:
                         threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
