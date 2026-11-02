@@ -244,7 +244,8 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
             log(f"skip {job.id}: another worker holds it")
             continue
         if status == claims.ERROR and ctx.claims and not ctx.dry_run:
-            log(f"{job.id}: the lease could not be registered; proceeding unclaimed (fail-open)")
+            log(f"{job.id}: the lease could not be registered; proceeding unclaimed (fail-open)"
+                + (f": {ctx.claims.last_push_error}" if getattr(ctx.claims, "last_push_error", "") else ""))
         return run_job(ctx, job, lane, key, log, held=status == claims.ACQUIRED)
     return LaneResult("", "idle", "no eligible job")
 

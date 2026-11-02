@@ -44,6 +44,7 @@ GIT_ID = {"GIT_AUTHOR_NAME": "tauceti-claim", "GIT_AUTHOR_EMAIL": "claim@tauceti
           "GIT_COMMITTER_NAME": "tauceti-claim", "GIT_COMMITTER_EMAIL": "claim@tauceti.invalid"}
 
 ACQUIRED, HELD, ERROR = 0, 1, 2
+PUSH_TRIES, PUSH_PAUSE = 3, 2.0   # a refused push that left the ref as expected is pushed again, after 2 s, then 4 s
 
 
 def ref_safe(job_id: str) -> str:
@@ -146,6 +147,7 @@ class Claims:
     operator: str
     project: str
     dry_run: bool = False
+    last_push_error: str = ""      # git's words for the last refused lease push (diagnostics only)
 
     # -- plumbing (git, with gh as the credential helper so no global setup is needed) --
     def _git(self, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -196,10 +198,17 @@ class Claims:
         if self.dry_run:
             print(f"[dry-run] lease push {ref} (expected {expected or 'absent'})")
             return ACQUIRED
-        out = self._git("push", f"--force-with-lease={ref}:{expected}", "origin", f"{new}:{ref}")
-        if out.returncode == 0:
-            return ACQUIRED
-        return self._after_refused_push(ref, expected)
+        for attempt in range(PUSH_TRIES):
+            out = self._git("push", f"--force-with-lease={ref}:{expected}", "origin", f"{new}:{ref}")
+            if out.returncode == 0:
+                self.last_push_error = ""
+                return ACQUIRED
+            self.last_push_error = " ".join((out.stdout + out.stderr).split())[:300]
+            status = self._after_refused_push(ref, expected)
+            if status != ERROR or self._remote(ref) != expected or attempt == PUSH_TRIES - 1:
+                return status
+            time.sleep(PUSH_PAUSE * (attempt + 1))      # the ref is as we expected: the push itself failed; once more
+        return ERROR
 
     def _after_refused_push(self, ref: str, expected: str) -> int:
         """What a refused compare-and-swap means, read from the namespace rather than from git's

@@ -411,6 +411,7 @@ def test_a_refused_push_is_read_from_the_namespace_not_from_gits_words(tmp_path,
     assert alice.acquire(KEY, ttl=600) == claims.ACQUIRED
     ref, mine = alice._ref(KEY), alice.remote_oid(alice._ref(KEY))
     real = alice._git
+    monkeypatch.setattr(claims.time, "sleep", lambda s: None)      # the retries' pauses
 
     def refused(*args, stdin=None):
         if args and args[0] == "push":
@@ -419,6 +420,7 @@ def test_a_refused_push_is_read_from_the_namespace_not_from_gits_words(tmp_path,
     monkeypatch.setattr(alice, "_git", refused)
     assert alice.renew(KEY, ttl=600) == claims.ERROR          # the ref is as it was: ours until it expires
     assert alice.read(KEY)["owner"] == "alice/w1"
+    assert "failed to push some refs" in alice.last_push_error
     assert alice.acquire(KEY, ttl=600) == claims.ERROR        # the same for a refused acquisition of our own
     monkeypatch.undo()
     later = alice.read(KEY)["acquired_at"] + 100
