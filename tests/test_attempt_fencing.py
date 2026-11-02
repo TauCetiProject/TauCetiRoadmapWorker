@@ -397,3 +397,40 @@ def test_a_second_worker_process_exits_before_it_touches_the_state(tmp_path, mon
         cli.main(["--conf", str(cli.paths.HERE / "tauceti-roadmap.toml.example"), "work", "--worker-id", "alice-1"])
     held.close()
     assert sorted(p.name for p in wdir.iterdir()) == ["worker.lock"]        # no build snapshot, no round log
+
+
+@needs_git
+def test_a_refused_push_is_read_from_the_namespace_not_from_gits_words(tmp_path, monkeypatch):
+    """`failed to push some refs` is also what a 5xx, a dropped connection or a lock held by a
+    concurrent push to the repository say: a renewal refused while the ref still holds our lease is an
+    error to retry at the next beat, not a loss (three one-off reviewers lost 45 minutes of work each
+    to renewals refused in the same second)."""
+    remote = tmp_path / "claims.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    alice, bob = local_claims(tmp_path, remote, "alice/w1"), local_claims(tmp_path, remote, "bob/w2")
+    assert alice.acquire(KEY, ttl=600) == claims.ACQUIRED
+    ref, mine = alice._ref(KEY), alice.remote_oid(alice._ref(KEY))
+    real = alice._git
+
+    def refused(*args, stdin=None):
+        if args and args[0] == "push":
+            return subprocess.CompletedProcess(args, 1, "", "error: failed to push some refs to 'origin'\n")
+        return real(*args, stdin=stdin)
+    monkeypatch.setattr(alice, "_git", refused)
+    assert alice.renew(KEY, ttl=600) == claims.ERROR          # the ref is as it was: ours until it expires
+    assert alice.read(KEY)["owner"] == "alice/w1"
+    assert alice.acquire(KEY, ttl=600) == claims.ERROR        # the same for a refused acquisition of our own
+    monkeypatch.undo()
+    later = alice.read(KEY)["acquired_at"] + 100
+    monkeypatch.setattr(claims.time, "time", lambda: later)
+    assert alice.renew(KEY, ttl=600) == claims.ACQUIRED       # a later renewal: the ref moved to a newer lease of ours
+    # the same refusal while the ref moved: read what moved it
+    assert alice._after_refused_push(ref, mine) == claims.ACQUIRED      # our own newer lease (a concurrent write of ours)
+    bob.release(KEY, force=True)
+    assert alice._after_refused_push(ref, mine) == claims.HELD          # released under us
+    assert bob.acquire(KEY) == claims.ACQUIRED
+    assert alice._after_refused_push(ref, mine) == claims.HELD          # another owner's
+    assert alice._after_refused_push(ref, alice.remote_oid(ref)) == claims.ERROR   # unchanged: the push itself failed
+    alice.repo = str(tmp_path / "unreachable.git")
+    alice.ensure_repo()
+    assert alice._after_refused_push(ref, mine) == claims.ERROR         # unreadable: never a loss

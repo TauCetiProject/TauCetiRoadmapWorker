@@ -199,8 +199,27 @@ class Claims:
         out = self._git("push", f"--force-with-lease={ref}:{expected}", "origin", f"{new}:{ref}")
         if out.returncode == 0:
             return ACQUIRED
-        text = (out.stdout + out.stderr).lower()
-        return HELD if any(s in text for s in ("rejected", "stale info", "failed to push")) else ERROR
+        return self._after_refused_push(ref, expected)
+
+    def _after_refused_push(self, ref: str, expected: str) -> int:
+        """What a refused compare-and-swap means, read from the namespace rather than from git's
+        words: `failed to push some refs` is also what a 5xx, a lock held by a concurrent push to the
+        repository or a dropped connection say, and three one-off reviewers once lost 45 minutes of
+        work each to renewals refused in the same second while their leases stood untouched. ACQUIRED
+        when the ref now holds our own lease (a concurrent write of ours won); HELD when another owner
+        holds a live lease, or when the ref moved from what we expected to nothing (released under us);
+        ERROR when the ref still holds what we expected (the push failed for a reason of its own; the
+        lease is as it was) or when the namespace cannot be read."""
+        now = int(time.time())
+        cur = self._remote(ref)
+        if cur is None or cur == expected:
+            return ERROR
+        lease = self.lease_at(cur, ref) if cur else None
+        if cur and lease is None:
+            return ERROR
+        if lease and lease.get("owner") == self.owner:
+            return ACQUIRED if lease_live(lease, now) else ERROR
+        return HELD
 
     # -- the lease protocol --
     def acquire(self, key: str, ttl: int = JOB_TTL, extra: dict | None = None) -> int:
