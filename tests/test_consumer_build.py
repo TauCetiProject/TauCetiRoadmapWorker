@@ -66,3 +66,23 @@ def test_consumer_warnings_are_not_the_roadmaps_problem():
     assert out == [p for p in out if "LocalFields" in p] and len(out) == 1
     # no folder: the old behaviour
     assert len(gates.build_output_problems("\n".join(text.splitlines()[:3]), 0)) == 2
+
+
+def test_gate_problems_pass_a_nested_folder_into_the_gate(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from tauceti_roadmap_worker.lanes import gate as gate_lane
+    seen = {}
+
+    def run_gate(worktree, name, opts, base="", build_cmd=""):
+        seen["folder"] = opts.folder
+        r = gates.GateResult(name)
+        return r
+    monkeypatch.setattr(gates, "run_gate", run_gate)
+    monkeypatch.setattr(gate_lane, "fetch_pr_base", lambda ctx, ws: "origin/main")
+    monkeypatch.setattr(gate_lane, "worktree_elaboration_problems", lambda ctx, ws, folder: [])
+    ctx = SimpleNamespace(cfg=SimpleNamespace(gates=SimpleNamespace(build="")))
+    ws = SimpleNamespace(workdir=tmp_path)
+    gate_lane.gate_problems(ctx, ws, "SemisimpleAlgebras", "RepresentationTheory/SemisimpleAlgebras", gates.GateOptions())
+    assert seen["folder"] == "RepresentationTheory/SemisimpleAlgebras"
+    gate_lane.gate_problems(ctx, ws, "Foo", "Foo", gates.GateOptions())
+    assert seen["folder"] == ""

@@ -12,6 +12,8 @@ mk-reply.py, post_fix.sh and label-sync.sh.
 
 from __future__ import annotations
 
+import dataclasses
+
 import json
 from pathlib import Path
 
@@ -93,6 +95,10 @@ def gate_problems(ctx: Context, ws: Workspace, name: str, folder: str,
     """(the problems, the result) of the push gate with the targeted build on the worktree, its
     outside-folder check against the pull request's own base (`fetch_pr_base`), and of the elaboration
     of the folder's Suggested.lean when no build is configured."""
+    if folder and folder != name and not opts.folder:
+        # a nested roadmap: the gate must look in its folder, not in `<active_dir>/<name>/` (2026-11-02: the
+        # gate of a RepresentationTheory member failed with missing-files on every round)
+        opts = dataclasses.replace(opts, folder=folder)
     result = gates.run_gate(ws.workdir, name, opts, base=fetch_pr_base(ctx, ws), build_cmd=ctx.cfg.gates.build)
     return scan_problems(result) + worktree_elaboration_problems(ctx, ws, folder), result
 
