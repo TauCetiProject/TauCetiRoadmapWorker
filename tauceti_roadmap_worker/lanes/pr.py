@@ -148,12 +148,20 @@ def inline_events(items: list[dict]) -> list[replies.Event]:
             for c in items]
 
 
+def dismissed_or_empty(review: dict) -> bool:
+    """A dismissed pull-request review: GitHub keeps it as a review in state DISMISSED with an empty
+    body, and three pool pull requests sat in awaiting-author on such events (2026-11-02). An empty
+    review in any other state stays: an empty approval approves, and a review with no text of its own
+    can carry inline comments."""
+    return str(review.get("state") or "") == "DISMISSED"
+
+
 def events_from_api(reviews: list[dict], comments: list[dict], inline: list[dict] = ()) -> list[replies.Event]:
     out = [replies.Event(r.get("submitted_at") or "", (r.get("user") or {}).get("login", ""), r.get("body") or "",
                          approved=r.get("state") == "APPROVED", commit=r.get("commit_id") or "",
                          review_id=r.get("id") or 0, ref=_ref("review", r),
                          version=replies.text_version(r.get("body") or ""))
-           for r in reviews if r.get("submitted_at")]
+           for r in reviews if r.get("submitted_at") and not dismissed_or_empty(r)]
     out += [replies.Event(c.get("created_at", ""), (c.get("user") or {}).get("login", ""), c.get("body") or "",
                           ref=_ref("comment", c), version=replies.text_version(c.get("body") or ""))
             for c in comments]
