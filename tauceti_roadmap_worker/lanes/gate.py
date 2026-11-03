@@ -75,7 +75,8 @@ def answer_values(ctx: Context, ws: Workspace, name: str, folder: str, reviews: 
               "GATE": ctx.cli("gate", str(ws.workdir), name, *(("--folder", folder) if folder != name else ()),
                               "--base", pr_base(ctx, ws)),
               "COMMIT": (f"If you changed anything: `git add {path} && git commit -m \"{name}: review repairs "
-                         "(<your summary, at most 15 words>)\"`. Do not push.")}
+                         "(<your summary, at most 15 words>)\"`. Do not push."),
+              "BOARD_EDITS": ""}
     return {**values, "REPORT": str(report)} if report is not None else values
 
 

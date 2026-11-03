@@ -37,6 +37,8 @@ three points is three findings). A comment that asks a question gets an answer, 
 `__FILES__` in the worktree `__WORKDIR__` (the pull request branch, checked out at `__HEAD__`).
 Nothing else: no other folder, no pull-request text, no tooling.
 
+__BOARD_EDITS__
+
 ## Method
 
 For each point: verify it against the sources (legal sources only), the roadmap's own definitions,

@@ -92,7 +92,10 @@ def test_a_review_delivers_its_report_and_verdict_and_releases_nothing():
     job = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "owner": "carol", "name": "Foo"})
     wanted = {"packages/Foo/reports/PRREVIEW-Foo~2.md", "packages/Foo/reports/PRREVIEW-Foo~2.json"}
     assert board.required_paths(job, "packages") == wanted
-    assert board.allowed_paths(job, "packages", "merge-order/ORDER.txt") == wanted     # no manifest, no order
+    # no order; the manifest and the plan (its gaps) only for the in-job repair of a pool author's roadmap
+    assert board.allowed_paths(job, "packages", "merge-order/ORDER.txt") == wanted | {
+        "packages/Foo/sources.toml", "packages/Foo/design/plan.json"}
+    assert board.gaps_only(job)
     for verdict in ("accepted", "needs_changes", "rejected"):
         assert board.successors(job, Outcome(verdict=verdict)) == []
         assert board.blocked_reason(job, Outcome(verdict=verdict)) == ""
@@ -1296,9 +1299,29 @@ def reviewed(lane, job, ctx, head, status="needs_changes"):
 REPAIR_LINE = "## H01 (AI review PRREVIEW-Foo~2) — applied\nThe README now states the hypothesis on p.\n"
 
 
-def repair_agent(monkeypatch, briefs, report=REPAIR_LINE, edit=True, stray=False, forget_commit_once=False):
+PLAN_BEFORE = json.dumps({"gaps": [{"slug": "a-gap", "supplier": "Bar", "needs": "x"},
+                                   {"slug": "kept-gap", "supplier": "Baz", "needs": "y"}]}, indent=1) + "\n"
+MANIFEST_BEFORE = 'schema = "tauceti-roadmap-sources/v1"\nroadmap = "Foo"\n\n[[source]]\nid = "AUTH"\ntitle = "The author\'s source"\nyear = 2001\n'
+NEW_RECORD = '\n[[source]]\nid = "NEW"\ntitle = "A source the README cites"\nyear = 2020\n'
+
+
+def seed_board_plan_and_manifest(rh, tmp_path):
+    """The board's main with Foo's plan (two gaps) and sources manifest (one entry of the author)."""
+    seed = tmp_path / "board-seed"
+    sh(tmp_path, "clone", "-q", "-b", "main", str(rh.board), str(seed))
+    (seed / "packages" / "Foo" / "design" / "plan.json").write_text(PLAN_BEFORE)
+    (seed / "packages" / "Foo" / "sources.toml").write_text(MANIFEST_BEFORE)
+    sh(seed, "add", "-A")
+    sh(seed, "commit", "-q", "-m", "Foo: plan and manifest")
+    sh(seed, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+
+def repair_agent(monkeypatch, briefs, report=REPAIR_LINE, edit=True, stray=False, forget_commit_once=False,
+                 board_edits=None):
     def run_agent(self, ctx, ws, brief, label=""):
         briefs.append((label, brief, (ws.scratch / "reviews.md").read_text()))
+        for rel, text in (board_edits or {}).items():
+            (ws.board / rel).write_text(text)
         if edit:
             (ws.workdir / "TauCetiRoadmap" / "Foo" / "README.md").write_text("# Foo\n\nFor every odd prime p.\n")
             if not (forget_commit_once and len(briefs) == 1) and sh(ws.workdir, "status", "--short").strip():
@@ -1454,3 +1477,68 @@ def test_the_managed_pull_requests_name_their_base(tmp_path):
                           state=tmp_path)
     assert [(p["pr"], p["base"]) for p in lane_base.open_roadmap_prs(ctx)] == [
         (816, "roadmap/diamonds-and-v-stacks"), (817, "main")]
+
+
+@needs_git
+def test_a_repair_delivers_its_plan_gap_retirements_and_manifest_additions_with_the_review(hub, monkeypatch, tmp_path):  # noqa: F811
+    """2026-11-03: five rounds in a row disputed board-side findings (a plan gap the README now owns, a
+    cited source the manifest lacks) that the repair could not deliver: those two edits now ride on
+    the review's submission; a stray file does not."""
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    seed_board_plan_and_manifest(rh, tmp_path)
+    briefs = []
+    retired = json.dumps({"gaps": [{"slug": "kept-gap", "supplier": "Baz", "needs": "y"}]}, indent=1) + "\n"
+    repair_agent(monkeypatch, briefs, stray=True, board_edits={
+        "packages/Foo/design/plan.json": retired, "packages/Foo/sources.toml": MANIFEST_BEFORE + NEW_RECORD})
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted", result.detail
+    [(label, brief, _reviews)] = briefs
+    assert "Two files of the board checkout as well" in brief and "packages/Foo/design/plan.json" in brief
+    [opened] = rh.opened
+    assert ("Files: `packages/Foo/design/plan.json`, `packages/Foo/reports/PRREVIEW-Foo~2.json`, "
+            "`packages/Foo/reports/PRREVIEW-Foo~2.md`, `packages/Foo/sources.toml`") in opened["body"]
+    assert "board edits delivered with the review: packages/Foo/design/plan.json, packages/Foo/sources.toml" in ws.extra["notes"]
+    assert lane_base.read_pending(ctx, job) is None
+
+
+@needs_git
+def test_a_repair_that_declares_a_gap_or_rewrites_an_author_entry_delivers_neither(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    seed_board_plan_and_manifest(rh, tmp_path)
+    briefs = []
+    declared = json.dumps({"gaps": [{"slug": "a-gap", "supplier": "Bar", "needs": "x"},
+                                    {"slug": "kept-gap", "supplier": "Baz", "needs": "y"},
+                                    {"slug": "new-gap", "supplier": "Qux", "needs": "z"}]}, indent=1) + "\n"
+    rewritten = MANIFEST_BEFORE.replace("year = 2001", "year = 1999") + NEW_RECORD
+    repair_agent(monkeypatch, briefs, board_edits={"packages/Foo/design/plan.json": declared,
+                                                   "packages/Foo/sources.toml": rewritten})
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted", result.detail
+    [opened] = rh.opened
+    assert "Files: `packages/Foo/reports/PRREVIEW-Foo~2.json`, `packages/Foo/reports/PRREVIEW-Foo~2.md`" in opened["body"]
+    notes = "\n".join(ws.extra["notes"])
+    assert ("the repair's edit of packages/Foo/design/plan.json is not delivered: packages/Foo/design/plan.json: "
+            "a review's repair retires gaps, it declares none (new-gap)") in notes
+    assert "the repair's edit of packages/Foo/sources.toml is not delivered: sources.toml: a repair keeps the author's entries: AUTH: year changed" in notes
+
+
+def test_plan_and_manifest_edit_guards():
+    from tauceti_roadmap_worker.lanes import prreview as lp
+    before = json.dumps({"gaps": [{"slug": "a"}, {"slug": "b"}], "layers": []})
+    assert lp.plan_edit_problems("p/plan.json", before, json.dumps({"gaps": [{"slug": "b"}], "layers": []})) == []
+    assert lp.plan_edit_problems("p/plan.json", before, json.dumps({"gaps": [{"slug": "b"}, {"slug": "c"}], "layers": []})) == [
+        "p/plan.json: a review's repair retires gaps, it declares none (c)"]
+    assert lp.plan_edit_problems("p/plan.json", before, json.dumps({"gaps": [], "layers": [1]})) == [
+        "p/plan.json: at the package stage only its top-level `gaps` list may change"]
+    assert lp.plan_edit_problems("p/plan.json", before, "{") == ["invalid JSON in p/plan.json"]
+    assert lp.manifest_edit_problems(MANIFEST_BEFORE, MANIFEST_BEFORE + NEW_RECORD) == []
+    assert lp.manifest_edit_problems(MANIFEST_BEFORE, "[[source") == ["sources.toml does not parse: Expected ']]' at the end of a table declaration (at line 1, column 9)"][:0] or \
+        lp.manifest_edit_problems(MANIFEST_BEFORE, "[[source")[0].startswith("sources.toml does not parse")
+    assert lp.manifest_edit_problems(MANIFEST_BEFORE, MANIFEST_BEFORE.replace("2001", "1999"))[0].startswith(
+        "sources.toml: a repair keeps the author's entries")

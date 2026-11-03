@@ -45,10 +45,11 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import tomllib
 from pathlib import Path
 from urllib.parse import quote
 
-from .. import board, depgraph, gates, gitops, prompts, prreviews, references, replies
+from .. import board, depgraph, gates, gitops, prompts, prreviews, references, replies, sources
 from ..board import Job
 from ..depgraph import read_order
 from ..gh import GHError
@@ -332,6 +333,82 @@ def restore_board(ws: Workspace, kept: dict[str, bytes]) -> None:
     for rel, data in kept.items():
         (ws.board / rel).parent.mkdir(parents=True, exist_ok=True)
         (ws.board / rel).write_bytes(data)
+
+
+def board_edit_paths(job: Job, ctx: Context) -> tuple[str, str]:
+    """The two board files a review's repair may deliver: the package plan and the sources manifest."""
+    pkgs = ctx.cfg.board.packages_dir
+    return f"{board.package_dir(pkgs, job.name)}/design/plan.json", board.manifest_path(pkgs, job.name)
+
+
+def plan_edit_problems(rel: str, before: str, after: str) -> list[str]:
+    """Why a repair's edit of the plan is not delivered: anything but its top-level `gaps`, an entry
+    added (a gap is declared at the package stage), or a gap a target still names."""
+    problems = board.plan_change_problems(rel, before, after)
+    if problems:
+        return problems
+    try:
+        old, new = json.loads(before or "{}"), json.loads(after)
+    except ValueError:
+        return [f"invalid JSON in {rel}"]
+
+    def slugs(plan) -> set[str]:
+        return {str(g.get("slug") or g.get("id")) for g in (plan.get("gaps") or []) if isinstance(g, dict)} \
+            if isinstance(plan, dict) else set()
+    added = sorted(slugs(new) - slugs(old))
+    if added:
+        return [f"{rel}: a review's repair retires gaps, it declares none ({', '.join(added)})"]
+    return []
+
+
+def manifest_edit_problems(before: str, after: str) -> list[str]:
+    """Why a repair's edit of the manifest is not delivered: it does not parse, or it alters an entry
+    the author recorded (a repair adds records; `sources.altered_entries`)."""
+    try:
+        old = tomllib.loads(before or "")
+    except tomllib.TOMLDecodeError:
+        old = {}
+    try:
+        new = tomllib.loads(after)
+    except tomllib.TOMLDecodeError as exc:
+        return [f"sources.toml does not parse: {exc}"]
+    altered = sources.altered_entries(old, new)
+    return [f"sources.toml: a repair keeps the author's entries: {altered[0]}"] if altered else []
+
+
+def board_edits(job: Job, ctx: Context, ws: Workspace) -> tuple[dict[str, bytes], list[str]]:
+    """The repair agent's edits to the board files a review may deliver (`board_edit_paths`), as the
+    files to keep once the board checkout is put back, and a note for each edit dropped. Everything
+    else the agent changed on the board is the review's to discard (`restore_board`)."""
+    keep, notes = {}, []
+    plan, manifest = board_edit_paths(job, ctx)
+    for rel in (plan, manifest):
+        path = ws.board / rel
+        if not path.is_file():
+            continue
+        after = path.read_bytes()
+        before = gitops.git(ws.board, "show", f"HEAD:{rel}", check=False) or ""
+        text = after.decode("utf-8", errors="replace")
+        if text == before:
+            continue
+        problems = plan_edit_problems(rel, before, text) if rel == plan else manifest_edit_problems(before, text)
+        if problems:
+            notes.append(f"the repair's edit of {rel} is not delivered: {problems[0]}")
+        else:
+            keep[rel] = after
+    return keep, notes
+
+
+def board_edits_brief(job: Job, ctx: Context, ws: Workspace) -> str:
+    """The sentence of the repair brief on the two board files it may edit, for board-side findings."""
+    plan, manifest = board_edit_paths(job, ctx)
+    return (f"Two files of the board checkout as well, for findings about the board's records only: "
+            f"`{ws.board / plan}` (retire an entry of its top-level `gaps` list when the README owns, or imports "
+            f"from the supplier named, what the entry requests: remove entries, add none, change nothing else in "
+            f"the file) and `{ws.board / manifest}` (add a record for a source the README cites and the manifest "
+            f"lacks, fetched through the legal sources service; never change or remove an existing record). "
+            f"The worker delivers these two edits with the review; every other change to the board checkout is "
+            f"discarded. Do not commit in the board checkout.")
 
 
 def save_gate(path: Path, head: str, result: gates.GateResult) -> None:
@@ -637,10 +714,24 @@ class PRReviewLane(Lane):
                          f"`- {fid} — repaired | partly repaired | not repaired: <the passage>` under `## Previous findings`)"
                          for fid in unaccounted_findings(Path(previous).read_text(encoding="utf-8"), report)]
         problems += self.checkout_problems(ws, repaired_head(ctx, job))
+        problems += self.board_edit_problems(job, ctx, ws)
         if not problems and len(self.comment_body(job, ctx, ws)) > COMMENT_LIMIT:
             problems.append(f"report: too long to post as one pull-request comment (the limit is {COMMENT_LIMIT:,} "
                             "characters): keep every finding and the sampled rows of the adversarial table, and cut the "
                             "per-target ledgers and the restated roadmap content")
+        return problems
+
+    def board_edit_problems(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
+        """The board files a repair may deliver, as the submission will carry them: the plan in its gaps
+        only and without additions, the manifest with the author's entries intact."""
+        problems = []
+        plan, manifest = board_edit_paths(job, ctx)
+        for rel in gitops.changed_files(ws.board):
+            if rel not in (plan, manifest) or not (ws.board / rel).is_file():
+                continue
+            before = gitops.git(ws.board, "show", f"HEAD:{rel}", check=False) or ""
+            after = (ws.board / rel).read_text(encoding="utf-8", errors="replace")
+            problems += plan_edit_problems(rel, before, after) if rel == plan else manifest_edit_problems(before, after)
         return problems
 
     def checkout_problems(self, ws: Workspace, repaired: str = "") -> list[str]:
@@ -761,7 +852,8 @@ class PRReviewLane(Lane):
         (ws.job_dir / ANSWERED).write_text(json.dumps(replies.versions([event]), indent=1, sort_keys=True) + "\n",
                                            encoding="utf-8")
         report.unlink(missing_ok=True)
-        values = {**self.common_values(job, ctx, ws), **answer_values(ctx, ws, job.name, folder, reviews, report)}
+        values = {**self.common_values(job, ctx, ws), **answer_values(ctx, ws, job.name, folder, reviews, report),
+                  "BOARD_EDITS": board_edits_brief(job, ctx, ws)}
         brief = prompts.render("gate", values)
         (ws.job_dir / "brief-repair.md").write_text(brief, encoding="utf-8")
         gate, problems = None, []
@@ -776,7 +868,14 @@ class PRReviewLane(Lane):
                 (ws.job_dir / f"brief-{label}.md").write_text(brief, encoding="utf-8")
             kept = board_snapshot(job, ctx, ws)
             result = self.run_agent(ctx, ws, brief, label)
+            edits, dropped = board_edits(job, ctx, ws)
             restore_board(ws, kept)
+            for rel, data in edits.items():
+                (ws.board / rel).write_bytes(data)
+            for line in dropped:
+                self.note(ws, line)
+            if edits:
+                self.note(ws, "board edits delivered with the review: " + ", ".join(sorted(edits)))
             if result.limited or result.exit_code != 0:
                 raise LaneError("the repair agent " + ("hit a usage limit" if result.limited else f"exited {result.exit_code}"))
             problems = ([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report)

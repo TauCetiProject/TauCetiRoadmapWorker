@@ -572,7 +572,10 @@ def allowed_paths(job: Job, packages_dir: str, order_file: str = "") -> set[str]
         verdict = f"{p}/design/review.json" if art == "DESIGN" else f"{p}/review.json"
         return report | manifest | {verdict}
     if job.kind == "prreview":
-        return report | {prreview_verdict_path(packages_dir, job)}     # read-only on the pull request
+        # The review is read-only on the pull request; its in-job repair of a pool author's roadmap may retire
+        # plan gaps the README now owns and record sources the README cites (2026-11-03: five rounds disputed
+        # board-side findings the repair could not deliver).
+        return report | {prreview_verdict_path(packages_dir, job)} | manifest | plan
     if job.kind == "fix" and art:
         return report | manifest | (design if art == "DESIGN" else package | plan)
     if job.kind == "fix" and job.inputs.get("board_pr"):
@@ -627,8 +630,9 @@ def order_change_problems(path: str, before: str, after: str, own: set[str]) -> 
 
 def gaps_only(job: Job) -> bool:
     """Whether the job may change the design's plan.json only in its top-level `gaps` list: every job
-    at the package stage (the package, its fixes, a red-team fix on its board pull request)."""
-    return job.kind == "package" or (job.kind == "fix" and (artefact_of(job.id) == "PKG"
+    at the package stage (the package, its fixes, a red-team fix on its board pull request) and a
+    review of a roadmap pull request (its repair retires gaps the README owns)."""
+    return job.kind in ("package", "prreview") or (job.kind == "fix" and (artefact_of(job.id) == "PKG"
                                                             or bool(job.inputs.get("board_pr")) and not artefact_of(job.id)))
 
 
