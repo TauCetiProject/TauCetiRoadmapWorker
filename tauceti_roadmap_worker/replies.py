@@ -186,6 +186,30 @@ def answered_marker(job: str, answered: dict[str, str], worker: str = "", head: 
     return f"<!-- {ANSWERED_MARK} {json.dumps(data, sort_keys=True)} -->"
 
 
+CARRIED_MARK = "tauceti-roadmap-carried"
+CARRIED_RE = re.compile(r"<!--\s*" + CARRIED_MARK + r"\b(.*?)-->", re.DOTALL)
+
+
+def carried_marker(from_head: str, head: str, worker: str = "") -> str:
+    """The record a reply carries when small repairs were pushed onto an accepted head without a
+    re-review: `from`, the head an AI review accepted, `head`, the repaired head, and the worker."""
+    data = {"from": from_head, "head": head, **({"worker": worker} if worker else {})}
+    return f"<!-- {CARRIED_MARK} {json.dumps(data, sort_keys=True)} -->"
+
+
+def carried_record(body: str) -> dict | None:
+    """A reply's carried record (the last one): {from, head, worker}; {} for one that does not parse,
+    None for a reply without one."""
+    found = CARRIED_RE.findall(body or "")
+    if not found:
+        return None
+    try:
+        record = json.loads(found[-1].strip())
+    except ValueError:
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
 def answered_record(body: str) -> dict | None:
     """A reply's whole record (the last one: the worker appends it after the agent's text): {job,
     answered, worker, head}; {} for a record that does not parse, None for a reply without one."""

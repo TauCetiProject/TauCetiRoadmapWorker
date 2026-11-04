@@ -241,9 +241,11 @@ class ContentGH:
     REST, main's tree (`tree`: the folders under TauCetiRoadmap/ holding a README.md), the board's main
     (verdict records), and every write; label writes fail with `refuse`."""
 
-    def __init__(self, nodes=(), pulls=None, files=None, refuse=False, tree=(), comments=None, unreadable=False):
+    def __init__(self, nodes=(), pulls=None, files=None, refuse=False, tree=(), comments=None, unreadable=False,
+                 compares=None):
         self.nodes, self.pulls, self.files, self.refuse = list(nodes), dict(pulls or {}), dict(files or {}), refuse
         self.comments, self.unreadable = dict(comments or {}), unreadable   # pull request -> its issue comments
+        self.compares = dict(compares or {})                                  # (old, new) -> the comparison's files
         self.tree = [f"TauCetiRoadmap/{d}/README.md" for d in tree]
         self.writes, self.listings, self.dry_run, self.fence = [], 0, False, None
 
@@ -258,6 +260,9 @@ class ContentGH:
         m = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)/comments\?per_page=100", path)
         if m and not self.unreadable:
             return list(self.comments.get(int(m.group(1)), []))
+        m = re.fullmatch(r"repos/[^/]+/[^/]+/compare/([0-9a-f]+)\.\.\.([0-9a-f]+)", path)
+        if m and (m.group(1), m.group(2)) in self.compares:
+            return {"files": self.compares[(m.group(1), m.group(2))]}
         if re.fullmatch(r"repos/[^/]+/[^/]+/git/trees/main\?recursive=1", path):
             return {"truncated": False, "tree": [{"path": t, "type": "blob"} for t in self.tree]}
         raise GHError(f"GET {path}: 404")
@@ -535,6 +540,45 @@ def test_the_label_is_added_once_every_folder_accepts_and_goes_when_one_blocks_o
     gh = ContentGH([two_folder_pr(H1)], files={**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)},
                    refuse=True)
     assert sync(gh, [foo, bar])[0][0].startswith(f"#1164: ai-approved on {REPO} not added (gh api -X POST")
+
+
+def test_small_repairs_with_a_carried_record_keep_the_label_and_file_no_review():
+    """`[prreview] carry_accept`: a reply recording that H2 carries the acceptance of H1 keeps the label
+    on H2 when the folders changed by at most small_change_lines lines, and no review of H2 is filed;
+    a bigger change, a change outside the folders, or a chain from an unaccepted head carries nothing."""
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar", folder="Bar")
+    accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
+    carried = {1164: [{"id": 1, "body": "Applied the P3 repairs.\n\n" + replies.carried_marker(H1, H2, "maintainer"),
+                       "user": {"login": "carol"}}]}
+    small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 5, "deletions": 2},
+             {"filename": "TauCetiRoadmap/Bar/README.md", "additions": 3, "deletions": 0}]
+    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, comments=carried, compares={(H1, H2): small})
+    out, fake = sync(gh, [foo, bar], carry_accept=True)
+    assert gh.writes == [] and created(fake) == []
+    assert out == [f"#1164: ai-approved kept (the acceptance of {H1[:7]} carries to {H2[:7]}: 10 lines of repairs "
+                   "inside the roadmap folders, no review filed)"]
+    # Without the setting the ordinary rule applies: the label goes and both folders are reviewed.
+    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, comments=carried, compares={(H1, H2): small})
+    out, fake = sync(gh, [foo, bar])
+    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    # Too many lines: nothing carries.
+    big = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 200, "deletions": 0}]
+    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, comments=carried, compares={(H1, H2): big})
+    out, fake = sync(gh, [foo, bar], carry_accept=True)
+    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    # A file outside the roadmap folders changed: nothing carries.
+    outside = small + [{"filename": "scripts/x.py", "additions": 1, "deletions": 0}]
+    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, comments=carried, compares={(H1, H2): outside})
+    out, fake = sync(gh, [foo, bar], carry_accept=True)
+    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    # A chain of two carries (H1 -> H2 -> H3) is followed back to the accepted head, with the total diff.
+    chain = {1164: carried[1164] + [{"id": 2, "body": replies.carried_marker(H2, H3), "user": {"login": "carol"}}]}
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=chain, compares={(H1, H3): small})
+    out, fake = sync(gh, [foo, bar], carry_accept=True)
+    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-approved kept")
+    # The record and marker round-trip; a reply without one has none.
+    assert replies.carried_record(replies.carried_marker(H1, H2, "w")) == {"from": H1, "head": H2, "worker": "w"}
+    assert replies.carried_record("Fixed in `abc`") is None and intake.carried_from([], H2) == ""
 
 
 def test_a_chore_loses_a_label_put_on_by_hand():

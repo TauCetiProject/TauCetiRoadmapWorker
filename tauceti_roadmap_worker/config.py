@@ -279,6 +279,12 @@ class PRReview:
     # pool operator, goes on in the same job to repair it as a gate round would (push onto its branch,
     # reply finding by finding); the next review of the repaired head is another worker's.
     repair_pool: bool = True
+    # A reply on a labelled pull request that records `<!-- tauceti-roadmap-carried {"from": H0, "head": H1} -->`
+    # carries the acceptance of H0 (a head an AI review accepted) to H1 when, between the two, the roadmap
+    # folders changed by at most `small_change_lines` lines and nothing outside them changed: the label stays
+    # and no review of H1 is filed. For the small repairs an accepting review lists (its P3 findings), applied
+    # without a re-review at the maintainer's decision.
+    carry_accept: bool = False
 
 
 @dataclass

@@ -1708,6 +1708,56 @@ def supersede(ctx, job: Job, note: str, expect: str = "available",
     return True
 
 
+def carried_from(comments: list[dict], head: str) -> str:
+    """The head whose acceptance the latest carried record for `head` on a pull request claims
+    (`replies.carried_record`); '' when none does."""
+    for c in reversed(comments or []):
+        record = replies.carried_record(c.get("body") or "")
+        if record and record.get("head") == head and record.get("from"):
+            return str(record["from"])
+    return ""
+
+
+def folder_change_lines(ctx, repo: str, old: str, new: str, folders, active_dir: str) -> int | None:
+    """Insertions plus deletions between `old` and `new` inside the roadmap folders `folders` (names
+    under `active_dir`); None when the comparison cannot be read or a file outside them changed (then
+    nothing is carried)."""
+    try:
+        compared = ctx.gh.api(f"repos/{repo}/compare/{old}...{new}") or {}
+    except GHError:
+        return None
+    prefixes = [f"{active_dir.strip('/')}/{str(name).strip('/')}/" for name in folders]
+    total = 0
+    for f in compared.get("files") or []:
+        path = str(f.get("filename") or "")
+        if not any(path.startswith(prefix) for prefix in prefixes):
+            return None
+        total += int(f.get("additions") or 0) + int(f.get("deletions") or 0)
+    return total
+
+
+def carried_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: list[Job], texts, p,
+                       threads: dict, batch: int) -> tuple[str, int]:
+    """(the accepted head whose acceptance carries to `head`, the lines changed between them), or
+    ('', 0): a chain of carried records leads from `head` back to a head an AI review of every folder
+    accepted, and the folders changed by at most `[prreview] small_change_lines` lines in all."""
+    if number not in threads:
+        try:
+            threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
+        except GHError:
+            threads[number] = None
+    comments, seen, at = threads.get(number) or [], set(), head
+    while True:
+        source = carried_from(comments, at)
+        if not source or source == at or source in seen:
+            return "", 0
+        seen.add(source)
+        if folders_accepted(ctx, folders, jobs, source, texts)[0]:
+            lines = folder_change_lines(ctx, repo, source, head, folders, ctx.cfg.roadmap.active_dir)
+            return (source, lines) if lines is not None and lines <= p.small_change_lines else ("", 0)
+        at = source
+
+
 def finished_reviews(jobs: list[Job], head: str) -> list[Job]:
     """The done reviews of `head` among `jobs` (a superseded job reviewed nothing)."""
     return [j for j in jobs
@@ -1831,6 +1881,8 @@ def sync_pr_reviews(ctx) -> list[str]:
         board.prreview_verdict_path(cfg.board.packages_dir, j) for entry in listed if plans[int(entry["pr"])][0]
         for j in finished_reviews([j for j in reviews if pr_of(j) == int(entry["pr"])], entry.get("head", ""))], batch)
     accepted_prs: set[int] = set()
+    carried_prs: set[int] = set()
+    threads: dict[int, list[dict] | None] = {}
     for entry in listed:
         number, head = int(entry["pr"]), entry.get("head", "")
         labelled = p.label in entry.get("labels", [])
@@ -1842,6 +1894,13 @@ def sync_pr_reviews(ctx) -> list[str]:
             continue             # being finished: its lane labels, or a later run does
         accepted, reason = (folders_accepted(ctx, folders, mine, head, texts) if folders
                             else (False, f"not reviewed: {why}" if why else "no roadmap folder to review"))
+        if not accepted and labelled and folders and p.carry_accept:
+            source, lines = carried_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads, batch)
+            if source:
+                accepted, reason = True, f"carried from {source[:7]}"
+                carried_prs.add(number)
+                out.append(f"#{number}: {p.label} kept (the acceptance of {source[:7]} carries to {head[:7]}: "
+                           f"{lines} lines of repairs inside the roadmap folders, no review filed)")
         if accepted:
             accepted_prs.add(number)
         try:
@@ -1856,7 +1915,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             out.append(f"#{number}: {p.label} on {repo} not {'added' if accepted else 'removed'} "
                        f"({str(exc).splitlines()[0][:160]})")
 
-    made, waiting, threads = 0, 0, {}
+    made, waiting = 0, 0
     for entry in listed:
         number, head, author = int(entry["pr"]), entry.get("head", ""), entry.get("author", "")
         settled = number in accepted_prs or p.label in entry.get("labels", [])     # an accepted head: no dispute
@@ -1866,6 +1925,8 @@ def sync_pr_reviews(ctx) -> list[str]:
             continue
         if not folders or not author_reviewed(p, author) or not head:
             continue
+        if number in carried_prs:
+            continue             # small repairs on an accepted head: the acceptance carries, no round
         if any(pr_of(g) == number and g.state in OPEN_ROUND for g in gate_rounds):
             continue
         mine = [j for j in reviews if pr_of(j) == number]
