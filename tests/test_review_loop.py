@@ -43,6 +43,8 @@ Verdict: needs_changes
    Re-raised: F02
 3. **F03** (P3) A typo in Layer 2
 """
+# The same review without its new P3 finding: every finding re-raises one the repair settled.
+SETTLED_REVIEW = REVIEW.replace("3. **F03** (P3) A typo in Layer 2\n", "")
 
 
 def test_not_actionable_findings_of_a_repair_report():
@@ -53,9 +55,11 @@ def test_not_actionable_findings_of_a_repair_report():
 
 
 def test_a_review_that_only_re_raises_settled_findings_is_stuck():
-    stuck = intake.stuck_findings(REPAIR, REVIEW)
-    assert [s.split(" ", 1)[0] for s in stuck] == ["`F01`", "`F02`"]           # the P3 does not count
+    stuck = intake.stuck_findings(REPAIR, SETTLED_REVIEW)
+    assert [s.split(" ", 1)[0] for s in stuck] == ["`F01`", "`F02`"]
     assert "re-raises `F01`, which the repair marked not actionable (the six interfaces" in stuck[0]
+    # A new P3 finding asks for a change (owner rule 2026-11-04), so the review is not stuck: a repair round runs.
+    assert intake.stuck_findings(REPAIR, REVIEW) == []
     fresh = REVIEW.replace("   Re-raised: F02\n", "")                         # F02 is now a new finding
     assert intake.stuck_findings(REPAIR, fresh) == []
     assert intake.stuck_findings("## F01 (P1) — applied\nok\n", REVIEW) == []   # nothing was settled
@@ -90,8 +94,7 @@ def test_the_intake_parks_the_next_repair_round_for_a_human():
     rev = new_job("REV-DESIGN-QWittVectors~2", independent_of=["DESIGN-QWittVectors", "FIX-DESIGN-QWittVectors~2"])
     rev.number, rev.state = 9, "submitted"
     pkg = "packages/QWittVectors"
-    worker_review = (REVIEW.replace("1. **F01** (P1)", "## R01 (P1) —").replace("2. **F02** (P2)", "## R02 (P2) —")
-                     .replace("3. **F03** (P3)", "## R03 (P3) —"))
+    worker_review = SETTLED_REVIEW.replace("1. **F01** (P1)", "## R01 (P1) —").replace("2. **F02** (P2)", "## R02 (P2) —")
     gh = LoopGH({f"{pkg}/reports/{rev.id}.md": worker_review, f"{pkg}/reports/FIX-DESIGN-QWittVectors~2.md": REPAIR,
                  f"{pkg}/design/review.json": json.dumps({"review": {"status": "needs_changes",
                                                                      "reviewer": f"independent-review-{rev.id}"}})})
@@ -101,7 +104,7 @@ def test_the_intake_parks_the_next_repair_round_for_a_human():
     fix = board.find("FIX-DESIGN-QWittVectors~3")
     assert fix.state == "blocked"
     parked = [body for number, body in board.posted if number == 9 and body.startswith("Parked for a human")]
-    assert parked and "`R01` (P1)" in parked[0] and "`R02` (P2)" in parked[0] and "R03" not in parked[0]
+    assert parked and "`R01` (P1)" in parked[0] and "`R02` (P2)" in parked[0]
 
 
 def test_a_board_review_reads_the_repair_at_the_head_it_reviewed():
@@ -113,10 +116,10 @@ def test_a_board_review_reads_the_repair_at_the_head_it_reviewed():
         return files.get((path, ref), "")
     bot = SimpleNamespace(cfg=example_config(), gh=SimpleNamespace(raw_file=raw_file))
     rev = new_job("REV-PKG-Foo~2", inputs={"board_pr": 12})
-    stuck = intake.stuck_on(bot, rev, Outcome(verdict="needs_changes", report=REVIEW, head="c" * 40))
+    stuck = intake.stuck_on(bot, rev, Outcome(verdict="needs_changes", report=SETTLED_REVIEW, head="c" * 40))
     assert len(stuck) == 2 and reads[0] == ("packages/Foo/reports/FIX-PKG-Foo~2.md", "c" * 40)
-    assert intake.stuck_on(bot, new_job("REV-PKG-Foo"), Outcome(verdict="needs_changes", report=REVIEW)) == []   # round 1
-    assert intake.stuck_on(bot, rev, Outcome(verdict="accepted", report=REVIEW)) == []
+    assert intake.stuck_on(bot, new_job("REV-PKG-Foo"), Outcome(verdict="needs_changes", report=SETTLED_REVIEW)) == []   # round 1
+    assert intake.stuck_on(bot, rev, Outcome(verdict="accepted", report=SETTLED_REVIEW)) == []
 
 
 def test_a_design_is_checked_as_a_merge_order_candidate():

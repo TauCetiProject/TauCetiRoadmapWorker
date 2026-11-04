@@ -406,7 +406,7 @@ def stuck_findings(repair_report: str, review: str) -> list[str]:
         return []
     ids = [fid for fid, _how in replies.dispositions(repair_report)]
     by_title = {_norm(t): fid for fid, (t, _r) in settled.items() if _norm(t)}
-    blocking = [f for f in prreviews.findings_with_bodies(review) if f[1] in ("P1", "P2")]
+    blocking = list(prreviews.findings_with_bodies(review))     # every finding asks for a change
     out = []
     for fid, severity, title, body in blocking:
         named = [replies.names(r, ids) for r in prreviews.reraised(title, body)]

@@ -851,7 +851,7 @@ def test_a_lost_comment_answer_is_found_and_not_posted_twice(review_env):
 
 @pytest.mark.parametrize("status,report,gate_ok,problem", [
     ("accepted", "no table", True, "adversarial table"),
-    ("accepted", "blocking", True, "an acceptance leaves P3 notes only"),
+    ("accepted", "blocking", True, "an acceptance lists no finding"),
     ("accepted", "", False, "an acceptance needs the worker's gate to pass at this head"),
     ("needs_changes", "no findings", True, "a verdict that asks for changes writes each finding"),
     ("accepted", "wrong head line", True, "report: first line must be '# Review of Foo (pull request #905 at 1111111)'"),

@@ -104,8 +104,8 @@ cross-roadmap sections you opened; review a section you only skimmed before you 
 under `## Not verifiable` only what you cannot check (a text you cannot open), with the reason.
 An acceptance, and a red-team pass with no finding, carries the adversarial pass's table
 (`| Statement | Instances tried | Values | Result | Change |`, rows with the computed values), or it
-is not counted. `accepted` means only P3 notes remain (an acceptance with a P1 or P2 finding is not
-counted); `needs_changes` needs at least one P1 or P2 finding; `rejected` is for a __SUBJECT__ no
+is not counted. `accepted` means no finding remains at all (an acceptance that lists a finding, P3
+included, is not counted: a repair asks for changes); `needs_changes` needs at least one finding; `rejected` is for a __SUBJECT__ no
 fix can repair (it re-plans an existing roadmap, or its scope is wrong): a human decides. Review only the head named in the first
 line: a review of an older head is not counted. Quote locators, never passages.
 

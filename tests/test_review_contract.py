@@ -49,15 +49,20 @@ def test_an_acceptance_with_a_blocking_finding_and_no_evidence_is_not_counted():
     gh.say("roed-math", prreviews.review_head("chatgpt", HEAD) + "\n\nVerdict: accepted\n\n1. **F01** (P1) false\n")
     assert boardpr.scan(ctx, yes=True) == [] and rev.state == "available" and board.find("RT-Foo~1a") is None
     [note] = not_counted(gh)
-    assert note.startswith("Not counted for `REV-PKG-Foo~2`: `roed-math`'s review: it accepts with blocking findings "
-                           "(F01 (P1)): an acceptance leaves P3 notes only; the report has no adversarial table")
+    assert note.startswith("Not counted for `REV-PKG-Foo~2`: `roed-math`'s review: it accepts with findings "
+                           "(F01 (P1)): an acceptance lists no finding; a repair, whatever its priority, asks for "
+                           "changes; the report has no adversarial table")
     assert boardpr.scan(ctx, yes=True) == [] and len(not_counted(gh)) == 1             # answered once
-    # The browser workflow itself still works: an acceptance with its table and only P3 notes.
+    # An acceptance with a P3 note is not counted either (owner rule 2026-11-04: a repair asks for changes).
     gh.say("roed-math", prreviews.review_head("chatgpt", HEAD) + "\n\nVerdict: accepted\n\n1. **F01** (P3) a locator\n\n"
            + TABLE)
+    assert boardpr.scan(ctx, yes=True) == [] and len(not_counted(gh)) == 2
+    assert "it accepts with findings (F01 (P3))" in not_counted(gh)[1]
+    # The browser workflow itself still works: an acceptance with its table and no finding.
+    gh.say("roed-math", prreviews.review_head("chatgpt", HEAD) + "\n\nVerdict: accepted\n\n" + TABLE)
     assert boardpr.scan(ctx, yes=True)[0].startswith("#12: REV-PKG-Foo~2 accepted; created RT-Foo~1a, RT-Foo~1b")
     record = rev.inputs["accepted_review"]
-    assert (record["status"], record["findings"], record["blocking"]) == ("accepted", 1, 0)
+    assert (record["status"], record["findings"], record["blocking"]) == ("accepted", 0, 0)
 
 
 def test_each_red_team_pass_counts_only_from_its_family_of_models():

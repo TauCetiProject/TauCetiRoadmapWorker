@@ -244,9 +244,10 @@ def contract_problems(parsed: Parsed, job: Job, declared: set[str] | None = None
     unrated = [f for f, severity in parsed.findings if not severity]
     if unrated:
         problems.append(f"finding {', '.join(unrated)} names no severity (P1, P2 or P3)")
-    blocking = [f"{f} ({severity})" for f, severity in parsed.findings if severity in ("P1", "P2")]
-    if parsed.verdict == "accepted" and blocking:
-        problems.append(f"it accepts with blocking findings ({', '.join(blocking)}): an acceptance leaves P3 notes only")
+    listed = [f"{f} ({severity})" for f, severity in parsed.findings]
+    if parsed.verdict == "accepted" and listed:
+        problems.append(f"it accepts with findings ({', '.join(listed)}): an acceptance lists no finding; a repair, "
+                        "whatever its priority, asks for changes")
     if not parsed.evidence and parsed.kind == "review" and parsed.verdict == "accepted":
         problems.append(EVIDENCE)
     elif not parsed.evidence and parsed.kind == "redteam" and not parsed.findings:
@@ -386,8 +387,8 @@ PR_VERDICTS = {"accepted": "APPROVE", "needs_changes": "CHANGES NEEDED", "reject
 PR_STATUS_LINES = {
     "accepted": ("The AI review accepts this head: the pull request is ready for a human's final approval. The AI "
                  "does not approve or merge; a human does."),
-    "needs_changes": ("Changes needed before a human's final approval: the findings below (P1 and P2) block it at "
-                      "this head."),
+    "needs_changes": ("Changes needed before a human's final approval: the findings below block it at this head "
+                      "(every finding, P3 included, is a change to make)."),
     "rejected": ("Changes needed: the AI review rejects the roadmap as it stands at this head (its scope or plan, "
                  "see the findings); a human decides how to continue."),
 }

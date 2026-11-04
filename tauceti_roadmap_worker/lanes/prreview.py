@@ -265,8 +265,8 @@ full review: check that the updates are correct.
    head repairs it and whether the repair introduced a new problem. Account for every one under
    `## Previous findings` (after this report's own findings, before `## Verified sound`), one bullet
    each: `- R01 — repaired | partly repaired | not repaired: <the passage at this head, at most 40
-   words>`. A finding partly or not repaired that still blocks is written again as a finding of this
-   report; a new problem a repair introduced is a new finding.
+   words>`. A finding partly or not repaired is written again as a finding of this report; a new
+   problem a repair introduced is a new finding.
 2. **The changed passages.** Review in full, by the steps below, only the passages the diff adds or
    changes and anything that cites or depends on them: the names, section numbers and suppliers they
    mention or that mention them, and the Lean statements touched. The seeded sample is checked where
@@ -275,7 +275,7 @@ full review: check that the updates are correct.
 4. **The adversarial table** carries forward the previous report's rows for the statements the diff
    leaves untouched, each citing the previous report, and adds a row with computed values for every
    changed statement.
-5. **The verdict.** Accept when no blocking finding remains (new, or carried from the previous report)
+5. **The verdict.** Accept when no finding remains at all (new, or carried from the previous report)
    and the gate passes; the verdict file's `notes` say "incremental re-review of {lines} changed lines
    since {since}", then what was checked.
 
@@ -698,9 +698,10 @@ class PRReviewLane(Lane):
         if status == "accepted":
             if not prreviews.adversarial_rows(report):
                 problems.append("report: " + prreviews.EVIDENCE)
-            blocking = [f"{severity} {title}" for severity, title, _b in findings if severity in ("P1", "P2")]
-            if blocking:
-                problems.append("report: an acceptance leaves P3 notes only, but it has " + "; ".join(blocking[:5]))
+            listed = [f"{severity} {title}" for severity, title, _b in findings]
+            if listed:
+                problems.append("report: an acceptance lists no finding (a repair, whatever its priority, asks for "
+                                "changes), but it has " + "; ".join(listed[:5]))
             gate = ws.extra.get("gate")
             if gate is not None and not gate.ok:
                 failing = ", ".join(f"{k}={v}" for k, v in gate.counts.items() if v)

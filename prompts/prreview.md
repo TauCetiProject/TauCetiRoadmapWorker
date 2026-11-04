@@ -91,10 +91,13 @@ requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned l
                   "findings": <number of findings>, "blocking": <number of P1 and P2 findings>,
                   "notes": "<what was checked: the sample, the gate>"}}
 
-  `accepted`: no P1 or P2 finding, a passing gate, the adversarial table with its values: this
-  roadmap folder is ready for a human's final approval (P3 notes are the author's to take or leave).
-  `needs_changes`: a P1 or P2 finding. `rejected`: edits cannot repair it (it re-plans an existing
-  roadmap, its scope is wrong).
+  `accepted`: no finding at all, a passing gate, the adversarial table with its values: this
+  roadmap folder is ready for a human's final approval. An acceptance lists no finding: if you have
+  a repair to write, whatever its priority, the verdict is `needs_changes` and the repair is a
+  request the author makes before the next review; a remark that needs no change is not a finding
+  (leave it out, or record what you checked under `## Verified sound`).
+  `needs_changes`: at least one finding, P1, P2 or P3. `rejected`: edits cannot repair it (it
+  re-plans an existing roadmap, its scope is wrong).
 - `__REPORT__`: first line `# Review of __ROADMAP__ (pull request #__PR__ at __HEAD7__)`__FOLDER_LINE__, then
   `**Verdict:** <accepted | needs changes | rejected>`, then findings numbered R01, R02, … as
   `## R01 (P1) — <short title>` with: location (file and line, quoting at most 40 words), the claim,
