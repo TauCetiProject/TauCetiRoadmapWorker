@@ -230,6 +230,20 @@ def test_an_earlier_ai_review_is_superseded_by_the_latest_one():
     assert pending(events(comments=[first, second, reply_b, accept, third])) == ["comment-15"]
 
 
+def test_a_pool_members_carried_note_is_neither_a_review_nor_a_reply():
+    """A note by an answerer that carries an acceptance (small repairs pushed onto an accepted head) is
+    housekeeping: it does not put the pull request on awaiting-author (2026-11-04, kim-em's PRs after
+    the stray-file consolidation)."""
+    accept = comment(20, "2026-11-03T21:06:00Z", "🤖 AI review (claude, fable) of " + "a" * 40 + "\n\nVerdict: APPROVE\n")
+    note = comment(21, "2026-11-04T12:40:00Z", "Folded the stray file into Suggested.lean.\n\n" + replies.carried_marker("a" * 40, "b" * 40, "m"),
+                   user="chris")
+    evs = events(comments=[accept, note])
+    ours = {OWNER, "chris"}
+    assert replies.unanswered(evs, ours, MARKERS, HOUSE, owner=OWNER) == []
+    want, _drop = replies.wanted_label(evs, ours, "b" * 40, markers=MARKERS, housekeeping=HOUSE, approvers=[], owner=OWNER)
+    assert want == "awaiting-review"
+
+
 def test_replies_from_before_the_records_answer_by_time_until_the_first_recorded_reply():
     legacy = comment(800, "2026-10-20T12:00:00Z", "Fixed in `0000000` (reply to the review): R01 applied.", user=OWNER)
     old = review(60, "2026-10-20T10:00:00Z", "Changes needed: old point.")

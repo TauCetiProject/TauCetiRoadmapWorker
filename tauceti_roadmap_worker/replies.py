@@ -120,6 +120,8 @@ def is_review(e: Event, ours: set[str], markers: list[str], ignore: set[str] = f
               owner: str = "") -> bool:
     if e.user in ignore:
         return False
+    if e.user.lower() in ours and carried_record(e.body or ""):
+        return False     # an answerer's housekeeping note carrying an acceptance (small repairs): no review
     body = ("Verdict: APPROVE " if e.approved else "") + (e.body or "")
     mine = speaks_for_author(e, ours, owner) and not is_maintainer_review(e, maintainers, maintainer_prefix)
     if mine and not (_markers_re(markers).search(body[:60]) and not THANKS.match(body)):
