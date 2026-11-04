@@ -117,6 +117,44 @@ def elaboration_problems(ctx: Context, ws: Workspace, lean: Path, where: Path | 
     return problems
 
 
+PADDING_RULE = ("padding: one trivial tactic closes it, so it restates a definition, mirrors a Check or computes a "
+                "value; delete it from Suggested.lean (the README keeps the statement)")
+
+
+def padding_problems(ctx: Context, ws: Workspace, lean: Path) -> list[str]:
+    """The one-tactic probe of the reviews, run on a copy of an elaborated Suggested.lean with
+    `[gates] elaborate` (its object files exist once the elaboration above succeeded): every sorried
+    theorem that `rfl`, `infer_instance` or `simp` closes is a problem the author removes before
+    submitting, so the package reaches its review, and later its pull request, without padding."""
+    cfg = ctx.cfg
+    setup = ws.extra.get("lake")
+    if not cfg.gates.elaborate or setup is None or setup.reason:
+        return []
+    try:
+        text = lean.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    probe, probed = gates.padding_probe_text(text)
+    if not probed:
+        return []
+    copy = lean.parent / ".padding-probe.lean"
+    try:
+        copy.write_text(probe, encoding="utf-8")
+        command = cfg.gates.elaborate.format(file=str(copy.resolve()))
+        output, _code, failure = gates.build_output(ws.content, command)
+    finally:
+        try:
+            copy.unlink()
+        except OSError:
+            pass
+    if failure:
+        return []
+    hits = gates.padding_hits(output, probed)
+    notes = ws.extra.setdefault("notes", [])
+    notes.append(f"padding probe: {len(probed)} sorried theorems tried with one tactic, {len(hits)} closed")
+    return [f"{PADDING_RULE}: {h}" for h in hits[:12]]
+
+
 def place_module(lean: Path, target: Path):
     """Put the package's Suggested.lean at the module's path in the checkout (nothing to do when it is
     already that file). Returns the function that undoes it: the folder goes when it was created, the
@@ -204,6 +242,8 @@ class PackageLane(Lane):
         problems += package_scan(ctx, ws, job.name, pkg)
         if not problems:
             problems += elaboration_problems(ctx, ws, pkg / "Suggested.lean")
+        if not problems:
+            problems += padding_problems(ctx, ws, pkg / "Suggested.lean")
         return problems
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:

@@ -1047,3 +1047,50 @@ def explain_build_problems(lean: str, problems: list[str], tauceti: Path | None 
     if "object file" in first and foreign_imports(lean, tauceti):
         return problems + [IMPORT_EXPLANATION]
     return problems
+
+
+# --- padding probe -------------------------------------------------------------------------------
+# The reviews' one-tactic probe, run mechanically: a sorried theorem that one trivial tactic closes
+# restates a definition, mirrors a Check or computes a value, and is padding in the acceptance test.
+
+PROBE_TACTIC = "by first | rfl | infer_instance | (simp) | sorry"
+PROBE_DECL = re.compile(r"^\s*(?:@\[[^\]]*\]\s*)?(?:(?:private|protected|noncomputable|public)\s+)*(?:theorem|lemma)\s+([^\s(:{\[]+)")
+PROBE_SORRY = re.compile(r":(\d+):\d+: warning: declaration uses [`']sorry[`']")
+
+
+def padding_probe_text(lean: str, heartbeats: int = 40000) -> tuple[str, dict[int, str]]:
+    """A copy of Suggested.lean in which the `sorry` closing each theorem or lemma is replaced by one
+    trivial tactic that falls back to `sorry`, with a heartbeat cap after the imports. Returns the
+    text and the probed declarations by the line of their keyword (1-based), as the sorry warnings
+    report them. Definitions, instances and examples are left alone."""
+    lines = lean.split("\n")
+    probed: dict[int, str] = {}
+    current: tuple[int, str] | None = None
+    for i, line in enumerate(lines):
+        m = PROBE_DECL.match(line)
+        if m:
+            current = (i + 1, m.group(1))
+        if current is None:
+            continue
+        stripped = line.rstrip()
+        if stripped.endswith(":= sorry"):
+            lines[i] = stripped[: -len("sorry")] + PROBE_TACTIC
+        elif stripped.strip() == "sorry" and i > 0 and lines[i - 1].rstrip().endswith(":="):
+            lines[i] = line.replace("sorry", PROBE_TACTIC, 1)
+        else:
+            continue
+        probed[current[0]] = current[1]
+        current = None
+    last_import = max((i for i, l in enumerate(lines) if l.startswith("import ")), default=-1)
+    lines.insert(last_import + 1, f"set_option maxHeartbeats {heartbeats}")
+    shifted = {k + (1 if k > last_import + 1 else 0): v for k, v in probed.items()}
+    return "\n".join(lines), shifted
+
+
+def padding_hits(output: str, probed: dict[int, str]) -> list[str]:
+    """The probed declarations the elaboration output no longer reports as using `sorry`: one
+    trivial tactic closed them. Empty when the output has an error (the probe is inconclusive then)."""
+    if re.search(r"^\S+:\d+:\d+: error", output, re.M):
+        return []
+    still_sorry = {int(m.group(1)) for m in PROBE_SORRY.finditer(output)}
+    return [f"{name} (line {line})" for line, name in sorted(probed.items()) if line not in still_sorry]

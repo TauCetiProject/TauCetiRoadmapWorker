@@ -141,6 +141,11 @@ def fake_builds(monkeypatch, text=BUILT, code=0, seen=None):
     calls = []
 
     def build_output(worktree, command, timeout=gates.BUILD_TIMEOUT):
+        if ".padding-probe.lean" in command:        # the padding probe after a clean elaboration: nothing closes
+            probe = Path(command.split()[-1]).read_text()
+            warnings = [f"{command.split()[-1]}:{i}:8: warning: declaration uses 'sorry'"
+                        for i, line in enumerate(probe.splitlines(), 1) if gates.PROBE_TACTIC in line]
+            return "\n".join(warnings) + "\n", 0, ""
         calls.append((Path(worktree), command, timeout))
         if seen is not None:
             module = Path(worktree) / "TauCetiRoadmap" / NAME / "Suggested.lean"
@@ -360,3 +365,31 @@ def test_on_a_pull_request_branch_the_build_elaborates_or_the_elaboration_runs(t
         "Suggested.lean: not elaborated — lake exe cache get exited 1"]
     assert gate.worktree_elaboration_problems is fix.worktree_elaboration_problems
 
+
+
+@needs_git
+def test_the_padding_probe_flags_a_theorem_one_tactic_closes(live, monkeypatch):  # noqa: F811
+    """After a clean elaboration the package lane probes every sorried theorem with one trivial tactic;
+    one that closes is a problem the author removes before the package reaches its review."""
+    ctx, _board = live
+    job = new_job(JOB)
+    lane = lane_for(job)
+    monkeypatch.setattr(lake, "lake_on_path", lambda: "/usr/bin/lake")
+    mark_ready(ctx.state, ctx.wdir / "content")
+    monkeypatch.setattr(package, "package_scan", lambda ctx, ws, name, pkg: [])
+    ws = lane.prepare(job, ctx)
+    ws.report.write_text("# Report\n")
+    lean = ws.package(ctx.cfg, job.name) / "Suggested.lean"
+    lean.parent.mkdir(parents=True, exist_ok=True)
+    lean.write_text(TAUCETI_LEAN)
+    probes = []
+
+    def build_output(worktree, command, timeout=gates.BUILD_TIMEOUT):
+        if ".padding-probe.lean" in command:
+            probes.append(command)
+            return "Build completed successfully.\n", 0, ""          # no sorry warning left: `x` closed
+        return BUILT, 0, ""
+    monkeypatch.setattr(gates, "build_output", build_output)
+    problems = lane.check(job, ctx, ws)
+    assert len(probes) == 1 and problems and problems[-1].startswith("padding:") and "x (line 5)" in problems[-1]
+    assert not (lean.parent / ".padding-probe.lean").exists()

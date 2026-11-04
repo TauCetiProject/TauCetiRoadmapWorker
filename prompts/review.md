@@ -90,9 +90,14 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
                   "notes": "<what was checked, the sample verified, the elaboration outcome>",
                   "conditional_gaps": ["<slug>", ...]}}
 
-  `accepted` means ready for the next stage with only non-blocking notes (P3), which the next stage
-  applies; `conditional_gaps` (optional, with `accepted` only) lists the declared supplier gaps the
-  acceptance is conditional on. `needs_changes` means at least one P1 or P2 finding. `rejected` is for a __SUBJECT__ that
+  For a package, `accepted` means no finding at all: a passing elaboration, the adversarial table
+  with its values, and nothing to repair, so that the pull request ported from it meets its own
+  review without a round. A repair you would write, whatever its priority, makes the verdict
+  `needs_changes` (a fix round applies it before the port); a remark that needs no change is not a
+  finding (record it under `## Verified sound`). For a design, `accepted` may carry non-blocking
+  notes (P3), which the package stage applies. `conditional_gaps` (optional, with `accepted` only)
+  lists the declared supplier gaps the acceptance is conditional on. `needs_changes` means at
+  least one finding (for a design: at least one P1 or P2). `rejected` is for a __SUBJECT__ that
   cannot be repaired by fixes (it re-plans an existing roadmap, or its scope is wrong): a human decides.
 - `__REPORT__`: first line `# Review of __ROADMAP__ (__SUBJECT__, round __ROUND__)`, then
   `**Verdict:** <accepted | needs changes | rejected>`, then findings numbered R01, R02, … as
@@ -116,6 +121,8 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
   clear, an error a false statement or proof step, a gap a step the source does not justify. Add
   `; corrected in print at <locator>` when you know of a published correction. Write `- none` when
   you found none. Never copy a passage: describe it.
+
+<!-- include: sections/review-lessons.md -->
 
 <!-- include: sections/gaps-and-order.md -->
 

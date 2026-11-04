@@ -40,7 +40,10 @@ def seeded_sample(items: list[str], k: int, seed: str) -> list[str]:
     return [item for i, item in enumerate(items) if i in picked]
 
 
-def verdict_problems(data: dict, job_id: str, declared: set[str] | None = None) -> list[str]:
+def verdict_problems(data: dict, job_id: str, declared: set[str] | None = None, subject: str = "design") -> list[str]:
+    """`subject`: a package acceptance lists no finding at all (the same rule as the pull-request
+    review: a repair, whatever its priority, is requested with `needs_changes` and applied by a fix
+    round before the package is ported); a design acceptance may carry non-blocking notes."""
     review = data.get("review") if isinstance(data, dict) else None
     if not isinstance(review, dict):
         return ["verdict file: no review object"]
@@ -51,6 +54,8 @@ def verdict_problems(data: dict, job_id: str, declared: set[str] | None = None) 
         problems.append(f"verdict file: reviewer must be independent-review-{job_id}")
     if review.get("status") == "accepted" and int(review.get("blocking") or 0) > 0:
         problems.append("verdict file: accepted with blocking findings")
+    elif review.get("status") == "accepted" and subject == "package" and int(review.get("findings") or 0) > 0:
+        problems.append("verdict file: a package acceptance lists no finding (request the repairs with needs_changes)")
     conditional = review.get("conditional_gaps")
     if conditional is not None:
         if not isinstance(conditional, list) or not all(isinstance(g, str) for g in conditional):
@@ -180,7 +185,7 @@ class ReviewLane(Lane):
         vf = self.verdict_file(job, ctx, ws)
         declared = declared_slugs(ws.package(ctx.cfg, job.name))
         try:
-            problems += verdict_problems(json.loads(vf.read_text(encoding="utf-8")), job.id, declared)
+            problems += verdict_problems(json.loads(vf.read_text(encoding="utf-8")), job.id, declared, self.subject(job))
         except (OSError, ValueError) as exc:
             problems.append(f"verdict file: {exc}")
         if ws.report.is_file() and not ws.report.read_text(encoding="utf-8").startswith(f"# Review of {job.name}"):

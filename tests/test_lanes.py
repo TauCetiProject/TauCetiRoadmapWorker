@@ -191,3 +191,25 @@ def test_the_port_says_what_the_package_went_through(tmp_path):
     assert "1 independent review round and 1 red-team round" in assistance_paragraph("codex", "m", (1, 1))
     legacy = assistance_paragraph("codex", "gpt-6.1-sol", None)
     assert "author-side red-team passes by different agents follow on this draft" in legacy
+
+
+
+def test_a_package_acceptance_lists_no_finding():
+    from tauceti_roadmap_worker.lanes.review import verdict_problems
+    ok = {"review": {"status": "accepted", "reviewer": "independent-review-X", "findings": 0, "blocking": 0}}
+    notes = {"review": {"status": "accepted", "reviewer": "independent-review-X", "findings": 2, "blocking": 0}}
+    assert verdict_problems(ok, "X", subject="package") == []
+    assert any("lists no finding" in p for p in verdict_problems(notes, "X", subject="package"))
+    assert verdict_problems(notes, "X", subject="design") == []     # a design acceptance may carry P3 notes
+
+
+def test_padding_probe_replaces_theorem_sorries_and_reads_the_warnings():
+    from tauceti_roadmap_worker import gates
+    lean = "import Mathlib\n\n/-- doc -/\ntheorem foo : 1 + 1 = 2 := sorry\n\ndef bar : Nat := sorry\n\ntheorem baz (n : Nat) :\n    n = n :=\n  sorry\n"
+    probe, probed = gates.padding_probe_text(lean)
+    assert "set_option maxHeartbeats 40000" in probe.splitlines()[1]
+    assert probe.count(gates.PROBE_TACTIC) == 2 and "def bar : Nat := sorry" in probe
+    assert probed == {5: "foo", 9: "baz"}
+    out = "x/Suggested.lean:9:8: warning: declaration uses 'sorry'\n"
+    assert gates.padding_hits(out, probed) == ["foo (line 5)"]
+    assert gates.padding_hits("x/Suggested.lean:5:8: error: unknown identifier\n", probed) == []
