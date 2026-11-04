@@ -47,6 +47,7 @@ SETTLED = re.compile(
     r"(?:I )?would approve|Verdict: APPROVE|comments resolved|found no reason|finding resolved|are resolved|finding addressed|"
     r"comments addressed|are addressed|is addressed|fully addressed|— addressed|- addressed")
 APPROVE_VERDICT = re.compile(r"Verdict[^\n]{0,30}APPROVE")
+AI_REVIEW = re.compile(r"AI review \(")       # the board's pull-request review comments, after `undecorated`
 # The forms a reply takes when it is written for the author by someone else (a pool member, the
 # worker, the operator's scripts): a comment by another answerer in any other words is their own
 # review of the pull request, not an answer on the author's behalf.
@@ -268,9 +269,15 @@ def unanswered(events: list[Event], ours: set[str], markers: list[str], housekee
     def review(e: Event) -> bool:
         return is_review(e, ours_l, markers, ignore, maintainers, maintainer_prefix, owner)
     reviewing = {e.review_id for e in events if e.ref.startswith("review-") and review(e)}
+    # The board's own AI reviews supersede one another: only the latest one (whatever its verdict) can
+    # still wait for an answer; an earlier one, of an older head or of a disputed head reviewed again,
+    # is settled by the review that followed it (2026-11-04: five accepted pull requests sat
+    # awaiting-author over a review of a head long gone).
+    ai = sorted((e for e in events if AI_REVIEW.match(undecorated(e.body or ""))), key=lambda e: e.t)
+    superseded = {e.ref for e in ai[:-1]}
     return [e for e in sorted(events, key=lambda e: e.t)
             if (review(e) or (e.ref.startswith("inline-") and e.review_id in reviewing))
-            and (e.ref, e.version) not in seen and e.t > before]
+            and (e.ref, e.version) not in seen and e.t > before and e.ref not in superseded]
 
 
 REPLY_PREFIX = "Reply to the review comments above, finding by finding:\n\n"

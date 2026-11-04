@@ -210,6 +210,26 @@ def pending(evs):
     return [e.ref for e in replies.unanswered(evs, {OWNER}, MARKERS, HOUSE)]
 
 
+def test_an_earlier_ai_review_is_superseded_by_the_latest_one():
+    """2026-11-04: an AI review of an older head (or of a disputed head reviewed again) that no reply
+    record names is settled by the AI review that followed it; only the latest can wait for an answer."""
+    first = comment(10, "2026-10-29T10:22:00Z", "🤖 AI review (claude, fable) of " + "f" * 40 + "\n\nVerdict: CHANGES NEEDED\n\n1. **F01** (P2) x")
+    reply = comment(11, "2026-10-29T10:30:00Z", "Fixed in `aaaaaaa` (reply to the review):\n\n- **F01** (applied) — x\n\n"
+                    + replies.answered_marker("GATE-Foo~1", {"comment-10": replies.text_version(first["body"])}, head="a" * 40), user=OWNER)
+    second = comment(12, "2026-11-03T18:58:00Z", "🤖 AI review (claude, fable) of " + "f" * 40 + "\n\nVerdict: CHANGES NEEDED\n\n1. **F02** (P2) y")
+    reply2 = comment(13, "2026-11-03T19:19:00Z", "Fixed in `bbbbbbb` (reply to the review):\n\n- **F02** (applied) — y\n\n"
+                     + replies.answered_marker("GATE-Foo~2", {"comment-12": replies.text_version(second["body"])}, head="b" * 40), user=OWNER)
+    accept = comment(14, "2026-11-03T21:06:00Z", "🤖 AI review (claude, fable) of " + "b" * 40 + "\n\nVerdict: APPROVE\n")
+    # Without the acceptance: the first review's record was answered, the second too; nothing waits.
+    assert pending(events(comments=[first, reply, second, reply2])) == []
+    # The second reply named only the second review: the first, superseded, does not come back.
+    reply_b = comment(13, "2026-11-03T19:19:00Z", reply2["body"].replace("comment-12", "comment-12"), user=OWNER)
+    assert pending(events(comments=[first, second, reply_b, accept])) == []
+    # The latest AI review itself, unanswered, still waits.
+    third = comment(15, "2026-11-04T08:00:00Z", "🤖 AI review (claude, fable) of " + "c" * 40 + "\n\nVerdict: CHANGES NEEDED\n\n1. **F03** (P1) z")
+    assert pending(events(comments=[first, second, reply_b, accept, third])) == ["comment-15"]
+
+
 def test_replies_from_before_the_records_answer_by_time_until_the_first_recorded_reply():
     legacy = comment(800, "2026-10-20T12:00:00Z", "Fixed in `0000000` (reply to the review): R01 applied.", user=OWNER)
     old = review(60, "2026-10-20T10:00:00Z", "Changes needed: old point.")
