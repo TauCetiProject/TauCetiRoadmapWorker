@@ -296,7 +296,10 @@ def sync(gh, jobs=(), **over):
     cfg = example_config()
     cfg.prreview.enabled = True
     for key, value in over.items():
-        setattr(cfg.prreview, key, value)
+        if key == "pool":
+            cfg.roadmap.pool = list(value)
+        else:
+            setattr(cfg.prreview, key, value)
     fake = FakeBoard(jobs=list(jobs))
     out = intake.sync_pr_reviews(SimpleNamespace(cfg=cfg, gh=gh, board=fake, operator="board-bot", dry_run=False))
     return out, fake
@@ -481,23 +484,23 @@ def test_a_chore_carries_the_label_while_a_pool_member_records_an_accepting_chor
     assert gh.writes == [] and fake.created == [] and out == ["#1800: not reviewed (chore by its title)"]
     # On: the accepting record of the current head labels it; no folder review is filed.
     gh = ContentGH([bump], comments=ok, tree=names)
-    out, fake = sync(gh, chore_review=True, comment_reviewers=["CBirkbeck"])
+    out, fake = sync(gh, chore_review=True, pool=["CBirkbeck"])
     assert fake.created == [] and gh.writes == [("POST", labels, {"labels": ["ai-approved"]})]
     assert f"#1800: ai-approved added (the AI review of {H1[:7]} accepts it)" in out
     # A record by a login outside the pool counts for nothing.
     stranger = {1800: [{**ok[1800][0], "user": {"login": "mallory"}}]}
     gh = ContentGH([bump], comments=stranger, tree=names)
-    out, fake = sync(gh, chore_review=True, comment_reviewers=["CBirkbeck"])
+    out, fake = sync(gh, chore_review=True, pool=["CBirkbeck"])
     assert gh.writes == [] and not any("ai-approved" in line for line in out)
     # A blocking record: no label; a labelled chore whose head moved loses it.
     blocks = {1800: [{"id": 2, "body": replies.chore_marker(H1, "needs_changes"), "user": {"login": "CBirkbeck"}}]}
     gh = ContentGH([bump], comments=blocks, tree=names)
-    out, fake = sync(gh, chore_review=True, comment_reviewers=["CBirkbeck"])
+    out, fake = sync(gh, chore_review=True, pool=["CBirkbeck"])
     assert gh.writes == [] and not any("ai-approved" in line for line in out)
     moved = node(1800, H2, title="chore: bump the Tau Ceti pin", labels=["ai-approved"],
                  paths=[f"TauCetiRoadmap/R{k:02d}/Suggested.lean" for k in range(30)])
     gh = ContentGH([moved], comments=ok, tree=names)
-    out, fake = sync(gh, chore_review=True, comment_reviewers=["CBirkbeck"])
+    out, fake = sync(gh, chore_review=True, pool=["CBirkbeck"])
     assert gh.writes == [("DELETE", f"{labels}/ai-approved", {})]
     assert f"#1800: ai-approved removed (not reviewed: chore by its title; no chore review of {H2[:7]})" in out
 

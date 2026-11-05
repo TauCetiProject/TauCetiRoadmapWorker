@@ -1762,14 +1762,14 @@ def chore_accepted(ctx, repo: str, number: int, head: str, why: str, p, threads:
                    batch: int) -> tuple[bool, str]:
     """(whether a chore review accepts `head`, '' or why not): the latest comment on the pull request
     whose chore record (`replies.chore_record`) names `head`, by a pool member or a
-    `[prreview] comment_reviewers` login, with status `accepted`. A chore gets no folder review
+    `[review] comment_reviewers` login, with status `accepted`. A chore gets no folder review
     (`why` says so); its AI review is of the whole change and is posted by the operator who ran it."""
     if number not in threads:
         try:
             threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
         except GHError:
             threads[number] = None
-    trusted = {str(x).lower() for x in list(ctx.cfg.roadmap.pool) + list(p.comment_reviewers)}
+    trusted = {str(x).lower() for x in list(ctx.cfg.roadmap.pool) + list(ctx.cfg.review.comment_reviewers)}
     for c in reversed(threads.get(number) or []):
         record = replies.chore_record(c.get("body") or "")
         if not record or record.get("head") != head:
