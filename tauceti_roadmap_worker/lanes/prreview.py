@@ -881,7 +881,7 @@ class PRReviewLane(Lane):
                 raise LaneError("the repair agent " + ("hit a usage limit" if result.limited else f"exited {result.exit_code}"))
             problems = ([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report)
             if not problems:
-                problems, gate = gate_problems(ctx, ws, job.name, folder, self.gate_options(job, ctx, ws))
+                problems, gate = gate_problems(ctx, ws, job.name, folder, self.gate_options(job, ctx, ws), base=head)
             if not problems:
                 break
         if problems:

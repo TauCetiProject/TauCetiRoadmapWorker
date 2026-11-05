@@ -92,15 +92,18 @@ def answer_problems(ws: Workspace, report: Path) -> list[str]:
 
 
 def gate_problems(ctx: Context, ws: Workspace, name: str, folder: str,
-                  opts: gates.GateOptions) -> tuple[list[str], gates.GateResult]:
+                  opts: gates.GateOptions, base: str = "") -> tuple[list[str], gates.GateResult]:
     """(the problems, the result) of the push gate with the targeted build on the worktree, its
-    outside-folder check against the pull request's own base (`fetch_pr_base`), and of the elaboration
-    of the folder's Suggested.lean when no build is configured."""
+    outside-folder check against `base` (default: the pull request's own base, `fetch_pr_base`), and of
+    the elaboration of the folder's Suggested.lean when no build is configured. A repair of one folder
+    of a pull request passes the reviewed head as `base`: the pull request's other changes (its other
+    roadmap folders, a completed roadmap's README, a family index) are not the repair's doing
+    (2026-11-05: every repair on a sixteen-folder pull request was refused for them)."""
     if folder and folder != name and not opts.folder:
         # a nested roadmap: the gate must look in its folder, not in `<active_dir>/<name>/` (2026-11-02: the
         # gate of a RepresentationTheory member failed with missing-files on every round)
         opts = dataclasses.replace(opts, folder=folder)
-    result = gates.run_gate(ws.workdir, name, opts, base=fetch_pr_base(ctx, ws), build_cmd=ctx.cfg.gates.build)
+    result = gates.run_gate(ws.workdir, name, opts, base=base or fetch_pr_base(ctx, ws), build_cmd=ctx.cfg.gates.build)
     return scan_problems(result) + worktree_elaboration_problems(ctx, ws, folder), result
 
 
