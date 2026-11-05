@@ -13,11 +13,14 @@ Pull request and issue edits use the REST endpoints (`PATCH repos/.../pulls/N`),
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from dataclasses import dataclass
 
 
@@ -125,8 +128,87 @@ class GH:
             raise GHError(message)
         return result.stdout
 
+    # Conditional requests (2026-11-05). GitHub answers a GET that carries the ETag of the last answer
+    # with 304 Not Modified when nothing changed, and a 304 does not count against the hourly quota.
+    # Almost every read the board and the workers make is a re-read of an unchanged page (job lists,
+    # comment threads, pull-request listings), so with `cache_dir` set every plain GET (no `jq`) sends
+    # the ETag it holds and keeps the body it got; a paginated listing is read page by page with one
+    # ETag per page. Entries are files named by the hash of the path, written atomically, so every
+    # worker on the machine may share one directory.
+    cache_dir: Path | None = None
+    cache_hits: int = 0          # answers taken from the cache after a 304 (requests that cost nothing)
+
+    def _cache_file(self, key: str) -> Path:
+        return self.cache_dir / (hashlib.sha1(key.encode()).hexdigest() + ".json")
+
+    def _cached_get(self, path: str) -> str:
+        """The body of `GET path`, through the ETag cache: the request carries the stored ETag; a 304
+        returns the stored body (and counts as a hit, not a call); a 200 stores body and ETag."""
+        entry = None
+        file = self._cache_file(path)
+        try:
+            entry = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            entry = None
+        args = ["api", "-i", path]
+        if entry and entry.get("etag"):
+            args += ["-H", f"If-None-Match: {entry['etag']}"]
+        try:
+            out = self._read(args)
+        except GHError as exc:
+            # `gh api` exits 1 on a 304 although it printed the status line; that is the hit we asked for.
+            if entry is not None and "304" in str(exc) and not RATE_LIMITED.search(str(exc)):
+                self.calls -= 1
+                self.cache_hits += 1
+                return entry["body"]
+            raise
+        head, sep, body = out.partition("\r\n\r\n")
+        if not sep:
+            head, sep, body = out.partition("\n\n")
+        status = head.split("\n", 1)[0].strip()
+        if " 304" in status and entry is not None:
+            self.calls -= 1
+            self.cache_hits += 1
+            return entry["body"]
+        etag = ""
+        for line in head.splitlines():
+            if line.lower().startswith("etag:"):
+                etag = line.split(":", 1)[1].strip()
+        if etag:
+            try:
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+                tmp = file.with_suffix(f".{os.getpid()}.tmp")
+                tmp.write_text(json.dumps({"etag": etag, "body": body}), encoding="utf-8")
+                os.replace(tmp, file)
+            except OSError:
+                pass
+        return body
+
+    def _cached_pages(self, path: str) -> list:
+        """A paginated listing read page by page through the cache (`per_page=100`, stop at a short page)."""
+        sep = "&" if "?" in path else "?"
+        base = path if "per_page=" in path else f"{path}{sep}per_page=100"
+        items, page = [], 1
+        while True:
+            body = self._cached_get(f"{base}&page={page}")
+            if looks_like_api_error(body):
+                raise GHError(f"GET {path}: API error: {body[:200]}")
+            value = json.loads(body) if body.strip() else []
+            chunk = value if isinstance(value, list) else [value]
+            items.extend(chunk)
+            if len(chunk) < 100 or not isinstance(value, list):
+                return items
+            page += 1
+
     def api(self, path: str, *, paginate: bool = False, jq: str | None = None):
         """GET a REST path and return parsed JSON (a list for paginated listings)."""
+        if self.cache_dir is not None and jq is None and not path.startswith("graphql"):
+            if paginate:
+                return self._cached_pages(path)
+            body = self._cached_get(path)
+            if looks_like_api_error(body):
+                raise GHError(f"GET {path}: API error: {body[:200]}")
+            return json.loads(body) if body.strip() else None
         args = ["api", path]
         if paginate:
             args.insert(1, "--paginate")

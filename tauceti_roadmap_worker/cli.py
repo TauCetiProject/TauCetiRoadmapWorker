@@ -71,6 +71,7 @@ def _load(args) -> config.Config:
     except config.ConfigError as exc:
         raise SystemExit(f"configuration: {exc}") from exc
     GH.throttle = throttle.for_config(cfg)      # every GH in this process shares the host's write throttle
+    GH.cache_dir = cfg.state_dir() / "gh-cache"  # conditional GETs: unchanged pages cost no quota (2026-11-05)
     return cfg
 
 
