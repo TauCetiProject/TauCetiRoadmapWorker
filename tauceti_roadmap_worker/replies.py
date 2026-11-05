@@ -213,6 +213,30 @@ def carried_record(body: str) -> dict | None:
     return record if isinstance(record, dict) else {}
 
 
+CHORE_MARK = "tauceti-roadmap-chore-review"
+CHORE_RE = re.compile(r"<!--\s*" + CHORE_MARK + r"\b(.*?)-->", re.DOTALL)
+
+
+def chore_marker(head: str, status: str, reviewer: str = "") -> str:
+    """The record a chore review's comment carries: `head`, the head it reviewed, `status`, its
+    verdict (`accepted`, `needs_changes`, `rejected`), and the reviewer (agent and model)."""
+    data = {"head": head, "status": status, **({"reviewer": reviewer} if reviewer else {})}
+    return f"<!-- {CHORE_MARK} {json.dumps(data, sort_keys=True)} -->"
+
+
+def chore_record(body: str) -> dict | None:
+    """A comment's chore-review record (the last one): {head, status, reviewer}; {} for one that does
+    not parse, None for a comment without one."""
+    found = CHORE_RE.findall(body or "")
+    if not found:
+        return None
+    try:
+        record = json.loads(found[-1].strip())
+    except ValueError:
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
 def answered_record(body: str) -> dict | None:
     """A reply's whole record (the last one: the worker appends it after the agent's text): {job,
     answered, worker, head}; {} for a record that does not parse, None for a reply without one."""

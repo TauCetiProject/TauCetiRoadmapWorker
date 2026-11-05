@@ -285,6 +285,12 @@ class PRReview:
     # and no review of H1 is filed. For the small repairs an accepting review lists (its P3 findings), applied
     # without a re-review at the maintainer's decision.
     carry_accept: bool = False
+    # A chore (a pull request titled `chore:`/`archive`, or one editing more roadmap folders than
+    # `max_folders`) is reviewed by no folder review. With this on, it carries `label` when a comment
+    # by a pool member or a `comment_reviewers` login records `<!-- tauceti-roadmap-chore-review
+    # {"head": H, "status": "accepted"} -->` for its current head (the AI review of the whole change,
+    # posted by the operator who ran it); the label goes when the head moves. For pin bumps.
+    chore_review: bool = False
 
 
 @dataclass

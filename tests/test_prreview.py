@@ -465,6 +465,43 @@ def test_a_mass_edit_of_existing_roadmaps_is_a_chore_and_a_bundle_of_new_ones_is
     assert out == ["#271: not reviewed (chore: 3 roadmap folders)"]
 
 
+def test_a_chore_carries_the_label_while_a_pool_member_records_an_accepting_chore_review_of_its_head():
+    """`[prreview] chore_review`: a chore (here a pin bump titled `chore:`) gets no folder review; it is
+    labelled when a comment by a pool member records `tauceti-roadmap-chore-review {head, status:
+    accepted}` for its current head, and loses the label when the head moves or the review blocks."""
+    bump = node(1800, H1, title="chore: bump the Tau Ceti pin",
+                paths=[f"TauCetiRoadmap/R{k:02d}/Suggested.lean" for k in range(30)] + ["lake-manifest.json"])
+    names = [f"R{k:02d}" for k in range(30)]
+    labels = f"repos/{REPO}/issues/1800/labels"
+    ok = {1800: [{"id": 1, "body": "🤖 AI review of the bump\n\n" + replies.chore_marker(H1, "accepted", "claude/fable"),
+                  "user": {"login": "CBirkbeck"}}]}
+    # Off: a chore is simply not reviewed.
+    gh = ContentGH([bump], comments=ok, tree=names)
+    out, fake = sync(gh)
+    assert gh.writes == [] and fake.created == [] and out == ["#1800: not reviewed (chore by its title)"]
+    # On: the accepting record of the current head labels it; no folder review is filed.
+    gh = ContentGH([bump], comments=ok, tree=names)
+    out, fake = sync(gh, chore_review=True, comment_reviewers=["CBirkbeck"])
+    assert fake.created == [] and gh.writes == [("POST", labels, {"labels": ["ai-approved"]})]
+    assert f"#1800: ai-approved added (the AI review of {H1[:7]} accepts it)" in out
+    # A record by a login outside the pool counts for nothing.
+    stranger = {1800: [{**ok[1800][0], "user": {"login": "mallory"}}]}
+    gh = ContentGH([bump], comments=stranger, tree=names)
+    out, fake = sync(gh, chore_review=True, comment_reviewers=["CBirkbeck"])
+    assert gh.writes == [] and not any("ai-approved" in line for line in out)
+    # A blocking record: no label; a labelled chore whose head moved loses it.
+    blocks = {1800: [{"id": 2, "body": replies.chore_marker(H1, "needs_changes"), "user": {"login": "CBirkbeck"}}]}
+    gh = ContentGH([bump], comments=blocks, tree=names)
+    out, fake = sync(gh, chore_review=True, comment_reviewers=["CBirkbeck"])
+    assert gh.writes == [] and not any("ai-approved" in line for line in out)
+    moved = node(1800, H2, title="chore: bump the Tau Ceti pin", labels=["ai-approved"],
+                 paths=[f"TauCetiRoadmap/R{k:02d}/Suggested.lean" for k in range(30)])
+    gh = ContentGH([moved], comments=ok, tree=names)
+    out, fake = sync(gh, chore_review=True, comment_reviewers=["CBirkbeck"])
+    assert gh.writes == [("DELETE", f"{labels}/ai-approved", {})]
+    assert f"#1800: ai-approved removed (not reviewed: chore by its title; no chore review of {H2[:7]})" in out
+
+
 def test_completed_progress_reports_and_archives_are_not_reviewed():
     archive = node(752, H1, title="Archive ConformalMapping", paths=(
         ("Completed/ConformalMapping/README.md", "RENAMED"), ("Completed/ConformalMapping/Suggested.lean", "ADDED"),

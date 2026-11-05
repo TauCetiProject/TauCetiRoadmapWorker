@@ -1758,6 +1758,31 @@ def carried_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: li
         at = source
 
 
+def chore_accepted(ctx, repo: str, number: int, head: str, why: str, p, threads: dict,
+                   batch: int) -> tuple[bool, str]:
+    """(whether a chore review accepts `head`, '' or why not): the latest comment on the pull request
+    whose chore record (`replies.chore_record`) names `head`, by a pool member or a
+    `[prreview] comment_reviewers` login, with status `accepted`. A chore gets no folder review
+    (`why` says so); its AI review is of the whole change and is posted by the operator who ran it."""
+    if number not in threads:
+        try:
+            threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
+        except GHError:
+            threads[number] = None
+    trusted = {str(x).lower() for x in list(ctx.cfg.roadmap.pool) + list(p.comment_reviewers)}
+    for c in reversed(threads.get(number) or []):
+        record = replies.chore_record(c.get("body") or "")
+        if not record or record.get("head") != head:
+            continue
+        who = str(((c.get("user") or {}).get("login")) or "").lower()
+        if who not in trusted:
+            continue
+        if record.get("status") == "accepted":
+            return True, ""
+        return False, f"the chore review of {head[:7]} does not accept it"
+    return False, f"not reviewed: {why}; no chore review of {head[:7]}"
+
+
 def finished_reviews(jobs: list[Job], head: str) -> list[Job]:
     """The done reviews of `head` among `jobs` (a superseded job reviewed nothing)."""
     return [j for j in jobs
@@ -1819,6 +1844,8 @@ def sync_pr_reviews(ctx) -> list[str]:
       every roadmap folder it adds or edits (`folders_accepted`, from the verdicts on the board's
       main): added when the last folder's verdict lands, removed otherwise; while a review of that
       head is being finished (claimed or submitted) it is left as it is.
+      With `[prreview] chore_review`, a chore (no folder review) carries the label while a comment by
+      a pool member records an accepting chore review of its current head (`chore_accepted`).
     * `PRREVIEW-<Leaf>~N` (`<Leaf>` the folder's last component, N one more than that name's PRREVIEW
       jobs; inputs `folder`, `pr`, `head`, `owner`, `name`, `roadmaps`, every folder of the pull
       request, when it has several, and `rereview`: after an earlier review of that folder of that
@@ -1887,12 +1914,14 @@ def sync_pr_reviews(ctx) -> list[str]:
         number, head = int(entry["pr"]), entry.get("head", "")
         labelled = p.label in entry.get("labels", [])
         folders, why = plans[number]
-        if not head or not (labelled or folders):
+        chore = bool(why) and not folders and p.chore_review
+        if not head or not (labelled or folders or chore):
             continue
         mine = [j for j in reviews if pr_of(j) == number]
         if any(j.state in ("claimed", "submitted") and j.inputs.get("head") == head for j in mine):
             continue             # being finished: its lane labels, or a later run does
         accepted, reason = (folders_accepted(ctx, folders, mine, head, texts) if folders
+                            else chore_accepted(ctx, repo, number, head, why, p, threads, batch) if chore
                             else (False, f"not reviewed: {why}" if why else "no roadmap folder to review"))
         if not accepted and labelled and folders and p.carry_accept:
             source, lines = carried_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads, batch)
