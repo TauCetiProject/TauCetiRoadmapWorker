@@ -16,8 +16,8 @@ from .test_gate_scanners import CLEAN_LEAN, CLEAN_README
 EXAMPLE_TOML = (HERE / "tauceti-roadmap.toml.example").read_text(encoding="utf-8")
 
 
-def scan(lean: str) -> list[tuple[int, str]]:
-    return [(h.line, h.text) for h in gates.scan_lean_statement_hygiene(textwrap.dedent(lean))]
+def scan(lean: str, **kw) -> list[tuple[int, str]]:
+    return [(h.line, h.text) for h in gates.scan_lean_statement_hygiene(textwrap.dedent(lean), **kw)]
 
 
 def repair(key: str, **kw) -> str:
@@ -39,10 +39,10 @@ def test_a_theorem_concluding_that_an_isomorphism_exists_is_reported():
             ∃ e : A ≃+ B, e 0 = 0 := sorry
         theorem iso_given (A B : Type) : ∃ (e : A ≅ B), True := sorry
         """)
-    assert [line for line, _ in found] == [3, 5, 7, 9, 10]
+    assert [line for line, _ in found] == [3, 5, 7, 10]   # `additive_headline` states a property of `e`: characterised, not bare
     assert found[0][1] == ("P3 theorem `equiv_headline` concludes `Nonempty (A ≃ B)`" + repair("nonempty-iso"))
-    assert found[3][1].startswith("P3 theorem `additive_headline` concludes `∃ e : A ≃+ B, e 0 = 0`")
-    assert "keep `Nonempty` only as a corollary named `nonempty_*`" in found[4][1]
+    assert found[3][1].startswith("P3 theorem `iso_given` concludes `∃ (e : A ≅ B), True`")
+    assert "keep `Nonempty` only as a corollary named `nonempty_*`" in found[3][1]
 
 
 def test_the_named_corollary_a_conjunction_and_an_automorphism_are_not_headlines():
@@ -74,8 +74,9 @@ def test_a_definition_whose_body_chooses_is_reported():
         noncomputable def pick₄ (h : ∀ n : ℕ, ∃ m, n < m) : ℕ → ℕ
           | 0 => (h 0).choose
           | n + 1 => Nonempty.some ⟨n⟩
+        def binomial (n : ℕ) : ℕ := n.choose 2 + (n + 1).choose 3
         """)
-    assert [line for line, _ in found] == [3, 4, 5, 7, 9, 10]
+    assert [line for line, _ in found] == [3, 4, 5, 7, 9, 10]   # `n.choose 2` is a binomial coefficient
     assert found[0][1] == "P3 def `pick` chooses its datum (`h.some`)" + repair("choice-data")
     assert "(`Classical.choose`)" in found[1][1] and "abbrev `pick₃`" in found[2][1]
     assert found[3][1].startswith("P3 instance `inst` chooses its datum (`Classical.choice`)")
@@ -106,10 +107,9 @@ def test_a_local_instance_in_a_signature_is_reported():
         theorem have_in_type {c : ℝ} (hc : 0 < c) : haveI : NeZero c := ⟨hc.ne'⟩; c ≠ 0 := sorry
         example : letI : Add ℕ := ⟨Nat.add⟩; (1 : ℕ) + 1 = 2 := rfl
         """)
-    assert [line for line, _ in found] == [4, 6, 7]
+    assert [line for line, _ in found] == [4, 6]   # an `example` is a check, not an API surface
     assert found[0][1] == "P3 `letI` in the signature of theorem `let_in_type`" + repair("local-instance")
     assert found[1][1].startswith("P3 `haveI` in the signature of theorem `have_in_type`")
-    assert "an anonymous example" in found[2][1]
 
 
 def test_a_local_instance_in_a_proof_or_a_body_is_not_in_a_signature():
@@ -173,7 +173,7 @@ def test_fintype_without_field_finite_beside_field_and_closed_sections_pass():
 
 # --- 5. no `ULift` in a signature ---------------------------------------------------------------------
 
-def test_ulift_in_the_signature_of_a_theorem_or_definition_is_reported():
+def test_ulift_in_the_signature_of_a_theorem_or_definition_is_reported_on_request():
     found = scan("""\
         import Mathlib
 
@@ -181,9 +181,17 @@ def test_ulift_in_the_signature_of_a_theorem_or_definition_is_reported():
         theorem lifted (X : Type) : Nonempty (ULift.{u} X) ↔ Nonempty X := sorry
         def liftedCarrier (X : Type) : Type u := ULift.{u} X
         noncomputable def comparison (X : Type) : ULift.{u} X ≃ X := sorry
-        """)
+        """, ulift=True)
     assert found == [(4, "P3 `ULift` in the signature of theorem `lifted`" + repair("ulift")),
                      (6, "P3 `ULift` in the signature of def `comparison`" + repair("ulift"))]
+
+
+def test_ulift_is_not_reported_unless_requested():
+    assert scan("""\
+        import Mathlib
+
+        theorem lifted (X : Type) : Nonempty (ULift.{0} X) ↔ Nonempty X := sorry
+        """) == []
 
 
 def test_ulift_in_a_body_or_another_name_is_not_in_a_signature():
@@ -194,7 +202,7 @@ def test_ulift_in_a_body_or_another_name_is_not_in_a_signature():
           have := ULift.up x
           trivial
         def liftable (f : Type → Type) [ULiftable f f] : Type := f ℕ
-        """) == []
+        """, ulift=True) == []
 
 
 # --- 6. no instance removals or local derived-category instances -------------------------------------

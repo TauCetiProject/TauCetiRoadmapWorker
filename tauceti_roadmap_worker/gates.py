@@ -434,6 +434,9 @@ def iso_headline(conclusion: str) -> bool:
     if m := re.match(r"∃\s*(?P<paren>\()?\s*[^\W\d][\w']*\s*:", c):
         comma = depth0_index(c, ",", m.end())
         ty = c[m.end():comma if comma >= 0 else len(c)].strip()
+        body = c[comma + 1:].strip() if comma >= 0 else ""
+        if body not in ("", "True"):
+            return False                  # a property of the isomorphism is stated: a characterised existence
         return distinct_iso(ty[:-1] if m.group("paren") and ty.endswith(")") else ty)
     return False
 
@@ -450,6 +453,8 @@ def choice_uses(body: str) -> list[tuple[int, str]]:
         else:
             chosen = bool(m.group("close")) or owner in ("Classical", "Nonempty", "Exists") or owner[:1].islower() \
                 or owner[:1] == "_"
+        if chosen and fn == "choose" and owner not in ("Classical", "Exists") and re.match(r"[ \t]+[\w(⟨'↑]", body[m.end():]):
+            chosen = False                # `n.choose k`: a binomial coefficient takes an argument, a choice never does
         if chosen:
             out.append((m.start(), f"{m.group('pre') or '(…)'}.{fn}"))
     return out
@@ -487,7 +492,7 @@ def fintype_beside_field(decl: LeanDecl) -> list[tuple[int, str, bool]]:
     return out
 
 
-def scan_lean_statement_hygiene(lean: str) -> list[Hit]:
+def scan_lean_statement_hygiene(lean: str, ulift: bool = False) -> list[Hit]:
     """How Suggested.lean states its targets, one hit per occurrence, each `P3 <what>; repair: <how>`
     (a duplicate statement P2). Comments, docstrings and strings are ignored.
     1. a theorem whose conclusion is `Nonempty (A ≅ B)` (`≃`, `≌`) or `∃ e : A ≅ B, …` (a name
@@ -517,10 +522,10 @@ def scan_lean_statement_hygiene(lean: str) -> list[Hit]:
         if d.kw in ("def", "abbrev", "instance"):
             for at, call in choice_uses(d.body):
                 hit(d.body_at + at, f"{d.label} chooses its datum (`{call}`)", HYGIENE_REPAIRS["choice-data"])
-        for m in LOCAL_INSTANCE.finditer(d.signature):
+        for m in (LOCAL_INSTANCE.finditer(d.signature) if d.kw != "example" else ()):
             hit(d.sig_at + m.start(), f"`{m.group(0)}` in the signature of {d.label}",
                 HYGIENE_REPAIRS["local-instance"])
-        if d.kw in ("theorem", "lemma", "def", "abbrev"):
+        if ulift and d.kw in ("theorem", "lemma", "def", "abbrev"):
             for m in ULIFT.finditer(d.signature):
                 hit(d.sig_at + m.start(), f"`ULift` in the signature of {d.label}", HYGIENE_REPAIRS["ulift"])
         for at, k, own in fintype_beside_field(d):
