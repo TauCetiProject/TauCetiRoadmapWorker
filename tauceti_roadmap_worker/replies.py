@@ -39,7 +39,10 @@ from . import prreviews
 
 CHANGES = re.compile(
     r"CHANGES NEEDED|[Cc]hanges needed|correction is needed|needed before approval|substantive (?:change|addition|correction)|"
-    r"changes are needed|would not approve|[Rr]equest changes")
+    r"changes are needed|would not approve|[Rr]equest changes|"
+    # a reviewer who moves the pull request to the author, or makes the settled state conditional on
+    # repairs ("once these are addressed"), is asking for changes however the sentence ends
+    r"[Mm]oving this to `?awaiting-author|switch it back to `?awaiting-review|(?:once|until|after|when) (?:these|this|they|it) (?:are|is) addressed")
 SETTLED = re.compile(
     r"[Nn]o further change|ready for manual approval|recommend(?:ing)? manual (?:content )?approval|accepted all|"
     r"would not request another revision|found no issues|[Nn]o remaining blocking|no blocking issue|previous findings closed|"
