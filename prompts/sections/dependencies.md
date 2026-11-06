@@ -8,7 +8,7 @@ consume only:
 - roadmaps earlier than it in the merge order: __SUPPLIERS__;
 - other authors' open pull requests only when they add a new roadmap folder (a pull request that
   revises or reports progress on an existing roadmap is never a dependency: cite that roadmap as it
-  is on main).
+  is on main), or when they drop an id this roadmap cites (below).
 
 Never cite these roadmaps as suppliers: __DROPPED__.
 
@@ -20,6 +20,28 @@ Cite an existing owner, or say in your report why this roadmap is the owner, and
 of `Suggested.lean` the fully qualified name of a declaration in a roadmap you can read. Where the
 brief names open pull requests without their files, or none, do not look for them yourself: say in
 your report that ownership against open pull requests was not checked.
+
+**Overlap with open pull requests.** `scratch/overlaps.md`, when the tools list it, says what the open
+pull requests do to this roadmap and it to them, read from their heads (check each item before you
+act on it):
+
+- an id this roadmap cites that an open pull request drops (a revision renumbers or deletes the
+  section, layer or target, or renames the heading): the citation breaks when that pull request
+  merges. Cite the id as it is at that head (where the content now is); when the content is gone,
+  cite another owner or state it here. Citing a revision's numbering makes it a dependency: the
+  report lists it under "only an open revision defines", and the worker names it in the merge-order
+  paragraph of the pull requests it opens. A pull request opened any other way names it in its
+  description;
+- an id this roadmap's pull request drops that other roadmaps cite: keep the id, or give the old →
+  new numbering in the README (one line per moved id) so that the citing roadmaps can follow. A
+  roadmap on main that cites it breaks at the merge;
+- another open pull request that changes this roadmap: when the heads conflict, or the two change
+  the same targets differently, one is rebased on the other before either merges; say which, and do
+  not restate what the other already changes;
+- the closest open roadmaps in vocabulary: read their scope and ownership and compare what each says
+  it owns with what this roadmap owns. An object two roadmaps both own, or that each hands to the
+  other, has no single owner: settle it as any other duplication, with one owner earlier in the
+  merge order and a citation from the other.
 
 **Citations are resolved, not remembered.** Check every cross-roadmap citation (roadmap, section or
 target, declaration name) against the cited roadmap as it is now, every round: on main, or at the

@@ -74,6 +74,7 @@ tauceti-roadmap --conf $CONF tail --worker-id alice-1      # its rounds and the 
 tauceti-roadmap --conf $CONF status                        # the board's jobs by state, ages, claimants
 tauceti-roadmap --conf $CONF usage --by lane               # the tokens this host's agent runs used
 tauceti-roadmap --conf $CONF roadmaps grep 'Poisson summation'   # search every open roadmap pull request
+tauceti-roadmap --conf $CONF roadmaps overlaps                    # shared roadmaps, cited ids a revision drops
 ```
 
 ## Where things live
@@ -87,7 +88,7 @@ override it; it must not lie inside a git checkout):
 | `workers/<id>/board`, `workers/<id>/content` | the worker's checkouts of the board and the roadmap repository, reset to their main branches every round |
 | `workers/<id>/jobs/<JOB>/brief.md` | the brief the agent got |
 | `workers/<id>/jobs/<JOB>/run-N.out`, `run-N.err`, `run-N.jsonl` | the agent's output, run by run (readable, its errors, the CLI's raw events) |
-| `workers/<id>/jobs/<JOB>/scratch/` | the agent's scratch space, a pending `needs-references.toml`, and the worker's `citations.md` and `signatures.md` |
+| `workers/<id>/jobs/<JOB>/scratch/` | the agent's scratch space, a pending `needs-references.toml`, and the worker's `citations.md`, `overlaps.md` and `signatures.md` |
 | `workers/<id>/usage.jsonl`, `jobs/<JOB>/usage.jsonl` | the tokens of every agent run (`tauceti-roadmap usage` sums them) |
 | `open-roadmaps/` | a mirror of the roadmap repository with the head of every open roadmap pull request, and its index |
 | `workers/<id>/jobs/<JOB>/unsubmitted/` | what a round left behind without submitting it |

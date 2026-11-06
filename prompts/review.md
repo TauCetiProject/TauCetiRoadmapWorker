@@ -61,6 +61,14 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
 4. **Duplication audit** against the current library and roadmaps, by object: what Mathlib, Tau
    Ceti, a roadmap on main or an open roadmap pull request already states must be cited, not
    restated.
+   Then the overlap facts of `scratch/overlaps.md` (the rules are under "Overlap with open pull
+   requests" below): an id this roadmap cites that an open pull request drops, with no citation of
+   the id as it is at its head, is P2 for a supplier citation and P3 otherwise; an id it cites that
+   only an open revision defines, when neither the description nor its merge-order paragraph names
+   that revision, is P3; an id this package drops that other roadmaps cite, with no old → new numbering,
+   is P3; a conflicting head of another open pull request changing this roadmap, with no stated order,
+   is P3; an object this roadmap and another open roadmap both own, or hand to each other, is P2. Name
+   the other pull request and the cited file and line in the witness.
 5. **Supplier-order audit**: run the dependency check below and read every `*Needs:*` line and
    supplier citation; flag upward citations, cycles, unowned prerequisites and supplier drift
    (a cited section or declaration that does not exist where it is cited, resolved as the section on

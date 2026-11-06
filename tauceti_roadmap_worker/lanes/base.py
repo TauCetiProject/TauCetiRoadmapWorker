@@ -32,6 +32,7 @@ from .. import (
     gates,
     gitops,
     openroadmaps,
+    overlaps,
     prompts,
     prreviews,
     references,
@@ -744,9 +745,10 @@ class Lane:
 
     def prepare_tools(self, job: Job, ctx: Context, ws: Workspace) -> None:
         """The index of open roadmap pull requests (refreshed at most every half hour, shared by the
-        host's workers), and the citations of the roadmap's README that are found nowhere, written to
-        `scratch/citations.md` for the agent. Best effort: a failure is a line in the round log and in
-        the brief, never a failed round."""
+        host's workers), the citations of the roadmap's README that are found nowhere, written to
+        `scratch/citations.md` for the agent, and its overlaps with the open pull requests, written to
+        `scratch/overlaps.md`. Best effort: a failure is a line in the round log and in the brief,
+        never a failed round."""
         index: dict = {}
         try:
             index = (openroadmaps.refresh(ctx.gh, ctx.cfg) if ctx.gh is not None and not ctx.dry_run
@@ -759,6 +761,7 @@ class Lane:
         readme = self.citation_target(job, ctx, ws)
         if not index or readme is None:
             return
+        self.prepare_overlaps(job, ctx, ws, index, readme)
         lean = readme.parent / "Suggested.lean"
         try:
             citations, names, why = openroadmaps.resolve(
@@ -772,6 +775,25 @@ class Lane:
         rel = readme.relative_to(ws.board) if readme.is_relative_to(ws.board) else readme.name
         path.write_text(openroadmaps.report(citations, names, why, index, str(rel)), encoding="utf-8")
         ws.extra["citations"] = (path, len(citations) + len(names))
+
+    def prepare_overlaps(self, job: Job, ctx: Context, ws: Workspace, index: dict, readme: Path) -> None:
+        """`scratch/overlaps.md`: the other open pull requests that change this roadmap and whether
+        their heads merge with it, the ids its README cites that an open pull request drops, the ids
+        its pull request (when the job has one) drops that other roadmaps cite, and the open roadmaps
+        closest to it in vocabulary (`overlaps.report`). Best effort, like the citations."""
+        # Only a pull request of the content repository that carries this roadmap counts: a job on a
+        # board pull request (a red-team pass before the port) has the board's number in `extra["pr"]`.
+        pr = 0 if self.board_pr(job) else int(ws.extra.get("pr") or job.inputs.get("pr") or 0)
+        if not any(p["pr"] == pr and job.name in p.get("roadmaps", []) for p in index.get("prs", [])):
+            pr = 0
+        try:
+            text, facts = overlaps.report(ctx.state, index, job.name, readme.read_text(encoding="utf-8"), pr=pr)
+        except Exception as exc:  # noqa: BLE001 - a tool for the agent: its failure must never fail the round
+            print(f"{ws.job_dir.name}: the overlaps were not computed ({type(exc).__name__}: {str(exc)[:160]})")
+            return
+        path = ws.scratch / "overlaps.md"
+        path.write_text(text, encoding="utf-8")
+        ws.extra["overlaps"] = (path, facts)
 
     def prepare_signatures(self, job: Job, ctx: Context, ws: Workspace) -> None:
         """The elaborated type of every declaration of the roadmap's Suggested.lean, with the section
@@ -836,6 +858,18 @@ class Lane:
                 citation += (f" For this roadmap's README the worker found {found[1]} (`{found[0]}`)." if found[1]
                              else " For this roadmap's README the worker found none.")
             lines.append(citation)
+            overlap = (f"- **Overlaps**: `{ctx.cli('roadmaps', 'overlaps', '<Name>')}` lists, for a roadmap, the "
+                       "other open pull requests that change it (and whether their heads merge), the ids its README "
+                       "cites that an open pull request drops (a section, layer or target a revision renumbers or "
+                       "deletes, a heading anchor it renames), the ids its pull request drops that other roadmaps "
+                       "cite, and the open roadmaps closest to it in vocabulary, where a second owner of the same "
+                       "objects is likeliest; with no name it lists every shared roadmap and dropped id.")
+            found = ws.extra.get("overlaps")
+            if found:
+                overlap += (f" For this roadmap the worker found {found[1]} (`{found[0]}`): use each as the rules "
+                            "under \"Overlap with open pull requests\" say." if found[1]
+                            else f" For this roadmap the worker found none (`{found[0]}` has the closest roadmaps).")
+            lines.append(overlap)
         sigs = ws.extra.get("signatures")
         if sigs:
             path, total, flagged, reason = sigs

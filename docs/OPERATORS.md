@@ -197,7 +197,7 @@ fields are the same for both CLIs: `input_tokens` (read without the cache), `cac
 [--since DATE] [--json]` sums them for the host. Input read from the cache dominates long runs
 (every turn reads the whole context again); output includes the thinking.
 
-**The tools a brief lists.** Before the agent runs, the worker prepares three things and the brief's
+**The tools a brief lists.** Before the agent runs, the worker prepares four things and the brief's
 "Tools" section points at them; each is best effort (a failure is a line in the round log and in the
 brief, never a failed round):
 
@@ -214,6 +214,24 @@ brief, never a failed round):
   occurs nowhere in the pinned Mathlib and Tau Ceti sources (its additive or multiplicative twin
   counts), or a `TauCetiRoadmap.<Name>.x` that roadmap's Suggested.lean does not have. These are
   leads for the agent, never gates;
+* `scratch/overlaps.md`: `roadmaps overlaps` on the roadmap (module `overlaps`), what neither main nor
+  one pull request shows. It lists the other open pull requests that change the same roadmap folder,
+  with whether each pair of heads merges (`git merge-tree --write-tree`, git 2.38 or later; "not
+  checked" otherwise; a conflict git names no file for, such as a directory rename split, is still
+  a conflict); the ids the README cites (`Name §1.2`, `Name Layer 3`, `Name A1.2`, a link to
+  `../Name/README.md#heading`) that an open pull request revising that roadmap drops: defined on
+  main and at the merge base of main and that head, and no longer at the head (a heading, a bold
+  label or a numbered item defines an id; a mention, such as another roadmap's equal number, does
+  not; a deleted or emptied README defines nothing); the ids it cites that only an open revision
+  defines, which make that revision a dependency; when the job is on a pull request of the content
+  repository (never a board pull request), the ids it drops from a roadmap on main that other
+  roadmaps cite, on main or at an open head; and the five open roadmaps closest to it in vocabulary
+  (tf-idf cosine over the README words), where a second owner of the same objects is likeliest. The
+  rules in the briefs' "Overlap with open pull requests" say what each item asks of the author and,
+  in a review, which finding it is. With no name, `roadmaps overlaps` lists every shared roadmap
+  folder and every dropped id that is cited somewhere, for the maintainers. The merge-order paragraph
+  and the port lane's Dependencies sentence name the open revisions whose numbering a README cites
+  (`mergeorder.revision_facts`), so the dependency the rule creates is written by the worker;
 * `scratch/signatures.md` (lanes that elaborate, with the pin's Lake packages ready): the elaborated
   type of every declaration of Suggested.lean (`#check @name` appended to a copy, elaborated with
   `[gates] elaborate` and `--json`, split like a command line and run without a shell), and the

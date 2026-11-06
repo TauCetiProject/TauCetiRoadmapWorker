@@ -317,6 +317,18 @@ ADDITIVE = (("add", "mul"), ("Add", "Mul"), ("zero", "one"), ("Zero", "One"), ("
             ("sub", "div"), ("Sub", "Div"), ("nsmul", "pow"), ("zsmul", "zpow"), ("sum", "prod"), ("Sum", "Prod"))
 
 
+def cite_pattern(names) -> re.Pattern | None:
+    """The cross-roadmap citations of the roadmaps `names` (`Name §1.2`, `Name Layer 3`, `Name A1.2`),
+    the longest name tried first; None when there are no names."""
+    names = sorted(set(names), key=len, reverse=True)
+    return re.compile(r"\b(" + "|".join(map(re.escape, names)) + r")\b" + CITE_TAIL) if names else None
+
+
+def cited_id(m: re.Match) -> tuple[str, bool]:
+    """(the cited id, whether it is a layer number) of a `cite_pattern` match."""
+    return (m.group("layer") or m.group("sec") or m.group("pre")).rstrip("."), bool(m.group("layer"))
+
+
 def _labelled(text: str, token: str) -> bool:
     """`token` appears in a heading or at the start of a bold label or bullet of `text`."""
     tok = re.compile(r"(?<![\w.])§?\s?" + re.escape(token) + r"(?![\w])")
@@ -327,7 +339,7 @@ def _labelled(text: str, token: str) -> bool:
     return False
 
 
-def _present(text: str, token: str, layer: bool = False) -> bool:
+def present(text: str, token: str, layer: bool = False) -> bool:
     """The cited id occurs in the roadmap: literally, or as item N of a numbered list under the heading
     or label of its parent id (`B1.4` is the fourth item under `## B1. Principal bundles`)."""
     if layer:
@@ -336,6 +348,27 @@ def _present(text: str, token: str, layer: bool = False) -> bool:
         return True
     parent, _, last = token.rpartition(".")
     return bool(parent and last.isdigit()) and _enumerated(text, parent, int(last))
+
+
+FOREIGN = re.compile(CAMEL + r",?\s*$")      # text ending in a roadmap name: what follows is its id
+
+
+def defined(text: str, token: str, layer: bool = False) -> bool:
+    """The id is defined in the roadmap, not only mentioned: it occurs in a heading or a bold label (a
+    bullet's too), anywhere in it (`### 1.3 Theta`, `### 1.1 Spinors (G1.1)`, `- **B1.2**`, `## Layer
+    3: ...`) but not right after another roadmap's name (`## 2.1 Uses ModularForms §1.3` cites), or
+    it is item N of the numbered list under its parent id. Stricter than `present`, which another
+    roadmap's equal number cited in the text satisfies: two versions of one README are compared by
+    this."""
+    tok = re.compile((r"\bLayers?\s+" + re.escape(token) + r"(?!\d)") if layer else
+                     (r"(?<![\w.])" + re.escape(token) + r"(?![\w])"))
+    for line in text.split("\n"):
+        if not line.lstrip().startswith(("#", "**", "- **", "* **")):
+            continue
+        if any(not FOREIGN.search(line[:m.start()].rstrip("§ ")) for m in tok.finditer(line)):
+            return True
+    parent, _, last = token.rpartition(".")
+    return not layer and bool(parent and last.isdigit()) and _enumerated(text, parent, int(last))
 
 
 def _enumerated(text: str, parent: str, n: int) -> bool:
@@ -359,8 +392,7 @@ def _enumerated(text: str, parent: str, n: int) -> bool:
 def citation_problems(state: Path, index: dict, readme: str, own: str = "") -> list[str]:
     """`<line>: <citation>: <why>` for each cross-roadmap citation of `readme` found nowhere."""
     known = set(index.get("main_roadmaps", [])) | {n for p in index.get("prs", []) for n in p["roadmaps"]}
-    names = sorted(known, key=len, reverse=True)
-    cite = re.compile(r"\b(" + "|".join(map(re.escape, names)) + r")\b" + CITE_TAIL) if names else None
+    cite = cite_pattern(known)
     unknown = re.compile(r"(?<![\w./])(" + CAMEL + r")" + CITE_TAIL)
     texts: dict[str, list[tuple[str, str]]] = {}
     out, seen = [], set()
@@ -375,17 +407,17 @@ def citation_problems(state: Path, index: dict, readme: str, own: str = "") -> l
             name = m.group(1)
             if name == own:
                 continue
-            token = (m.group("layer") or m.group("sec") or m.group("pre")).rstrip(".")
+            token, layer = cited_id(m)
             if (name, token) in seen:
                 continue
             seen.add((name, token))
             if name not in texts:
                 texts[name] = [(label, read(state, index, ref, name)) for label, ref in sources_for(index, name)]
             where = texts[name]
-            if any(_present(text, token, layer=bool(m.group("layer"))) for _label, text in where):
+            if any(present(text, token, layer=layer) for _label, text in where):
                 continue
             checked = ", ".join(label for label, _t in where) or "nowhere"
-            out.append(f"{number}: {m.group(0).strip()}: {name} has no {'Layer ' if m.group('layer') else ''}{token} "
+            out.append(f"{number}: {m.group(0).strip()}: {name} has no {'Layer ' if layer else ''}{token} "
                        f"(checked {checked})")
     return out
 
@@ -456,7 +488,7 @@ def name_problems(state: Path, index: dict, readme: str, lean: str, tokens: set[
                 roadmap_lean[target] = lean if target == own else "\n".join(
                     read(state, index, ref, target, "Suggested.lean") for _l, ref in sources_for(index, target))
             text = roadmap_lean[target]
-            if text and not _present(text, last):
+            if text and not present(text, last):
                 out.append(f"{where}: {full}: not in {target}'s Suggested.lean on main or at an open head")
             continue
         if tokens is None or parts[0] in ("TauCetiRoadmap",):
