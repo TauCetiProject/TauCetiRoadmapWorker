@@ -6,6 +6,7 @@
     tauceti-roadmap tail --worker-id ID [--job JOB]      follow a worker's rounds and its agent's output
     tauceti-roadmap status [--all]                       the board's jobs by state, ages and claimants
     tauceti-roadmap roadmaps refresh | list | grep <regex> | show <Name> [--file F] | resolve <README.md>
+    tauceti-roadmap roadmaps overlaps [<Name> | <README.md>] [--pr N]
     tauceti-roadmap usage [--worker-id ID] [--by lane|kind|job|agent|model|worker|day|label] [--since DATE]
     tauceti-roadmap gate <worktree> <Name> [--base origin/main] [--json] [--out FILE]
     tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE] [--movable]
@@ -51,6 +52,7 @@ from . import (
     gates,
     gitops,
     openroadmaps,
+    overlaps,
     paths,
     prompts,
     references,
@@ -748,9 +750,34 @@ def status_cmd(args) -> int:
     return 0
 
 
+def overlaps_text(state: Path, index: dict, args) -> str:
+    """`roadmaps overlaps`: every open pull request's (no target), or one roadmap's: a README path (a
+    package's, its name the folder's or `--name`), or a roadmap name, read at `--pr`'s head, else on
+    main, else at the first open pull request that carries it."""
+    if not args.target:
+        return overlaps.report_all(state, index)
+    readme = Path(args.target)
+    if args.target.endswith(".md") and readme.is_file():
+        name = args.name or readme.parent.name
+        return overlaps.report(state, index, name, readme.read_text(encoding="utf-8"), pr=args.pr)[0]
+    places = openroadmaps.sources_for(index, args.target)
+    if args.pr:
+        places = [(label, ref) for label, ref in places if label == f"#{args.pr}"]
+    if not places:
+        raise SystemExit(f"no roadmap {args.target} on main or in an open roadmap pull request"
+                         + (f" #{args.pr}" if args.pr else ""))
+    label, ref = places[0]
+    text = openroadmaps.read(state, index, ref, args.target)
+    if not text:
+        raise SystemExit(f"{args.target} has no README.md at {label}")
+    pr = int(label[1:]) if label.startswith("#") else 0
+    return overlaps.report(state, index, args.target, text, pr=pr)[0]
+
+
 def roadmaps_cmd(args) -> int:
     """The open roadmap pull requests: refresh the host's index, list, search, show a file, resolve a
-    README's citations. Only `refresh` reads GitHub; the rest works from the local mirror."""
+    README's citations, list their overlaps. Only `refresh` reads GitHub; the rest works from the local
+    mirror."""
     cfg = _load(args)
     state = cfg.state_dir()
     if args.action == "refresh":
@@ -763,6 +790,12 @@ def roadmaps_cmd(args) -> int:
     if args.action == "list":
         print(f"{len(index['prs'])} open roadmap pull requests, index of {index['at']}:")
         print("\n".join(openroadmaps.rows(index)))
+        return 0
+    if args.action == "overlaps":
+        text = overlaps_text(state, index, args)
+        if args.out:
+            Path(args.out).write_text(text, encoding="utf-8")
+        sys.stdout.write(text)
         return 0
     if not args.target:
         wanted = {"grep": "pattern", "show": "roadmap name"}.get(args.action, "README path")
@@ -1067,21 +1100,23 @@ def parser() -> argparse.ArgumentParser:
     st.add_argument("--all", action="store_true", help="include done jobs and closed issues")
 
     r = sub.add_parser("roadmaps", help="the open roadmap pull requests: refresh the index, list, search them, show a "
-                                        "file, resolve a README's citations")
-    r.add_argument("action", choices=["refresh", "list", "grep", "show", "resolve"])
+                                        "file, resolve a README's citations, list their overlaps")
+    r.add_argument("action", choices=["refresh", "list", "grep", "show", "resolve", "overlaps"])
     r.add_argument("target", nargs="?", default="", help="grep: a pattern (extended regex); show: a roadmap name; "
-                                                         "resolve: a README.md")
+                                                         "resolve: a README.md; overlaps: a roadmap name or a "
+                                                         "README.md (none: every open pull request)")
     r.add_argument("--fixed", action="store_true", help="grep: the pattern is a fixed string")
     r.add_argument("-i", "--ignore-case", action="store_true")
     r.add_argument("--readme-only", action="store_true")
     r.add_argument("--lean-only", action="store_true")
     r.add_argument("--limit", type=int, default=200, help="grep: at most this many lines")
-    r.add_argument("--pr", type=int, default=0, help="show: this pull request's copy")
+    r.add_argument("--pr", type=int, default=0, help="show, overlaps: this pull request's copy")
     r.add_argument("--file", default="README.md", choices=["README.md", "Suggested.lean"], help="show: which file")
-    r.add_argument("--name", default="", help="resolve: the roadmap's own name (default: the README's folder)")
+    r.add_argument("--name", default="", help="resolve, overlaps: the roadmap's own name (default: the README's "
+                                              "folder)")
     r.add_argument("--lean", default="", help="resolve: its Suggested.lean (default: beside the README)")
     r.add_argument("--packages", default="", help="resolve: the pinned Lake packages (default: the host's shared ones)")
-    r.add_argument("--out", default="", help="resolve: also write the report here")
+    r.add_argument("--out", default="", help="resolve, overlaps: also write the report here")
 
     u = sub.add_parser("usage", help="the agent runs' token usage on this host, summed by lane, job, agent, ...")
     u.add_argument("--worker-id", default="", help="only this worker's runs")
