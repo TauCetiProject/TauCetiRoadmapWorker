@@ -249,6 +249,16 @@ diff_cap_lines = 2000
 # is posted (a repair that fails is not pushed; the review stands). The board files no gate round
 # while the review job is claimed, and the next review of the repaired head is another worker's.
 repair_pool = true
+# The push gate's statement-hygiene scan of each Suggested.lean (count `statement-hygiene`), one hit
+# per occurrence with its line, severity and repair: a theorem concluding `Nonempty (A ≅ B)` (`≃`,
+# `≌`) or `∃ e : A ≃ B, …` unless named `nonempty_*`/`exists_*`; choice (`Classical.choose`, `h.some`,
+# ...) in the body of a def, abbrev or instance; `letI`/`haveI` in a signature; `[Fintype k]` beside
+# `[Field k]`; `ULift` in the signature of a theorem or definition; `attribute [-instance]`,
+# `[-simp]` or a local `HasDerivedCategory` instance; `HEq`, `≍`, `cast` or `eqToHom` in a public
+# theorem's conclusion (all P3); two theorems with one statement (P2). A review reports each hit as a
+# finding and accepts no head with one; every push gate (and `tauceti-roadmap gate`) runs the scan as
+# it runs the other Lean scans. false = the count stays 0.
+statement_hygiene = true
 
 [sources]
 # Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through

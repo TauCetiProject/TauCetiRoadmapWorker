@@ -291,6 +291,12 @@ class PRReview:
     # {"head": H, "status": "accepted"} -->` for its current head (the AI review of the whole change,
     # posted by the operator who ran it); the label goes when the head moves. For pin bumps.
     chore_review: bool = False
+    # The push gate's statement-hygiene scan of Suggested.lean (count `statement-hygiene`): no
+    # `Nonempty`-isomorphism headline, no choice in data, no `letI`/`haveI` in a signature, `[Finite k]`
+    # over `[Fintype k]` beside `[Field k]`, no `ULift`, no instance removals, no `HEq`/`eqToHom`
+    # conclusion, no duplicate statement. Each hit names its severity and repair, and a review reports
+    # it as a finding; every push gate runs it, as it runs the other Lean scans.
+    statement_hygiene: bool = True
 
 
 @dataclass

@@ -654,6 +654,7 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
+| `statement_hygiene` | `true` | the push gate's statement-hygiene scan of Suggested.lean (count `statement-hygiene`; every push gate and `tauceti-roadmap gate` run it): `Nonempty`/`∃` isomorphism headlines, choice in data, `letI`/`haveI` in signatures, `[Fintype k]` beside `[Field k]`, `ULift`, instance removals, `HEq`/`cast`/`eqToHom` conclusions (P3), duplicate statements (P2); each hit names its line, severity and repair, and a review reports it as a finding |
 
 The review runs on the review models: `[agents.lanes.prreview]` pins them, and without that table the
 lane uses `[agents.lanes.review]`'s. For example

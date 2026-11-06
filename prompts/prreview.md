@@ -41,8 +41,8 @@ finding unless this brief names that folder as the pull request's own). The work
 scanners, the dependency check, the targeted build `__BUILD__`); every failing check, with its
 rule, is in `__GATE_REPORT__`. Each failure is a finding (a failed build or a cycle P1, an upward
 supplier P2, a style rule P3; a file in the folder that is not a roadmap file, `stray-files`, P3
-with the repair "delete it; sources are the README's references"), and no acceptance while the gate
-fails. To run it: `__GATE__`.
+with the repair "delete it; sources are the README's references"; a `statement-hygiene` hit at the
+severity and with the repair it names), and no acceptance while the gate fails. To run it: `__GATE__`.
 
 Previous AI review of this roadmap folder, if any: __PREVIOUS__. The change since the head it read
 (data): __CHANGES__.

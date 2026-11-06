@@ -238,6 +238,314 @@ def scan_lean_length(lean: str, max_lines: int) -> list[Hit]:
     return [Hit(count, f"{count} lines (at most {max_lines})")] if max_lines and count > max_lines else []
 
 
+# --- Suggested.lean statement hygiene -------------------------------------------------------------
+#
+# How the targets are stated, checked on a copy of the file with comments, docstrings and strings
+# blanked (offsets kept, so an offset gives its line). Every hit names its severity and the repair a
+# review quotes. `[prreview] statement_hygiene` turns the scan off.
+
+HYGIENE_REPAIRS = {
+    "nonempty-iso": "state the canonical map and `IsIso` of it, or name the isomorphism as data; keep `Nonempty` only "
+                    "as a corollary named `nonempty_*`",
+    "choice-data": "define the datum through a universal property, by `Quotient.lift`/descent, or take it as an "
+                   "argument",
+    "local-instance": "use an instance binder or a named instance in the signature",
+    "fintype-field": "use `[Finite {k}]`; `Nat.card {k}` is the cardinality",
+    "ulift": "state on the carrier in the scheme's universe; cross universes once in a named comparison",
+    "instance-removal": "resolve the instance where it arises; no removals or local derived-category instances",
+    "transport": "restate without heterogeneous equality or transport in the conclusion",
+    "duplicate": "one statement, one declaration",
+}
+# Top-level commands start in column 0 (as `DECL_START`), with `public` and the commands that end a
+# declaration's text (`attribute`, notations, `mutual`) besides.
+HYGIENE_COMMAND = re.compile(
+    r"^(?:@\[[^\]]*\]\s*)?"
+    r"(?P<mods>(?:(?:private|protected|public|noncomputable|partial|unsafe|nonrec|scoped|local)\s+)*)"
+    r"(?P<kw>theorem|lemma|def|abbrev|instance|example|structure|class|inductive|opaque|axiom|namespace|section|end|"
+    r"mutual|open|variable|universe|import|attribute|set_option|notation|infixl|infixr|infix|prefix|postfix|"
+    r"macro_rules|macro|syntax|elab|#[a-z_]+)(?![\w'])", re.M)
+HYGIENE_DECLS = ("theorem", "lemma", "def", "abbrev", "instance", "example", "structure", "class", "inductive",
+                 "opaque", "axiom")
+DECL_NAME = re.compile(r"\s*(?:\(priority\s*:=[^)]*\)\s*)?"                     # an instance's priority
+                       r"(?:(?P<name>[^\s(\[{⦃:.]+(?:\.[^\s(\[{⦃:.]+)*)(?:\.\{[^}]*\})?)?")  # `Foo.bar.{u}`
+OPENERS, CLOSERS = "([{⟨⦃", ")]}⟩⦄"
+ISO = re.compile(r"[≅≃≌]")
+CHOICE_CALL = re.compile(r"(?:(?P<pre>[\w'.]*[\w'])|(?P<close>[)\]⟩]))?\.(?P<fn>choose|some|choice|arbitrary)(?![\w'])")
+LOCAL_INSTANCE = re.compile(r"(?<![\w'.])(?:letI|haveI)(?![\w'])")
+FINTYPE = re.compile(r"\[\s*Fintype\s+(?P<k>[^\]]+?)\s*\]")
+ULIFT = re.compile(r"(?<![\w'])ULift(?![\w'])")
+INSTANCE_REMOVAL = re.compile(r"\battribute\s*\[[^\]\n]*?(?<![\w'-])-\s*(?:instance|simp)(?![\w'])[^\]\n]*\]"
+                              r"|\battribute\s*\[\s*local\s+instance(?![\w'])[^\]\n]*\][^\n]*?\bHasDerivedCategory")
+TRANSPORT = re.compile(r"\b(?:HEq|eqToHom)(?![\w'])|≍|(?<![\w'.])cast(?![\w'])")
+BINDER_NAMES = re.compile(r"[(\[{⦃]\s*([^\W\d][\w']*(?:\s+[^\W\d][\w']*)*)\s*:(?!=)")
+QUANTIFIED_NAMES = re.compile(r"(?<![\w'])(?:∀|∃!?|fun|λ)\s+([^\W\d][\w']*(?:\s+[^\W\d][\w']*)*)\s*(?:[:,∈]|=>|↦)")
+
+
+@dataclass
+class LeanDecl:
+    """One declaration of blanked Lean code: where it starts, its signature (binders and conclusion,
+    after the name) and body as offsets into the file, and the `variable` commands (offset, text)
+    and namespaces in force."""
+    kw: str
+    name: str
+    private: bool
+    at: int
+    line: int
+    sig_at: int
+    signature: str
+    body_at: int
+    body: str
+    variables: list[tuple[int, str]]
+    namespaces: tuple[str, ...]
+
+    @property
+    def label(self) -> str:
+        return f"{self.kw} `{self.name}`" if self.name else f"an anonymous {self.kw}"
+
+    @property
+    def conclusion_at(self) -> int:
+        """The offset in the signature of what the declaration states: after the first `:` at bracket
+        depth 0 (the binders before it are bracketed or bare names; a `:` of `∃ e : …` comes later)."""
+        colon = depth0_index(self.signature, ":")
+        return colon + 1 if colon >= 0 else len(self.signature)
+
+    @property
+    def conclusion(self) -> str:
+        return self.signature[self.conclusion_at:]
+
+
+def blank_strings(code: str) -> str:
+    """Blank the contents of string literals, keeping the quotes, newlines and offsets."""
+    return re.sub(r'"(?:[^"\\]|\\.)*"', lambda m: '"' + re.sub(r"[^\n]", " ", m.group(0)[1:-1]) + '"', code, flags=re.S)
+
+
+def bracket_depths(text: str) -> list[int]:
+    """The bracket depth at each character of `text` (a bracket itself counts as outside)."""
+    out, depth = [], 0
+    for c in text:
+        if c in CLOSERS:
+            depth = max(0, depth - 1)
+        out.append(depth)
+        if c in OPENERS:
+            depth += 1
+    return out
+
+
+def depth0_index(text: str, mark: str, start: int = 0) -> int:
+    """The first offset from `start` of `mark` (`:` or `,`) at bracket depth 0, a `:` of `:=` or `::`
+    not counting; -1 when there is none."""
+    for i, depth in enumerate(bracket_depths(text)[start:], start):
+        if depth or text[i] != mark:
+            continue
+        if mark == ":" and (text[i + 1:i + 2] in ("=", ":") or text[i - 1:i] == ":"):
+            continue
+        return i
+    return -1
+
+
+def signature_end(text: str, inductive: bool = False) -> tuple[int, int]:
+    """(where the signature ends, where the body starts) in a declaration's text after its name: the
+    first `:=` at bracket depth 0 that is not the binding of a `let`/`have`/`letI`/`haveI` in the
+    type, else `where`, else a line opening a match arm (`| … =>`; any `|` line of an inductive)."""
+    depths, pending, i = bracket_depths(text), 0, 0
+    while i < len(text):
+        c, prev = text[i], text[i - 1] if i else " "
+        if depths[i] or c in OPENERS or c in CLOSERS:
+            pass
+        elif text.startswith(":=", i):
+            if not pending:
+                return i, i + 2
+            pending -= 1
+            i += 1
+        elif c == "|" and not text[text.rfind("\n", 0, i) + 1:i].strip():
+            eol = text.find("\n", i)
+            if inductive or "=>" in text[i:eol if eol >= 0 else len(text)]:
+                return i, i
+        elif (c.isalpha() or c == "_") and not (prev.isalnum() or prev in "_'."):
+            word = re.match(r"[\w']+", text[i:]).group(0)
+            if word == "where":
+                return i, i + len(word)
+            pending += word in ("let", "have", "letI", "haveI")
+            i += len(word) - 1
+        i += 1
+    return len(text), len(text)
+
+
+def lean_declarations(code: str) -> tuple[list[LeanDecl], list[tuple[int, str]]]:
+    """The declarations of blanked Lean code, and every `variable` command as (offset, text). A
+    declaration sees the `variable` commands of its enclosing namespaces and sections, up to the
+    `end` that closes them."""
+    commands = list(HYGIENE_COMMAND.finditer(code))
+    frames: list[list[tuple[int, str]]] = [[]]
+    namespaces: list[str] = [""]
+    decls, variables = [], []
+    for k, m in enumerate(commands):
+        kw, at = m.group("kw"), m.end()
+        text = code[at:commands[k + 1].start() if k + 1 < len(commands) else len(code)]
+        if kw in ("namespace", "section", "mutual"):
+            frames.append([])
+            namespaces.append(text.split()[0] if kw == "namespace" and text.split() else "")
+        elif kw == "end":
+            if len(frames) > 1:
+                frames.pop()
+                namespaces.pop()
+        elif kw == "variable":
+            frames[-1].append((at, text))
+            variables.append((at, text))
+        elif kw in HYGIENE_DECLS:
+            named = DECL_NAME.match(text) if kw != "example" else None
+            name = (named.group("name") or "") if named else ""
+            start = named.end() if name else 0
+            end, body = signature_end(text[start:], inductive=kw == "inductive")
+            decls.append(LeanDecl(kw, name, "private" in m.group("mods").split(), m.start(),
+                                  code.count("\n", 0, m.start()) + 1, at + start,
+                                  text[start:start + end], at + start + body, text[start + body:],
+                                  [v for frame in frames for v in frame], tuple(n for n in namespaces if n)))
+    return decls, variables
+
+
+def brief(text: str, limit: int = 80) -> str:
+    """`text` on one line, cut at `limit` characters."""
+    one = " ".join(text.split())
+    return one if len(one) <= limit else one[:limit - 1] + "…"
+
+
+def distinct_iso(ty: str) -> bool:
+    """Whether `ty` is an isomorphism type `A ≅ B` (`≃`, `≌`, decorated as `≃ₐ[K]` or `≃+*`) at bracket
+    depth 0 between two different objects. An automorphism `L ≃ₐ[K] L` is an element of a group: that
+    one with a property exists is mathematics, not an isomorphism asserted to exist."""
+    depths = bracket_depths(ty)
+    at = next((i for i, ch in enumerate(ty) if depths[i] == 0 and ISO.match(ch)), -1)
+    if at < 0:
+        return False
+    right = re.sub(r"^[^\s\[]*(?:\[[^\]]*\])?", "", ty[at + 1:])
+    return ty[:at].split() != right.split()
+
+
+def iso_headline(conclusion: str) -> bool:
+    """Whether a conclusion is `Nonempty (A ≅ B)` (or `≃`, `≌`; or `Nonempty <| A ≃ B`) or
+    `∃ e : A ≅ B, …`: an isomorphism asserted to exist rather than given (`distinct_iso`)."""
+    c = " ".join(conclusion.split())
+    if m := re.fullmatch(r"Nonempty\s*(?:<\|\s*(?P<bare>.+)|(?P<wrapped>\(.*\)))", c):
+        wrapped = m.group("wrapped")
+        if wrapped and not all(bracket_depths(wrapped)[1:-1]):
+            return False                  # `Nonempty (A ≃ B) ∧ P`: the parenthesis closes before the end
+        return distinct_iso(wrapped[1:-1] if wrapped else m.group("bare"))
+    if m := re.match(r"∃\s*(?P<paren>\()?\s*[^\W\d][\w']*\s*:", c):
+        comma = depth0_index(c, ",", m.end())
+        ty = c[m.end():comma if comma >= 0 else len(c)].strip()
+        return distinct_iso(ty[:-1] if m.group("paren") and ty.endswith(")") else ty)
+    return False
+
+
+def choice_uses(body: str) -> list[tuple[int, str]]:
+    """(offset, call) of the choice functions a definition's body calls: `Classical.choose`/`choice`/`arbitrary`,
+    `Nonempty.some`, `Exists.choose`, and `.choose`/`.some` on a local term (`h.some`) or a
+    parenthesised one. `Option.some`, `WithTop.some` and an anonymous constructor `.some x` are not."""
+    out = []
+    for m in CHOICE_CALL.finditer(body):
+        owner, fn = (m.group("pre") or "").split(".")[-1], m.group("fn")
+        if fn in ("choice", "arbitrary"):
+            chosen = owner == "Classical"
+        else:
+            chosen = bool(m.group("close")) or owner in ("Classical", "Nonempty", "Exists") or owner[:1].islower() \
+                or owner[:1] == "_"
+        if chosen:
+            out.append((m.start(), f"{m.group('pre') or '(…)'}.{fn}"))
+    return out
+
+
+def statement_key(decl: LeanDecl) -> str:
+    """A theorem's statement up to whitespace and the names of its binders, with the `variable`
+    commands and the namespaces in force: two theorems with one key state one thing. Binder names
+    are those of bracketed binders before the conclusion (and in the variables) and of `∀`, `∃`,
+    `fun` and `λ`; a type ascription `(x : ℝ)` in the conclusion is not a binder."""
+    variables = " ".join(v for _at, v in decl.variables)
+    text = f"{variables} ⊢ {decl.signature}"
+    names = [n for group in BINDER_NAMES.findall(f"{variables} {decl.signature[:decl.conclusion_at]}")
+             for n in group.split()]
+    names += [n for group in QUANTIFIED_NAMES.findall(text) for n in group.split()]
+    for k, name in enumerate(dict.fromkeys(n for n in names if n != "_")):
+        text = re.sub(rf"(?<![\w'.]){re.escape(name)}(?![\w'])", f"#{k}", text)
+    return ".".join(decl.namespaces) + "|" + re.sub(r"\s*([()\[\]{}⦃⦄⟨⟩,])\s*", r"\1", " ".join(text.split()))
+
+
+def fintype_beside_field(decl: LeanDecl) -> list[tuple[int, str, bool]]:
+    """(offset, k, whether in the signature) of every `[Fintype k]` in force for a declaration together
+    with `[Field k]`: in its signature, or in a `variable` command in scope when the signature mentions
+    `k` (so that Lean includes the variable's instances)."""
+    in_force = [*decl.variables, (decl.sig_at, decl.signature)]
+    out = []
+    for at, text in in_force:
+        for m in FINTYPE.finditer(text):
+            k = " ".join(m.group("k").split())
+            field_k = re.compile(r"\[\s*Field\s+" + r"\s+".join(map(re.escape, k.split())) + r"\s*\]")
+            own = at == decl.sig_at
+            if (own or re.search(rf"(?<![\w'.]){re.escape(k)}(?![\w'])", decl.signature)) \
+                    and any(field_k.search(t) for _a, t in in_force):
+                out.append((at + m.start(), k, own))
+    return out
+
+
+def scan_lean_statement_hygiene(lean: str) -> list[Hit]:
+    """How Suggested.lean states its targets, one hit per occurrence, each `P3 <what>; repair: <how>`
+    (a duplicate statement P2). Comments, docstrings and strings are ignored.
+    1. a theorem whose conclusion is `Nonempty (A ≅ B)` (`≃`, `≌`) or `∃ e : A ≅ B, …` (a name
+       `nonempty_*` or `exists_*` is the corollary, and passes);
+    2. a `def`, `abbrev` or `instance` whose body chooses (`Classical.choose`, `h.some`, ...);
+    3. `letI` or `haveI` in a signature or a `variable` command;
+    4. `[Fintype k]` with `[Field k]` in force (`fintype_beside_field`);
+    5. `ULift` in the signature of a theorem, lemma, `def` or `abbrev`;
+    6. `attribute [-instance …]`, `attribute [-simp …]`, `attribute [local instance] …HasDerivedCategory…`;
+    7. `HEq`, `≍`, `cast` or `eqToHom` in the conclusion of a theorem that is not private;
+    8. (P2) a theorem whose statement is an earlier theorem's (`statement_key`)."""
+    code = blank_strings(strip_lean_comments(lean))
+    found: list[tuple[int, str]] = []
+
+    def hit(at: int, what: str, repair: str, severity: str = "P3") -> None:
+        found.append((at, f"{severity} {what}; repair: {repair}"))
+
+    decls, variables = lean_declarations(code)
+    statements: dict[str, LeanDecl] = {}
+    fintypes: set[int] = set()
+    for d in decls:
+        theorem, conclusion = d.kw in ("theorem", "lemma"), d.conclusion
+        concl_at = d.sig_at + d.conclusion_at
+        if theorem and not d.name.split(".")[-1].startswith(("nonempty_", "exists_")) and iso_headline(conclusion):
+            hit(concl_at + len(conclusion) - len(conclusion.lstrip()), f"{d.label} concludes `{brief(conclusion)}`",
+                HYGIENE_REPAIRS["nonempty-iso"])
+        if d.kw in ("def", "abbrev", "instance"):
+            for at, call in choice_uses(d.body):
+                hit(d.body_at + at, f"{d.label} chooses its datum (`{call}`)", HYGIENE_REPAIRS["choice-data"])
+        for m in LOCAL_INSTANCE.finditer(d.signature):
+            hit(d.sig_at + m.start(), f"`{m.group(0)}` in the signature of {d.label}",
+                HYGIENE_REPAIRS["local-instance"])
+        if d.kw in ("theorem", "lemma", "def", "abbrev"):
+            for m in ULIFT.finditer(d.signature):
+                hit(d.sig_at + m.start(), f"`ULift` in the signature of {d.label}", HYGIENE_REPAIRS["ulift"])
+        for at, k, own in fintype_beside_field(d):
+            if at not in fintypes:            # a `variable` command's binder: once, at the first declaration it serves
+                fintypes.add(at)
+                where = d.label if own else f"a `variable` command in force for {d.label}"
+                hit(at, f"`[Fintype {k}]` beside `[Field {k}]` ({where})", HYGIENE_REPAIRS["fintype-field"].format(k=k))
+        if theorem and not d.private:
+            for m in TRANSPORT.finditer(conclusion):
+                hit(concl_at + m.start(), f"`{m.group(0)}` in the conclusion of {d.label}",
+                    HYGIENE_REPAIRS["transport"])
+        if theorem and conclusion.strip():
+            first = statements.setdefault(statement_key(d), d)
+            if first is not d:
+                hit(d.at, f"{d.label} states what {first.label} (line {first.line}) states",
+                    HYGIENE_REPAIRS["duplicate"], "P2")
+    for at, text in variables:
+        for m in LOCAL_INSTANCE.finditer(text):
+            hit(at + m.start(), f"`{m.group(0)}` in a `variable` command", HYGIENE_REPAIRS["local-instance"])
+    for m in INSTANCE_REMOVAL.finditer(code):
+        hit(m.start(), f"`{brief(m.group(0))}`", HYGIENE_REPAIRS["instance-removal"])
+    found.sort(key=lambda f: f[0])
+    return [Hit(code.count("\n", 0, at) + 1, text) for at, text in found]
+
+
 # --- README scanners ------------------------------------------------------------------------------
 
 def scan_blob_links(readme: str, repo: str) -> list[Hit]:
@@ -727,6 +1035,8 @@ class GateOptions:
     # The roadmaps on the content repository's main (`merged_roadmaps`): suppliers available to every
     # pull request, never UPWARD, whatever the merge order of open pull requests says of them.
     merged: set[str] = field(default_factory=set)
+    # The statement-hygiene scan of Suggested.lean (`[prreview] statement_hygiene`).
+    statement_hygiene: bool = True
 
     @classmethod
     def from_config(cls, cfg, order=None, siblings=None, dropped=None, tauceti=None, merged=None) -> "GateOptions":
@@ -736,7 +1046,8 @@ class GateOptions:
                    forbidden_patterns=list(g.forbidden_patterns), dropped_names=list(dropped or []),
                    outside_folder_allow=list(g.outside_folder_allow), order=order if g.require_depcheck else None,
                    sibling_readmes=dict(siblings or {}), main_extended=list(cfg.roadmap.main_extended),
-                   tauceti_sources=tauceti, roadmap_files=list(g.roadmap_files), merged=set(merged or ()))
+                   tauceti_sources=tauceti, roadmap_files=list(g.roadmap_files), merged=set(merged or ()),
+                   statement_hygiene=cfg.prreview.statement_hygiene)
 
 
 def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateResult:
@@ -755,6 +1066,7 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
     r.add("mathlib-subimports", scan_mathlib_subimports(lean) if opts.forbid_mathlib_subimports else [])
     r.add("no-import-mathlib", scan_missing_mathlib_import(lean))
     r.add("lean-lines", scan_lean_length(lean, opts.max_lean_lines))
+    r.add("statement-hygiene", scan_lean_statement_hygiene(lean) if opts.statement_hygiene else [])
     r.add("forbidden", scan_forbidden(readme, opts.forbidden_patterns) + scan_forbidden(lean, opts.forbidden_patterns))
     r.add("dropped", scan_dropped_names(readme, opts.dropped_names) + scan_dropped_names(lean, opts.dropped_names))
     r.add("readme-ids-missing", readme_identifiers_missing(readme, lean))
@@ -794,6 +1106,14 @@ GATE_RULES = {
     "mathlib-subimports": "no `import Mathlib.<submodule>`: the single line `import Mathlib`",
     "no-import-mathlib": "Suggested.lean has the line `import Mathlib`",
     "lean-lines": "Suggested.lean stays within the project's line limit (`[gates] max_lean_lines`)",
+    "statement-hygiene": "Suggested.lean states its targets cleanly: no theorem concluding `Nonempty (A ≅ B)` or "
+                         "`∃ e : A ≃ B, …` unless named `nonempty_*`/`exists_*`, no choice in the body of a `def`, "
+                         "`abbrev` or `instance`, no `letI`/`haveI` in a signature, `[Finite k]` and not "
+                         "`[Fintype k]` beside `[Field k]`, no `ULift` in the signature of a theorem or definition, no "
+                         "`attribute [-instance]`/`[-simp]` or local `HasDerivedCategory` instance, no `HEq`, `≍`, "
+                         "`cast` or `eqToHom` in a public theorem's conclusion, and no two theorems with one "
+                         "statement; each hit names its severity (P2 for a duplicate statement, else P3) and its "
+                         "repair",
     "forbidden": "no match of the project's forbidden patterns (`[gates] forbidden_patterns`)",
     "dropped": "no name of the project's dropped-names list",
     "readme-ids-missing": "every backticked identifier the README presents as this roadmap's own declaration (a "
