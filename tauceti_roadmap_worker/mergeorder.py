@@ -216,21 +216,24 @@ def _mutual(state: Path) -> set[tuple[int, int]]:
 @dataclass
 class OrderFacts:
     """What a pull request's "Merge order" paragraph states: the chain of ours that must merge
-    first, and other authors' pull requests (None: not read) and those that cite it back."""
+    first, other authors' pull requests (None: not read) and those that cite it back, and the open
+    revisions of roadmaps on main whose numbering it cites (None: not read)."""
     chain: list[tuple[int, str]]
     external: list[tuple] | None
     mutual: list[tuple]
+    revisions: list[tuple] | None = None
 
     def paragraph(self, pr: int) -> str:
-        return depgraph.merge_order_paragraph(pr, self.chain, self.external, self.mutual)
+        return depgraph.merge_order_paragraph(pr, self.chain, self.external, self.mutual, self.revisions)
 
 
 def facts(prs: list[dict], readmes: dict[str, str], order: list[str], main_extended: set[str],
           stacks: dict[int, int], external: dict, mutual: set[tuple[int, int]],
-          members: list[dict] | tuple = ()) -> dict[int, OrderFacts]:
+          members: list[dict] | tuple = (), revisions: dict | None = None) -> dict[int, OrderFacts]:
     """The merge-order facts of each of `prs` (pure, given the inputs). `members` are ours too (links
     of the chain, one per pull request even when it adds several roadmaps) but get no facts. A pull
-    request whose roadmap is not in the merge order, or whose README was not read, gets none."""
+    request whose roadmap is not in the merge order, or whose README was not read, gets none.
+    `revisions` maps a pull request to the open revisions whose numbering it cites (None: not read)."""
     edges = depgraph.supplier_edges(readmes, set(order), main_extended)
     name2pr = {p["name"]: p["pr"] for p in prs}
     pr2name = {v: k for k, v in name2pr.items()}
@@ -256,16 +259,39 @@ def facts(prs: list[dict], readmes: dict[str, str], order: list[str], main_exten
             rows = sorted((int(v[0]), k, str(v[1]) if len(v) > 1 else "") for k, v in ext.items() if v)
             ext_first = [r for r in rows if r[0] not in mut]
             ext_mut = [r for r in rows if r[0] in mut]
-        out[p["pr"]] = OrderFacts(chain, ext_first, ext_mut)
+        revs = None if revisions is None else sorted(revisions.get(p["pr"], []))
+        out[p["pr"]] = OrderFacts(chain, ext_first, ext_mut, revs)
     return out
 
 
 def plan(prs: list[dict], readmes: dict[str, str], order: list[str], main_extended: set[str],
          stacks: dict[int, int], external: dict, mutual: set[tuple[int, int]],
-         members: list[dict] | tuple = ()) -> dict[int, str]:
+         members: list[dict] | tuple = (), revisions: dict | None = None) -> dict[int, str]:
     """The paragraph for each of `prs` (pure, given the inputs): `facts`, rendered."""
     return {pr: f.paragraph(pr) for pr, f in facts(prs, readmes, order, main_extended, stacks, external, mutual,
-                                                   members).items()}
+                                                   members, revisions).items()}
+
+
+def revision_facts(ctx, prs: list[dict], readmes: dict[str, str]) -> dict[int, list[tuple]] | None:
+    """For each of `prs` whose README is in `readmes`: the open revisions of roadmaps on main whose
+    numbering it cites, (pull request, roadmap, author) (`overlaps.revision_dependencies`), from the
+    host's index of open roadmap pull requests. A README that cites a section as a revision renumbers
+    it depends on that revision, whoever opened it. None when the index cannot be read: the paragraph
+    then says nothing about revisions."""
+    from . import openroadmaps, overlaps
+    try:
+        index = openroadmaps.refresh(ctx.gh, ctx.cfg)
+    except Exception:  # noqa: BLE001 - best effort, as in the briefs: an old index, else nothing
+        index = openroadmaps.load(ctx.state)
+    if not index:
+        return None
+    try:
+        changed = overlaps.revisions(ctx.state, index)
+        return {p["pr"]: overlaps.revision_dependencies(ctx.state, index, readmes[p["name"]], p["name"], pr=p["pr"],
+                                                        changed=changed)
+                for p in prs if p["name"] in readmes}
+    except Exception:  # noqa: BLE001 - as above
+        return None
 
 
 def all_facts(ctx, prs: list[dict], readmes: dict[str, str], order: list[str]) -> dict[int, OrderFacts] | None:
@@ -276,7 +302,8 @@ def all_facts(ctx, prs: list[dict], readmes: dict[str, str], order: list[str]) -
         return None
     every = {**found.readmes, **readmes}
     return facts(prs, every, order, set(ctx.cfg.roadmap.main_extended), _stacks(ctx.state),
-                 externals(ctx.state, prs, readmes, found.others), _mutual(ctx.state), found.members)
+                 externals(ctx.state, prs, readmes, found.others), _mutual(ctx.state), found.members,
+                 revision_facts(ctx, prs, readmes))
 
 
 def paragraphs(ctx, prs: list[dict], readmes: dict[str, str], order: list[str]) -> dict[int, str] | None:

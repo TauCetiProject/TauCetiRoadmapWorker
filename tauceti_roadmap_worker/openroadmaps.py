@@ -350,6 +350,27 @@ def present(text: str, token: str, layer: bool = False) -> bool:
     return bool(parent and last.isdigit()) and _enumerated(text, parent, int(last))
 
 
+FOREIGN = re.compile(CAMEL + r",?\s*$")      # text ending in a roadmap name: what follows is its id
+
+
+def defined(text: str, token: str, layer: bool = False) -> bool:
+    """The id is defined in the roadmap, not only mentioned: it occurs in a heading or a bold label (a
+    bullet's too), anywhere in it (`### 1.3 Theta`, `### 1.1 Spinors (G1.1)`, `- **B1.2**`, `## Layer
+    3: ...`) but not right after another roadmap's name (`## 2.1 Uses ModularForms §1.3` cites), or
+    it is item N of the numbered list under its parent id. Stricter than `present`, which another
+    roadmap's equal number cited in the text satisfies: two versions of one README are compared by
+    this."""
+    tok = re.compile((r"\bLayers?\s+" + re.escape(token) + r"(?!\d)") if layer else
+                     (r"(?<![\w.])" + re.escape(token) + r"(?![\w])"))
+    for line in text.split("\n"):
+        if not line.lstrip().startswith(("#", "**", "- **", "* **")):
+            continue
+        if any(not FOREIGN.search(line[:m.start()].rstrip("§ ")) for m in tok.finditer(line)):
+            return True
+    parent, _, last = token.rpartition(".")
+    return not layer and bool(parent and last.isdigit()) and _enumerated(text, parent, int(last))
+
+
 def _enumerated(text: str, parent: str, n: int) -> bool:
     """Whether the section headed by `parent` (a heading or bold label naming it) has at least n
     numbered items before the next heading."""

@@ -27,9 +27,11 @@ act on it):
 
 - an id this roadmap cites that an open pull request drops (a revision renumbers or deletes the
   section, layer or target, or renames the heading): the citation breaks when that pull request
-  merges. Name that pull request as a dependency of this roadmap's pull request, in its description,
-  and cite the id as it is at that head (where the content now is); when the content is gone, cite
-  another owner or state it here;
+  merges. Cite the id as it is at that head (where the content now is); when the content is gone,
+  cite another owner or state it here. Citing a revision's numbering makes it a dependency: the
+  report lists it under "only an open revision defines", and the worker names it in the merge-order
+  paragraph of the pull requests it opens. A pull request opened any other way names it in its
+  description;
 - an id this roadmap's pull request drops that other roadmaps cite: keep the id, or give the old →
   new numbering in the README (one line per moved id) so that the citing roadmaps can follow. A
   roadmap on main that cites it breaks at the merge;

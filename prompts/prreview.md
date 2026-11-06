@@ -66,9 +66,10 @@ requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned l
 4. **Duplication audit** by object: what Mathlib, Tau Ceti, a roadmap on main or another open
    roadmap pull request already states must be cited, not restated.
    Then the overlap facts of `scratch/overlaps.md` (the rules are under "Overlap with open pull
-   requests" below): an id this roadmap cites that an open pull request drops, with no dependency on
-   that pull request and no citation of the id as it is at its head, is P2 for a supplier citation and
-   P3 otherwise; an id this pull request drops that other roadmaps cite, with no old → new numbering,
+   requests" below): an id this roadmap cites that an open pull request drops, with no citation of
+   the id as it is at its head, is P2 for a supplier citation and P3 otherwise; an id it cites that
+   only an open revision defines, when neither the description nor its merge-order paragraph names
+   that revision, is P3; an id this pull request drops that other roadmaps cite, with no old → new numbering,
    is P3; a conflicting head of another open pull request changing this roadmap, with no stated order,
    is P3; an object this roadmap and another open roadmap both own, or hand to each other, is P2. Name
    the other pull request and the cited file and line in the witness.

@@ -781,7 +781,11 @@ class Lane:
         their heads merge with it, the ids its README cites that an open pull request drops, the ids
         its pull request (when the job has one) drops that other roadmaps cite, and the open roadmaps
         closest to it in vocabulary (`overlaps.report`). Best effort, like the citations."""
-        pr = int(ws.extra.get("pr") or job.inputs.get("pr") or 0)
+        # Only a pull request of the content repository that carries this roadmap counts: a job on a
+        # board pull request (a red-team pass before the port) has the board's number in `extra["pr"]`.
+        pr = 0 if self.board_pr(job) else int(ws.extra.get("pr") or job.inputs.get("pr") or 0)
+        if not any(p["pr"] == pr and job.name in p.get("roadmaps", []) for p in index.get("prs", [])):
+            pr = 0
         try:
             text, facts = overlaps.report(ctx.state, index, job.name, readme.read_text(encoding="utf-8"), pr=pr)
         except Exception as exc:  # noqa: BLE001 - a tool for the agent: its failure must never fail the round

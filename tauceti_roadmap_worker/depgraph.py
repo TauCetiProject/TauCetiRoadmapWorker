@@ -331,13 +331,14 @@ def _cited(prs: list[tuple]) -> str:
 
 
 def merge_order_paragraph(pr: int, chain: list[tuple[int, str]], external: list[tuple] | None = None,
-                          mutual: list[tuple] | None = None) -> str:
+                          mutual: list[tuple] | None = None, revisions: list[tuple] | None = None) -> str:
     """The idempotent 'Merge order' paragraph of a pull request description, in the wording of the
     maintainer's merge_order.py: the chain only, no position number. `chain` holds (pr, roadmap)
     pairs in merge order; `external` and `mutual` hold (pr, roadmap, author) for other authors' pull
     requests that add roadmaps this one cites (those that cite it back are `mutual`). `external` is
     None when the other authors' pull requests were not read: then the paragraph says nothing about
-    them, rather than that there are none."""
+    them, rather than that there are none. `revisions` holds (pr, roadmap, author) for open pull
+    requests that revise a roadmap on main and define ids this one cites, which must merge first."""
     if chain:
         head = " → ".join(f"#{p} ({n})" for p, n in chain) + f" → **this pull request** (#{pr})."
     else:
@@ -353,6 +354,9 @@ def merge_order_paragraph(pr: int, chain: list[tuple[int, str]], external: list[
         ext += (" It also cites " + _cited(mutual) + ", which in turn consume this one (directly or through one "
                 "another); these specifications have no whole-pull-request order among themselves, and the "
                 "stage-level graph between them is acyclic.")
+    if revisions:
+        ext += (" It cites roadmaps on main by the numbering of open pull requests that revise them, which must "
+                "merge first: " + _cited(revisions) + ".")
     return f"{MARK_OPEN}\n**Merge order.** {head}{ext} Roadmaps already on main are not listed.\n{MARK_CLOSE}"
 
 
@@ -371,17 +375,20 @@ def apply_paragraph(body: str, para: str, footer: str = "\U0001f916 Generated wi
     return text.rstrip() + "\n\n" + para + "\n"
 
 
-def dependency_paragraph(chain: list[tuple[int, str]] | None) -> str:
+def dependency_paragraph(chain: list[tuple[int, str]] | None, revisions: list[tuple] | None = None) -> str:
     """The 'Dependencies' paragraph of a port pull request, from the same suppliers as its 'Merge
     order' chain: the open pull requests of ours that must merge first, in merge order ("none" only
-    when the chain is empty; not determined when the open pull requests could not be read)."""
+    when the chain is empty; not determined when the open pull requests could not be read), and the
+    open revisions of roadmaps on main whose numbering the README cites, (pr, roadmap, author)."""
     if chain is None:
         listed = "not determined (the open pull requests could not be read; `merge-order` fills it in)"
     else:
         listed = ", ".join(f"#{p} ({n})" for p, n in chain) or "none"
+    revised = (f" Open revisions of roadmaps on main whose numbering it cites, which must merge first: "
+               f"{_cited(revisions)}." if revisions else "")
     return ("Dependencies (the roadmaps the README cites by name and section, and what they in turn need; the "
-            f"Lean imports none of them). In open pull requests of ours: {listed}. Roadmaps on main are cited by "
-            "name; everything else named in the README is a consumer, not a prerequisite.")
+            f"Lean imports none of them). In open pull requests of ours: {listed}.{revised} Roadmaps on main are "
+            "cited by name; everything else named in the README is a consumer, not a prerequisite.")
 
 
 class OrderCycle(ValueError):
