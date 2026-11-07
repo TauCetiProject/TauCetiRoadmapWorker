@@ -1626,3 +1626,133 @@ def test_plan_and_manifest_edit_guards():
         lp.manifest_edit_problems(MANIFEST_BEFORE, "[[source")[0].startswith("sources.toml does not parse")
     assert lp.manifest_edit_problems(MANIFEST_BEFORE, MANIFEST_BEFORE.replace("2001", "1999"))[0].startswith(
         "sources.toml: a repair keeps the author's entries")
+
+
+# --- the dependency label ------------------------------------------------------------------------------
+
+DEPS = "awaiting-dependencies"
+
+
+class BlipPulls(dict):
+    """Single pull requests GitHub does not answer for (a 502)."""
+
+    def __contains__(self, number):
+        raise GHError(f"GET repos/x/pulls/{number}: HTTP 502: Bad Gateway")
+
+
+def dep_writes(gh, number=12):
+    """The writes of the dependency label on pull request `number`."""
+    labels = f"repos/{REPO}/issues/{number}/labels"
+    return [w for w in gh.writes if w[1] == f"{labels}/{DEPS}" or (w[1] == labels and w[2] == {"labels": [DEPS]})]
+
+
+def verdict_with(job, head, **record):
+    """A verdict file whose worker record names these dependencies at `head`."""
+    path, text = next(iter(verdict_file(job, "accepted", head).items()))
+    data = json.loads(text)
+    data["dependencies"] = {"head": head, "suppliers": [], "revisions": [], "declared": [], **record}
+    return {path: json.dumps(data)}
+
+
+def test_the_dependency_label_follows_the_record_and_goes_when_the_supplier_is_on_main():
+    foo = review_job(41, 1, 12, H1, "done")
+    record = verdict_with(foo, H1, suppliers=[{"roadmap": "CStar", "prs": [30]}])
+    # The supplier roadmap is not on main: the label is added, saying what it waits for.
+    gh = ContentGH([node(12, H1)], files=record, tree=["Foo"])
+    out, _fake = sync(gh, [foo], dependency_label=DEPS)
+    assert dep_writes(gh) == [("POST", f"repos/{REPO}/issues/12/labels", {"labels": [DEPS]})]
+    assert f"#12: {DEPS} added (waits for CStar (#30))" in out
+    # Still waiting: kept, nothing written.
+    gh = ContentGH([node(12, H1, labels=[DEPS])], files=record, tree=["Foo"])
+    sync(gh, [foo], dependency_label=DEPS)
+    assert dep_writes(gh) == []
+    # CStar merged (its folder is on main now): the next run takes the label off.
+    gh = ContentGH([node(12, H1, labels=[DEPS])], files=record, tree=["Foo", "CStar"])
+    out, _fake = sync(gh, [foo], dependency_label=DEPS)
+    assert dep_writes(gh) == [("DELETE", f"repos/{REPO}/issues/12/labels/{DEPS}", {})]
+    assert f"#12: {DEPS} removed (every dependency of {H1[:7]} is merged)" in out
+
+
+def test_revisions_and_declared_pull_requests_count_until_merged():
+    foo = review_job(41, 1, 12, H1, "done")
+    record = verdict_with(foo, H1, revisions=[{"roadmap": "Lattices", "pr": 7}], declared=[44])
+    merged, closed, still = {"state": "closed", "merged": True}, {"state": "closed", "merged": False}, {"state": "open"}
+    gh = ContentGH([node(12, H1, labels=[DEPS])], files=record, pulls={7: merged, 44: still}, tree=["Foo"])
+    sync(gh, [foo], dependency_label=DEPS)
+    assert dep_writes(gh) == []                                           # #44 is open: kept
+    gh = ContentGH([node(12, H1)], files=record, pulls={7: closed, 44: merged}, tree=["Foo"])
+    out, _fake = sync(gh, [foo], dependency_label=DEPS)
+    assert f"#12: {DEPS} added (waits for #7 (revision, closed without merging))" in out
+    gh = ContentGH([node(12, H1, labels=[DEPS])], files=record, pulls={7: merged, 44: merged}, tree=["Foo"])
+    sync(gh, [foo], dependency_label=DEPS)
+    assert dep_writes(gh) == [("DELETE", f"repos/{REPO}/issues/12/labels/{DEPS}", {})]
+
+
+def test_a_head_without_a_record_keeps_the_label_as_it_is():
+    foo = review_job(41, 1, 12, H1, "done")
+    # A verdict with no record, a record of another head, a dependency GitHub does not answer for: the
+    # label is not touched either way.
+    for files in (verdict_file(foo, "accepted", H1), verdict_with(foo, H2, suppliers=[{"roadmap": "CStar", "prs": []}]),
+                  verdict_with(foo, H1, declared=[44])):
+        for labelled in ([DEPS], []):
+            gh = ContentGH([node(12, H1, labels=labelled)], files=files, tree=["Foo"])
+            gh.pulls = BlipPulls()
+            sync(gh, [foo], dependency_label=DEPS)
+            assert dep_writes(gh) == [], (files, labelled)
+    # A declared number that is no pull request (GitHub answers 404) is ignored: nothing else waits, so it goes.
+    gh = ContentGH([node(12, H1, labels=[DEPS])], files=verdict_with(foo, H1, declared=[44]), tree=["Foo"])
+    sync(gh, [foo], dependency_label=DEPS)
+    assert dep_writes(gh) == [("DELETE", f"repos/{REPO}/issues/12/labels/{DEPS}", {})]
+    # Unmanaged (the default): never touched.
+    gh = ContentGH([node(12, H1)], files=verdict_with(foo, H1, suppliers=[{"roadmap": "CStar", "prs": []}]),
+                   tree=["Foo"])
+    sync(gh, [foo])
+    assert dep_writes(gh) == []
+
+
+def test_the_review_records_what_the_pull_request_waits_for(review_env):
+    ctx = lane_ctx(review_env, gh=LabelGH(labels=["awaiting-review"]))
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    (ws.workdir / "README.md").write_text("# Roadmap: foo\n\n### 1.1 A\n\n*Needs:* CStar §1.1 and Lattices §2.\n")
+    ws.extra.update(pr_body="Depends on #44.", leans=[], open_index={
+        "branch": "main", "main_roadmaps": ["Lattices"], "main_folders": {"Lattices": "TauCetiRoadmap/Lattices"},
+        "prs": [{"pr": 30, "roadmaps": ["CStar"], "adds": ["CStar"], "folders": {"CStar": "TauCetiRoadmap/CStar"}},
+                {"pr": 905, "roadmaps": ["Foo"], "adds": [], "folders": {"Foo": "TauCetiRoadmap/Foo"}}]})
+    lane.scrub_outputs(job, ctx, ws)
+    data = json.loads(lane.verdict_file(job, ctx, ws).read_text())
+    assert data["dependencies"] == {"head": H1, "suppliers": [{"roadmap": "CStar", "prs": [30]}], "revisions": [],
+                                    "declared": [44]}
+    assert data["review"]["status"] == "accepted" and lane.check(job, ctx, ws) == []
+    # An agent's own `dependencies` is replaced; without an index there is no record at all.
+    ws.extra.pop("open_index")
+    path = lane.verdict_file(job, ctx, ws)
+    path.write_text(json.dumps({**data, "dependencies": {"head": H1, "declared": [1]}}))
+    lane.scrub_outputs(job, ctx, ws)
+    assert "dependencies" not in json.loads(path.read_text())
+
+
+def test_the_dependency_label_pass_runs_alone_without_the_board_lock():
+    foo = review_job(41, 1, 12, H1, "done")
+    cfg = example_config()
+    gh = ContentGH([node(12, H1)], files=verdict_with(foo, H1, suppliers=[{"roadmap": "CStar", "prs": [30]}]),
+                   tree=["Foo"])
+    ctx = SimpleNamespace(cfg=cfg, gh=gh, board=FakeBoard(jobs=[foo]), operator="github-actions", dry_run=False)
+    assert intake.dependency_label_pass(ctx) == ["[prreview] dependency_label is not set: the label is not managed"]
+    cfg.prreview.dependency_label = DEPS
+    assert intake.dependency_label_pass(ctx) == [f"#12: {DEPS} added (waits for CStar (#30))"]
+    assert dep_writes(gh) == [("POST", f"repos/{REPO}/issues/12/labels", {"labels": [DEPS]})]
+    assert not ctx.board.created                     # nothing filed on the board, no review label touched
+
+
+def test_the_dependency_labels_command_takes_the_label_from_the_command_line(monkeypatch, capsys):
+    from tauceti_roadmap_worker.paths import HERE
+    seen = {}
+    monkeypatch.setattr(cli, "_bot_context", lambda args, cfg, dry: SimpleNamespace(cfg=cfg, dry=dry))
+    monkeypatch.setattr(intake, "dependency_label_pass",
+                        lambda ctx: seen.update(label=ctx.cfg.prreview.dependency_label, dry=ctx.dry) or ["ok"])
+    conf = str(HERE / "tauceti-roadmap.toml.example")
+    assert cli.main(["--conf", conf, "roadmaps", "dependency-labels", "--label", DEPS]) == 0
+    assert seen == {"label": DEPS, "dry": True} and capsys.readouterr().out == "ok\n"
+    cli.main(["--conf", conf, "roadmaps", "dependency-labels", "--yes"])
+    assert seen == {"label": "", "dry": False}                    # the config's (empty in the example)

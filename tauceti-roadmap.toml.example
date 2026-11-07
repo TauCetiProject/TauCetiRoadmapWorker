@@ -229,6 +229,13 @@ comment_reviewers = []
 # content repository for the comment and the label.
 enabled = false
 label = "ai-approved"
+# With a label name here, `board sync` keeps it on a pull request exactly while the latest review of its
+# current head records a dependency not yet merged (the review's verdict file holds the worker's record:
+# the supplier roadmaps it names that are not on main, the open revisions whose numbering it cites,
+# and the pull requests its description names as dependencies). Every run re-checks, so the label
+# goes on the first run after the last dependency merges. A head no review has finished keeps the
+# label as it is. Empty: the label is not managed.
+dependency_label = ""
 per_run = 3
 # Only these authors' pull requests (empty: everyone's), and never these.
 authors = []

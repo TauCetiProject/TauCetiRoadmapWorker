@@ -19,6 +19,10 @@ renumbers the sections other roadmaps cite. This module states the mechanical pa
   ids it cites that only an open revision defines (at its head, not at its merge base, not on main).
   Citing such an id makes that revision a dependency, which `mergeorder` writes into the merge-order
   paragraph (`revision_dependencies`).
+* `dependency_record`: what a pull request waits for at a head, as a structured record: the roadmaps
+  it names as suppliers that are not on main, the open revisions whose numbering it cites, and the
+  pull requests its description names as dependencies. The PR review writes it into its verdict, and
+  `board sync` keeps the dependency label by it (`intake.sync_dependency_labels`).
 * `neighbours`: the open roadmap folders whose READMEs share the most vocabulary with a README
   (tf-idf cosine over words), where two roadmaps that plan the same objects are likeliest to be.
 
@@ -39,6 +43,7 @@ from itertools import combinations
 from pathlib import Path
 from urllib.parse import unquote
 
+from . import depgraph
 from . import openroadmaps as o
 
 NEIGHBOURS = 5          # closest open roadmaps listed for a README
@@ -268,6 +273,72 @@ def revision_dependencies(state: Path, index: dict, readme: str, own: str, *, pr
     its head defines. That revision must merge first."""
     _dropped, adopted = readme_facts(state, index, readme, own, pr=pr, changed=changed)
     return sorted({(r.pr, r.citation.cited, r.author) for r in adopted})
+
+
+NUMBER = re.compile(r"(?<![\w/&])#(\d{1,6})\b")
+SAYS_DEPENDS = re.compile(r"depend|must merge (?:first|before)|merges? (?:only )?after #|merge order:?\**\s*after"
+                          r"|\bafter\b[^.;]*#\d+[^.;]*\b(?:lands?|merges?|is merged)\b", re.IGNORECASE)
+NOT_DEPENDS = re.compile(r"in turn|depends on no\b|no other\b", re.IGNORECASE)
+STACK = re.compile(r"\*\*Stack\.\*\*|^\s*Stack:", re.IGNORECASE)
+BULLET = re.compile(r"^(?:[-*+]|\d+\.)\s")
+
+
+def declared_dependencies(body: str, own: int = 0) -> list[int]:
+    """The pull requests a description names as dependencies: the `#N` of a sentence that says so
+    ("Depends on #887", "now depends on the revisions #1222 and #1015", "which must merge first: #934",
+    "Merge order: after AnalyticNumberTheoryPartI (#1126) lands", "merges after #12"),
+    of the bullets under a line that ends "Depends on:" or "Dependencies:", and of a "Stack." line
+    before "this pull request". Never the pull request itself, nor a sentence that names pull requests
+    citing it back ("in turn") or says it depends on none."""
+    out: set[int] = set()
+    listing, listed = False, False
+    for line in (body or "").split("\n"):
+        stripped = line.strip()
+        if listing:
+            if BULLET.match(stripped):
+                out |= {int(n) for n in NUMBER.findall(stripped)}
+                listed = True
+                continue
+            if not stripped and not listed:
+                continue
+            listing = False
+        if STACK.search(line):
+            out |= {int(n) for n in NUMBER.findall(line.split("this pull request")[0])}
+            continue
+        for sentence in re.split(r"(?<=[.;!?])\s+", line):
+            if SAYS_DEPENDS.search(sentence) and not NOT_DEPENDS.search(sentence):
+                out |= {int(n) for n in NUMBER.findall(sentence)}
+        if re.search(r"depend", stripped, re.IGNORECASE) and stripped.endswith(":"):
+            listing, listed = True, False
+    out.discard(own)
+    return sorted(out)
+
+
+def dependency_record(state: Path, index: dict, readme: str, lean: str, name: str, *, pr: int = 0, body: str = "",
+                      changed: list[Revision] | None = None) -> dict:
+    """What the pull request `pr` waits for, read from the README `readme` and Suggested.lean `lean` of its
+    roadmap `name` and from its description `body`:
+
+    * `suppliers`: the roadmaps it names as suppliers (as the dependency check reads a README, and every
+      `TauCetiRoadmap.<X>` of its Lean) that are not on main, each with the open pull requests that add
+      it. One is met once that roadmap is on main, whichever pull request brings it there.
+    * `revisions`: the open revisions whose numbering it cites (`revision_dependencies`), met once merged.
+    * `declared`: the pull requests its description names as dependencies (`declared_dependencies`),
+      met once merged.
+
+    The roadmaps the pull request itself carries are never its dependencies."""
+    main = set(index.get("main_roadmaps", []))
+    own = {name} | next((set(p.get("roadmaps", [])) for p in index.get("prs", []) if p["pr"] == pr), set())
+    adders: dict[str, list[int]] = {}
+    for p in index.get("prs", []):
+        for added in p.get("adds", []):
+            adders.setdefault(added, []).append(p["pr"])
+    suppliers = depgraph.package_suppliers(name, readme, lean, main | set(adders)) - main - own
+    revisions = revision_dependencies(state, index, readme, name, pr=pr, changed=changed)
+    return {"suppliers": [{"roadmap": s, "prs": sorted(n for n in adders.get(s, []) if n != pr)}
+                          for s in sorted(suppliers)],
+            "revisions": [{"roadmap": r, "pr": q} for q, r, _author in revisions],
+            "declared": declared_dependencies(body, own=pr)}
 
 
 def merge_conflicts(state: Path, a: int, b: int) -> Merge | None:

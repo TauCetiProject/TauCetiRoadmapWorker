@@ -49,7 +49,7 @@ import tomllib
 from pathlib import Path
 from urllib.parse import quote
 
-from .. import board, depgraph, gates, gitops, prompts, prreviews, references, replies, sources
+from .. import board, depgraph, gates, gitops, overlaps, prompts, prreviews, references, replies, sources
 from ..board import Job
 from ..depgraph import read_order
 from ..gh import GHError
@@ -488,7 +488,7 @@ class PRReviewLane(Lane):
                         base_ref=(data.get("base") or {}).get("ref") or cfg.project.branch,
                         answerers=sorted(pr_answerers(cfg, owner)), prs=prs,
                         siblings=sibling_checkouts(ctx, prs, skip=job.name), folder=folder,
-                        readme=folder / "README.md", lean=leans[0], leans=leans)
+                        readme=folder / "README.md", lean=leans[0], leans=leans, pr_body=data.get("body") or "")
         (ws.scratch / PULL_REQUEST_TEXT).write_text(pull_request_document(number, data, owner), encoding="utf-8")
         self.write_changes(job, ctx, ws)
         ws.extra["previous_report"] = self.previous_report(job, ctx, ws)
@@ -606,8 +606,10 @@ class PRReviewLane(Lane):
         return []
 
     def scrub_outputs(self, job: Job, ctx: Context, ws: Workspace) -> list[Path]:
-        """The base scrub, machine paths out of the verdict record, and the roadmap folder reviewed
-        recorded in it (`folder`) when the agent left it out."""
+        """The base scrub, machine paths out of the verdict record, the roadmap folder reviewed
+        recorded in it (`folder`) when the agent left it out, and the worker's record of what the
+        pull request waits for at the head reviewed (`dependencies`: `dependency_record`), which
+        `board sync` keeps the dependency label by. The agent never writes that record."""
         changed = super().scrub_outputs(job, ctx, ws)
         path = self.verdict_file(job, ctx, ws)
         if path.is_file():
@@ -617,13 +619,36 @@ class PRReviewLane(Lane):
                 data = json.loads(clean)
             except ValueError:
                 data = None
-            if isinstance(data, dict) and isinstance(data.get("review"), dict) and "folder" not in data["review"]:
-                data["review"]["folder"] = board.prreview_folder(job)
-                clean = json.dumps(data, indent=1, ensure_ascii=False) + "\n"
+            if isinstance(data, dict) and isinstance(data.get("review"), dict):
+                before = json.dumps(data, sort_keys=True)
+                data["review"].setdefault("folder", board.prreview_folder(job))
+                data.pop("dependencies", None)
+                record = self.dependency_record(job, ctx, ws)
+                if record is not None:
+                    data["dependencies"] = record
+                if json.dumps(data, sort_keys=True) != before:
+                    clean = json.dumps(data, indent=1, ensure_ascii=False) + "\n"
             if clean != text:
                 path.write_text(clean, encoding="utf-8")
                 changed.append(path)
         return changed
+
+    def dependency_record(self, job: Job, ctx: Context, ws: Workspace) -> dict | None:
+        """What the pull request waits for at the head reviewed (`overlaps.dependency_record`, with that
+        head), from the index of open roadmap pull requests the tools prepared; None when there is no
+        index or no README, or it cannot be computed (best effort: `board sync` then leaves the label)."""
+        index, readme = ws.extra.get("open_index"), ws.extra.get("readme")
+        if not index or not readme or not Path(readme).is_file():
+            return None
+        try:
+            lean = "\n".join(Path(f).read_text(encoding="utf-8") for f in ws.extra.get("leans") or [] if Path(f).is_file())
+            record = overlaps.dependency_record(ctx.state, index, Path(readme).read_text(encoding="utf-8"), lean,
+                                                job.name, pr=int(ws.extra.get("pr") or 0),
+                                                body=str(ws.extra.get("pr_body") or ""))
+        except Exception as exc:  # noqa: BLE001 - a record is best effort: none means the label is left alone
+            self.note(ws, f"no dependency record ({type(exc).__name__}: {str(exc)[:160]})")
+            return None
+        return {"head": ws.extra.get("head", ""), **record}
 
     def verdict_file(self, job: Job, ctx: Context, ws: Workspace) -> Path:
         return ws.board / board.prreview_verdict_path(ctx.cfg.board.packages_dir, job)

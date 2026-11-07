@@ -268,3 +268,35 @@ def test_a_board_pull_request_number_is_not_taken_for_a_content_one(world, tmp_p
     ws.extra["pr"] = 7
     lane.prepare_tools(job, ctx, ws)
     assert "Lattices §1.3 (line 1): #7 (@alice) changes Lattices" in (ws.scratch / "overlaps.md").read_text()
+
+
+def test_a_description_names_its_dependencies():
+    deps = overlaps.declared_dependencies
+    assert deps("Depends on:\n- #887 \n- #1050 \n\n\nAI assistance", own=1506) == [887, 1050]
+    assert deps("**Stack.** #785 (A) → #1688 (B) → **this pull request**. Reopened; #793 merged into #785.",
+                own=1689) == [785, 1688]
+    merge_order = ("**Merge order.** #1 (A) → **this pull request** (#5). It also depends on other authors' pull "
+                   "requests that add roadmaps it cites, which must merge first: #934 (Q, w). It also cites #77 (R), "
+                   "which in turn consume this one.")
+    assert deps(merge_order, own=5) == [934]                   # the chain is read from the README, not here
+    assert deps("It depends on no other author's open pull request. This pull request now depends on the "
+                "revisions #1410 (recorded in its description).", own=617) == [1410]
+    assert deps("Merge order: after AnalyticNumberTheoryPartI (#1126) lands, since the statements refer to its §0.34.",
+                own=1913) == [1126]
+    assert deps("#1411 consumes its §4a.1, so the order is this PR (#1410) → #1411; #940 and #856 cite its "
+                "§3a.1 and merge after it.", own=1410) == []
+
+
+def test_the_dependency_record_of_a_head(tmp_path, monkeypatch):
+    cstar = {"TauCetiRoadmap/CStar/README.md": "# Roadmap: C*-algebras\n\n### 1.1 Basics\n"}
+    mine = {"TauCetiRoadmap/Mine/README.md": "# Roadmap: mine\n",
+            "TauCetiRoadmap/Helper/README.md": "# Roadmap: helper\n"}
+    cfg, index = build(tmp_path, monkeypatch, [MAIN],
+                       [(7, "alice", 0, RENUMBER), (30, "dora", 0, cstar), (31, "eve", 0, mine)])
+    readme = ("# Roadmap: mine\n\n### 1.1 Foo\n\n*Needs:* CStar §1.1; Lattices §1.2 and Helper §2.\n\n"
+              "Uses Lattices §1.4.\n")
+    record = overlaps.dependency_record(cfg.state_dir(), index, readme, "import TauCetiRoadmap.Ghost.Suggested\n",
+                                        "Mine", pr=31, body="Depends on #44.")
+    assert record == {"suppliers": [{"roadmap": "CStar", "prs": [30]}, {"roadmap": "Ghost", "prs": []}],
+                      "revisions": [{"roadmap": "Lattices", "pr": 7}], "declared": [44]}
+    # Lattices is on main and Helper rides in the same pull request: neither is a dependency.
