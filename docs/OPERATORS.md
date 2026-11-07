@@ -665,6 +665,7 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 | --- | --- | --- |
 | `enabled` | `false` | file and retire review jobs and keep the label (nothing is read while off) |
 | `label` | `"ai-approved"` | the label an accepted head carries on the content repository |
+| `dependency_label` | `""` | a label `board sync` keeps on a pull request exactly while the dependency record of its current head names something not merged (below); empty: not managed |
 | `per_run` | `3` | new review jobs (one per roadmap folder) per `board sync` run, oldest pull request first |
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
 | `skip_authors` | `[]` | never these authors' pull requests |
@@ -763,6 +764,55 @@ of the current head is being finished. Verdicts are read only for a pull request
 has a finished review of its head, the most recent first, stopping at the first that does not
 accept. A human still approves and merges; the AI never does, and the awaiting-author and
 awaiting-review labels are left to the gate lane and `board sync`.
+
+**The dependency label.** The lane adds the worker's record of what the pull request waits for to
+the verdict file, beside `review`, at the head reviewed (`overlaps.dependency_record`; the agent never
+writes it):
+
+```json
+"dependencies": {"head": "<sha>",
+                 "suppliers": [{"roadmap": "CStarAlgebras", "prs": [860]}],
+                 "revisions": [{"roadmap": "LocalFieldsRamification", "pr": 617}],
+                 "declared": [1050]}
+```
+
+`suppliers` are the roadmaps the README names as suppliers (as the dependency check reads it) and
+the `TauCetiRoadmap.<X>` of its Lean files that are not on main, with the open pull requests that add
+each: recorded by name, one is met once that roadmap is on main, whichever pull request brings it
+(a supplier reopened under another number still counts). `revisions` are the open revisions whose
+numbering the README cites (`overlaps.revision_dependencies`), and `declared` the pull requests the
+description names as dependencies ("Depends on #N", a list under "Depends on:", a "Stack." line, the
+merge-order paragraph's other authors), each met once merged. The roadmaps the pull request carries
+itself never count.
+
+With `[prreview] dependency_label` set, every `board sync` re-checks each open pull request's records
+for its current head (`sync_dependency_labels`): the label is added when one names something not
+merged (a supplier not on main, a revision or declared pull request open or closed without merging,
+listed in the log line) and removed when nothing is outstanding and every roadmap folder has a
+record. A head no review has finished, or a record that names a pull request GitHub does not answer
+for, keeps the label as it is; a number that is no pull request (an issue) is ignored. So the label
+goes on the first sync after the last dependency merges: within the board workflow's ten minutes
+when its token may label the content repository, else at the next maintainer `board sync --yes`.
+`tauceti-roadmap roadmaps dependency-labels [--label NAME] [--yes]` runs this pass alone (`--label`
+overrides `[prreview] dependency_label`), without the board lock and
+with no write to the jobs repository, for a workflow of the content repository to run with its own
+`GITHUB_TOKEN` (issues: write) on every merged pull request and on a schedule:
+
+```yaml
+on:
+  pull_request_target: {types: [closed]}
+  schedule: [{cron: "17 * * * *"}]
+jobs:
+  dependency-labels:
+    if: github.event_name == 'schedule' || github.event.pull_request.merged
+    runs-on: ubuntu-latest
+    permissions: {issues: write, pull-requests: write}
+    steps:
+      - uses: astral-sh/setup-uv@v6
+      - run: uv tool install git+https://github.com/TauCetiProject/TauCetiRoadmapWorker
+      - run: tauceti-roadmap --conf "$CONF" roadmaps dependency-labels --label awaiting-dependencies --yes
+        env: {GH_TOKEN: "${{ github.token }}", CONF: "https://raw.githubusercontent.com/TauCetiProject/TauCetiRoadmapJobs/main/tauceti-roadmap.toml"}
+```
 
 The comment and the label are written with the operator's own token, which needs write access to
 the content repository (triage at least, for labels); a token without it reports `ai-approved not

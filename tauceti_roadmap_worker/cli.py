@@ -7,6 +7,7 @@
     tauceti-roadmap status [--all]                       the board's jobs by state, ages and claimants
     tauceti-roadmap roadmaps refresh | list | grep <regex> | show <Name> [--file F] | resolve <README.md>
     tauceti-roadmap roadmaps overlaps [<Name> | <README.md>] [--pr N]
+    tauceti-roadmap roadmaps dependency-labels [--label NAME] [--yes]
     tauceti-roadmap usage [--worker-id ID] [--by lane|kind|job|agent|model|worker|day|label] [--since DATE]
     tauceti-roadmap gate <worktree> <Name> [--base origin/main] [--json] [--out FILE]
     tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE] [--movable]
@@ -776,10 +777,17 @@ def overlaps_text(state: Path, index: dict, args) -> str:
 
 def roadmaps_cmd(args) -> int:
     """The open roadmap pull requests: refresh the host's index, list, search, show a file, resolve a
-    README's citations, list their overlaps. Only `refresh` reads GitHub; the rest works from the local
-    mirror."""
+    README's citations, list their overlaps, keep the dependency label (`dependency-labels`). Only
+    `refresh` and `dependency-labels` read GitHub; the rest works from the local mirror."""
     cfg = _load(args)
     state = cfg.state_dir()
+    if args.action == "dependency-labels":
+        from . import intake
+        if args.label:
+            cfg.prreview.dependency_label = args.label
+        for line in intake.dependency_label_pass(_bot_context(args, cfg, dry=not args.yes)):
+            print(line)
+        return 0
     if args.action == "refresh":
         index = openroadmaps.refresh(GH(), cfg, force=True)
         print(f"{len(index['prs'])} open roadmap pull requests indexed at {index['at']} (main {index['main'][:7]})")
@@ -1101,7 +1109,7 @@ def parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("roadmaps", help="the open roadmap pull requests: refresh the index, list, search them, show a "
                                         "file, resolve a README's citations, list their overlaps")
-    r.add_argument("action", choices=["refresh", "list", "grep", "show", "resolve", "overlaps"])
+    r.add_argument("action", choices=["refresh", "list", "grep", "show", "resolve", "overlaps", "dependency-labels"])
     r.add_argument("target", nargs="?", default="", help="grep: a pattern (extended regex); show: a roadmap name; "
                                                          "resolve: a README.md; overlaps: a roadmap name or a "
                                                          "README.md (none: every open pull request)")
@@ -1117,6 +1125,8 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--lean", default="", help="resolve: its Suggested.lean (default: beside the README)")
     r.add_argument("--packages", default="", help="resolve: the pinned Lake packages (default: the host's shared ones)")
     r.add_argument("--out", default="", help="resolve, overlaps: also write the report here")
+    r.add_argument("--yes", action="store_true", help="dependency-labels: write the labels (default: a dry run)")
+    r.add_argument("--label", default="", help="dependency-labels: the label (default: [prreview] dependency_label)")
 
     u = sub.add_parser("usage", help="the agent runs' token usage on this host, summed by lane, job, agent, ...")
     u.add_argument("--worker-id", default="", help="only this worker's runs")

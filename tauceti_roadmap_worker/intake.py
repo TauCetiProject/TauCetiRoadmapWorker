@@ -1826,6 +1826,164 @@ def folders_accepted(ctx, folders, jobs: list[Job], head: str,
     return True, ""
 
 
+def dependency_records(ctx, folders, jobs: list[Job], head: str, texts: dict[str, str | None]) -> list[dict] | None:
+    """The dependency record of `head` of each roadmap folder: the one in the verdict of its latest
+    finished review of that head, read from the board's main (`texts`: those already read, and where
+    this adds the ones it reads), or None when a folder has none. A read GitHub did not answer counts
+    as none (the label is then left as it is)."""
+    cfg, out = ctx.cfg, []
+    for folder in folders:
+        done = sorted((j for j in finished_reviews(jobs, head) if board.prreview_folder(j) == folder),
+                      key=lambda j: board.parse_job_id(j.id).round, reverse=True)
+        record = None
+        for job in done:
+            path = board.prreview_verdict_path(cfg.board.packages_dir, job)
+            if path not in texts:
+                try:
+                    texts[path] = ctx.gh.raw_file(cfg.repositories.packages_repo(), path)
+                except GHError:
+                    texts[path] = None
+            try:
+                data = json.loads(texts[path] or "null")
+            except ValueError:
+                data = None
+            found = data.get("dependencies") if isinstance(data, dict) else None
+            if isinstance(found, dict) and found.get("head") == head:
+                record = found
+                break
+        if record is None:
+            return None
+        out.append(record)
+    return out
+
+
+def outstanding_dependencies(records: list[dict], on_main: set[str], state_of) -> list[str]:
+    """What the records still wait for, one phrase each: a supplier roadmap not on main (with the open
+    pull requests that add it), a revision or declared pull request still open, or one closed without
+    merging (it will not bring what is cited). `state_of(n)`: "open", "merged", "closed", "absent" (not a
+    pull request of the repository: ignored) or None (not known)."""
+    out = set()
+    for record in records:
+        for supplier in record.get("suppliers") or []:
+            name = str(supplier.get("roadmap") or "")
+            if name and name not in on_main:
+                prs = ", ".join(f"#{n}" for n in supplier.get("prs") or [])
+                out.add(f"{name} ({prs or 'in no open pull request'})")
+        numbers = [("revision", r.get("pr")) for r in record.get("revisions") or []]
+        numbers += [("declared", n) for n in record.get("declared") or []]
+        for kind, number in numbers:
+            try:
+                number = int(number)
+            except (TypeError, ValueError):
+                continue
+            state = state_of(number)
+            if state == "open":
+                out.add(f"#{number} ({kind})")
+            elif state == "closed":
+                out.add(f"#{number} ({kind}, closed without merging)")
+    return sorted(out)
+
+
+def sync_dependency_labels(ctx, listed: list[dict], plans: dict, reviews: list[Job], texts: dict[str, str | None],
+                           on_main: set[str]) -> list[str]:
+    """`[prreview] dependency_label`: on an open pull request exactly while the dependency records of
+    its current head (`dependency_records`, written by the PR review) name something not yet merged
+    (`outstanding_dependencies`). Every run re-checks the records against main and the pull requests'
+    states, so the label goes on the first run after the last dependency merges. A head without a
+    record for every roadmap folder keeps the label as it is, unless a record it has names something
+    outstanding (then the label is added). `on_main`: the folders on main under the active directory
+    (`openroadmaps.readme_folders`); the completed directory is read here. While GitHub does not answer
+    for a pull request a record names, the label is kept as it is; a number that is no pull request of
+    the repository (an issue) is ignored."""
+    cfg = ctx.cfg
+    label, repo = cfg.prreview.dependency_label, cfg.repositories.content
+    on_main = {f.rsplit("/", 1)[-1] for f in on_main}
+    try:
+        on_main |= {f.rsplit("/", 1)[-1] for f in
+                    openroadmaps.readme_folders(ctx.gh, repo, cfg.project.branch, cfg.roadmap.completed_dir)}
+    except GHError as exc:
+        return [f"{label}: not synced (main's completed roadmaps not read: {str(exc).splitlines()[0][:160]})"]
+    live = {int(x["pr"]) for x in listed}
+
+    def pr_of(job: Job) -> int:
+        try:
+            return int(job.inputs.get("pr") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    found: dict[int, tuple[dict, list[dict], bool]] = {}
+    for entry in listed:
+        number, head = int(entry["pr"]), entry.get("head", "")
+        folders = plans[number][0]
+        if not head or not folders:
+            continue
+        mine = [j for j in reviews if pr_of(j) == number]
+        records = dependency_records(ctx, folders, mine, head, texts)
+        complete = records is not None
+        if records is None:         # some folders have a record: enough to add the label, not to remove it
+            records = [r for f in folders for r in dependency_records(ctx, [f], mine, head, texts) or []]
+        if records:
+            found[number] = (entry, records, complete)
+    wanted = {int(n) for _e, records, _c in found.values() for r in records
+              for n in [x.get("pr") for x in r.get("revisions") or []] + list(r.get("declared") or [])
+              if str(n).isdigit() and int(n) not in live}
+    reader = prbatch.PullReader(ctx.gh, repo, wanted, cfg.board.graphql_batch)
+    states: dict[int, str | None] = {}
+
+    def state_of(number: int) -> str | None:
+        if number in live:
+            return "open"
+        if number not in states:
+            try:
+                data = reader.pull(number)
+            except GHError as exc:      # unknown for now (kept as it is), or not a pull request (ignored)
+                states[number] = None if transient(exc) else "absent"
+            else:
+                states[number] = ("open" if data.get("state") == "open" else
+                                  "merged" if data.get("merged") or data.get("merged_at") else "closed")
+        return states[number]
+
+    out = []
+    for number, (entry, records, complete) in sorted(found.items()):
+        unknown = [n for r in records for n in [x.get("pr") for x in r.get("revisions") or []]
+                   + list(r.get("declared") or []) if str(n).isdigit() and state_of(int(n)) is None]
+        waiting = outstanding_dependencies(records, on_main, state_of)
+        labelled = label in entry.get("labels", [])
+        try:
+            if waiting and not labelled:
+                ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [label]})
+                out.append(f"#{number}: {label} added (waits for {', '.join(waiting)})")
+            elif labelled and not waiting and complete and not unknown:
+                ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(label, safe='')}")
+                out.append(f"#{number}: {label} removed (every dependency of {entry.get('head', '')[:7]} is merged)")
+        except GHError as exc:
+            out.append(f"#{number}: {label} on {repo} not {'added' if waiting else 'removed'} "
+                       f"({str(exc).splitlines()[0][:160]})")
+    return out
+
+
+def dependency_label_pass(ctx) -> list[str]:
+    """`sync_dependency_labels` alone, for `roadmaps dependency-labels`: no board lock and no write to the
+    jobs repository, only the label on the content repository's open pull requests, so a workflow of
+    the content repository can run it with its own token when a pull request merges. Reads what
+    `sync_pr_reviews` reads: the listing of open roadmap pull requests, main's tree, the board's
+    PRREVIEW jobs and the verdicts of their current heads."""
+    cfg = ctx.cfg
+    if not cfg.prreview.dependency_label:
+        return ["[prreview] dependency_label is not set: the label is not managed"]
+    repo = cfg.repositories.content
+    listed = sorted(openroadmaps.inventory(ctx.gh, repo, (cfg.roadmap.active_dir,), any_file=True),
+                    key=lambda x: int(x["pr"]))
+    on_main = openroadmaps.readme_folders(ctx.gh, repo, cfg.project.branch, cfg.roadmap.active_dir) if listed else set()
+    plans = {int(x["pr"]): review_plan(x, cfg, on_main) for x in listed}
+    reviews = ctx.board.kind_jobs("prreview")
+    texts = prbatch.verdict_texts(ctx.gh, cfg.repositories.packages_repo(), [
+        board.prreview_verdict_path(cfg.board.packages_dir, j) for entry in listed if plans[int(entry["pr"])][0]
+        for j in finished_reviews([j for j in reviews if str(j.inputs.get("pr")) == str(entry["pr"])],
+                                  entry.get("head", ""))], cfg.board.graphql_batch)
+    return sync_dependency_labels(ctx, listed, plans, reviews, texts, on_main)
+
+
 def sync_pr_reviews(ctx) -> list[str]:
     """`board sync`, with `[prreview] enabled`: the AI review of every roadmap folder an open pull
     request of the content repository adds or edits, whoever opened it, drafts included.
@@ -1858,6 +2016,7 @@ def sync_pr_reviews(ctx) -> list[str]:
       move the head): at most `[prreview] per_run` jobs per run, oldest pull request first, every
       folder of one pull request before the next. Any operator may take it except the author
       (`PRReviewLane.eligible`).
+    * With `[prreview] dependency_label`, that label is kept by `sync_dependency_labels`.
     A label the token cannot change (a hosted board run's token may not write to the content
     repository) is reported, not raised."""
     cfg = ctx.cfg
@@ -1943,6 +2102,9 @@ def sync_pr_reviews(ctx) -> list[str]:
         except GHError as exc:
             out.append(f"#{number}: {p.label} on {repo} not {'added' if accepted else 'removed'} "
                        f"({str(exc).splitlines()[0][:160]})")
+
+    if p.dependency_label:
+        out += sync_dependency_labels(ctx, listed, plans, reviews, texts, on_main)
 
     made, waiting = 0, 0
     for entry in listed:
