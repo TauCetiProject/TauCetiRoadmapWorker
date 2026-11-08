@@ -271,12 +271,17 @@ full review: check that the updates are correct.
    changes and anything that cites or depends on them: the names, section numbers and suppliers they
    mention or that mention them, and the Lean statements touched. The seeded sample is checked where
    it falls in them; a file changed outside the folder is checked as in a full review.
+   A finding of this report is one of three things: a previous finding not (fully) repaired, a problem
+   the repair introduced, or a defect in a changed passage or in text the change makes wrong. A defect
+   in untouched text that the previous review passed is NOT a finding of an incremental re-review
+   (a review that found nothing wrong with it has had its say): mention it in one line under
+   `## Verified sound` as a remark, without an R-number and without asking for a change.
 3. **The gate and the elaboration** run as in a full review.
 4. **The adversarial table** carries forward the previous report's rows for the statements the diff
    leaves untouched, each citing the previous report, and adds a row with computed values for every
    changed statement.
 5. **The verdict.** Accept when no finding remains at all (new, or carried from the previous report)
-   and the gate passes; the verdict file's `notes` say "incremental re-review of {lines} changed lines
+   and the gate passes — remarks on untouched text do not block acceptance; the verdict file's `notes` say "incremental re-review of {lines} changed lines
    since {since}", then what was checked.
 
 Every deliverable below is the same as in a full review."""
