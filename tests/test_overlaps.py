@@ -69,8 +69,9 @@ class ContentGH:
             got = self.states.get(n)
             nodes[f"p{n}"] = (None if got is None else {"__typename": "Issue"} if got == "issue" else
                               {"__typename": "PullRequest", "state": got["state"].upper(), "body": got.get("body", ""),
-                               "files": {"totalCount": len(got.get("added", [])),
-                                         "nodes": [{"path": a, "changeType": "ADDED"} for a in got.get("added", [])]}})
+                               "files": {"totalCount": len(got.get("added", [])) + len(got.get("removed", [])),
+                                         "nodes": [{"path": a, "changeType": "ADDED"} for a in got.get("added", [])]
+                                         + [{"path": r, "changeType": "DELETED"} for r in got.get("removed", [])]}})
         return {"repository": nodes}
 
     def api(self, path, paginate=False):
@@ -86,7 +87,9 @@ class ContentGH:
                     "body": got.get("body", "")}
         m = re.fullmatch(r"repos/[^/]+/[^/]+/pulls/(\d+)/files\?per_page=100", path)
         if m:
-            return [{"filename": a, "status": "added"} for a in self.states[int(m.group(1))].get("added", [])]
+            got = self.states[int(m.group(1))]
+            return ([{"filename": a, "status": "added"} for a in got.get("added", [])]
+                    + [{"filename": r, "status": "removed"} for r in got.get("removed", [])])
         if path.startswith("search/issues"):
             return {"items": [{"number": n} for n in self.merged_labelled]}
         raise GHError(f"GET {path}: HTTP 404: Not Found")
@@ -370,7 +373,8 @@ def test_the_dependency_record_of_a_head(tmp_path, monkeypatch):
     record = overlaps.dependency_record(cfg.state_dir(), index, readme, "import TauCetiRoadmap.Ghost.Suggested\n",
                                         "Mine", pr=31, body="Depends on #44.")
     assert record == {"suppliers": [{"roadmap": "CStar", "prs": [30]}, {"roadmap": "Ghost", "prs": []}],
-                      "revisions": [{"roadmap": "Lattices", "pr": 7}], "declared": [{"pr": 44, "roadmap": None}]}
+                      "revisions": [{"roadmap": "Lattices", "pr": 7, "ids": ["Lattices §1.4"]}],
+                      "declared": [{"pr": 44, "roadmap": None}]}
     # A path in a code span and a Lean namespace name no supplier.
     path_only = "### 1.1 A\n\n*Needs:* `Foo/LevelOne/CStar/` supplies it.\n"
     record = overlaps.dependency_record(cfg.state_dir(), index, path_only, "namespace TauCetiRoadmap.Ghost\n", "Mine",
@@ -561,3 +565,59 @@ def test_a_pin_bump_waits_for_nothing_its_folders_already_cited(tmp_path, monkey
                          (121, "hal", 0, {"TauCetiRoadmap/Drift/Suggested.lean": bump})])
     deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
     assert label_writes(build.gh) == []
+
+
+def test_a_revision_of_a_roadmap_main_has_since_moved_is_still_a_revision(tmp_path, monkeypatch):
+    moved = {LATTICES: None, LATTICES_LEAN: None, "Completed/Lattices/README.md": MAIN[LATTICES],
+             "Completed/Lattices/Suggested.lean": MAIN[LATTICES_LEAN]}
+    cfg, _index = build(tmp_path, monkeypatch, [MAIN, moved],
+                        [(7, "alice", 0, RENUMBER),                       # branched before main moved Lattices
+                         (130, "bea", 1, roadmap("Waiter")), (131, "cal", 1, roadmap("Other"))],
+                        labels={130: [DEPS], 131: [DEPS]},
+                        bodies={130: block("#7 Lattices"), 131: block("#150 Lattices")})
+    gh = build.gh
+    # #150 moved Lattices itself (an add and a remove, no rename) and was closed: it added no roadmap.
+    gh.states[150] = {"state": "closed", "added": ["Completed/Lattices/README.md"], "removed": [LATTICES]}
+    deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
+    assert label_writes(gh) == []
+    assert not deplabels.added_at_base(cfg.state_dir(), openroadmaps.load(cfg.state_dir()), 7, "Lattices")
+
+
+def test_an_id_main_already_cites_hides_no_other_id_of_the_same_revision(tmp_path, monkeypatch):
+    ghost = roadmap("Ghost", "### 1.1 Spirits")
+    old = roadmap("Old", "Uses Lattices §1.4.")                       # main already cites #140's §1.4
+    upstream = {LATTICES: RENUMBER[LATTICES] + "\n### 1.5 Theta lifts\n",
+                "TauCetiRoadmap/Ghost/README.md": "# Roadmap: Ghost\n\n### 1.1 Spirits\n\n### 1.2 Wraiths\n"}
+    cfg, _index = build(tmp_path, monkeypatch, [{**MAIN, **ghost, **old}],
+                        [(140, "dot", 0, upstream),
+                         (141, "eli", 0, roadmap("Old", "Uses Lattices §1.4 and Ghost §1.2.")),
+                         (142, "fin", 0, roadmap("Old", "Uses Lattices §1.4 and Lattices §1.5.")),
+                         (143, "gil", 0, roadmap("Old", "Uses Lattices §1.4, reworded."))])
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
+    assert label_writes(build.gh) == [("POST", 141), ("POST", 142)]
+    assert f"#141: {DEPS} added (waits for #140 (revision of Ghost))" in out
+    assert f"#142: {DEPS} added (waits for #140 (revision of Lattices))" in out
+
+
+def test_a_folder_is_compared_with_its_own_readme_not_another_of_the_same_name(tmp_path, monkeypatch):
+    twins = {"Completed/Twin/README.md": "# Roadmap: Twin\n\n*Needs:* Ghost §1.1.\n",
+             **roadmap("Twin", "*Needs:* Phantom §2.1."),
+             **roadmap("Drift", "*Needs:* Ghost §1.1.", {"Suggested.lean": "theorem t : True := trivial\n"})}
+    cfg, _index = build(tmp_path, monkeypatch, [{**MAIN, **twins}],
+                        [(110, "eve", 0, roadmap("Ghost", "### 1.1 Spirits")),
+                         (111, "flo", 0, roadmap("Phantom", "### 2.1 Shades")),
+                         (121, "gus", 0, roadmap("Twin", "*Needs:* Phantom §2.1 and Ghost §1.1.")),
+                         (122, "hal", 0, {"Completed/Twin/README.md": "# Roadmap: Twin\n\n*Needs:* Ghost §1.1, "
+                                                                     "Phantom §2.1.\n"}),
+                         # Moves Drift to Completed/ with the citation it had: brings nothing.
+                         (123, "ida", 0, {"TauCetiRoadmap/Drift/README.md": None,
+                                          "TauCetiRoadmap/Drift/Suggested.lean": None,
+                                          "Completed/Drift/README.md": twins["TauCetiRoadmap/Drift/README.md"],
+                                          "Completed/Drift/Suggested.lean": "theorem t : True := trivial\n"}),
+                         # A new Completed/Drift2 is no move: what it cites is its own.
+                         (124, "jo", 0, {"Completed/Drift2/README.md":
+                                         "# Roadmap: Drift2\n\n*Needs:* Ghost §1.1.\n"})])
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
+    assert label_writes(build.gh) == [("POST", 121), ("POST", 122), ("POST", 124)]
+    assert f"#121: {DEPS} added (waits for Ghost (#110))" in out
+    assert f"#122: {DEPS} added (waits for Phantom (#111))" in out

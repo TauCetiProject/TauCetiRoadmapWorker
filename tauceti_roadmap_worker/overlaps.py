@@ -374,7 +374,8 @@ def dependency_record(state: Path, index: dict, readme: str, lean: str, name: st
       in code spans aside, and every `import TauCetiRoadmap.<X>` of its Lean; a `namespace` names none)
       that are not on main, each with the open pull requests that add it. One is met once that roadmap
       is on main, whichever pull request brings it there.
-    * `revisions`: the open revisions whose numbering it cites (`revision_dependencies`), met once merged.
+    * `revisions`: the open revisions whose numbering it cites (`readme_facts`), with the ids it cites
+      that only each defines ("Lattices §1.4"), met once merged.
     * `declared`: the other dependencies its description names (`declared_items`: its `<!-- depends-on -->`
       block and its prose), as {pr, roadmap}: a bare number, or a block item whose roadmap is on main.
       Whether one is met depends on that pull request (`deplabels.met`): merged; or it was the pull
@@ -402,10 +403,12 @@ def dependency_record(state: Path, index: dict, readme: str, lean: str, name: st
                 adders.setdefault(roadmap, []).append(number)
         elif number:                                 # its pull request decides (`deplabels`)
             declared.add((number, roadmap))
-    revisions = revision_dependencies(state, index, readme, name, pr=pr, changed=changed)
+    ids: dict[tuple[int, str], set[str]] = {}
+    for got in readme_facts(state, index, readme, name, pr=pr, changed=changed)[1]:
+        ids.setdefault((got.pr, got.citation.cited), set()).add(got.citation.label())
     return {"suppliers": [{"roadmap": s, "prs": sorted(n for n in adders.get(s, []) if n != pr)}
                           for s in sorted(suppliers)],
-            "revisions": [{"roadmap": r, "pr": q} for q, r, _author in revisions],
+            "revisions": [{"roadmap": r, "pr": q, "ids": sorted(i)} for (q, r), i in sorted(ids.items())],
             "declared": [{"pr": n, "roadmap": r} for n, r in sorted(declared, key=lambda x: (x[0], x[1] or ""))]}
 
 

@@ -18,12 +18,13 @@ Lean file of the folder, a nested roadmap's aside:
 
 * every supplier roadmap its README names or its Lean files import that is not on main (with the open
   pull requests that add it, or none: a roadmap that exists nowhere waits too), and every open revision
-  whose numbering it cites, less what the same README already cites on main or at the merge base
-  (`record_of`: a pin bump does not wait for a supplier its roadmap has long named);
+  whose numbering it cites, less what the folder's own README already cites on main or at the merge
+  base, supplier by supplier and id by id (`record_of`: a pin bump does not wait for a supplier its
+  roadmap has long named);
 * every dependency its description declares (its `<!-- depends-on -->` block, then its prose), until
   `met`: a pull request that merged, or the one that added a roadmap another pull request has since
-  brought to main; one closed without merging that did not add its roadmap never brings what is
-  cited, so it still waits.
+  brought to main (`added_at_base`: no folder of that name at its merge base); one closed without
+  merging that did not add its roadmap never brings what is cited, so it still waits.
 
 So a head whose AI acceptance was carried over a small repair, a description edited since the last
 review, a supplier opened after it, or the first run on a backlog, are all read as they are now.
@@ -58,14 +59,14 @@ def rest_state(gh, repo: str, number: int, files: bool = False) -> dict | None:
     None when it gave no answer (a network error, a 5xx, a 403)."""
     try:
         data = gh.api(f"repos/{repo}/pulls/{number}") or {}
-        added = ([f.get("filename", "") for f in gh.api(f"repos/{repo}/pulls/{number}/files?per_page=100",
-                                                         paginate=True) or [] if f.get("status") == "added"]
-                 if files else None)
+        listing = gh.api(f"repos/{repo}/pulls/{number}/files?per_page=100", paginate=True) or [] if files else []
+        changes = {status: [f.get("filename", "") for f in listing if f.get("status") == status]
+                   for status in ("added", "removed")}
     except GHError as exc:
         return {"state": "absent"} if NOT_FOUND.search(str(exc)) else None
     merged = data.get("merged") or data.get("merged_at")
     state = "open" if data.get("state") == "open" else "merged" if merged else "closed"
-    return {"state": state, "added": added} if files else {"state": state, "body": data.get("body") or ""}
+    return {"state": state, **changes} if files else {"state": state, "body": data.get("body") or ""}
 
 
 def pull_states(gh, repo: str, numbers, *, files: bool = False, batch: int = BATCH) -> dict[int, dict | None]:
@@ -94,8 +95,8 @@ def pull_states(gh, repo: str, numbers, *, files: bool = False, batch: int = BAT
                 out[n] = {"state": "absent"}
             elif files:
                 out[n] = {"state": STATES.get(node.get("state") or "", "closed"),
-                          "added": [f.get("path", "") for f in listing.get("nodes") or []
-                                    if f.get("changeType") == "ADDED"]}
+                          **{key: [f.get("path", "") for f in listing.get("nodes") or [] if f.get("changeType") == kind]
+                             for key, kind in (("added", "ADDED"), ("removed", "DELETED"))}}
             else:
                 out[n] = {"state": STATES.get(node.get("state") or "", "closed"), "body": node.get("body") or ""}
     return out
@@ -143,13 +144,33 @@ def _texts(state, ref: str, paths: list[str]) -> tuple[str, str]:
     return texts[0] or "", "\n".join(t or "" for t in texts[1:])
 
 
+def moved_from(index: dict, pr: dict, folder: str) -> str | None:
+    """The folder on main that the pull request moves to `folder`, which is new at that path: the
+    folder main holds under the same name, when the pull request removes its README.md or renames a
+    README.md (from there, when the listing names the old path) into `folder`. None otherwise: another
+    folder of the same name is another roadmap's."""
+    name = folder.rsplit("/", 1)[-1]
+    there = (index.get("main_folders") or {}).get(name)
+    if not there or there == folder:
+        return None
+    for f in pr.get("files") or []:
+        if f.get("path") == f"{there}/README.md" and f.get("change") == "removed":
+            return there
+        if (f.get("path") == f"{folder}/README.md" and f.get("change") == "renamed"
+                and f.get("previous", f"{there}/README.md") == f"{there}/README.md"):
+            return there
+    return None
+
+
 def record_of(state, index: dict, pr: dict, body: str, changed) -> dict:
     """What the pull request brings that waits: the union of `overlaps.dependency_record` over the roadmap
     folders it touches, read at its head (`roadmap_folders`: every Lean file of a folder with its
-    README). A supplier or revision its README cites that the same README already cites on main or at
-    the merge base is not this pull request's to wait for (a pin bump or a progress edit of a roadmap
-    whose README names an open supplier does not wait for it), unless its Lean files import the
-    supplier or its description declares it."""
+    README). A supplier the same README already names on main or at the merge base, or an id of an
+    open revision it already cites there, is not this pull request's to wait for (a pin bump or a
+    progress edit of a roadmap whose README names an open supplier does not wait for it), unless its
+    Lean files import the supplier or its description declares it. The same README is the folder's own,
+    at its path; a folder new at its path has none, unless the pull request moves it there from the
+    folder main holds under its name (`moved_from`)."""
     ref = openroadmaps.pr_ref(pr["pr"])
     main_ref = f"refs/heads/{index.get('branch', 'main')}"
     base = overlaps._merge_base(state, main_ref, ref)
@@ -161,32 +182,39 @@ def record_of(state, index: dict, pr: dict, body: str, changed) -> dict:
         name = folder.rsplit("/", 1)[-1]
         readme, lean = _texts(state, ref, paths)
         record = overlaps.dependency_record(state, index, readme, lean, name, pr=pr["pr"], body=body, changed=changed)
-        earlier = [main_ref + ":" + paths[0]] + ([f"{base}:{paths[0]}"] if base else [])
-        if name in (index.get("main_folders") or {}):
-            earlier.append(f"{main_ref}:{index['main_folders'][name]}/README.md")
+        earlier = [main_ref] + ([base] if base else [])
+        texts = overlaps._batch(state, [f"{at}:{paths[0]}" for at in earlier])
+        source = moved_from(index, pr, folder) if not any(texts) else None
+        if source:
+            texts = overlaps._batch(state, [f"{at}:{source}/README.md" for at in earlier])
         had: set[str] = set()
-        cited: set[int] = set()
-        for text in overlaps._batch(state, earlier):
+        cited: set[tuple[int, str]] = set()
+        for text in texts:
             if text:
                 before = overlaps.dependency_record(state, index, text, "", name, pr=pr["pr"], changed=changed)
                 had |= {s["roadmap"] for s in before["suppliers"]}
-                cited |= {r["pr"] for r in before["revisions"]}
+                cited |= {(r["pr"], i) for r in before["revisions"] for i in r["ids"]}
         had -= kept | set(overlaps.LEAN_IMPORT.findall(lean))
         for s in record["suppliers"]:
             if s["roadmap"] not in had:
                 suppliers.setdefault(s["roadmap"], set()).update(s["prs"])
-        revisions |= {(r["pr"], r["roadmap"]) for r in record["revisions"] if r["pr"] not in cited}
+        revisions |= {(r["pr"], r["roadmap"]) for r in record["revisions"]
+                      if any((r["pr"], i) not in cited for i in r["ids"])}
         declared |= {(d["pr"], d["roadmap"]) for d in record["declared"]}
     return {"suppliers": suppliers, "revisions": revisions, "declared": declared}
 
 
 def added_at_base(state, index: dict, number: int, roadmap: str) -> bool:
-    """Whether the open pull request `number` was opened to add `roadmap`, which is on main now: the
-    roadmap's README is not there at the merge base of main and its head."""
+    """Whether the open pull request `number` was opened to add `roadmap`, which is on main now: no
+    folder of that name holds a README.md anywhere under the roadmap directories at the merge base of
+    main and its head (wherever main keeps it now: a roadmap main has since moved to Completed/ was
+    there all along)."""
     main_ref = f"refs/heads/{index.get('branch', 'main')}"
     base = overlaps._merge_base(state, main_ref, openroadmaps.pr_ref(number))
-    folder = (index.get("main_folders") or {}).get(roadmap)
-    return bool(base and folder) and overlaps._batch(state, [f"{base}:{folder}/README.md"])[0] is None
+    if not base:
+        return False
+    listing = _tree(state, base, index.get("dirs", []))
+    return bool(listing) and not any(p.endswith(f"/{roadmap}/README.md") for p in listing)
 
 
 def met(number: int, roadmap: str | None, state, index: dict, open_prs: set[int],
@@ -195,7 +223,8 @@ def met(number: int, roadmap: str | None, state, index: dict, open_prs: set[int]
     on main) is met: True, False, or None when GitHub did not say. A merged pull request is met, and so
     is a number that is no pull request. The pull request that added a roadmap (`added_at_base` while
     open, its added files once closed) is met once that roadmap is on main, whichever pull request
-    brought it; any other open one, or one closed without merging, is not."""
+    brought it (a closed one that also removed a README of that name moved the roadmap, and added
+    nothing); any other open one, or one closed without merging, is not."""
     if number in open_prs:
         return bool(roadmap) and added_at_base(state, index, number, roadmap)
     got = states.get(number)
@@ -203,7 +232,9 @@ def met(number: int, roadmap: str | None, state, index: dict, open_prs: set[int]
         return None
     if got["state"] in ("merged", "absent"):
         return True
-    return bool(roadmap) and any(p.endswith(f"/{roadmap}/README.md") for p in got.get("added") or [])
+    readme = f"/{roadmap}/README.md"
+    return (bool(roadmap) and any(p.endswith(readme) for p in got.get("added") or [])
+            and not any(p.endswith(readme) for p in got.get("removed") or []))
 
 
 def merged_with(gh, repo: str, label: str) -> list[int] | None:

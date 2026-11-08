@@ -801,11 +801,17 @@ roadmap's aside):
   "Depends on:", a "Stack." line; never a number before the phrase, after a negation ("does not depend
   on", "independent of") or about another pull request ("#22 depends on this pull request").
 
-A supplier or revision the README cites that the same README already cites on main or at the merge
-base is not the pull request's to wait for (a pin bump of a roadmap whose README names an open supplier
-waits for nothing), unless its Lean files import the supplier or its description declares it. A declared
-pull request is met once merged; one that added a roadmap (opened to add it, or, once closed, having
-added its README) is met once that roadmap is on main, whichever pull request brought it.
+A supplier the README names that the same README already names on main or at the merge base, or an id
+of an open revision it already cites there, is not the pull request's to wait for (a pin bump of a
+roadmap whose README names an open supplier waits for nothing), unless its Lean files import the
+supplier or its description declares it. The same README is the folder's own, at its path; a folder new
+at its path compares with nothing, unless the pull request moves it there (it removes the README.md of
+the folder main holds under that name, or renames one into the new folder). A new citation of another
+id of the same revision still waits. A declared pull request is met once merged; one that added a
+roadmap is met once that roadmap is on main, whichever pull request brought it. An open one added it
+when no folder of that name held a README.md at its merge base, wherever main keeps the roadmap now (a
+roadmap main has since moved to Completed/ was there all along); a closed one, when it added such a
+README.md and removed none.
 
 The label is added while one of those is outstanding and removed when none is. A pull request whose description, or the state of a
 pull request its description names, GitHub did not give keeps its label (only GitHub's `HTTP 404` says
