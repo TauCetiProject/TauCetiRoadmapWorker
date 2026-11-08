@@ -1295,6 +1295,7 @@ def build_problems(worktree: Path, command: str, timeout: int = BUILD_TIMEOUT, f
 DIAGNOSTIC = re.compile(r"^\s*(?:\S.*?\.lean:\d+:\d+:\s*)?(?P<severity>error|warning)\b")
 LAKE_STATUS = re.compile(r"^\s*(?:[✖⚠✔ℹ√×!]\s*\[\d+/\d+\]|Build completed|Some required builds|trace:|info:|- [A-Z]\w*(?:\.\w+)*\s*$)")
 SORRY_WARNING = re.compile(r"declaration uses ['`]sorry['`]")
+MODULE_ADVISORY = re.compile(r"designed for use with the module system; consider adding `module`")   # Lake's advisory, not a lint
 LEAN_FILE = re.compile(r"(\S+\.lean):\d+:\d+")
 MESSAGE_CHARS = 1000      # one diagnostic with its continuation lines: never cut mid-path
 MAX_DIAGNOSTICS = 40      # the cap is on their number, never on their length
@@ -1309,7 +1310,7 @@ def build_diagnostics(text: str) -> list[tuple[str, str, str]]:
         line = raw.rstrip()
         m = DIAGNOSTIC.match(line)
         if m:
-            if "error: build failed" in line or (m.group("severity") == "warning" and SORRY_WARNING.search(line)):
+            if "error: build failed" in line or (m.group("severity") == "warning" and (SORRY_WARNING.search(line) or MODULE_ADVISORY.search(line))):
                 out.append([])         # swallow its continuation too
                 continue
             fm = LEAN_FILE.search(line)
