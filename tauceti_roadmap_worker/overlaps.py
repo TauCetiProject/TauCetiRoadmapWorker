@@ -21,8 +21,8 @@ renumbers the sections other roadmaps cite. This module states the mechanical pa
   paragraph (`revision_dependencies`).
 * `dependency_record`: what a pull request waits for at a head, as a structured record: the roadmaps
   it names as suppliers that are not on main, the open revisions whose numbering it cites, and the
-  pull requests its description names as dependencies. The PR review writes it into its verdict, and
-  `board sync` keeps the dependency label by it (`intake.sync_dependency_labels`).
+  pull requests its description names as dependencies (`declared_dependencies`). `deplabels` keeps the
+  dependency label by it, recomputed from the current heads and descriptions on every run.
 * `neighbours`: the open roadmap folders whose READMEs share the most vocabulary with a README
   (tf-idf cosine over words), where two roadmaps that plan the same objects are likeliest to be.
 
@@ -276,20 +276,67 @@ def revision_dependencies(state: Path, index: dict, readme: str, own: str, *, pr
 
 
 NUMBER = re.compile(r"(?<![\w/&])#(\d{1,6})\b")
-SAYS_DEPENDS = re.compile(r"depend|must merge (?:first|before)|merges? (?:only )?after #|merge order:?\**\s*after"
-                          r"|\bafter\b[^.;]*#\d+[^.;]*\b(?:lands?|merges?|is merged)\b", re.IGNORECASE)
-NOT_DEPENDS = re.compile(r"in turn|depends on no\b|no other\b", re.IGNORECASE)
+# A sentence that says this pull request waits for the pull requests named after the phrase.
+DEPENDS_ON = re.compile(r"\bdepends?\s+on\b|\bmerges?\s+(?:first|before)\b|\bmerges?\s+(?:only\s+)?after\b"
+                        r"|\bmerge\s+order:?\**\s*after\b"
+                        r"|\bafter\b(?=[^.;]*#\d+[^.;]*\b(?:lands?|merges?|is\s+merged)\b)", re.IGNORECASE)
+NEGATED = re.compile(r"\b(?:not|never|no\s+longer|n't|no\s+other)\b[^.;]{0,30}$|\bon\s+no\b", re.IGNORECASE)
+ABOUT_OTHERS = re.compile(r"^\s*(?:on\s+)?(?:this|the\s+present)\s+(?:pull\s+request|PR)\b|^\s*(?:on\s+)?it\b",
+                          re.IGNORECASE)
 STACK = re.compile(r"\*\*Stack\.\*\*|^\s*Stack:", re.IGNORECASE)
+CHAIN_END = re.compile(r"(?:→|->)\s*\**\s*this\s+(?:pull\s+request|PR)\b", re.IGNORECASE)
 BULLET = re.compile(r"^(?:[-*+]|\d+\.)\s")
+LIST_HEAD = re.compile(r"\b(?:depends\s+on|dependencies)\s*:\s*$", re.IGNORECASE)
+# The structured list a description may carry: `<!-- depends-on -->`, a header, then one checkbox per
+# dependency, "- [ ] #1126 AnalyticNumberTheoryPartI" or "- [ ] PlanarTopology (no pull request yet)".
+DEPENDS_BLOCK = re.compile(r"<!--\s*depends-on\s*-->(.*?)<!--\s*/depends-on\s*-->", re.DOTALL)
+LEAN_IMPORT = re.compile(r"^\s*(?:public\s+)?import\s+TauCetiRoadmap\.([A-Z][A-Za-z0-9]*)", re.MULTILINE)
+PATH_SPAN = re.compile(r"`[^`\n]*/[^`\n]*`")     # `ModularForms/LevelOne/TraceFormula/`: a path, no citation
+BLOCK_ITEM = re.compile(r"^\s*[-*+]\s*\[(?P<done>[ xX])\]\s*(?:#(?P<pr>\d+)\b)?\s*(?P<name>[A-Z][A-Za-z0-9]+)?")
+
+
+def _sentence_dependencies(sentence: str) -> set[int]:
+    """The `#N` a sentence names as this pull request's prerequisites: those after a positive phrase
+    ("depends on", "must merge first", "merges after", "after ... lands"), not after a negated one
+    ("does not depend on", "depends on no other"), and not when the phrase is about this pull request
+    ("#22 depends on this pull request")."""
+    out: set[int] = set()
+    for m in DEPENDS_ON.finditer(sentence):
+        if NEGATED.search(sentence[:m.end()]) or NEGATED.search(sentence[m.end():m.end() + 12]):
+            continue
+        rest = sentence[m.end():]
+        if ABOUT_OTHERS.match(rest):
+            continue
+        out |= {int(n) for n in NUMBER.findall(rest)}
+    return out
+
+
+def declared_items(body: str, own: int = 0) -> list[tuple[int | None, str | None]]:
+    """(pull request, roadmap) for each dependency a description names: every unchecked item of its
+    `<!-- depends-on -->` block (a checked one is met), with its number, its roadmap name or both, and
+    (N, None) for every `#N` its prose names (`declared_dependencies`). Never the pull request itself."""
+    body = body or ""
+    out: set[tuple[int | None, str | None]] = set()
+    for block in DEPENDS_BLOCK.findall(body):
+        for line in block.split("\n"):
+            m = BLOCK_ITEM.match(line)
+            if m and m["done"] == " " and (m["pr"] or m["name"]):
+                number = int(m["pr"]) if m["pr"] else None
+                if number != own:
+                    out.add((number, m["name"]))
+    out |= {(n, None) for n in declared_dependencies(DEPENDS_BLOCK.sub("", body), own=own)}
+    return sorted(out, key=lambda x: (x[0] or 0, x[1] or ""))
 
 
 def declared_dependencies(body: str, own: int = 0) -> list[int]:
-    """The pull requests a description names as dependencies: the `#N` of a sentence that says so
-    ("Depends on #887", "now depends on the revisions #1222 and #1015", "which must merge first: #934",
-    "Merge order: after AnalyticNumberTheoryPartI (#1126) lands", "merges after #12"),
-    of the bullets under a line that ends "Depends on:" or "Dependencies:", and of a "Stack." line
-    before "this pull request". Never the pull request itself, nor a sentence that names pull requests
-    citing it back ("in turn") or says it depends on none."""
+    """The pull requests a description names as this one's dependencies: the `#N` after a phrase that says
+    so in a sentence ("Depends on #887", "now depends on the revisions #1222 and #1015", "which must merge
+    first: #934", "Merge order: after AnalyticNumberTheoryPartI (#1126) lands", "merges after #12"), those
+    of a chain that ends in this pull request ("#1101 → #1807 → this pull request"), the
+    bullets under a line ending "Depends on:" or "Dependencies:", and a "Stack." line before "this pull
+    request". Never one named before the phrase or about another pull request ("#1808 is independent of
+    this pull request", "#22 depends on this pull request"), after a negation ("does not depend on #20"),
+    or the pull request itself."""
     out: set[int] = set()
     listing, listed = False, False
     for line in (body or "").split("\n"):
@@ -306,9 +353,11 @@ def declared_dependencies(body: str, own: int = 0) -> list[int]:
             out |= {int(n) for n in NUMBER.findall(line.split("this pull request")[0])}
             continue
         for sentence in re.split(r"(?<=[.;!?])\s+", line):
-            if SAYS_DEPENDS.search(sentence) and not NOT_DEPENDS.search(sentence):
-                out |= {int(n) for n in NUMBER.findall(sentence)}
-        if re.search(r"depend", stripped, re.IGNORECASE) and stripped.endswith(":"):
+            out |= _sentence_dependencies(sentence)
+            chain = CHAIN_END.search(sentence)          # "#1101 → #1807 → this pull request"
+            if chain:
+                out |= {int(n) for n in NUMBER.findall(sentence[:chain.start()])}
+        if LIST_HEAD.search(stripped):
             listing, listed = True, False
     out.discard(own)
     return sorted(out)
@@ -319,12 +368,15 @@ def dependency_record(state: Path, index: dict, readme: str, lean: str, name: st
     """What the pull request `pr` waits for, read from the README `readme` and Suggested.lean `lean` of its
     roadmap `name` and from its description `body`:
 
-    * `suppliers`: the roadmaps it names as suppliers (as the dependency check reads a README, and every
-      `TauCetiRoadmap.<X>` of its Lean) that are not on main, each with the open pull requests that add
-      it. One is met once that roadmap is on main, whichever pull request brings it there.
+    * `suppliers`: the roadmaps it names as suppliers (as the dependency check reads a README, file paths
+      in code spans aside, and every `import TauCetiRoadmap.<X>` of its Lean; a `namespace` names none)
+      that are not on main, each with the open pull requests that add it. One is met once that roadmap
+      is on main, whichever pull request brings it there.
     * `revisions`: the open revisions whose numbering it cites (`revision_dependencies`), met once merged.
-    * `declared`: the pull requests its description names as dependencies (`declared_dependencies`),
-      met once merged.
+    * `declared`: the pull requests its description names as dependencies (`declared_items`: its
+      `<!-- depends-on -->` block and its prose), met once merged. A block item that names a roadmap
+      not on main is a supplier instead, met once that roadmap is on main whichever pull request brings
+      it (so "- [ ] PlanarTopology (no pull request yet)" waits too).
 
     The roadmaps the pull request itself carries are never its dependencies."""
     main = set(index.get("main_roadmaps", []))
@@ -333,12 +385,23 @@ def dependency_record(state: Path, index: dict, readme: str, lean: str, name: st
     for p in index.get("prs", []):
         for added in p.get("adds", []):
             adders.setdefault(added, []).append(p["pr"])
-    suppliers = depgraph.package_suppliers(name, readme, lean, main | set(adders)) - main - own
+    prose = PATH_SPAN.sub(" ", readme)
+    suppliers = (set(depgraph.supplier_edges({name: prose}, main | set(adders)).get(name, {}))
+                 | set(LEAN_IMPORT.findall(lean))) - main - own
+    declared: set[int] = set()
+    for number, roadmap in declared_items(body, own=pr):
+        if roadmap and roadmap not in main:          # a new roadmap: met once it is on main
+            if roadmap not in own:
+                suppliers.add(roadmap)
+                if number and number not in adders.get(roadmap, []):
+                    adders.setdefault(roadmap, []).append(number)
+        elif number:                                  # a revision of a roadmap on main, or a bare number
+            declared.add(number)
     revisions = revision_dependencies(state, index, readme, name, pr=pr, changed=changed)
     return {"suppliers": [{"roadmap": s, "prs": sorted(n for n in adders.get(s, []) if n != pr)}
                           for s in sorted(suppliers)],
             "revisions": [{"roadmap": r, "pr": q} for q, r, _author in revisions],
-            "declared": declared_dependencies(body, own=pr)}
+            "declared": sorted(declared)}
 
 
 def merge_conflicts(state: Path, a: int, b: int) -> Merge | None:

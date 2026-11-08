@@ -3,11 +3,14 @@ repository: a revision of a roadmap on main that renumbers a section and renames
 cite, a second revision of the same roadmap that conflicts with it, a new roadmap citing both ids, and the
 cases that must not count as a removal (a head that fell behind main) or must (a deleted README)."""
 
+import re
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
-from tauceti_roadmap_worker import cli, config, depgraph, gitops, mergeorder, openroadmaps, overlaps
+from tauceti_roadmap_worker import cli, config, depgraph, deplabels, gitops, mergeorder, openroadmaps, overlaps
+from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.paths import HERE
 
 pytestmark = pytest.mark.skipif(subprocess.run(["git", "--version"], capture_output=True).returncode != 0,
@@ -46,7 +49,48 @@ def commit(repo, files, message):
     return git(repo, "rev-parse", "HEAD").strip()
 
 
-def build(tmp_path, monkeypatch, mains, prs):
+class ContentGH:
+    """The content repository as `refresh` and `deplabels` read it: the open pull requests' listing (with
+    labels), each pull request's state and description (`states`: number -> {state, body}, or "issue"),
+    the merged pull requests a label search finds, and every write. A number in `blip` gets a 502."""
+
+    def __init__(self, listed, states=None, merged_labelled=()):
+        self.listed, self.states, self.merged_labelled = listed, dict(states or {}), list(merged_labelled)
+        self.blip, self.writes, self.dry_run = set(), [], False
+
+    def graphql(self, query, **variables):
+        if "pullRequests(states: OPEN" in query:
+            return {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": self.listed}}}
+        numbers = [int(n) for n in re.findall(r"p(\d+): issueOrPullRequest", query)]
+        if set(numbers) & self.blip:
+            raise GHError("graphql: HTTP 502")
+        nodes = {}
+        for n in numbers:
+            got = self.states.get(n)
+            nodes[f"p{n}"] = (None if got is None else {"__typename": "Issue"} if got == "issue" else
+                              {"__typename": "PullRequest", "state": got["state"].upper(), "body": got.get("body", "")})
+        return {"repository": nodes}
+
+    def api(self, path, paginate=False):
+        m = re.fullmatch(r"repos/[^/]+/[^/]+/pulls/(\d+)", path)
+        if m:
+            n = int(m.group(1))
+            if n in self.blip:
+                raise GHError(f"GET {path}: HTTP 502: Bad Gateway")
+            got = self.states.get(n)
+            if got is None or got == "issue":
+                raise GHError(f"GET {path}: HTTP 404: Not Found")
+            return {"state": "open" if got["state"] == "open" else "closed", "merged": got["state"] == "merged",
+                    "body": got.get("body", "")}
+        if path.startswith("search/issues"):
+            return {"items": [{"number": n} for n in self.merged_labelled]}
+        raise GHError(f"GET {path}: HTTP 404: Not Found")
+
+    def write(self, method, path, payload=None):
+        self.writes.append((method, path, payload or {}))
+
+
+def build(tmp_path, monkeypatch, mains, prs, labels=None, bodies=None):
     """An origin whose main takes the commits `mains` in turn, and open pull requests (number, login,
     the main commit they branch from, the files they write: None deletes one, an (old, new) key moves
     one), indexed as `roadmaps refresh` indexes them."""
@@ -67,16 +111,15 @@ def build(tmp_path, monkeypatch, mains, prs):
                  for k, v in files.items()]
         listed.append({"number": number, "title": f"PR {number}", "isDraft": False, "headRefOid": head,
                        "author": {"login": login},
+                       "labels": {"nodes": [{"name": x} for x in (labels or {}).get(number, [])]},
                        "files": {"nodes": [{"path": p, "changeType": c} for p, c in paths]}})
     git(origin, "checkout", "-q", "main")
     monkeypatch.setattr(gitops, "url", lambda repo: str(origin))
     monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
     cfg = config.parse((HERE / "tauceti-roadmap.toml.example").read_text(), "example")
 
-    class FakeGH:
-        def graphql(self, query, **variables):
-            return {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": listed}}}
-    return cfg, openroadmaps.refresh(FakeGH(), cfg)
+    build.gh = ContentGH(listed, {n: {"state": "open", "body": (bodies or {}).get(n, "")} for n, *_ in prs})
+    return cfg, openroadmaps.refresh(build.gh, cfg)
 
 
 @pytest.fixture
@@ -278,13 +321,26 @@ def test_a_description_names_its_dependencies():
     merge_order = ("**Merge order.** #1 (A) → **this pull request** (#5). It also depends on other authors' pull "
                    "requests that add roadmaps it cites, which must merge first: #934 (Q, w). It also cites #77 (R), "
                    "which in turn consume this one.")
-    assert deps(merge_order, own=5) == [934]                   # the chain is read from the README, not here
+    assert deps(merge_order, own=5) == [1, 934]
     assert deps("It depends on no other author's open pull request. This pull request now depends on the "
                 "revisions #1410 (recorded in its description).", own=617) == [1410]
     assert deps("Merge order: after AnalyticNumberTheoryPartI (#1126) lands, since the statements refer to its §0.34.",
                 own=1913) == [1126]
-    assert deps("#1411 consumes its §4a.1, so the order is this PR (#1410) → #1411; #940 and #856 cite its "
-                "§3a.1 and merge after it.", own=1410) == []
+    # #1854's description: a chain into this pull request, and a pull request it says it is independent of.
+    assert deps("**Merge order.** #1101 → #1807 → this pull request (the cut consumes what #1807 establishes). "
+                "#1808 is independent of this pull request.", own=1854) == [1101, 1807]
+    assert deps("Open revisions of roadmaps on main whose numbering this roadmap cites, which merge first: "
+                "#1097, #1771.", own=1137) == [1097, 1771]
+    block = ("Text.\n\n<!-- depends-on -->\n**Depends on** (suppliers still open; they merge first):\n"
+             "- [ ] #1126 AnalyticNumberTheoryPartI\n- [x] #1408 ComputationalNumberTheory\n"
+             "- [ ] PlanarTopology (no pull request yet)\n<!-- /depends-on -->\nDepends on #44.")
+    assert overlaps.declared_items(block, own=9) == [(None, "PlanarTopology"), (44, None),
+                                                     (1126, "AnalyticNumberTheoryPartI")]
+    # Not dependencies: independence, negation, the other direction, pull requests that come after.
+    for text in ("This PR is independent of #17.", "Does not depend on #20.", "#22 depends on this PR.",
+                 "#1411 consumes its §4a.1, so the order is this PR (#1410) → #1411; #940 and #856 cite its "
+                 "§3a.1 and merge after it."):
+        assert deps(text, own=1410) == [], text
 
 
 def test_the_dependency_record_of_a_head(tmp_path, monkeypatch):
@@ -299,4 +355,80 @@ def test_the_dependency_record_of_a_head(tmp_path, monkeypatch):
                                         "Mine", pr=31, body="Depends on #44.")
     assert record == {"suppliers": [{"roadmap": "CStar", "prs": [30]}, {"roadmap": "Ghost", "prs": []}],
                       "revisions": [{"roadmap": "Lattices", "pr": 7}], "declared": [44]}
+    # A path in a code span and a Lean namespace name no supplier.
+    path_only = "### 1.1 A\n\n*Needs:* `Foo/LevelOne/CStar/` supplies it.\n"
+    record = overlaps.dependency_record(cfg.state_dir(), index, path_only, "namespace TauCetiRoadmap.Ghost\n", "Mine",
+                                        pr=31)
+    assert record["suppliers"] == []
+    # A depends-on block: a roadmap not on main is a supplier (met once on main); one on main is waited
+    # for through its pull request; a roadmap the pull request carries itself is no dependency.
+    block = ("<!-- depends-on -->\n**Depends on**:\n- [ ] #60 PlanarTopology\n- [ ] #61 Lattices\n"
+             "- [ ] #31 Helper\n<!-- /depends-on -->")
+    record = overlaps.dependency_record(cfg.state_dir(), index, "# Roadmap: mine\n", "", "Mine", pr=31, body=block)
+    assert record == {"suppliers": [{"roadmap": "PlanarTopology", "prs": [60]}], "revisions": [], "declared": [61]}
     # Lattices is on main and Helper rides in the same pull request: neither is a dependency.
+
+
+DEPS = "awaiting-dependencies"
+
+
+def label_writes(gh):
+    return sorted((method, int(re.search(r"issues/(\d+)/", path).group(1))) for method, path, _payload in gh.writes)
+
+
+def test_the_label_follows_what_each_open_pull_request_waits_for_now(tmp_path, monkeypatch):
+    cstar = {"TauCetiRoadmap/CStar/README.md": "# Roadmap: C*-algebras\n\n### 1.1 Basics\n"}
+    def new(name, text):
+        return {f"TauCetiRoadmap/{name}/README.md": f"# Roadmap: {name}\n\n{text}\n"}
+    prs = [(7, "alice", 0, RENUMBER), (30, "dora", 0, cstar),
+           (31, "eve", 0, new("Mine", "*Needs:* CStar §1.1.")),                  # waits for CStar (#30)
+           (32, "fay", 0, new("Free", "Nothing needed.")),                      # waits for nothing
+           (33, "gus", 0, new("Open", "Plain.")), (34, "hal", 0, new("Done", "Plain.")),
+           (35, "ivy", 0, new("Indep", "Plain.")),
+           (38, "jon", 0, new("Renum", "Uses Lattices §1.4.")),                 # #7's numbering
+           ]
+    bodies = {33: "Depends on #44.", 34: "Depends on #45.", 35: "#36 is independent of this pull request."}
+    labels = {32: [DEPS], 33: [DEPS], 34: [DEPS], 35: [DEPS]}
+    cfg, _index = build(tmp_path, monkeypatch, [MAIN], prs, labels=labels, bodies=bodies)
+    gh = build.gh
+    gh.states.update({44: {"state": "open"}, 45: {"state": "merged"}, 36: {"state": "open"}})
+    gh.merged_labelled = [12]
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
+    assert label_writes(gh) == [("DELETE", 12), ("DELETE", 32), ("DELETE", 34), ("DELETE", 35),
+                                ("POST", 31), ("POST", 38)]
+    assert f"#31: {DEPS} added (waits for CStar (#30))" in out
+    assert f"#38: {DEPS} added (waits for #7 (revision of Lattices))" in out
+    assert f"#12: {DEPS} removed (merged)" in out and f"#35: {DEPS} removed (it waits for no open pull request)" in out
+    # #33 still waits for the open #44: kept, nothing written. Its description changes: read as it is now.
+    gh.writes.clear()
+    gh.states[33]["body"] = "Plain."
+    gh.merged_labelled = []
+    deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
+    assert ("DELETE", 33) in label_writes(gh)
+
+
+def test_what_github_does_not_answer_keeps_the_label(tmp_path, monkeypatch):
+    def new(name):
+        return {f"TauCetiRoadmap/{name}/README.md": f"# Roadmap: {name}\n"}
+    cfg, _index = build(tmp_path, monkeypatch, [MAIN], [(50, "kim", 0, new("A")), (51, "lou", 0, new("B")),
+                                                         (52, "max", 0, new("C"))],
+                        labels={50: [DEPS], 51: [DEPS], 52: [DEPS]},
+                        bodies={50: "Depends on #60.", 52: "Depends on #61."})
+    gh = build.gh
+    gh.blip = {51, 60}                    # #51's own description, and the state of #60, go unanswered
+    gh.states[61] = "issue"               # a 404: no pull request, so nothing waits for it
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
+    assert label_writes(gh) == [("DELETE", 52)]
+    assert f"#51: {DEPS} left as it is (its description was not read)" in out
+    assert f"#50: {DEPS} left as it is (a pull request its description names was not read)" in out
+
+
+def test_the_command_needs_a_label(world, monkeypatch, capsys):
+    conf = str(HERE / "tauceti-roadmap.toml.example")
+    with pytest.raises(SystemExit, match="give --label"):
+        cli.main(["--conf", conf, "roadmaps", "dependency-labels"])
+    seen = {}
+    monkeypatch.setattr(cli, "_bot_context", lambda args, cfg, dry: SimpleNamespace(dry=dry))
+    monkeypatch.setattr(deplabels, "run", lambda ctx, label: seen.update(label=label, dry=ctx.dry) or ["ok"])
+    assert cli.main(["--conf", conf, "roadmaps", "dependency-labels", "--label", DEPS]) == 0
+    assert seen == {"label": DEPS, "dry": True} and capsys.readouterr().out == "ok\n"

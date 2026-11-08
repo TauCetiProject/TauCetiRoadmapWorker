@@ -229,12 +229,11 @@ comment_reviewers = []
 # content repository for the comment and the label.
 enabled = false
 label = "ai-approved"
-# With a label name here, `board sync` keeps it on a pull request exactly while the latest review of its
-# current head records a dependency not yet merged (the review's verdict file holds the worker's record:
-# the supplier roadmaps it names that are not on main, the open revisions whose numbering it cites,
-# and the pull requests its description names as dependencies). Every run re-checks, so the label
-# goes on the first run after the last dependency merges. A head no review has finished keeps the
-# label as it is. Empty: the label is not managed.
+# The label `roadmaps dependency-labels` keeps when it is given no `--label`: on an open roadmap pull
+# request exactly while it waits for another pull request (a supplier roadmap its README names that is
+# not on main, an open revision whose numbering it cites, a pull request its description names as a
+# dependency that has not merged), recomputed from the current heads, descriptions and main on every
+# run, and off merged pull requests. `board sync` does not touch it. Empty: no default label.
 dependency_label = ""
 per_run = 3
 # Only these authors' pull requests (empty: everyone's), and never these.

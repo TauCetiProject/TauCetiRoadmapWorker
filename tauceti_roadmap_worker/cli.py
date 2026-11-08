@@ -782,10 +782,11 @@ def roadmaps_cmd(args) -> int:
     cfg = _load(args)
     state = cfg.state_dir()
     if args.action == "dependency-labels":
-        from . import intake
-        if args.label:
-            cfg.prreview.dependency_label = args.label
-        for line in intake.dependency_label_pass(_bot_context(args, cfg, dry=not args.yes)):
+        from . import deplabels
+        label = args.label or cfg.prreview.dependency_label
+        if not label:
+            raise SystemExit("roadmaps dependency-labels: give --label, or set [prreview] dependency_label")
+        for line in deplabels.run(_bot_context(args, cfg, dry=not args.yes), label):
             print(line)
         return 0
     if args.action == "refresh":

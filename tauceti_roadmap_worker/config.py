@@ -263,10 +263,9 @@ class PRReview:
     # accepts carries `label`. A human still approves and merges.
     enabled: bool = False
     label: str = "ai-approved"
-    # A pull request carries this label exactly while the dependency record of the latest review of its
-    # current head (every roadmap folder's) names something not yet merged: a supplier roadmap not on
-    # main, or an open revision or declared pull request. Kept by every `board sync`, so a dependency
-    # that merges takes the label off on the next run. Empty: the label is not managed.
+    # The label `roadmaps dependency-labels` keeps (when it is given no `--label`): on an open roadmap
+    # pull request exactly while it waits for another pull request, recomputed from the current heads,
+    # descriptions and main on every run (`deplabels`). `board sync` does not touch it.
     dependency_label: str = ""
     per_run: int = 3                 # new jobs filed per `board sync` run, oldest pull request first
     authors: list[str] = field(default_factory=list)        # only these authors' pull requests (empty: all)

@@ -665,7 +665,7 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 | --- | --- | --- |
 | `enabled` | `false` | file and retire review jobs and keep the label (nothing is read while off) |
 | `label` | `"ai-approved"` | the label an accepted head carries on the content repository |
-| `dependency_label` | `""` | a label `board sync` keeps on a pull request exactly while the dependency record of its current head names something not merged (below); empty: not managed |
+| `dependency_label` | `""` | the label `roadmaps dependency-labels` keeps when given no `--label` (below); `board sync` does not touch it |
 | `per_run` | `3` | new review jobs (one per roadmap folder) per `board sync` run, oldest pull request first |
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
 | `skip_authors` | `[]` | never these authors' pull requests |
@@ -765,54 +765,46 @@ has a finished review of its head, the most recent first, stopping at the first 
 accept. A human still approves and merges; the AI never does, and the awaiting-author and
 awaiting-review labels are left to the gate lane and `board sync`.
 
-**The dependency label.** The lane adds the worker's record of what the pull request waits for to
-the verdict file, beside `review`, at the head reviewed (`overlaps.dependency_record`; the agent never
-writes it):
+**The dependency label.** `tauceti-roadmap roadmaps dependency-labels [--label NAME] [--yes]` (module
+`deplabels`; the label defaults to `[prreview] dependency_label`; a dry run without `--yes`) keeps the
+label on an open roadmap pull request exactly while it waits for another pull request, and takes it off
+merged pull requests. Nothing is recorded between runs: each run fetches every open head into the host's
+mirror (`openroadmaps.refresh(force=True)`; a failed refresh writes nothing), reads every open pull
+request's current description and the states of the pull requests the descriptions name (GraphQL
+batches), and computes, for each roadmap folder a pull request carries, `overlaps.dependency_record` at
+its head:
 
-```json
-"dependencies": {"head": "<sha>",
-                 "suppliers": [{"roadmap": "CStarAlgebras", "prs": [860]}],
-                 "revisions": [{"roadmap": "LocalFieldsRamification", "pr": 617}],
-                 "declared": [1050]}
-```
+- `suppliers`: the roadmaps the README names as suppliers (as the dependency check reads it, file paths
+  in code spans aside) and those its Suggested.lean imports (`import TauCetiRoadmap.<X>`; a namespace
+  names none) that are not on main, with the open pull requests that add each, or none (a roadmap that
+  exists nowhere waits too); the roadmaps the pull request carries itself never count;
+- `revisions`: the open revisions whose numbering it cites (`overlaps.revision_dependencies`);
+- `declared`: what its description declares (`declared_items`). First the structured block
 
-`suppliers` are the roadmaps the README names as suppliers (as the dependency check reads it) and
-the `TauCetiRoadmap.<X>` of its Lean files that are not on main, with the open pull requests that add
-each: recorded by name, one is met once that roadmap is on main, whichever pull request brings it
-(a supplier reopened under another number still counts). `revisions` are the open revisions whose
-numbering the README cites (`overlaps.revision_dependencies`), and `declared` the pull requests the
-description names as dependencies ("Depends on #N", a list under "Depends on:", a "Stack." line, the
-merge-order paragraph's other authors), each met once merged. The roadmaps the pull request carries
-itself never count.
+  ```markdown
+  <!-- depends-on -->
+  **Depends on** (suppliers still open; they merge first):
+  - [ ] #1126 AnalyticNumberTheoryPartI
+  - [ ] PlanarTopology (no pull request yet)
+  <!-- /depends-on -->
+  ```
 
-With `[prreview] dependency_label` set, every `board sync` re-checks each open pull request's records
-for its current head (`sync_dependency_labels`): the label is added when one names something not
-merged (a supplier not on main, a revision or declared pull request open or closed without merging,
-listed in the log line) and removed when nothing is outstanding and every roadmap folder has a
-record. A head no review has finished, or a record that names a pull request GitHub does not answer
-for, keeps the label as it is; a number that is no pull request (an issue) is ignored. So the label
-goes on the first sync after the last dependency merges: within the board workflow's ten minutes
-when its token may label the content repository, else at the next maintainer `board sync --yes`.
-`tauceti-roadmap roadmaps dependency-labels [--label NAME] [--yes]` runs this pass alone (`--label`
-overrides `[prreview] dependency_label`), without the board lock and
-with no write to the jobs repository, for a workflow of the content repository to run with its own
-`GITHUB_TOKEN` (issues: write) on every merged pull request and on a schedule:
+  where an unchecked item naming a roadmap not on main is a supplier (met once that roadmap is on main,
+  whichever pull request brings it), any other unchecked item waits for its pull request, and a checked
+  one is met; then the prose (`declared_dependencies`): the numbers after "depends on", "merge(s)
+  first", "merges after" or "after ... lands", a chain ending in "→ this pull request", a list under
+  "Depends on:", a "Stack." line; never a number before the phrase, after a negation ("does not depend
+  on", "independent of") or about another pull request ("#22 depends on this pull request").
 
-```yaml
-on:
-  pull_request_target: {types: [closed]}
-  schedule: [{cron: "17 * * * *"}]
-jobs:
-  dependency-labels:
-    if: github.event_name == 'schedule' || github.event.pull_request.merged
-    runs-on: ubuntu-latest
-    permissions: {issues: write, pull-requests: write}
-    steps:
-      - uses: astral-sh/setup-uv@v6
-      - run: uv tool install git+https://github.com/TauCetiProject/TauCetiRoadmapWorker
-      - run: tauceti-roadmap --conf "$CONF" roadmaps dependency-labels --label awaiting-dependencies --yes
-        env: {GH_TOKEN: "${{ github.token }}", CONF: "https://raw.githubusercontent.com/TauCetiProject/TauCetiRoadmapJobs/main/tauceti-roadmap.toml"}
-```
+The label is added while one of those is outstanding (a declared pull request counts while open or once
+closed without merging) and removed when none is. A pull request whose description, or the state of a
+pull request its description names, GitHub did not give keeps its label (only a 404 says a number is no
+pull request). A carried acceptance, a description edited since the last review, a supplier opened
+since, and a backlog never reviewed with this code are all read as they are now. `board sync` does not
+manage the label. A run costs a fetch of the open heads (a fresh bare mirror on a new runner, about
+140 MB) and a few dozen GraphQL queries, and takes about three minutes, so it suits a
+workflow of the content repository that runs on every merged pull request and hourly, with a token that
+may label its pull requests (TauCetiRoadmap's `dependency-labels.yml`).
 
 The comment and the label are written with the operator's own token, which needs write access to
 the content repository (triage at least, for labels); a token without it reports `ai-approved not
