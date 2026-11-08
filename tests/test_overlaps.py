@@ -68,7 +68,9 @@ class ContentGH:
         for n in numbers:
             got = self.states.get(n)
             nodes[f"p{n}"] = (None if got is None else {"__typename": "Issue"} if got == "issue" else
-                              {"__typename": "PullRequest", "state": got["state"].upper(), "body": got.get("body", "")})
+                              {"__typename": "PullRequest", "state": got["state"].upper(), "body": got.get("body", ""),
+                               "files": {"totalCount": len(got.get("added", [])),
+                                         "nodes": [{"path": a, "changeType": "ADDED"} for a in got.get("added", [])]}})
         return {"repository": nodes}
 
     def api(self, path, paginate=False):
@@ -82,6 +84,9 @@ class ContentGH:
                 raise GHError(f"GET {path}: HTTP 404: Not Found")
             return {"state": "open" if got["state"] == "open" else "closed", "merged": got["state"] == "merged",
                     "body": got.get("body", "")}
+        m = re.fullmatch(r"repos/[^/]+/[^/]+/pulls/(\d+)/files\?per_page=100", path)
+        if m:
+            return [{"filename": a, "status": "added"} for a in self.states[int(m.group(1))].get("added", [])]
         if path.startswith("search/issues"):
             return {"items": [{"number": n} for n in self.merged_labelled]}
         raise GHError(f"GET {path}: HTTP 404: Not Found")
@@ -246,6 +251,17 @@ def test_a_citation_of_a_revisions_numbering_makes_it_a_dependency(world):
     assert mergeorder.revision_facts(Ctx(), prs, {"Mine": readme}) == {905: [(7, "Lattices", "alice")]}
 
 
+def test_an_id_a_pull_requests_own_revision_defines_is_its_own(tmp_path, monkeypatch):
+    mine = {"TauCetiRoadmap/Mine/README.md": "# Roadmap: mine\n\nUses Lattices §1.4.\n"}
+    cfg, index = build(tmp_path, monkeypatch, [MAIN], [(7, "alice", 0, RENUMBER), (40, "zed", 0, {**RENUMBER, **mine}),
+                                                       (41, "ann", 0, mine)])
+    state, readme = cfg.state_dir(), mine["TauCetiRoadmap/Mine/README.md"]
+    # #40 renumbers Lattices as #7 does: its citation of §1.4 is its own. #41 needs #7 (or #40).
+    assert overlaps.revision_dependencies(state, index, readme, "Mine", pr=40) == []
+    assert overlaps.revision_dependencies(state, index, readme, "Mine", pr=41) == [(7, "Lattices", "alice"),
+                                                                                   (40, "Lattices", "zed")]
+
+
 def test_report_all_and_the_command(world, capsys):
     cfg, index = world
     text = overlaps.report_all(cfg.state_dir(), index)
@@ -354,7 +370,7 @@ def test_the_dependency_record_of_a_head(tmp_path, monkeypatch):
     record = overlaps.dependency_record(cfg.state_dir(), index, readme, "import TauCetiRoadmap.Ghost.Suggested\n",
                                         "Mine", pr=31, body="Depends on #44.")
     assert record == {"suppliers": [{"roadmap": "CStar", "prs": [30]}, {"roadmap": "Ghost", "prs": []}],
-                      "revisions": [{"roadmap": "Lattices", "pr": 7}], "declared": [44]}
+                      "revisions": [{"roadmap": "Lattices", "pr": 7}], "declared": [{"pr": 44, "roadmap": None}]}
     # A path in a code span and a Lean namespace name no supplier.
     path_only = "### 1.1 A\n\n*Needs:* `Foo/LevelOne/CStar/` supplies it.\n"
     record = overlaps.dependency_record(cfg.state_dir(), index, path_only, "namespace TauCetiRoadmap.Ghost\n", "Mine",
@@ -365,7 +381,8 @@ def test_the_dependency_record_of_a_head(tmp_path, monkeypatch):
     block = ("<!-- depends-on -->\n**Depends on**:\n- [ ] #60 PlanarTopology\n- [ ] #61 Lattices\n"
              "- [ ] #31 Helper\n<!-- /depends-on -->")
     record = overlaps.dependency_record(cfg.state_dir(), index, "# Roadmap: mine\n", "", "Mine", pr=31, body=block)
-    assert record == {"suppliers": [{"roadmap": "PlanarTopology", "prs": [60]}], "revisions": [], "declared": [61]}
+    assert record == {"suppliers": [{"roadmap": "PlanarTopology", "prs": [60]}], "revisions": [],
+                      "declared": [{"pr": 61, "roadmap": "Lattices"}]}
     # Lattices is on main and Helper rides in the same pull request: neither is a dependency.
 
 
@@ -432,3 +449,115 @@ def test_the_command_needs_a_label(world, monkeypatch, capsys):
     monkeypatch.setattr(deplabels, "run", lambda ctx, label: seen.update(label=label, dry=ctx.dry) or ["ok"])
     assert cli.main(["--conf", conf, "roadmaps", "dependency-labels", "--label", DEPS]) == 0
     assert seen == {"label": DEPS, "dry": True} and capsys.readouterr().out == "ok\n"
+
+
+def block(*items):
+    return ("<!-- depends-on -->\n**Depends on** (suppliers still open; they merge first):\n"
+            + "".join(f"- [ ] {item}\n" for item in items) + "<!-- /depends-on -->")
+
+
+def roadmap(name, text="", extra=None):
+    files = {f"TauCetiRoadmap/{name}/README.md": f"# Roadmap: {name}\n\n{text}\n"}
+    files.update({f"TauCetiRoadmap/{name}/{k}": v for k, v in (extra or {}).items()})
+    return files
+
+
+def test_a_dependency_named_only_in_the_block_is_met_once_merged(tmp_path, monkeypatch):
+    cfg, _index = build(tmp_path, monkeypatch, [MAIN], [(90, "ann", 0, roadmap("Waiter"))],
+                        labels={90: [DEPS]}, bodies={90: block("#44 Lattices")})
+    gh = build.gh
+    gh.states[44] = {"state": "open"}            # a revision of Lattices, open but not a roadmap pull request here
+    deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
+    assert label_writes(gh) == []
+    gh.states[44] = {"state": "merged"}
+    deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
+    assert label_writes(gh) == [("DELETE", 90)]
+
+
+def test_a_supplier_brought_by_another_pull_request_meets_the_one_named(tmp_path, monkeypatch):
+    cstar = roadmap("CStar", "### 1.1 Basics")
+    later = {**MAIN, **cstar}                    # CStar reached main through another pull request
+    cfg, _index = build(tmp_path, monkeypatch, [MAIN, later],
+                        [(70, "bea", 0, roadmap("CStar", "### 1.1 Other basics")),       # opened to add CStar
+                         (71, "cal", 1, roadmap("Uses")), (72, "dan", 1, roadmap("Also")),
+                         (73, "eli", 1, roadmap("Rev"))],
+                        labels={71: [DEPS], 72: [DEPS], 73: [DEPS]},
+                        bodies={71: block("#30 CStar"), 72: block("#70 CStar"), 73: block("#61 Lattices")})
+    gh = build.gh
+    gh.states[30] = {"state": "closed", "added": ["TauCetiRoadmap/CStar/README.md"]}    # replaced by another
+    gh.states[61] = {"state": "closed", "added": []}                                       # a revision, abandoned
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
+    # #71's #30 added CStar and #72's #70 was opened to add it: met. #73's #61 revised Lattices and was
+    # closed without merging: still waits, so its label stays.
+    assert label_writes(gh) == [("DELETE", 71), ("DELETE", 72)] and not any("#73" in line for line in out)
+
+
+def test_every_lean_file_of_a_roadmap_counts_and_a_pull_request_that_changes_only_one(tmp_path, monkeypatch):
+    ghost = "import TauCetiRoadmap.Ghost.Suggested\n"
+    nested = {**roadmap("Fam", "Family."), "TauCetiRoadmap/Fam/Sub/README.md": "# Roadmap: Sub\n",
+              "TauCetiRoadmap/Fam/Sub/Suggested.lean": ghost}
+    cfg, index = build(tmp_path, monkeypatch, [MAIN, {**MAIN, **nested}],
+                       [(80, "fay", 0, roadmap("Mine", "", {"Suggested.lean": "import TauCetiRoadmap.Mine.Extras\n",
+                                                            "Extras.lean": ghost})),
+                        (81, "gil", 0, {"TauCetiRoadmap/Lattices/Extra.lean": ghost}),
+                        (82, "hob", 1, {"TauCetiRoadmap/Fam/README.md": "# Roadmap: Fam\n\nFamily, edited.\n"})])
+    gh = build.gh
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
+    assert f"#80: {DEPS} added (waits for Ghost (in no open pull request))" in out
+    assert f"#81: {DEPS} added (waits for Ghost (in no open pull request))" in out
+    pr82 = next(p for p in openroadmaps.load(cfg.state_dir())["prs"] if p["pr"] == 82)
+    assert deplabels.roadmap_folders(cfg.state_dir(), index, pr82) == {
+        "TauCetiRoadmap/Fam": ["TauCetiRoadmap/Fam/README.md"]}
+    assert ("POST", 82) not in label_writes(gh)                  # Sub's import is Sub's, not the family's
+
+
+def test_only_an_http_404_says_a_number_is_no_pull_request():
+    class Errors:
+        def __init__(self, text):
+            self.text = text
+
+        def api(self, path, paginate=False):
+            raise GHError(f"gh api {path}: {self.text}")
+    repo = "TauCetiProject/TauCetiRoadmap"
+    assert deplabels.rest_state(Errors("HTTP 502: Bad Gateway"), repo, 404) is None
+    assert deplabels.rest_state(Errors("dial tcp: lookup api.github.com: no such host"), repo, 44) is None
+    assert deplabels.rest_state(Errors("gh: Not Found (HTTP 404)"), repo, 404) == {"state": "absent"}
+
+
+def test_a_pull_request_waits_only_for_what_it_brings_not_for_what_main_already_cites(tmp_path, monkeypatch):
+    old = roadmap("Old", "*Needs:* Ghost §1.1.", {"PROGRESS.md": "Started.\n", "STATUS.md": "open\n"})
+    cfg, _index = build(tmp_path, monkeypatch, [{**MAIN, **old}],
+                        [(110, "eve", 0, roadmap("Ghost", "### 1.1 Spirits")),           # Old on main cites it
+                         (111, "flo", 0, roadmap("Phantom", "### 2.1 Shades")),
+                         (100, "ada", 0, {"TauCetiRoadmap/Old/PROGRESS.md": "Week 2.\n",  # a progress report
+                                          "TauCetiRoadmap/Old/STATUS.md": "active\n"}),
+                         (101, "bo", 0, roadmap("Old", "*Needs:* Ghost §1.1. Reworded.")),
+                         (102, "cy", 0, roadmap("Old", "*Needs:* Ghost §1.1 and Phantom §2.1.")),
+                         (103, "di", 0, roadmap("Old", "*Needs:* Ghost §1.1.",
+                                                {"Suggested.lean": "import TauCetiRoadmap.Ghost\n"})),
+                         (104, "ed", 0, roadmap("Old", "*Needs:* Ghost §1.1. Reworded again."))],
+                        bodies={104: block("#110 Ghost")})
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
+    # Main's Old already names Ghost: an edit of Old waits for it only when its Lean files import it or its
+    # description declares it, and a progress report touches no roadmap file at all.
+    assert label_writes(build.gh) == [("POST", 102), ("POST", 103), ("POST", 104)]
+    assert f"#102: {DEPS} added (waits for Phantom (#111))" in out
+    assert f"#103: {DEPS} added (waits for Ghost (#110))" in out
+
+
+def test_a_pin_bump_waits_for_nothing_its_folders_already_cited(tmp_path, monkeypatch):
+    lean = "theorem t : True := trivial\n"
+    twins = {"Completed/Twin/README.md": "# Roadmap: Twin\n\nDone.\n", "Completed/Twin/Suggested.lean": lean,
+             **roadmap("Twin", "*Needs:* Ghost §1.1.", {"Suggested.lean": lean}),
+             **roadmap("Drift", "*Needs:* Ghost §1.1.", {"Suggested.lean": lean})}
+    later = {**twins, "TauCetiRoadmap/Drift/README.md": "# Roadmap: Drift\n\nGhost no longer needed.\n"}
+    bump = "-- bumped\n" + lean
+    cfg, _index = build(tmp_path, monkeypatch, [{**MAIN, **twins}, {**MAIN, **later}],
+                        [(110, "eve", 1, roadmap("Ghost", "### 1.1 Spirits")),
+                         # Two folders named Twin, each compared with its own README on main.
+                         (120, "gus", 1, {"Completed/Twin/Suggested.lean": bump,
+                                          "TauCetiRoadmap/Twin/Suggested.lean": bump}),
+                         # Branched before main's Drift dropped Ghost: its stale README is not its doing.
+                         (121, "hal", 0, {"TauCetiRoadmap/Drift/Suggested.lean": bump})])
+    deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
+    assert label_writes(build.gh) == []

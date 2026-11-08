@@ -199,17 +199,19 @@ def age(index: dict, now: dt.datetime | None = None) -> float:
     return ((now or dt.datetime.now(dt.UTC)) - built).total_seconds()
 
 
-def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None) -> dict:
+def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any_file: bool = False) -> dict:
     """The index of open roadmap pull requests, rebuilt when older than MAX_AGE (or `force`): the
-    listing from GitHub, every head fetched into the shared mirror, stale heads dropped. Raises on a
-    GitHub or git failure; the caller decides what a missing index means."""
+    listing from GitHub, every head fetched into the shared mirror, stale heads dropped. With
+    `any_file`, it also lists the pull requests whose only changes under the roadmap directories are
+    other files (an extra Lean file of a roadmap: `inventory`). Raises on a GitHub or git failure; the
+    caller decides what a missing index means."""
     state, repo, branch = cfg.state_dir(), cfg.repositories.content, cfg.project.branch
     dirs = (cfg.roadmap.active_dir, cfg.roadmap.completed_dir)
     with _lock(state):
         current = load(state)
         if not force and current.get("repo") == repo and age(current, now) < MAX_AGE:
             return current
-        prs = inventory(gh, repo, dirs)          # GitHub first: nothing is cloned when it cannot be read
+        prs = inventory(gh, repo, dirs, any_file=any_file)    # GitHub first: nothing is cloned when it cannot be read
         if not (mirror(state) / "HEAD").exists():
             mirror(state).parent.mkdir(parents=True, exist_ok=True)
             git(None, "clone", "-q", "--bare", "--no-tags", gitops.url(repo), str(mirror(state)))

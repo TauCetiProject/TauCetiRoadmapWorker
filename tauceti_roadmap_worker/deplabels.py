@@ -4,109 +4,206 @@ The label (`--label`, else `[prreview] dependency_label`; `awaiting-dependencies
 repository) is on an open roadmap pull request exactly while it waits for another pull request. Every
 run works it out again from the current state, and nothing is kept between runs:
 
-* every open head, fetched into the host's mirror for this run (`openroadmaps.refresh(force=True)`);
-  a refresh that fails stops the run before anything is written;
-* every open pull request's current description, and the state of every pull request a description
-  names, read in batches (`pull_states`);
+* every open pull request that changes a file under the roadmap directories, its head fetched into the
+  host's mirror for this run (`openroadmaps.refresh(force=True, any_file=True)`); a refresh that fails
+  stops the run before anything is written;
+* every open pull request's current description, and the state (and, once closed, the added files) of
+  every other pull request a description names, read in batches (`pull_states`);
 * main as it is.
 
-What a pull request waits for is `overlaps.dependency_record` of each roadmap folder it carries, at its
-current head, with its current description:
+What a pull request waits for is `overlaps.dependency_record` of each roadmap folder it touches
+(`roadmap_folders`: the folders the index names, and the deepest folder holding a README.md above any
+other Lean file it changes; a progress report touches none), read at its head: the README and every
+Lean file of the folder, a nested roadmap's aside:
 
-* every supplier roadmap its README names or its Suggested.lean imports that is not on main (with the
-  open pull requests that add it, or none: a roadmap that exists nowhere waits too);
-* every open revision whose numbering it cites;
-* every dependency its description declares (its `<!-- depends-on -->` block, then its prose): a roadmap
-  not on main until it is on main, a pull request until it merges (one closed without merging never
-  brings what is cited, so it still waits).
+* every supplier roadmap its README names or its Lean files import that is not on main (with the open
+  pull requests that add it, or none: a roadmap that exists nowhere waits too), and every open revision
+  whose numbering it cites, less what the same README already cites on main or at the merge base
+  (`record_of`: a pin bump does not wait for a supplier its roadmap has long named);
+* every dependency its description declares (its `<!-- depends-on -->` block, then its prose), until
+  `met`: a pull request that merged, or the one that added a roadmap another pull request has since
+  brought to main; one closed without merging that did not add its roadmap never brings what is
+  cited, so it still waits.
 
 So a head whose AI acceptance was carried over a small repair, a description edited since the last
 review, a supplier opened after it, or the first run on a backlog, are all read as they are now.
 
 The label is added while a pull request waits for something and removed once it waits for nothing. A
 pull request whose description, or the state of a pull request its description names, GitHub did not
-give (anything but a 404, which means the number is no pull request) keeps its label as it is. A merged
+give keeps its label as it is; only GitHub's `HTTP 404` says that a number is no pull request. A merged
 pull request that still carries the label loses it.
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 from urllib.parse import quote
 
 from . import openroadmaps, overlaps
 from .gh import GHError
 
 BATCH = 40
-NOT_FOUND = re.compile(r"\b404\b|Not Found")
+NOT_FOUND = re.compile(r"\(HTTP 404\)|\bHTTP 404\b")          # the status, never a pull request numbered 404
 QUERY = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { %s } }"
-ALIAS = "p%d: issueOrPullRequest(number: %d) { __typename ... on PullRequest { state body } }"
+BODY = "p%d: issueOrPullRequest(number: %d) { __typename ... on PullRequest { state body } }"
+FILES = ("p%d: issueOrPullRequest(number: %d) { __typename ... on PullRequest { state "
+         "files(first: 100) { totalCount nodes { path changeType } } } }")
 STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
 
 
-def rest_state(gh, repo: str, number: int) -> dict | None:
-    """{state, body} of one pull request by REST; {"state": "absent"} when GitHub says 404 (no such pull
-    request: an issue's number, say); None when it gave no answer (a network error, a 5xx, a 403)."""
+def rest_state(gh, repo: str, number: int, files: bool = False) -> dict | None:
+    """{state, body} (with `files`: {state, added}, the paths it adds) of one pull request by REST;
+    {"state": "absent"} when GitHub answers HTTP 404 (no such pull request: an issue's number, say);
+    None when it gave no answer (a network error, a 5xx, a 403)."""
     try:
         data = gh.api(f"repos/{repo}/pulls/{number}") or {}
+        added = ([f.get("filename", "") for f in gh.api(f"repos/{repo}/pulls/{number}/files?per_page=100",
+                                                         paginate=True) or [] if f.get("status") == "added"]
+                 if files else None)
     except GHError as exc:
         return {"state": "absent"} if NOT_FOUND.search(str(exc)) else None
     merged = data.get("merged") or data.get("merged_at")
     state = "open" if data.get("state") == "open" else "merged" if merged else "closed"
-    return {"state": state, "body": data.get("body") or ""}
+    return {"state": state, "added": added} if files else {"state": state, "body": data.get("body") or ""}
 
 
-def pull_states(gh, repo: str, numbers, batch: int = BATCH) -> dict[int, dict | None]:
-    """number -> {"state": "open" | "merged" | "closed", "body": ...} for a pull request, {"state":
-    "absent"} for an issue's number or one GitHub says does not exist, None when GitHub did not answer.
-    One GraphQL query per `batch` numbers; a batch the query fails for, and a number it leaves empty,
-    are read one by one by REST (`rest_state`)."""
+def pull_states(gh, repo: str, numbers, *, files: bool = False, batch: int = BATCH) -> dict[int, dict | None]:
+    """number -> {"state": "open" | "merged" | "closed", "body": ...} for a pull request (with `files`:
+    "added", the paths it adds, instead of "body"), {"state": "absent"} for an issue's number or one
+    GitHub says does not exist, None when GitHub did not answer. One GraphQL query per `batch`
+    numbers; a batch the query fails for, a number it leaves empty, and a pull request with more than
+    100 files are read one by one by REST (`rest_state`)."""
     owner, name = repo.split("/", 1)
     wanted = sorted({int(n) for n in numbers})
     out: dict[int, dict | None] = {}
     for i in range(0, len(wanted), batch):
         chunk = wanted[i:i + batch]
         try:
-            data = (gh.graphql(QUERY % " ".join(ALIAS % (n, n) for n in chunk), owner=owner, name=name) or {})
+            data = gh.graphql(QUERY % " ".join((FILES if files else BODY) % (n, n) for n in chunk),
+                              owner=owner, name=name) or {}
             nodes = data.get("repository") or {}
         except GHError:
             nodes = None
         for n in chunk:
             node = nodes.get(f"p{n}") if nodes is not None else None
-            if not node:
-                out[n] = rest_state(gh, repo, n)
+            listing = (node or {}).get("files") or {}
+            if not node or (files and int(listing.get("totalCount") or 0) > len(listing.get("nodes") or [])):
+                out[n] = rest_state(gh, repo, n, files)
             elif node.get("__typename") != "PullRequest":
                 out[n] = {"state": "absent"}
+            elif files:
+                out[n] = {"state": STATES.get(node.get("state") or "", "closed"),
+                          "added": [f.get("path", "") for f in listing.get("nodes") or []
+                                    if f.get("changeType") == "ADDED"]}
             else:
                 out[n] = {"state": STATES.get(node.get("state") or "", "closed"), "body": node.get("body") or ""}
     return out
 
 
-def waiting_for(state, index: dict, pr: dict, body: str, changed, states: dict[int, dict | None],
-                open_prs: set[int]) -> tuple[list[str], bool]:
-    """(what the open pull request `pr` waits for, one phrase each; whether that is known): the
-    dependency records of every roadmap folder it carries, read at its head in the mirror."""
-    folders = sorted((pr.get("folders") or {}).items())
-    texts = overlaps._batch(state, [f"{openroadmaps.pr_ref(pr['pr'])}:{folder}/{file}" for _n, folder in folders
-                                    for file in ("README.md", "Suggested.lean")])
-    waits: set[str] = set()
-    known = True
-    for i, (name, _folder) in enumerate(folders):
-        record = overlaps.dependency_record(state, index, texts[2 * i] or "", texts[2 * i + 1] or "", name, pr=pr["pr"],
-                                            body=body, changed=changed)
+def _tree(state, ref: str, paths) -> list[str]:
+    result = subprocess.run(["git", "-C", str(openroadmaps.mirror(state)), "ls-tree", "-r", "--name-only", ref, "--",
+                             *paths], capture_output=True, text=True, check=False)
+    return result.stdout.splitlines() if result.returncode == 0 else []
+
+
+def roadmap_folders(state, index: dict, pr: dict) -> dict[str, list[str]]:
+    """Roadmap folder -> the paths at the pull request's head of its README.md and of every Lean file in
+    it, a nested roadmap's (a subfolder holding its own README.md) aside, for each roadmap folder
+    the pull request touches: those `openroadmaps.inventory` names, and for every other Lean file it
+    changes under the roadmap directories, the deepest folder above it that holds a README.md at the
+    head (a progress report touches none). A folder without a README.md at the head (the pull request
+    deletes the roadmap) waits for nothing."""
+    ref, dirs = openroadmaps.pr_ref(pr["pr"]), tuple(index.get("dirs", []))
+    folders = set((pr.get("folders") or {}).values())
+    others = [f["path"] for f in pr.get("files") or [] if f.get("path", "").split("/")[0] in dirs
+              and f.get("path", "").endswith(".lean") and f.get("path", "").rsplit("/", 1)[0] not in folders]
+    if others:
+        listing = set(_tree(state, ref, sorted({p.split("/")[0] for p in others})))
+        for path in others:
+            parts = path.split("/")[:-1]
+            for depth in range(len(parts), 1, -1):
+                if "/".join(parts[:depth]) + "/README.md" in listing:
+                    folders.add("/".join(parts[:depth]))
+                    break
+    out = {}
+    for folder in sorted(folders):
+        files = _tree(state, ref, [folder + "/"])
+        if folder + "/README.md" not in files:
+            continue
+        nested = {f.rsplit("/", 1)[0] for f in files if f.endswith("/README.md") and f.rsplit("/", 1)[0] != folder}
+        leans = [f for f in files if f.endswith(".lean") and not any(f.startswith(n + "/") for n in nested)]
+        out[folder] = [folder + "/README.md", *leans]
+    return out
+
+
+def _texts(state, ref: str, paths: list[str]) -> tuple[str, str]:
+    """The README and the Lean files (joined) of a roadmap folder at `ref`."""
+    texts = overlaps._batch(state, [f"{ref}:{path}" for path in paths])
+    return texts[0] or "", "\n".join(t or "" for t in texts[1:])
+
+
+def record_of(state, index: dict, pr: dict, body: str, changed) -> dict:
+    """What the pull request brings that waits: the union of `overlaps.dependency_record` over the roadmap
+    folders it touches, read at its head (`roadmap_folders`: every Lean file of a folder with its
+    README). A supplier or revision its README cites that the same README already cites on main or at
+    the merge base is not this pull request's to wait for (a pin bump or a progress edit of a roadmap
+    whose README names an open supplier does not wait for it), unless its Lean files import the
+    supplier or its description declares it."""
+    ref = openroadmaps.pr_ref(pr["pr"])
+    main_ref = f"refs/heads/{index.get('branch', 'main')}"
+    base = overlaps._merge_base(state, main_ref, ref)
+    kept = {r for _n, r in overlaps.declared_items(body, own=pr["pr"]) if r}
+    suppliers: dict[str, set[int]] = {}
+    revisions: set[tuple[int, str]] = set()
+    declared: set[tuple[int, str | None]] = set()
+    for folder, paths in roadmap_folders(state, index, pr).items():
+        name = folder.rsplit("/", 1)[-1]
+        readme, lean = _texts(state, ref, paths)
+        record = overlaps.dependency_record(state, index, readme, lean, name, pr=pr["pr"], body=body, changed=changed)
+        earlier = [main_ref + ":" + paths[0]] + ([f"{base}:{paths[0]}"] if base else [])
+        if name in (index.get("main_folders") or {}):
+            earlier.append(f"{main_ref}:{index['main_folders'][name]}/README.md")
+        had: set[str] = set()
+        cited: set[int] = set()
+        for text in overlaps._batch(state, earlier):
+            if text:
+                before = overlaps.dependency_record(state, index, text, "", name, pr=pr["pr"], changed=changed)
+                had |= {s["roadmap"] for s in before["suppliers"]}
+                cited |= {r["pr"] for r in before["revisions"]}
+        had -= kept | set(overlaps.LEAN_IMPORT.findall(lean))
         for s in record["suppliers"]:
-            waits.add(f"{s['roadmap']} ({', '.join(f'#{n}' for n in s['prs']) or 'in no open pull request'})")
-        for r in record["revisions"]:
-            waits.add(f"#{r['pr']} (revision of {r['roadmap']})")
-        for n in record["declared"]:
-            got = {"state": "open"} if n in open_prs else states.get(n)
-            if got is None:
-                known = False
-            elif got["state"] == "open":
-                waits.add(f"#{n} (declared)")
-            elif got["state"] == "closed":
-                waits.add(f"#{n} (declared, closed without merging)")
-    return sorted(waits), known
+            if s["roadmap"] not in had:
+                suppliers.setdefault(s["roadmap"], set()).update(s["prs"])
+        revisions |= {(r["pr"], r["roadmap"]) for r in record["revisions"] if r["pr"] not in cited}
+        declared |= {(d["pr"], d["roadmap"]) for d in record["declared"]}
+    return {"suppliers": suppliers, "revisions": revisions, "declared": declared}
+
+
+def added_at_base(state, index: dict, number: int, roadmap: str) -> bool:
+    """Whether the open pull request `number` was opened to add `roadmap`, which is on main now: the
+    roadmap's README is not there at the merge base of main and its head."""
+    main_ref = f"refs/heads/{index.get('branch', 'main')}"
+    base = overlaps._merge_base(state, main_ref, openroadmaps.pr_ref(number))
+    folder = (index.get("main_folders") or {}).get(roadmap)
+    return bool(base and folder) and overlaps._batch(state, [f"{base}:{folder}/README.md"])[0] is None
+
+
+def met(number: int, roadmap: str | None, state, index: dict, open_prs: set[int],
+        states: dict[int, dict | None]) -> bool | None:
+    """Whether a declared dependency (a pull request, with the roadmap a block item names when that is
+    on main) is met: True, False, or None when GitHub did not say. A merged pull request is met, and so
+    is a number that is no pull request. The pull request that added a roadmap (`added_at_base` while
+    open, its added files once closed) is met once that roadmap is on main, whichever pull request
+    brought it; any other open one, or one closed without merging, is not."""
+    if number in open_prs:
+        return bool(roadmap) and added_at_base(state, index, number, roadmap)
+    got = states.get(number)
+    if got is None:
+        return None
+    if got["state"] in ("merged", "absent"):
+        return True
+    return bool(roadmap) and any(p.endswith(f"/{roadmap}/README.md") for p in got.get("added") or [])
 
 
 def merged_with(gh, repo: str, label: str) -> list[int] | None:
@@ -125,15 +222,15 @@ def run(ctx, label: str) -> list[str]:
     an answer."""
     cfg = ctx.cfg
     repo, state = cfg.repositories.content, cfg.state_dir()
-    index = openroadmaps.refresh(ctx.gh, cfg, force=True)
+    index = openroadmaps.refresh(ctx.gh, cfg, force=True, any_file=True)
     prs = index.get("prs", [])
     open_prs = {p["pr"] for p in prs}
-    current = pull_states(ctx.gh, repo, open_prs)
-    bodies = {n: (got or {}).get("body") for n, got in current.items()}
-    named = {n for p in prs if bodies.get(p["pr"]) is not None
-             for n in overlaps.declared_dependencies(bodies[p["pr"]], own=p["pr"])}
-    states = pull_states(ctx.gh, repo, named - open_prs)
+    bodies = {n: (got or {}).get("body") for n, got in pull_states(ctx.gh, repo, open_prs).items()}
     changed = overlaps.revisions(state, index)
+    records = {p["pr"]: record_of(state, index, p, bodies[p["pr"]], changed) for p in prs
+               if bodies.get(p["pr"]) is not None}
+    named = {n for r in records.values() for n, _roadmap in r["declared"]} - open_prs
+    states = pull_states(ctx.gh, repo, named, files=True)
     out = []
 
     def write(method: str, number: int, why: str) -> None:
@@ -150,12 +247,22 @@ def run(ctx, label: str) -> list[str]:
 
     for p in sorted(prs, key=lambda x: x["pr"]):
         number, labelled = p["pr"], label in p.get("labels", [])
-        body = bodies.get(number)
-        if body is None:
+        record = records.get(number)
+        if record is None:
             if labelled:
                 out.append(f"#{number}: {label} left as it is (its description was not read)")
             continue
-        waits, known = waiting_for(state, index, p, body, changed, states, open_prs)
+        waits = {f"{s} ({', '.join(f'#{n}' for n in sorted(adders)) or 'in no open pull request'})"
+                 for s, adders in record["suppliers"].items()}
+        waits |= {f"#{n} (revision of {r})" for n, r in record["revisions"]}
+        known = True
+        for n, roadmap in record["declared"]:
+            ok = met(n, roadmap, state, index, open_prs, states)
+            if ok is None:
+                known = False
+            elif not ok:
+                waits.add(f"#{n} (declared{'' if n in open_prs else ', closed without merging'})")
+        waits = sorted(waits)
         if waits and not labelled:
             write("POST", number, "waits for " + ", ".join(waits))
         elif labelled and not waits and known:

@@ -252,8 +252,10 @@ def removals(state: Path, index: dict, *, texts: list[tuple[str, str, str]] | No
 def readme_facts(state: Path, index: dict, readme: str, own: str, *, pr: int = 0,
                  changed: list[Revision] | None = None) -> tuple[list[Removal], list[Removal]]:
     """(the ids `readme` cites that an open revision drops, those it cites that only an open revision
-    defines), the revisions of `pr` itself aside."""
+    defines), the revisions of `pr` itself aside: an id its own revision of the cited roadmap defines
+    too is its own, whichever other revision adds it as well."""
     changed = revisions(state, index) if changed is None else changed
+    mine = {r.name: r.head for r in changed if pr > 0 and r.pr["pr"] == pr}
     changed = [r for r in changed if r.pr["pr"] != pr]
     cites = citations(readme, {r.name for r in changed}, citer=own, where=f"#{pr}" if pr > 0 else "this README")
     dropped, adopted = [], []
@@ -262,7 +264,7 @@ def readme_facts(state: Path, index: dict, readme: str, own: str, *, pr: int = 0
             if rev.name == c.cited:
                 if rev.drops(c):
                     dropped.append(Removal(rev.pr["pr"], rev.pr.get("author", ""), c))
-                elif rev.adds(c):
+                elif rev.adds(c) and not (c.cited in mine and defines(mine[c.cited], c)):
                     adopted.append(Removal(rev.pr["pr"], rev.pr.get("author", ""), c))
     return dropped, adopted
 
@@ -373,10 +375,12 @@ def dependency_record(state: Path, index: dict, readme: str, lean: str, name: st
       that are not on main, each with the open pull requests that add it. One is met once that roadmap
       is on main, whichever pull request brings it there.
     * `revisions`: the open revisions whose numbering it cites (`revision_dependencies`), met once merged.
-    * `declared`: the pull requests its description names as dependencies (`declared_items`: its
-      `<!-- depends-on -->` block and its prose), met once merged. A block item that names a roadmap
-      not on main is a supplier instead, met once that roadmap is on main whichever pull request brings
-      it (so "- [ ] PlanarTopology (no pull request yet)" waits too).
+    * `declared`: the other dependencies its description names (`declared_items`: its `<!-- depends-on -->`
+      block and its prose), as {pr, roadmap}: a bare number, or a block item whose roadmap is on main.
+      Whether one is met depends on that pull request (`deplabels.met`): merged; or it was the pull
+      request that added the roadmap, which another one has since brought to main. A block item whose
+      roadmap is not on main is a supplier instead, met once that roadmap is on main whichever pull
+      request brings it (so "- [ ] PlanarTopology (no pull request yet)" waits too).
 
     The roadmaps the pull request itself carries are never its dependencies."""
     main = set(index.get("main_roadmaps", []))
@@ -388,20 +392,21 @@ def dependency_record(state: Path, index: dict, readme: str, lean: str, name: st
     prose = PATH_SPAN.sub(" ", readme)
     suppliers = (set(depgraph.supplier_edges({name: prose}, main | set(adders)).get(name, {}))
                  | set(LEAN_IMPORT.findall(lean))) - main - own
-    declared: set[int] = set()
+    declared: set[tuple[int, str | None]] = set()
     for number, roadmap in declared_items(body, own=pr):
+        if roadmap and roadmap in own:
+            continue
         if roadmap and roadmap not in main:          # a new roadmap: met once it is on main
-            if roadmap not in own:
-                suppliers.add(roadmap)
-                if number and number not in adders.get(roadmap, []):
-                    adders.setdefault(roadmap, []).append(number)
-        elif number:                                  # a revision of a roadmap on main, or a bare number
-            declared.add(number)
+            suppliers.add(roadmap)
+            if number and number not in adders.get(roadmap, []):
+                adders.setdefault(roadmap, []).append(number)
+        elif number:                                 # its pull request decides (`deplabels`)
+            declared.add((number, roadmap))
     revisions = revision_dependencies(state, index, readme, name, pr=pr, changed=changed)
     return {"suppliers": [{"roadmap": s, "prs": sorted(n for n in adders.get(s, []) if n != pr)}
                           for s in sorted(suppliers)],
             "revisions": [{"roadmap": r, "pr": q} for q, r, _author in revisions],
-            "declared": sorted(declared)}
+            "declared": [{"pr": n, "roadmap": r} for n, r in sorted(declared, key=lambda x: (x[0], x[1] or ""))]}
 
 
 def merge_conflicts(state: Path, a: int, b: int) -> Merge | None:

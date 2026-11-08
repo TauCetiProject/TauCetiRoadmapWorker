@@ -768,17 +768,22 @@ awaiting-review labels are left to the gate lane and `board sync`.
 **The dependency label.** `tauceti-roadmap roadmaps dependency-labels [--label NAME] [--yes]` (module
 `deplabels`; the label defaults to `[prreview] dependency_label`; a dry run without `--yes`) keeps the
 label on an open roadmap pull request exactly while it waits for another pull request, and takes it off
-merged pull requests. Nothing is recorded between runs: each run fetches every open head into the host's
-mirror (`openroadmaps.refresh(force=True)`; a failed refresh writes nothing), reads every open pull
-request's current description and the states of the pull requests the descriptions name (GraphQL
-batches), and computes, for each roadmap folder a pull request carries, `overlaps.dependency_record` at
-its head:
+merged pull requests. Nothing is recorded between runs: each run fetches the head of every open pull
+request that changes a file under the roadmap directories into the host's mirror
+(`openroadmaps.refresh(force=True, any_file=True)`; a failed refresh writes nothing), reads every open
+pull request's current description and the states (and, once closed, the added files) of the pull
+requests the descriptions name (GraphQL batches), and computes, for each roadmap folder a pull request
+touches (`deplabels.roadmap_folders`: the folders `openroadmaps.inventory` names, and the deepest folder
+holding a README.md above any other Lean file it changes; a PROGRESS.md or STATUS.md edit touches none),
+`overlaps.dependency_record` at its head, from the README and every Lean file of the folder (a nested
+roadmap's aside):
 
 - `suppliers`: the roadmaps the README names as suppliers (as the dependency check reads it, file paths
-  in code spans aside) and those its Suggested.lean imports (`import TauCetiRoadmap.<X>`; a namespace
-  names none) that are not on main, with the open pull requests that add each, or none (a roadmap that
-  exists nowhere waits too); the roadmaps the pull request carries itself never count;
-- `revisions`: the open revisions whose numbering it cites (`overlaps.revision_dependencies`);
+  in code spans aside) and those its Lean files import (`import TauCetiRoadmap.<X>`; a namespace names
+  none) that are not on main, with the open pull requests that add each, or none (a roadmap that exists
+  nowhere waits too); the roadmaps the pull request carries itself never count;
+- `revisions`: the open revisions whose numbering it cites (`overlaps.revision_dependencies`; an id the
+  pull request's own revision of that roadmap defines is its own);
 - `declared`: what its description declares (`declared_items`). First the structured block
 
   ```markdown
@@ -796,13 +801,18 @@ its head:
   "Depends on:", a "Stack." line; never a number before the phrase, after a negation ("does not depend
   on", "independent of") or about another pull request ("#22 depends on this pull request").
 
-The label is added while one of those is outstanding (a declared pull request counts while open or once
-closed without merging) and removed when none is. A pull request whose description, or the state of a
-pull request its description names, GitHub did not give keeps its label (only a 404 says a number is no
-pull request). A carried acceptance, a description edited since the last review, a supplier opened
+A supplier or revision the README cites that the same README already cites on main or at the merge
+base is not the pull request's to wait for (a pin bump of a roadmap whose README names an open supplier
+waits for nothing), unless its Lean files import the supplier or its description declares it. A declared
+pull request is met once merged; one that added a roadmap (opened to add it, or, once closed, having
+added its README) is met once that roadmap is on main, whichever pull request brought it.
+
+The label is added while one of those is outstanding and removed when none is. A pull request whose description, or the state of a
+pull request its description names, GitHub did not give keeps its label (only GitHub's `HTTP 404` says
+a number is no pull request). A carried acceptance, a description edited since the last review, a supplier opened
 since, and a backlog never reviewed with this code are all read as they are now. `board sync` does not
 manage the label. A run costs a fetch of the open heads (a fresh bare mirror on a new runner, about
-140 MB) and a few dozen GraphQL queries, and takes about three minutes, so it suits a
+140 MB) and a few dozen GraphQL queries, and takes about four minutes, so it suits a
 workflow of the content repository that runs on every merged pull request and hourly, with a token that
 may label its pull requests (TauCetiRoadmap's `dependency-labels.yml`).
 
