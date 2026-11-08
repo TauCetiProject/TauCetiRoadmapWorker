@@ -68,8 +68,9 @@ write "the congruence kernel is closed under inverses", not a new declaration.
 
 ## Deliverables (only these paths)
 
-- `__PACKAGE__/README.md`, `__PACKAGE__/Suggested.lean`, `__PACKAGE__/metadata.toml`,
-  `__PACKAGE__/sources.toml`;
+- `__PACKAGE__/README.md`, `__PACKAGE__/Suggested.lean` (its first line is `module`, then the single
+  `import Mathlib`: Lake's module-system advisory is not a lint, but the header keeps it quiet),
+  `__PACKAGE__/metadata.toml`, `__PACKAGE__/sources.toml`;
 - `__PACKAGE__/design/plan.json`, its top-level `gaps` list only (nothing else in it changes): when
   the package needs from another roadmap something that roadmap does not yet state, declare it as a
   supplier gap there (`slug`, `needs` in one sentence, `supplier` = the roadmap, `section`) and state
