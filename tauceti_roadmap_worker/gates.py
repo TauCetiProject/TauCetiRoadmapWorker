@@ -1073,7 +1073,10 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
     r.add("lean-lines", scan_lean_length(lean, opts.max_lean_lines))
     r.add("statement-hygiene", scan_lean_statement_hygiene(lean) if opts.statement_hygiene else [])
     r.add("forbidden", scan_forbidden(readme, opts.forbidden_patterns) + scan_forbidden(lean, opts.forbidden_patterns))
-    r.add("dropped", scan_dropped_names(readme, opts.dropped_names) + scan_dropped_names(lean, opts.dropped_names))
+    # a roadmap names itself (its namespace, its title): the list refuses CITATIONS of dropped roadmaps, not the
+    # roadmap of that name when it is the one under review
+    others = [n for n in opts.dropped_names if n != name]
+    r.add("dropped", scan_dropped_names(readme, others) + scan_dropped_names(lean, others))
     r.add("readme-ids-missing", readme_identifiers_missing(readme, lean))
     r.add("empty-sections", empty_lean_sections(lean))
     r.add("round-labels", round_labels(readme + "\n" + lean))
