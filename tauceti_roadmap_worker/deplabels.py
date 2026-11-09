@@ -111,12 +111,13 @@ def _tree(state, ref: str, paths) -> list[str]:
 def roadmap_folders(state, index: dict, pr: dict) -> dict[str, list[str]]:
     """Roadmap folder -> the paths at the pull request's head of its README.md and of every Lean file in
     it, a nested roadmap's (a subfolder holding its own README.md) aside, for each roadmap folder
-    the pull request touches: those `openroadmaps.inventory` names, and for every other Lean file it
-    changes under the roadmap directories, the deepest folder above it that holds a README.md at the
-    head (a progress report touches none). A folder without a README.md at the head (the pull request
+    the pull request touches: the folder of every README.md, Suggested.lean or metadata.toml it changes
+    (`overlaps.folders_of`, by full path, so two folders of the same name are both here), and for every
+    other Lean file it changes under the roadmap directories, the deepest folder above it that holds a
+    README.md at the head (a progress report touches none). A folder without a README.md at the head (the pull request
     deletes the roadmap) waits for nothing."""
     ref, dirs = openroadmaps.pr_ref(pr["pr"]), tuple(index.get("dirs", []))
-    folders = set((pr.get("folders") or {}).values())
+    folders = set(overlaps.folders_of(pr, dirs))
     others = [f["path"] for f in pr.get("files") or [] if f.get("path", "").split("/")[0] in dirs
               and f.get("path", "").endswith(".lean") and f.get("path", "").rsplit("/", 1)[0] not in folders]
     if others:
@@ -144,24 +145,6 @@ def _texts(state, ref: str, paths: list[str]) -> tuple[str, str]:
     return texts[0] or "", "\n".join(t or "" for t in texts[1:])
 
 
-def moved_from(index: dict, pr: dict, folder: str) -> str | None:
-    """The folder on main that the pull request moves to `folder`, which is new at that path: the
-    folder main holds under the same name, when the pull request removes its README.md or renames a
-    README.md (from there, when the listing names the old path) into `folder`. None otherwise: another
-    folder of the same name is another roadmap's."""
-    name = folder.rsplit("/", 1)[-1]
-    there = (index.get("main_folders") or {}).get(name)
-    if not there or there == folder:
-        return None
-    for f in pr.get("files") or []:
-        if f.get("path") == f"{there}/README.md" and f.get("change") == "removed":
-            return there
-        if (f.get("path") == f"{folder}/README.md" and f.get("change") == "renamed"
-                and f.get("previous", f"{there}/README.md") == f"{there}/README.md"):
-            return there
-    return None
-
-
 def record_of(state, index: dict, pr: dict, body: str, changed) -> dict:
     """What the pull request brings that waits: the union of `overlaps.dependency_record` over the roadmap
     folders it touches, read at its head (`roadmap_folders`: every Lean file of a folder with its
@@ -169,8 +152,8 @@ def record_of(state, index: dict, pr: dict, body: str, changed) -> dict:
     open revision it already cites there, is not this pull request's to wait for (a pin bump or a
     progress edit of a roadmap whose README names an open supplier does not wait for it), unless its
     Lean files import the supplier or its description declares it. The same README is the folder's own,
-    at its path; a folder new at its path has none, unless the pull request moves it there from the
-    folder main holds under its name (`moved_from`)."""
+    at its path; a folder new at its path has none, unless the pull request moves a roadmap there
+    (`overlaps.rename_source`)."""
     ref = openroadmaps.pr_ref(pr["pr"])
     main_ref = f"refs/heads/{index.get('branch', 'main')}"
     base = overlaps._merge_base(state, main_ref, ref)
@@ -184,7 +167,9 @@ def record_of(state, index: dict, pr: dict, body: str, changed) -> dict:
         record = overlaps.dependency_record(state, index, readme, lean, name, pr=pr["pr"], body=body, changed=changed)
         earlier = [main_ref] + ([base] if base else [])
         texts = overlaps._batch(state, [f"{at}:{paths[0]}" for at in earlier])
-        source = moved_from(index, pr, folder) if not any(texts) else None
+        source = (overlaps.rename_source(state, base, ref, folder, pr.get("files") or [],
+                                         index.get("main_folders") or {}, tuple(index.get("dirs", [])))
+                  if not any(texts) else None)
         if source:
             texts = overlaps._batch(state, [f"{at}:{source}/README.md" for at in earlier])
         had: set[str] = set()

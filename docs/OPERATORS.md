@@ -773,7 +773,8 @@ request that changes a file under the roadmap directories into the host's mirror
 (`openroadmaps.refresh(force=True, any_file=True)`; a failed refresh writes nothing), reads every open
 pull request's current description and the states (and, once closed, the added files) of the pull
 requests the descriptions name (GraphQL batches), and computes, for each roadmap folder a pull request
-touches (`deplabels.roadmap_folders`: the folders `openroadmaps.inventory` names, and the deepest folder
+touches (`deplabels.roadmap_folders`, by full path, so `Completed/Twin` and `TauCetiRoadmap/Twin` are
+two: the folder of every README.md, Suggested.lean or metadata.toml it changes, and the deepest folder
 holding a README.md above any other Lean file it changes; a PROGRESS.md or STATUS.md edit touches none),
 `overlaps.dependency_record` at its head, from the README and every Lean file of the folder (a nested
 roadmap's aside):
@@ -782,8 +783,10 @@ roadmap's aside):
   in code spans aside) and those its Lean files import (`import TauCetiRoadmap.<X>`; a namespace names
   none) that are not on main, with the open pull requests that add each, or none (a roadmap that exists
   nowhere waits too); the roadmaps the pull request carries itself never count;
-- `revisions`: the open revisions whose numbering it cites (`overlaps.revision_dependencies`; an id the
-  pull request's own revision of that roadmap defines is its own);
+- `revisions`: the open revisions whose numbering it cites (`overlaps.readme_facts`; an id the pull
+  request's own revision of that roadmap defines is its own). A revision is read where its head has the
+  roadmap (`overlaps.revisions`): at its merge base there, and on main there, or where main keeps the
+  roadmap now when main has moved it to Completed/ since;
 - `declared`: what its description declares (`declared_items`). First the structured block
 
   ```markdown
@@ -796,17 +799,21 @@ roadmap's aside):
 
   where an unchecked item naming a roadmap not on main is a supplier (met once that roadmap is on main,
   whichever pull request brings it), any other unchecked item waits for its pull request, and a checked
-  one is met; then the prose (`declared_dependencies`): the numbers after "depends on", "merge(s)
-  first", "merges after" or "after ... lands", a chain ending in "→ this pull request", a list under
-  "Depends on:", a "Stack." line; never a number before the phrase, after a negation ("does not depend
-  on", "independent of") or about another pull request ("#22 depends on this pull request").
+  one is met; then the prose (`declared_dependencies`): the numbers after "depends on", "which merge
+  first:", "merges after" or "after ... lands", the subject of "must merge first" or "merges before
+  this pull request" ("#1125 and #1124 must merge first"), a chain ending in "→ this pull request", a
+  list under "Depends on:", a "Stack." line; never a number after a negation ("does not depend on",
+  "independent of"), about another pull request ("#22 depends on this pull request"), or after "merges
+  before" ("it merges before #956": #956 waits for it) or "this pull request merges first".
 
 A supplier the README names that the same README already names on main or at the merge base, or an id
 of an open revision it already cites there, is not the pull request's to wait for (a pin bump of a
 roadmap whose README names an open supplier waits for nothing), unless its Lean files import the
 supplier or its description declares it. The same README is the folder's own, at its path; a folder new
-at its path compares with nothing, unless the pull request moves it there (it removes the README.md of
-the folder main holds under that name, or renames one into the new folder). A new citation of another
+at its path compares with nothing, unless the pull request moves a roadmap there
+(`overlaps.rename_source`): the folder whose README.md GitHub's listing or `git diff -M` pairs with the
+new one as renamed, or else the folder main holds under that name when the pull request removes its
+README.md. A rename whose source neither names is no move. A new citation of another
 id of the same revision still waits. A declared pull request is met once merged; one that added a
 roadmap is met once that roadmap is on main, whichever pull request brought it. An open one added it
 when no folder of that name held a README.md at its merge base, wherever main keeps the roadmap now (a

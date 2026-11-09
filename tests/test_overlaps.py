@@ -101,7 +101,8 @@ class ContentGH:
 def build(tmp_path, monkeypatch, mains, prs, labels=None, bodies=None):
     """An origin whose main takes the commits `mains` in turn, and open pull requests (number, login,
     the main commit they branch from, the files they write: None deletes one, an (old, new) key moves
-    one), indexed as `roadmaps refresh` indexes them."""
+    one with `git mv` and writes the text given, and GitHub's listing names only its new path, as
+    RENAMED), indexed as `roadmaps refresh` indexes them."""
     origin = tmp_path / "origin"
     origin.mkdir()
     git(origin, "init", "-q", "-b", "main")
@@ -113,9 +114,9 @@ def build(tmp_path, monkeypatch, mains, prs, labels=None, bodies=None):
             if isinstance(key, tuple):
                 (origin / key[1]).parent.mkdir(parents=True, exist_ok=True)
                 git(origin, "mv", *key)
-        head = commit(origin, {k: v for k, v in files.items() if not isinstance(k, tuple)}, f"pr {number}")
+        head = commit(origin, {k[1] if isinstance(k, tuple) else k: v for k, v in files.items()}, f"pr {number}")
         git(origin, "update-ref", f"refs/pull/{number}/head", head)
-        paths = [(k[1] if isinstance(k, tuple) else k, "DELETED" if v is None else "MODIFIED")
+        paths = [(k[1], "RENAMED") if isinstance(k, tuple) else (k, "DELETED" if v is None else "MODIFIED")
                  for k, v in files.items()]
         listed.append({"number": number, "title": f"PR {number}", "isDraft": False, "headRefOid": head,
                        "author": {"login": login},
@@ -350,6 +351,12 @@ def test_a_description_names_its_dependencies():
                 "#1808 is independent of this pull request.", own=1854) == [1101, 1807]
     assert deps("Open revisions of roadmaps on main whose numbering this roadmap cites, which merge first: "
                 "#1097, #1771.", own=1137) == [1097, 1771]
+    # #1705's and #1974's descriptions: a subject that merges first, and one that waits for this pull request.
+    assert deps("Prerequisites: #1125 and #1124 must merge first.", own=1705) == [1124, 1125]
+    assert deps("**Merge order.** This PR merges after #1683 and #1327, which restructure the parent README; it "
+                "will be rebased onto them once they land. It merges before #956, whose PositiveMass §3.1 cites "
+                "Surfaces Layer 3 (S3).", own=1974) == [1327, 1683]
+    assert deps("#7 merges before this pull request.", own=8) == [7]
     block = ("Text.\n\n<!-- depends-on -->\n**Depends on** (suppliers still open; they merge first):\n"
              "- [ ] #1126 AnalyticNumberTheoryPartI\n- [x] #1408 ComputationalNumberTheory\n"
              "- [ ] PlanarTopology (no pull request yet)\n<!-- /depends-on -->\nDepends on #44.")
@@ -358,7 +365,8 @@ def test_a_description_names_its_dependencies():
     # Not dependencies: independence, negation, the other direction, pull requests that come after.
     for text in ("This PR is independent of #17.", "Does not depend on #20.", "#22 depends on this PR.",
                  "#1411 consumes its §4a.1, so the order is this PR (#1410) → #1411; #940 and #856 cite its "
-                 "§3a.1 and merge after it."):
+                 "§3a.1 and merge after it.", "It can merge before or after #937;",
+                 "This pull request must merge first; #22 follows.", "It merges first, then #23."):
         assert deps(text, own=1410) == [], text
 
 
@@ -621,3 +629,47 @@ def test_a_folder_is_compared_with_its_own_readme_not_another_of_the_same_name(t
     assert label_writes(build.gh) == [("POST", 121), ("POST", 122), ("POST", 124)]
     assert f"#121: {DEPS} added (waits for Ghost (#110))" in out
     assert f"#122: {DEPS} added (waits for Phantom (#111))" in out
+
+
+def test_a_citation_of_a_revision_of_a_roadmap_main_has_since_moved_waits(tmp_path, monkeypatch):
+    moved = {LATTICES: None, LATTICES_LEAN: None, "Completed/Lattices/README.md": MAIN[LATTICES],
+             "Completed/Lattices/Suggested.lean": MAIN[LATTICES_LEAN]}
+    cfg, index = build(tmp_path, monkeypatch, [MAIN, moved],
+                       [(7, "alice", 0, RENUMBER),                        # branched before main moved Lattices
+                        (160, "ken", 1, roadmap("Uses", "Uses Lattices §1.4."))])
+    # #7 revises Lattices where its head has it; main keeps it in Completed/ now.
+    assert [(r.pr["pr"], r.name) for r in overlaps.revisions(cfg.state_dir(), index)] == [(7, "Lattices")]
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
+    assert f"#160: {DEPS} added (waits for #7 (revision of Lattices))" in out
+
+
+def test_one_pull_request_changing_two_folders_of_the_same_name_reads_both(tmp_path, monkeypatch):
+    twins = {"Completed/Twin/README.md": "# Roadmap: Twin\n\nDone.\n", **roadmap("Twin", "Active.")}
+    cfg, index = build(tmp_path, monkeypatch, [{**MAIN, **twins}],
+                       [(110, "eve", 0, roadmap("Ghost", "### 1.1 Spirits")),
+                        (170, "lea", 0, {"Completed/Twin/README.md": "# Roadmap: Twin\n\nDone, reworded.\n",
+                                         **roadmap("Twin", "Active. *Needs:* Ghost §1.1.")})])
+    pr = next(p for p in index["prs"] if p["pr"] == 170)
+    assert sorted(deplabels.roadmap_folders(cfg.state_dir(), index, pr)) == ["Completed/Twin", "TauCetiRoadmap/Twin"]
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
+    assert f"#170: {DEPS} added (waits for Ghost (#110))" in out
+
+
+def test_a_rename_is_compared_with_its_true_source_not_a_folder_of_the_same_name(tmp_path, monkeypatch):
+    body = "".join(f"### 1.{i} Topic {i}\n\nText of topic {i}.\n\n" for i in range(1, 12))
+    other = f"# Roadmap: Other\n\n{body}"
+    on_main = {**roadmap("Twin", "*Needs:* Ghost §1.1."), "TauCetiRoadmap/Other/README.md": other}
+    cfg, index = build(tmp_path, monkeypatch, [{**MAIN, **on_main}],
+                       [(110, "eve", 0, roadmap("Ghost", "### 1.1 Spirits")),
+                        # A real rename Other -> Completed/Twin that adds a Ghost citation; the listing names
+                        # no source, and TauCetiRoadmap/Twin, which cites Ghost already, is untouched.
+                        (180, "max", 0, {("TauCetiRoadmap/Other/README.md", "Completed/Twin/README.md"):
+                                         other + "*Needs:* Ghost §1.1.\n"}),
+                        # A plain move of Other, unchanged: what it cites comes with it.
+                        (181, "ned", 0, {("TauCetiRoadmap/Other/README.md", "Completed/Other/README.md"): other})])
+    state, pr = cfg.state_dir(), next(p for p in index["prs"] if p["pr"] == 180)
+    base = overlaps._merge_base(state, "refs/heads/main", openroadmaps.pr_ref(180))
+    assert overlaps.rename_source(state, base, openroadmaps.pr_ref(180), "Completed/Twin", pr["files"],
+                                  index["main_folders"], tuple(index["dirs"])) == "TauCetiRoadmap/Other"
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
+    assert f"#180: {DEPS} added (waits for Ghost (#110))" in out and not any("#181" in line for line in out)

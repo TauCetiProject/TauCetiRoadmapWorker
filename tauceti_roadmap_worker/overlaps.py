@@ -200,22 +200,75 @@ def defines(text: str, citation: Citation) -> bool:
 
 # --- the facts ------------------------------------------------------------------------------------
 
+def folders_of(p: dict, dirs: tuple[str, ...]) -> list[str]:
+    """Every roadmap folder an indexed pull request touches, by its full path (`touched_folders` of its
+    changed files; the index's name-keyed `folders` for an index without them)."""
+    files = [f.get("path", "") for f in p.get("files") or []]
+    return o.touched_folders(files, dirs) if files else sorted(set((p.get("folders") or {}).values()))
+
+
+def rename_source(state: Path, base: str, ref: str, folder: str, files: list[dict], on_main: dict,
+                  dirs: tuple[str, ...]) -> str | None:
+    """The folder a pull request moves to `folder`, which is new at that path: the folder whose README.md
+    the listing (`previous`) or git (`git diff -M` from the merge base to the head) pairs with
+    `folder/README.md` as renamed; else the folder main holds under the same name, when the pull request
+    removes its README.md and git pairs it with no other. None otherwise: a folder of the same name
+    elsewhere, or a rename whose source nobody names, is no evidence of a move."""
+    readme = f"{folder}/README.md"
+    moves = [f for f in files if f.get("path", "").endswith("README.md") and f.get("change") in ("renamed", "removed")]
+    if not base or not moves:
+        return None
+    for f in moves:
+        if f.get("path") == readme and f.get("previous", "").endswith("/README.md"):
+            return f["previous"][:-len("/README.md")]
+    result = subprocess.run(["git", "-C", str(o.mirror(state)), "diff", "-M", "--name-status", "--diff-filter=R",
+                             base, ref, "--", *dirs], capture_output=True, text=True, check=False)
+    pairs = {}
+    for line in result.stdout.splitlines() if result.returncode == 0 else []:
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[1].endswith("/README.md"):
+            pairs[parts[1]] = parts[2]
+    for old, new in pairs.items():
+        if new == readme:
+            return old[:-len("/README.md")]
+    there = on_main.get(folder.rsplit("/", 1)[-1])
+    if (there and there != folder and f"{there}/README.md" not in pairs
+            and any(f.get("path") == f"{there}/README.md" and f.get("change") == "removed" for f in files)):
+        return there
+    return None
+
+
 def revisions(state: Path, index: dict, *, only: str = "", pr: int = 0) -> list[Revision]:
     """Each roadmap on main whose README an open pull request changes since its merge base with main
-    (`only` and `pr` narrow it to one roadmap or pull request). A head the mirror lacks is skipped."""
+    (`only` and `pr` narrow it to one roadmap or pull request). A head the mirror lacks is skipped.
+
+    The README is read where the head has it (`folders_of`, by full path): at the merge base there, and
+    on main there too, or, when main has moved the roadmap since (no README at that path on main, none
+    at main's path at the merge base), where main keeps it now. A folder new at its path is a revision
+    only when the pull request moves a roadmap there (`rename_source`), read at the source; another
+    folder of the same name is another roadmap."""
     main_ref, on_main = f"refs/heads/{index.get('branch', 'main')}", index.get("main_folders") or {}
-    found = [(p, name, folder, on_main[name]) for p in index.get("prs", []) if not pr or p["pr"] == pr
-             for name, folder in sorted((p.get("folders") or {}).items())
-             if name in on_main and name not in p.get("adds", []) and (not only or name == only)]
-    bases = {p["pr"]: _merge_base(state, main_ref, o.pr_ref(p["pr"])) for p, _n, _f, _m in found}
+    dirs = tuple(index.get("dirs", []))
+    found = [(p, folder.rsplit("/", 1)[-1], folder) for p in index.get("prs", []) if not pr or p["pr"] == pr
+             for folder in folders_of(p, dirs)
+             if folder.rsplit("/", 1)[-1] in on_main and (not only or folder.rsplit("/", 1)[-1] == only)]
+    bases = {p["pr"]: _merge_base(state, main_ref, o.pr_ref(p["pr"])) for p, _n, _f in found}
     found = [f for f in found if bases[f[0]["pr"]]]
-    specs = [s for p, _n, folder, main in found
-             for s in (f"{main_ref}:{main}/README.md", f"{bases[p['pr']]}:{main}/README.md",
-                       f"{o.pr_ref(p['pr'])}:{folder}/README.md")]
+    specs = [f"{at}:{path}/README.md" for p, name, folder in found
+             for at, path in ((bases[p["pr"]], folder), (main_ref, folder), (bases[p["pr"]], on_main[name]),
+                              (main_ref, on_main[name]), (o.pr_ref(p["pr"]), folder))]
     texts = _batch(state, specs)
     out = []
-    for i, (p, name, _f, _m) in enumerate(found):
-        main, base, head = texts[3 * i:3 * i + 3]
+    for i, (p, name, folder) in enumerate(found):
+        base, main, base_there, main_there, head = texts[5 * i:5 * i + 5]
+        if base is not None:
+            if main is None and base_there is None:
+                main = main_there                        # main moved it since the head branched
+        else:
+            source = rename_source(state, bases[p["pr"]], o.pr_ref(p["pr"]), folder, p.get("files") or [],
+                                   on_main, dirs)
+            if source:
+                base, main = _batch(state, [f"{bases[p['pr']]}:{source}/README.md", f"{main_ref}:{source}/README.md"])
         if main is None or base is None:
             continue                     # the roadmap is not on main, or not yet where the head branched
         if (head or "") != base:
@@ -279,9 +332,16 @@ def revision_dependencies(state: Path, index: dict, readme: str, own: str, *, pr
 
 NUMBER = re.compile(r"(?<![\w/&])#(\d{1,6})\b")
 # A sentence that says this pull request waits for the pull requests named after the phrase.
-DEPENDS_ON = re.compile(r"\bdepends?\s+on\b|\bmerges?\s+(?:first|before)\b|\bmerges?\s+(?:only\s+)?after\b"
+# ("merges before #N" is the other direction: #N waits for this one.)
+DEPENDS_ON = re.compile(r"\bdepends?\s+on\b|\bmerges?\s+first\b|\bmerges?\s+(?:only\s+)?after\b"
                         r"|\bmerge\s+order:?\**\s*after\b"
                         r"|\bafter\b(?=[^.;]*#\d+[^.;]*\b(?:lands?|merges?|is\s+merged)\b)", re.IGNORECASE)
+# A sentence whose subject is a list of pull requests that merge first: "#1125 and #1124 must merge
+# first", "#7 merges before this pull request".
+SUBJECT_FIRST = re.compile(r"((?:#\d+[\s,]*(?:(?:and|&)\s+)?)+)(?:(?:must|should|will|needs?\s+to|ha(?:ve|s)\s+to)\s+)?"
+                           r"merges?\s+(?:first|before\s+(?:this\s+(?:pull\s+request|PR)|it)\b)", re.IGNORECASE)
+SELF_SUBJECT = re.compile(r"\b(?:this\s+(?:pull\s+request|PR)|it)\s+(?:(?:must|should|will|can|needs?\s+to)\s+)?$",
+                          re.IGNORECASE)
 NEGATED = re.compile(r"\b(?:not|never|no\s+longer|n't|no\s+other)\b[^.;]{0,30}$|\bon\s+no\b", re.IGNORECASE)
 ABOUT_OTHERS = re.compile(r"^\s*(?:on\s+)?(?:this|the\s+present)\s+(?:pull\s+request|PR)\b|^\s*(?:on\s+)?it\b",
                           re.IGNORECASE)
@@ -299,9 +359,11 @@ BLOCK_ITEM = re.compile(r"^\s*[-*+]\s*\[(?P<done>[ xX])\]\s*(?:#(?P<pr>\d+)\b)?\
 
 def _sentence_dependencies(sentence: str) -> set[int]:
     """The `#N` a sentence names as this pull request's prerequisites: those after a positive phrase
-    ("depends on", "must merge first", "merges after", "after ... lands"), not after a negated one
+    ("depends on", "which merge first:", "merges after", "after ... lands"), not after a negated one
     ("does not depend on", "depends on no other"), and not when the phrase is about this pull request
-    ("#22 depends on this pull request")."""
+    ("#22 depends on this pull request", "it merges first"); and those that are the subject of "merge
+    first" or "merges before this pull request" ("#1125 and #1124 must merge first"). "Merges before
+    #N" names a pull request that waits for this one, and "can merge before or after #N" none."""
     out: set[int] = set()
     for m in DEPENDS_ON.finditer(sentence):
         if NEGATED.search(sentence[:m.end()]) or NEGATED.search(sentence[m.end():m.end() + 12]):
@@ -309,7 +371,11 @@ def _sentence_dependencies(sentence: str) -> set[int]:
         rest = sentence[m.end():]
         if ABOUT_OTHERS.match(rest):
             continue
+        if re.search(r"first", m.group(0), re.IGNORECASE) and SELF_SUBJECT.search(sentence[:m.start()]):
+            continue                     # "this pull request merges first": what follows waits for it
         out |= {int(n) for n in NUMBER.findall(rest)}
+    for m in SUBJECT_FIRST.finditer(sentence):
+        out |= {int(n) for n in NUMBER.findall(m.group(1))}
     return out
 
 

@@ -88,15 +88,26 @@ def _lock(state: Path):
 ROADMAP_FILES = ("README.md", "Suggested.lean", "metadata.toml")
 
 
-def roadmap_folders(paths: list[str], dirs: tuple[str, ...]) -> dict[str, str]:
-    """Roadmap name -> folder for the roadmaps a pull request's changed paths touch: the folder of each
-    changed README.md, Suggested.lean or metadata.toml under a roadmap directory, at any depth
-    (`TauCetiRoadmap/RepresentationTheory/CharacterTheory/README.md` is CharacterTheory)."""
-    out: dict[str, str] = {}
+def touched_folders(paths: list[str], dirs: tuple[str, ...]) -> list[str]:
+    """Every roadmap folder a pull request's changed paths touch, by its full path: the folder of each
+    changed README.md, Suggested.lean or metadata.toml under a roadmap directory, at any depth. Two
+    folders of the same name (`Completed/Twin`, `TauCetiRoadmap/Twin`) are both there."""
+    out: list[str] = []
     for path in paths:
         parts = path.split("/")
-        if len(parts) >= 3 and parts[0] in dirs and parts[-1] in ROADMAP_FILES:
-            out.setdefault(parts[-2], "/".join(parts[:-1]))
+        folder = "/".join(parts[:-1])
+        if len(parts) >= 3 and parts[0] in dirs and parts[-1] in ROADMAP_FILES and folder not in out:
+            out.append(folder)
+    return out
+
+
+def roadmap_folders(paths: list[str], dirs: tuple[str, ...]) -> dict[str, str]:
+    """Roadmap name -> folder for the roadmaps a pull request's changed paths touch (`touched_folders`;
+    `TauCetiRoadmap/RepresentationTheory/CharacterTheory/README.md` is CharacterTheory). Keyed by name,
+    so of two folders of the same name only the first is here: `touched_folders` has both."""
+    out: dict[str, str] = {}
+    for folder in touched_folders(paths, dirs):
+        out.setdefault(folder.rsplit("/", 1)[-1], folder)
     return out
 
 
