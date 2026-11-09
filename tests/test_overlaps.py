@@ -172,6 +172,41 @@ def test_removals_are_the_cited_ids_a_revision_drops(world):
                    (7, "Lattices §1.3", "ThetaSeries", "#8")]       # §1.2 survives; #9 keeps 1.3 and the heading
 
 
+def test_a_renumbering_that_maps_its_old_ids_drops_none_of_them(tmp_path, monkeypatch):
+    table = RENUMBER[LATTICES] + "\n| Former label | Now |\n|---|---|\n| §1.3 | §1.4 Theta functions |\n"
+    sentence = RENUMBER[LATTICES] + "\nThe earlier §1.3 is now §1.4; nothing else moved.\n"
+    status = RENUMBER[LATTICES] + "\n| Section | Status |\n|---|---|\n| §1.3 | done |\n"
+    for text, kept in ((table, False), (sentence, False), (status, True)):
+        root = tmp_path / str(len(text))
+        root.mkdir()
+        cfg, index = build(root, monkeypatch, [MAIN], [(7, "alice", 0, {LATTICES: text})])
+        got = {r.citation.label() for r in overlaps.removals(cfg.state_dir(), index)}
+        # The heading anchor never follows a mapping: a link to it lands at the top of the README.
+        assert got == ({"Lattices §1.3", "Lattices #layer-1-basics"} if kept else {"Lattices #layer-1-basics"}), text
+
+
+def test_the_old_to_new_mappings_roadmaps_write():
+    def cite(roadmap, id_, kind):
+        return overlaps.Citation("main", "Other", 1, roadmap, id_, kind, "")
+    # #989's sentence and table for SemisimpleAlgebras, and #617's "Former layer numbers" table.
+    semisimple = ("## Layer 1: simple modules\n\nThe earlier separate Layer 1.5 is now §1.3 of this layer; Layers "
+                  "0–6 keep their numbers, so a\ncitation of Layers 1.5–2 reads as §1.3 and Layer 2.\n\n"
+                  "| Earlier label | Present location |\n| --- | --- |\n| Layer 1.5: every simple module is a "
+                  "minimal left ideal | §1.3 Simple modules as minimal left ideals |\n")
+    local = ("**Former layer numbers.** This roadmap formerly numbered the material above as Layers 0–4.\n\n"
+             "| Former label | Content | Now |\n|---|---|---|\n| Layer 3 | ramification | *Ramified extensions* |\n"
+             "| Layer 4 | the tame quotient | *Absolute Galois group* |\n")
+    assert overlaps.mapped(semisimple, cite("SemisimpleAlgebras", "1.5", "layer"))
+    # #1701's: the old section now resolves to library declarations.
+    derived = ("Stage 6. Citations of §1.T.1 (*Towers, `lim` and `lim¹`*, with its targets *lim and lim¹ of a\n"
+               "tower*) resolve to the Tau Ceti tower declarations listed in Exact supplier contracts.\n")
+    assert overlaps.mapped(derived, cite("DerivedModuleAlgebra", "1.T.1", "section"))
+    assert overlaps.mapped(local, cite("LocalFieldsRamification", "4", "layer"))
+    assert not overlaps.mapped(local, cite("LocalFieldsRamification", "5", "layer"))
+    assert not overlaps.mapped(semisimple, cite("SemisimpleAlgebras", "1.6", "layer"))
+    assert not overlaps.mapped(semisimple, cite("SemisimpleAlgebras", "layer-15-every-simple-module", "anchor"))
+
+
 def test_an_id_main_gained_after_the_branch_is_not_dropped(tmp_path, monkeypatch):
     later = {LATTICES: MAIN[LATTICES] + "\n### 1.5 Lattice sums\n", GROUPS: MAIN[GROUPS] + "Also Lattices §1.5.\n"}
     cfg, index = build(tmp_path, monkeypatch, [MAIN, later],
@@ -380,7 +415,8 @@ def test_the_dependency_record_of_a_head(tmp_path, monkeypatch):
               "Uses Lattices §1.4.\n")
     record = overlaps.dependency_record(cfg.state_dir(), index, readme, "import TauCetiRoadmap.Ghost.Suggested\n",
                                         "Mine", pr=31, body="Depends on #44.")
-    assert record == {"suppliers": [{"roadmap": "CStar", "prs": [30]}, {"roadmap": "Ghost", "prs": []}],
+    assert record == {"suppliers": [{"roadmap": "CStar", "prs": [30], "cited": True},
+                                    {"roadmap": "Ghost", "prs": [], "cited": True}],
                       "revisions": [{"roadmap": "Lattices", "pr": 7, "ids": ["Lattices §1.4"]}],
                       "declared": [{"pr": 44, "roadmap": None}]}
     # A path in a code span and a Lean namespace name no supplier.
@@ -393,12 +429,17 @@ def test_the_dependency_record_of_a_head(tmp_path, monkeypatch):
     block = ("<!-- depends-on -->\n**Depends on**:\n- [ ] #60 PlanarTopology\n- [ ] #61 Lattices\n"
              "- [ ] #31 Helper\n<!-- /depends-on -->")
     record = overlaps.dependency_record(cfg.state_dir(), index, "# Roadmap: mine\n", "", "Mine", pr=31, body=block)
-    assert record == {"suppliers": [{"roadmap": "PlanarTopology", "prs": [60]}], "revisions": [],
+    assert record == {"suppliers": [{"roadmap": "PlanarTopology", "prs": [60], "cited": False}], "revisions": [],
                       "declared": [{"pr": 61, "roadmap": "Lattices"}]}
     # Lattices is on main and Helper rides in the same pull request: neither is a dependency.
 
 
 DEPS = "awaiting-dependencies"
+
+
+def upward(number, on, supplier, prs):
+    return (f"#{number}: UPWARD, not waited for: {on} (on main) -> {supplier} ({prs}); a roadmap on main does not "
+            "wait for one that is not, so the edge goes")
 
 
 def label_writes(gh):
@@ -516,11 +557,12 @@ def test_every_lean_file_of_a_roadmap_counts_and_a_pull_request_that_changes_onl
     gh = build.gh
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
     assert f"#80: {DEPS} added (waits for Ghost (in no open pull request))" in out
-    assert f"#81: {DEPS} added (waits for Ghost (in no open pull request))" in out
+    assert upward(81, "Lattices", "Ghost", "in no open pull request") in out   # Lattices is on main
     pr82 = next(p for p in openroadmaps.load(cfg.state_dir())["prs"] if p["pr"] == 82)
     assert deplabels.roadmap_folders(cfg.state_dir(), index, pr82) == {
         "TauCetiRoadmap/Fam": ["TauCetiRoadmap/Fam/README.md"]}
-    assert ("POST", 82) not in label_writes(gh)                  # Sub's import is Sub's, not the family's
+    assert label_writes(gh) == [("POST", 80)] and not any(line.startswith("#82") for line in out)
+    # (Sub's import is Sub's, not the family's.)
 
 
 def test_only_an_http_404_says_a_number_is_no_pull_request():
@@ -547,14 +589,19 @@ def test_a_pull_request_waits_only_for_what_it_brings_not_for_what_main_already_
                          (102, "cy", 0, roadmap("Old", "*Needs:* Ghost §1.1 and Phantom §2.1.")),
                          (103, "di", 0, roadmap("Old", "*Needs:* Ghost §1.1.",
                                                 {"Suggested.lean": "import TauCetiRoadmap.Ghost\n"})),
-                         (104, "ed", 0, roadmap("Old", "*Needs:* Ghost §1.1. Reworded again."))],
-                        bodies={104: block("#110 Ghost")})
+                         (104, "ed", 0, roadmap("Old", "*Needs:* Ghost §1.1. Reworded again.")),
+                         (105, "fi", 0, roadmap("Old", "Reworded; Ghost no longer named."))],
+                        bodies={104: block("#110 Ghost"), 105: block("#110 Ghost")})
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
-    # Main's Old already names Ghost: an edit of Old waits for it only when its Lean files import it or its
-    # description declares it, and a progress report touches no roadmap file at all.
-    assert label_writes(build.gh) == [("POST", 102), ("POST", 103), ("POST", 104)]
-    assert f"#102: {DEPS} added (waits for Phantom (#111))" in out
-    assert f"#103: {DEPS} added (waits for Ghost (#110))" in out
+    # Old is on main and already names Ghost. A progress report touches no roadmap file; an edit that keeps
+    # Ghost brings nothing. What an edit newly names (Phantom, or Ghost through an import or beside its own
+    # declaration) is an UPWARD edge of a roadmap on main: logged for the author, not waited for. Only a
+    # dependency the description alone declares (#105) puts the label on.
+    assert label_writes(build.gh) == [("POST", 105)]
+    assert f"#105: {DEPS} added (waits for Ghost (#110))" in out
+    assert upward(102, "Old", "Phantom", "#111") in out and not any("#102: UPWARD" in x and "Ghost" in x for x in out)
+    assert upward(103, "Old", "Ghost", "#110") in out and upward(104, "Old", "Ghost", "#110") in out
+    assert not any(line.startswith(("#100", "#101")) for line in out)
 
 
 def test_a_pin_bump_waits_for_nothing_its_folders_already_cited(tmp_path, monkeypatch):
@@ -626,9 +673,14 @@ def test_a_folder_is_compared_with_its_own_readme_not_another_of_the_same_name(t
                          (124, "jo", 0, {"Completed/Drift2/README.md":
                                          "# Roadmap: Drift2\n\n*Needs:* Ghost §1.1.\n"})])
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
-    assert label_writes(build.gh) == [("POST", 121), ("POST", 122), ("POST", 124)]
-    assert f"#121: {DEPS} added (waits for Ghost (#110))" in out
-    assert f"#122: {DEPS} added (waits for Phantom (#111))" in out
+    # Both Twins are on main, so what they newly name is UPWARD; each is compared with its own README, so
+    # #121's Ghost is new although Completed/Twin names Ghost, and #122's Phantom although TauCetiRoadmap/Twin
+    # names Phantom. The new Completed/Drift2 waits; the move of Drift brings nothing.
+    assert label_writes(build.gh) == [("POST", 124)]
+    assert upward(121, "Twin", "Ghost", "#110") in out and upward(122, "Twin", "Phantom", "#111") in out
+    assert not any("#121: UPWARD" in x and "Phantom" in x for x in out)
+    assert not any("#122: UPWARD" in x and "Ghost" in x for x in out)
+    assert not any(line.startswith("#123") for line in out)
 
 
 def test_a_citation_of_a_revision_of_a_roadmap_main_has_since_moved_waits(tmp_path, monkeypatch):
@@ -652,7 +704,7 @@ def test_one_pull_request_changing_two_folders_of_the_same_name_reads_both(tmp_p
     pr = next(p for p in index["prs"] if p["pr"] == 170)
     assert sorted(deplabels.roadmap_folders(cfg.state_dir(), index, pr)) == ["Completed/Twin", "TauCetiRoadmap/Twin"]
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
-    assert f"#170: {DEPS} added (waits for Ghost (#110))" in out
+    assert upward(170, "Twin", "Ghost", "#110") in out
 
 
 def test_a_rename_is_compared_with_its_true_source_not_a_folder_of_the_same_name(tmp_path, monkeypatch):
@@ -672,4 +724,5 @@ def test_a_rename_is_compared_with_its_true_source_not_a_folder_of_the_same_name
     assert overlaps.rename_source(state, base, openroadmaps.pr_ref(180), "Completed/Twin", pr["files"],
                                   index["main_folders"], tuple(index["dirs"])) == "TauCetiRoadmap/Other"
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
-    assert f"#180: {DEPS} added (waits for Ghost (#110))" in out and not any("#181" in line for line in out)
+    # Compared with Other's README, the Ghost citation is new: an UPWARD edge of a roadmap on main.
+    assert upward(180, "Twin", "Ghost", "#110") in out and not any("#181" in line for line in out)

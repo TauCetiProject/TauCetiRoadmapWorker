@@ -222,7 +222,11 @@ brief, never a failed round):
   `../Name/README.md#heading`) that an open pull request revising that roadmap drops: defined on
   main and at the merge base of main and that head, and no longer at the head (a heading, a bold
   label or a numbered item defines an id; a mention, such as another roadmap's equal number, does
-  not; a deleted or emptied README defines nothing); the ids it cites that only an open revision
+  not; a deleted or emptied README defines nothing), unless the head maps the old id to where it is
+  now (`overlaps.mapped`: a row of a table whose header names the earlier numbering, "| Former label
+  | … | Now |", or a sentence such as "The earlier separate Layer 1.5 is now §1.3"), which keeps a
+  citation by the old id valid and asks nothing of the roadmaps that cite it (a heading anchor does
+  not follow a mapping: a link to it lands at the top of the README); the ids it cites that only an open revision
   defines, which make that revision a dependency; when the job is on a pull request of the content
   repository (never a board pull request), the ids it drops from a roadmap on main that other
   roadmaps cite, on main or at an open head; and the five open roadmaps closest to it in vocabulary
@@ -819,6 +823,13 @@ roadmap is met once that roadmap is on main, whichever pull request brought it. 
 when no folder of that name held a README.md at its merge base, wherever main keeps the roadmap now (a
 roadmap main has since moved to Completed/ was there all along); a closed one, when it added such a
 README.md and removed none.
+
+A roadmap on main never waits for one that is not. The dependency check rejects a supplier edge from a
+roadmap on main to an open one as UPWARD (`depgraph.check_order`), and the remedy is to drop the edge,
+the newer roadmap consuming the one on main if the two overlap, never to hold the roadmap on main back.
+So a supplier not on main that the README or Lean of a folder on main newly names is not waited for:
+the run logs it (`#N: UPWARD, not waited for: Name (on main) -> Supplier (#M); …`) for the author, and
+only a dependency the description alone declares puts the label on such a pull request.
 
 The label is added while one of those is outstanding and removed when none is. A pull request whose description, or the state of a
 pull request its description names, GitHub did not give keeps its label (only GitHub's `HTTP 404` says

@@ -105,7 +105,10 @@ class Revision:
     head: str            # at the head ('' when the head deletes or empties it)
 
     def drops(self, c: Citation) -> bool:
-        return defines(self.main, c) and defines(self.base, c) and not defines(self.head, c)
+        """Main and the merge base define the id and the head neither defines nor maps it (`mapped`): a
+        renumbering that says where the old id went keeps its citations valid."""
+        return (defines(self.main, c) and defines(self.base, c) and not defines(self.head, c)
+                and not mapped(self.head, c))
 
     def adds(self, c: Citation) -> bool:
         return defines(self.head, c) and not defines(self.base, c) and not defines(self.main, c)
@@ -196,6 +199,46 @@ def defines(text: str, citation: Citation) -> bool:
     if citation.kind == "anchor":
         return citation.id in anchors(text)
     return o.defined(text, citation.id, layer=citation.kind == "layer")
+
+
+# A renumbering that keeps the old ids readable: a table whose header names the earlier numbering
+# ("| Former label | Content | Now |", "| Earlier label | Present location |"), or a sentence saying
+# where an old id went ("The earlier separate Layer 1.5 is now §1.3", "Citations of §1.T.1 ... resolve to
+# the Tau Ceti tower declarations").
+MAP_HEADER = re.compile(r"\b(?:former|formerly|earlier|old|previous|prior)\b", re.IGNORECASE)
+MAP_SENTENCE = re.compile(r"\b(?:is|are)\s+now\b|\breads?\s+as\b|\bresolves?\s+(?:to|as)\b|\bformerly\b"
+                          r"|\brenumbered\b|\bwas\s+(?:numbered|called|labell?ed)\b", re.IGNORECASE)
+
+
+def _label(c: Citation) -> re.Pattern:
+    if c.kind == "layer":
+        return re.compile(r"\bLayers?\s+" + re.escape(c.id) + r"(?!\w|\.\d)")
+    return re.compile(r"(?:§\s*|(?<![\w.]))" + re.escape(c.id) + r"(?!\w|\.\d)")
+
+
+def mapped(text: str, c: Citation) -> bool:
+    """Whether a README version maps the old id `c` to where it is now: the first cell of a row of a
+    table whose header row names the earlier numbering, or a sentence naming the id with "is now",
+    "reads as", "resolves to", "formerly", "renumbered" or "was numbered". A citation by that id stays valid, so the
+    renumbering drops nothing (#989 folding SemisimpleAlgebras Layer 1.5 into §1.3, #617's "Former
+    layer numbers"). A heading anchor does not follow a mapping: a link to it lands at the top."""
+    if c.kind == "anchor" or not text:
+        return False
+    label = _label(c)
+    header = None
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            header = None
+            continue
+        if header is None:
+            header = stripped
+            continue
+        cells = [x.strip() for x in stripped.strip("|").split("|")]
+        if MAP_HEADER.search(header) and cells and label.search(cells[0]):
+            return True
+    prose = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    return any(label.search(s) and MAP_SENTENCE.search(s) for s in re.split(r"(?<=[.;])\s+|\n", prose))
 
 
 # --- the facts ------------------------------------------------------------------------------------
@@ -438,7 +481,8 @@ def dependency_record(state: Path, index: dict, readme: str, lean: str, name: st
 
     * `suppliers`: the roadmaps it names as suppliers (as the dependency check reads a README, file paths
       in code spans aside, and every `import TauCetiRoadmap.<X>` of its Lean; a `namespace` names none)
-      that are not on main, each with the open pull requests that add it. One is met once that roadmap
+      that are not on main, each with the open pull requests that add it and whether the README or the
+      Lean names it (`cited`; false for one only its description names). One is met once that roadmap
       is on main, whichever pull request brings it there.
     * `revisions`: the open revisions whose numbering it cites (`readme_facts`), with the ids it cites
       that only each defines ("Lattices §1.4"), met once merged.
@@ -459,6 +503,7 @@ def dependency_record(state: Path, index: dict, readme: str, lean: str, name: st
     prose = PATH_SPAN.sub(" ", readme)
     suppliers = (set(depgraph.supplier_edges({name: prose}, main | set(adders)).get(name, {}))
                  | set(LEAN_IMPORT.findall(lean))) - main - own
+    cited = set(suppliers)
     declared: set[tuple[int, str | None]] = set()
     for number, roadmap in declared_items(body, own=pr):
         if roadmap and roadmap in own:
@@ -472,7 +517,7 @@ def dependency_record(state: Path, index: dict, readme: str, lean: str, name: st
     ids: dict[tuple[int, str], set[str]] = {}
     for got in readme_facts(state, index, readme, name, pr=pr, changed=changed)[1]:
         ids.setdefault((got.pr, got.citation.cited), set()).add(got.citation.label())
-    return {"suppliers": [{"roadmap": s, "prs": sorted(n for n in adders.get(s, []) if n != pr)}
+    return {"suppliers": [{"roadmap": s, "prs": sorted(n for n in adders.get(s, []) if n != pr), "cited": s in cited}
                           for s in sorted(suppliers)],
             "revisions": [{"roadmap": r, "pr": q, "ids": sorted(i)} for (q, r), i in sorted(ids.items())],
             "declared": [{"pr": n, "roadmap": r} for n, r in sorted(declared, key=lambda x: (x[0], x[1] or ""))]}
