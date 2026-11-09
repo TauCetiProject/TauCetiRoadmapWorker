@@ -222,7 +222,11 @@ brief, never a failed round):
   `../Name/README.md#heading`) that an open pull request revising that roadmap drops: defined on
   main and at the merge base of main and that head, and no longer at the head (a heading, a bold
   label or a numbered item defines an id; a mention, such as another roadmap's equal number, does
-  not; a deleted or emptied README defines nothing); the ids it cites that only an open revision
+  not; a deleted or emptied README defines nothing), unless the head maps the old id to where it is
+  now (`overlaps.mapped`: a row of a table whose header names the earlier numbering, "| Former label
+  | … | Now |", or a sentence such as "The earlier separate Layer 1.5 is now §1.3"), which keeps a
+  citation by the old id valid and asks nothing of the roadmaps that cite it (a heading anchor does
+  not follow a mapping: a link to it lands at the top of the README); the ids it cites that only an open revision
   defines, which make that revision a dependency; when the job is on a pull request of the content
   repository (never a board pull request), the ids it drops from a roadmap on main that other
   roadmaps cite, on main or at an open head; and the five open roadmaps closest to it in vocabulary
@@ -665,6 +669,7 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 | --- | --- | --- |
 | `enabled` | `false` | file and retire review jobs and keep the label (nothing is read while off) |
 | `label` | `"ai-approved"` | the label an accepted head carries on the content repository |
+| `dependency_label` | `""` | the label `roadmaps dependency-labels` keeps when given no `--label` (below); `board sync` does not touch it |
 | `per_run` | `3` | new review jobs (one per roadmap folder) per `board sync` run, oldest pull request first |
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
 | `skip_authors` | `[]` | never these authors' pull requests |
@@ -763,6 +768,77 @@ of the current head is being finished. Verdicts are read only for a pull request
 has a finished review of its head, the most recent first, stopping at the first that does not
 accept. A human still approves and merges; the AI never does, and the awaiting-author and
 awaiting-review labels are left to the gate lane and `board sync`.
+
+**The dependency label.** `tauceti-roadmap roadmaps dependency-labels [--label NAME] [--yes]` (module
+`deplabels`; the label defaults to `[prreview] dependency_label`; a dry run without `--yes`) keeps the
+label on an open roadmap pull request exactly while it waits for another pull request, and takes it off
+merged pull requests. Nothing is recorded between runs: each run fetches the head of every open pull
+request that changes a file under the roadmap directories into the host's mirror
+(`openroadmaps.refresh(force=True, any_file=True)`; a failed refresh writes nothing), reads every open
+pull request's current description and the states (and, once closed, the added files) of the pull
+requests the descriptions name (GraphQL batches), and computes, for each roadmap folder a pull request
+touches (`deplabels.roadmap_folders`, by full path, so `Completed/Twin` and `TauCetiRoadmap/Twin` are
+two: the folder of every README.md, Suggested.lean or metadata.toml it changes, and the deepest folder
+holding a README.md above any other Lean file it changes; a PROGRESS.md or STATUS.md edit touches none),
+`overlaps.dependency_record` at its head, from the README and every Lean file of the folder (a nested
+roadmap's aside):
+
+- `suppliers`: the roadmaps the README names as suppliers (as the dependency check reads it, file paths
+  in code spans aside) and those its Lean files import (`import TauCetiRoadmap.<X>`; a namespace names
+  none) that are not on main, with the open pull requests that add each, or none (a roadmap that exists
+  nowhere waits too); the roadmaps the pull request carries itself never count;
+- `revisions`: the open revisions whose numbering it cites (`overlaps.readme_facts`; an id the pull
+  request's own revision of that roadmap defines is its own). A revision is read where its head has the
+  roadmap (`overlaps.revisions`): at its merge base there, and on main there, or where main keeps the
+  roadmap now when main has moved it to Completed/ since;
+- `declared`: what its description declares (`declared_items`). First the structured block
+
+  ```markdown
+  <!-- depends-on -->
+  **Depends on** (suppliers still open; they merge first):
+  - [ ] #1126 AnalyticNumberTheoryPartI
+  - [ ] PlanarTopology (no pull request yet)
+  <!-- /depends-on -->
+  ```
+
+  where an unchecked item naming a roadmap not on main is a supplier (met once that roadmap is on main,
+  whichever pull request brings it), any other unchecked item waits for its pull request, and a checked
+  one is met; then the prose (`declared_dependencies`): the numbers after "depends on", "which merge
+  first:", "merges after" or "after ... lands", the subject of "must merge first" or "merges before
+  this pull request" ("#1125 and #1124 must merge first"), a chain ending in "→ this pull request", a
+  list under "Depends on:", a "Stack." line; never a number after a negation ("does not depend on",
+  "independent of"), about another pull request ("#22 depends on this pull request"), or after "merges
+  before" ("it merges before #956": #956 waits for it) or "this pull request merges first".
+
+A supplier the README names that the same README already names on main or at the merge base, or an id
+of an open revision it already cites there, is not the pull request's to wait for (a pin bump of a
+roadmap whose README names an open supplier waits for nothing), unless its Lean files import the
+supplier or its description declares it. The same README is the folder's own, at its path; a folder new
+at its path compares with nothing, unless the pull request moves a roadmap there
+(`overlaps.rename_source`): the folder whose README.md GitHub's listing or `git diff -M` pairs with the
+new one as renamed, or else the folder main holds under that name when the pull request removes its
+README.md. A rename whose source neither names is no move. A new citation of another
+id of the same revision still waits. A declared pull request is met once merged; one that added a
+roadmap is met once that roadmap is on main, whichever pull request brought it. An open one added it
+when no folder of that name held a README.md at its merge base, wherever main keeps the roadmap now (a
+roadmap main has since moved to Completed/ was there all along); a closed one, when it added such a
+README.md and removed none.
+
+A roadmap on main never waits for one that is not. The dependency check rejects a supplier edge from a
+roadmap on main to an open one as UPWARD (`depgraph.check_order`), and the remedy is to drop the edge,
+the newer roadmap consuming the one on main if the two overlap, never to hold the roadmap on main back.
+So a supplier not on main that the README or Lean of a folder on main newly names is not waited for:
+the run logs it (`#N: UPWARD, not waited for: Name (on main) -> Supplier (#M); …`) for the author, and
+only a dependency the description alone declares puts the label on such a pull request.
+
+The label is added while one of those is outstanding and removed when none is. A pull request whose description, or the state of a
+pull request its description names, GitHub did not give keeps its label (only GitHub's `HTTP 404` says
+a number is no pull request). A carried acceptance, a description edited since the last review, a supplier opened
+since, and a backlog never reviewed with this code are all read as they are now. `board sync` does not
+manage the label. A run costs a fetch of the open heads (a fresh bare mirror on a new runner, about
+140 MB) and a few dozen GraphQL queries, and takes about four minutes, so it suits a
+workflow of the content repository that runs on every merged pull request and hourly, with a token that
+may label its pull requests (TauCetiRoadmap's `dependency-labels.yml`).
 
 The comment and the label are written with the operator's own token, which needs write access to
 the content repository (triage at least, for labels); a token without it reports `ai-approved not

@@ -263,6 +263,10 @@ class PRReview:
     # accepts carries `label`. A human still approves and merges.
     enabled: bool = False
     label: str = "ai-approved"
+    # The label `roadmaps dependency-labels` keeps (when it is given no `--label`): on an open roadmap
+    # pull request exactly while it waits for another pull request, recomputed from the current heads,
+    # descriptions and main on every run (`deplabels`). `board sync` does not touch it.
+    dependency_label: str = ""
     per_run: int = 3                 # new jobs filed per `board sync` run, oldest pull request first
     authors: list[str] = field(default_factory=list)        # only these authors' pull requests (empty: all)
     skip_authors: list[str] = field(default_factory=list)   # never these authors' pull requests

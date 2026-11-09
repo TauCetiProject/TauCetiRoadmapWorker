@@ -10,6 +10,10 @@ consume only:
   revises or reports progress on an existing roadmap is never a dependency: cite that roadmap as it
   is on main), or when they drop an id this roadmap cites (below).
 
+A roadmap already on main (this pull request revises it) consumes only the first two: it never names
+a roadmap that is not on main as a supplier, whatever the merge order says (the dependency check
+reports that edge UPWARD, and it is never waited for).
+
 Never cite these roadmaps as suppliers: __DROPPED__.
 
 **Ownership against open work.** Before this roadmap states a construction another roadmap could
@@ -28,20 +32,26 @@ act on it):
 - an id this roadmap cites that an open pull request drops (a revision renumbers or deletes the
   section, layer or target, or renames the heading): the citation breaks when that pull request
   merges. Cite the id as it is at that head (where the content now is); when the content is gone,
-  cite another owner or state it here. Citing a revision's numbering makes it a dependency: the
-  report lists it under "only an open revision defines", and the worker names it in the merge-order
-  paragraph of the pull requests it opens. A pull request opened any other way names it in its
-  description;
+  cite another owner or state it here. A revision that maps the old id to its new place (a table
+  whose header names the former numbering, or "Layer 1.5 is now §1.3") keeps the citation valid:
+  the report does not list it, and the citation needs no change and no dependency. Citing a
+  revision's numbering makes it a dependency: the report lists it under "only an open revision
+  defines", and the worker names it in the merge-order paragraph of the pull requests it opens. A
+  pull request opened any other way names it in its description;
 - an id this roadmap's pull request drops that other roadmaps cite: keep the id, or give the old →
-  new numbering in the README (one line per moved id) so that the citing roadmaps can follow. A
-  roadmap on main that cites it breaks at the merge;
+  new numbering in the README (a table whose header names the former numbering, one row per moved
+  id, or a sentence "Layer 1.5 is now §1.3") so that the citing roadmaps can follow; the overlap
+  check reads such a mapping and no longer lists the id. A roadmap on main that cites it breaks at
+  the merge otherwise;
 - another open pull request that changes this roadmap: when the heads conflict, or the two change
   the same targets differently, one is rebased on the other before either merges; say which, and do
   not restate what the other already changes;
 - the closest open roadmaps in vocabulary: read their scope and ownership and compare what each says
   it owns with what this roadmap owns. An object two roadmaps both own, or that each hands to the
   other, has no single owner: settle it as any other duplication, with one owner earlier in the
-  merge order and a citation from the other.
+  merge order and a citation from the other. A roadmap on main is earlier than every open one: when
+  it and an open roadmap both own something, the open roadmap cites the one on main (or narrows its
+  own statement), never the reverse, whichever pull request is older.
 
 **Citations are resolved, not remembered.** Check every cross-roadmap citation (roadmap, section or
 target, declaration name) against the cited roadmap as it is now, every round: on main, or at the
