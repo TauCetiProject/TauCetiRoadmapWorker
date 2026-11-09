@@ -175,10 +175,17 @@ class Job:
     state: str = ""
     labels: list[str] = field(default_factory=list)
     title: str = ""
+    closed: bool = False     # the issue is closed: whatever state its label names, the round is over
+
+    def under_way(self, states: tuple[str, ...]) -> bool:
+        """The job is in one of `states` on an open issue. A closed issue left with the label of a
+        state under way (an operator closed it by hand) is over: read as open, it stopped every later
+        round of its roadmap."""
+        return self.state in states and not self.closed
 
     def spec(self) -> dict:
         data = asdict(self)
-        for transient in ("number", "state", "labels", "title"):
+        for transient in ("number", "state", "labels", "title", "closed"):
             data.pop(transient)
         return {k: v for k, v in data.items() if v not in ("", [], {}) or k in ("id", "kind", "name")}
 
@@ -884,6 +891,7 @@ class Board:
             return None
         job.number, job.labels, job.title = issue["number"], labels, issue.get("title") or ""
         job.state = state_from_labels(job.labels)
+        job.closed = issue.get("state") == "closed"
         return job
 
     def list_jobs(self, states: tuple[str, ...] = ("available",), kinds: tuple[str, ...] | None = None,

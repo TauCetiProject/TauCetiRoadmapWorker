@@ -1471,7 +1471,7 @@ def repairing_review(cfg, jobs: list[Job], number: int, owner: str) -> Job | Non
     in the same job, so no gate round is filed for it meanwhile; None when there is none."""
     if not cfg.prreview.repair_pool or owner not in set(cfg.roadmap.pool):
         return None
-    return next((j for j in jobs if j.kind == "prreview" and j.state == "claimed"
+    return next((j for j in jobs if j.kind == "prreview" and j.under_way(("claimed",))
                  and str(j.inputs.get("pr")) == str(number)), None)
 
 
@@ -1519,10 +1519,10 @@ def sync_pull_requests(ctx) -> list[str]:
             out.append(f"#{number}: labels on {repo} not changed ({exc})")
         if want == r.awaiting_author:
             mine = [j for j in jobs if j.kind == "gate" and j.name == p["name"]]
-            open_round = any(j.state in GATE_OPEN for j in mine)
+            open_round = any(j.under_way(GATE_OPEN) for j in mine)
             # A round parked for references answers the review once they come: another round would
             # wait on the same references.
-            waiting = None if open_round else max((j for j in mine if j.state == "needs-references"),
+            waiting = None if open_round else max((j for j in mine if j.under_way(("needs-references",))),
                                                   key=round_key, default=None)
             open_round = open_round or waiting is not None
             repairing = None if open_round else repairing_review(cfg, jobs, number, p["owner"])
@@ -1683,7 +1683,7 @@ def dispute_pending(jobs: list[Job], comments: list[dict], head: str, verdict: d
     no round has re-examined: the latest verdict of `head` does not accept, and a reply on the pull
     request records `head` itself as the head it answered at (`replies.answered_record`), so nothing
     was pushed in answer. A head moved by its repair is re-reviewed by the ordinary filing."""
-    if not jobs or any(j.state in OPEN_ROUND for j in jobs):
+    if not jobs or any(j.under_way(OPEN_ROUND) for j in jobs):
         return False
     if not verdict or verdict.get("status") == "accepted":
         return False
@@ -1922,7 +1922,7 @@ def sync_pr_reviews(ctx) -> list[str]:
         if not head or not (labelled or folders or chore):
             continue
         mine = [j for j in reviews if pr_of(j) == number]
-        if any(j.state in ("claimed", "submitted") and j.inputs.get("head") == head for j in mine):
+        if any(j.under_way(("claimed", "submitted")) and j.inputs.get("head") == head for j in mine):
             continue             # being finished: its lane labels, or a later run does
         accepted, reason = (folders_accepted(ctx, folders, mine, head, texts) if folders
                             else chore_accepted(ctx, repo, number, head, why, p, threads, batch) if chore
@@ -1968,7 +1968,7 @@ def sync_pr_reviews(ctx) -> list[str]:
         mine = [j for j in reviews if pr_of(j) == number]
         for folder in folders:
             ours = [j for j in mine if board.prreview_folder(j) == folder]
-            if any(j.state in OPEN_ROUND for j in ours):
+            if any(j.under_way(OPEN_ROUND) for j in ours):
                 continue
             same = [j for j in ours if j.inputs.get("head") == head]
             dispute = False

@@ -359,6 +359,31 @@ def test_a_gate_round_waiting_for_references_stops_the_next_one(tmp_path):
     assert "#905: GATE-Foo~3 created for @alice" in out
 
 
+@pytest.mark.parametrize("state", ["available", "claimed", "submitted", "blocked", "needs-references"])
+def test_a_closed_round_left_with_the_label_of_a_state_under_way_does_not_stop_the_next_one(tmp_path, state):
+    """An operator closed the round's issue by hand and its state label stayed: read as a round under
+    way, it stopped every later gate round of the roadmap, and reviews of it went unanswered."""
+    gh = PullGH(reviews=[REVIEW_A])
+    stale = gate_round(1, state)
+    out, board = sync(tmp_path, gh, [stale])
+    assert board.created == [] and "#905 Foo: awaiting-author" in out          # open: the round is under way
+    stale.closed = True
+    out, board = sync(tmp_path, gh, [stale])
+    assert "#905: GATE-Foo~2 created for @alice" in out and [j.id for j, _s, _p in board.created] == ["GATE-Foo~2"]
+
+
+def test_a_hand_reply_that_opens_reply_to_counts_after_a_recorded_one():
+    """An answer written by hand to a contributor's comment opens "Reply to @them ...": it answers
+    the comment, where the owner's other notes after a recorded reply do not."""
+    old = review(60, "2026-10-20T10:00:00Z", "Changes needed: old point.")
+    recorded = answered_reply("2026-10-20T12:00:00Z", old)
+    later = review(61, "2026-10-21T10:00:00Z", "Changes needed: a newer point.")
+    by_hand = comment(805, "2026-10-21T11:00:00Z", "Reply to @kim (the overlap with Bar):\n\n- the statement stays here.",
+                      user=OWNER)
+    assert pending(events([old, later], [recorded])) == ["review-61"]
+    assert pending(events([old, later], [recorded, by_hand])) == []
+
+
 def test_board_sync_keeps_the_newest_of_the_rounds_waiting_on_the_same_references():
     jobs = [gate_round(n, "needs-references") for n in (1, 3, 2)] + [gate_round(4, "done"),
                                                                        gate_round(1, "needs-references", "Bar"),

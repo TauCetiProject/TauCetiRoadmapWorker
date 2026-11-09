@@ -372,6 +372,13 @@ def test_no_review_is_filed_while_a_review_or_a_gate_round_of_the_pull_request_i
     assert fake.created == [] and fake.states == []          # a claimed or submitted review is left to finish
 
 
+def test_a_closed_review_round_left_with_the_label_of_a_state_under_way_does_not_stop_the_next_one():
+    stale = review_job(41, 1, 12, H1, "available")
+    stale.closed = True
+    _out, fake = sync(ContentGH([node(12, H2)]), [stale])
+    assert [j.inputs["head"] for j, _s, _p in fake.created] == [H2]
+
+
 def test_at_most_per_run_jobs_are_filed_oldest_pull_request_first():
     nodes = [node(n, str(n) * 40 if n < 10 else H1, paths=(f"TauCetiRoadmap/R{n}/README.md",)) for n in (31, 7, 19, 5)]
     out, fake = sync(ContentGH(nodes), per_run=2)

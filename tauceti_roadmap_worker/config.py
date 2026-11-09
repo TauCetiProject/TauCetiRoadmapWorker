@@ -231,7 +231,8 @@ class Replies:
     awaiting_author: str = "awaiting-author"
     awaiting_review: str = "awaiting-review"
     housekeeping_prefixes: list[str] = field(default_factory=lambda: [
-        "Red-team repairs at", "Scope change at", "Supplier change at", "Ownership change at", "Housekeeping at"])
+        "Red-team repairs at", "Scope change at", "Supplier change at", "Ownership change at", "Housekeeping at",
+        "Merged main into this branch", "Owner's request applied at"])
     # Logins of maintainers who may act as the same login as the workers: their review or comment that
     # opens with `maintainer_review_prefix` (case-insensitive, after optional emoji) is a review even
     # on a pull request that login owns.

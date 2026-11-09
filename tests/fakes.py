@@ -174,7 +174,7 @@ class FakeBoard:
         return list(self.jobs)
 
     def kind_jobs(self, kind: str, issue_state: str = "all"):
-        return [j for j in self.jobs if j.kind == kind]
+        return [j for j in self.jobs if j.kind == kind and not (issue_state == "open" and j.closed)]
 
     def labelled_by(self, job, label: str) -> str:
         return ""

@@ -235,6 +235,9 @@ def test_only_synced_issues_are_jobs_and_sync_neutralises_typed_markers():
     assert decode_spec(body).id == "TARGET-Widgets" and body.count("<!--") == 1
     synced = dict(unsynced, body=body, labels=unsynced["labels"] + [{"name": "state:available"}])
     assert b._job_from_issue(synced).id == "TARGET-Widgets"
+    assert not b._job_from_issue(synced).closed and b._job_from_issue(dict(synced, state="closed")).closed
+    assert b._job_from_issue(dict(synced, state="closed")).under_way(("available",)) is False
+    assert "closed" not in b._job_from_issue(dict(synced, state="closed")).spec()
     written.clear()
     unsynced["labels"] = synced["labels"]
     assert intake.sync_targets(ctx) == [] and written == []       # synced issues are left alone
