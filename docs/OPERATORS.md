@@ -1293,7 +1293,15 @@ reach) is not built yet.
   every point, and the labels flip between awaiting-author and awaiting-review. Merging is yours.
   The reply records the exact reviews and comments it answers (an HTML comment at its end), so a
   review posted or edited while the gate works stays awaiting-author and gets its own round; a
-  comment of the branch owner's acknowledges nothing once the pull request has such a reply.
+  comment of the branch owner's acknowledges nothing once the pull request has such a reply, unless
+  it is written in a reply form: `Fixed in <sha7> …`, `… (reply to the review)`, or a hand answer
+  that opens `Reply to `.
+  On a pull request of the pool, another pool member's comment in their own words is a review. A
+  note that only says what was done to the branch must open with one of `[replies]
+  housekeeping_prefixes` (`Merged main into this branch`, `Housekeeping at <sha7>`, …): it is then
+  neither a review nor a reply, and the labels stay as they are.
+  A round is under way only while its issue is open. Closing a job issue by hand ends the round
+  whatever state label it still carries: the next review of that roadmap gets its round.
   A maintainer whose login is also the one the workers act as is the author of every worker-ported
   draft, so on those drafts their comments would read as the author's own replies. List that login
   in `[replies] maintainer_logins` and open each review with `[replies] maintainer_review_prefix`

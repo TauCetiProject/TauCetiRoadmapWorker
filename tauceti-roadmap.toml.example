@@ -359,8 +359,10 @@ ignore_logins = ["github-actions[bot]"]
 # Label names on the content repository.
 awaiting_author = "awaiting-author"
 awaiting_review = "awaiting-review"
-# Our own comments that start like this are housekeeping, not replies to a review.
-housekeeping_prefixes = ["Red-team repairs at", "Scope change at", "Supplier change at", "Ownership change at", "Housekeeping at"]
+# Our own comments that start like this are housekeeping: not replies to a review, and not reviews
+# when a pool member writes one on another member's pull request.
+housekeeping_prefixes = ["Red-team repairs at", "Scope change at", "Supplier change at", "Ownership change at", "Housekeeping at",
+                         "Merged main into this branch", "Owner's request applied at"]
 # Maintainer logins that are also the login the workers act as (so a worker's draft is "theirs").
 # Such a login's review or comment whose text starts with `maintainer_review_prefix`
 # (case-insensitive, after optional emoji and whitespace) counts as a review that the gate lane

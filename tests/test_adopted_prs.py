@@ -154,6 +154,29 @@ def test_another_pool_members_own_words_are_a_review_not_a_reply():
     assert replies.unanswered([theirs], ours, r.review_markers, r.housekeeping_prefixes) == []
 
 
+@pytest.mark.parametrize("note", ["Merged main into this branch so CI builds against the current tree.",
+                                  "Owner's request applied at `c42ca42`: the merge order names its suppliers."])
+def test_a_pool_members_housekeeping_note_on_another_members_pull_request_is_no_review(note):
+    """A note that opens with a housekeeping prefix says what a pool member did to the branch: it
+    asks the author for nothing, so it does not put the pull request on awaiting-author."""
+    from tauceti_roadmap_worker import replies
+    cfg = adopted_config()
+    r = cfg.replies
+    ours = pr_answerers(cfg, AUTHOR)
+    kw = dict(markers=r.review_markers, housekeeping=r.housekeeping_prefixes, approvers=r.approvers, owner=AUTHOR)
+    kept = _event("2026-11-09T10:00:00Z", CUSTODIAN, note, 4)
+    assert replies.unanswered([kept], ours, r.review_markers, r.housekeeping_prefixes, owner=AUTHOR) == []
+    assert replies.wanted_label([kept], ours, SHA, **kw)[0] == "awaiting-review"
+    # The same member's other words are still a review, and the note answers no review either.
+    theirs = _event("2026-11-09T09:00:00Z", THIRD, "Layer 2 cites a theorem the paper does not prove.", 5)
+    assert [e.ref for e in replies.unanswered([theirs, kept], ours, r.review_markers, r.housekeeping_prefixes,
+                                              owner=AUTHOR)] == ["comment-5"]
+    # Someone outside the pool who opens the same way is a reviewer like any other.
+    outside = _event("2026-11-09T10:00:00Z", "mallory", note + " Please check the statement of Layer 3.", 6)
+    assert [e.ref for e in replies.unanswered([outside], ours, r.review_markers, r.housekeeping_prefixes,
+                                              owner=AUTHOR)] == ["comment-6"]
+
+
 def test_a_gate_round_on_a_family_or_nested_name_works_in_the_nested_roadmap_folder():
     from tauceti_roadmap_worker.lanes.gate import nested_folder
     readmes = {"RepresentationTheory", "RepresentationTheory/SemisimpleAlgebras", "RepresentationTheory/SchurWeyl", "Foo"}

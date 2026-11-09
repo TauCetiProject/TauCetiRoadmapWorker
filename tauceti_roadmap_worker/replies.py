@@ -54,7 +54,7 @@ AI_REVIEW = re.compile(r"AI review \(")       # the board's pull-request review 
 # The forms a reply takes when it is written for the author by someone else (a pool member, the
 # worker, the operator's scripts): a comment by another answerer in any other words is their own
 # review of the pull request, not an answer on the author's behalf.
-REPLY_FORM = re.compile(r"\(reply to the review|^Fixed in `|tauceti-roadmap-answered", re.M)
+REPLY_FORM = re.compile(r"\(reply to the review|^Fixed in `|^Reply to |tauceti-roadmap-answered", re.M)
 THANKS = re.compile(r"^(?:Thank you|Thanks)")
 MAINTAINER_REVIEW_PREFIX = "Maintainer review"
 SHORTCODE = re.compile(r":[a-z0-9_+-]+:")
@@ -120,9 +120,11 @@ def speaks_for_author(e: Event, ours: set[str], owner: str = "") -> bool:
 
 def is_review(e: Event, ours: set[str], markers: list[str], ignore: set[str] = frozenset(),
               maintainers: set[str] = frozenset(), maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX,
-              owner: str = "") -> bool:
+              owner: str = "", housekeeping: list[str] | tuple[str, ...] = ()) -> bool:
     if e.user in ignore:
         return False
+    if e.user.lower() in ours and any((e.body or "").startswith(p) for p in housekeeping):
+        return False     # an answerer's housekeeping note (on another pool member's pull request too): no review
     if e.user.lower() in ours and carried_record(e.body or ""):
         return False     # an answerer's housekeeping note carrying an acceptance (small repairs): no review
     body = ("Verdict: APPROVE " if e.approved else "") + (e.body or "")
@@ -150,7 +152,8 @@ def classify(events: list[Event], ours: set[str], markers: list[str], housekeepi
     """(time of the last review, time of our last reply); '' when there is none."""
     ours = {o.lower() for o in ours}
     ordered = sorted(events, key=lambda e: e.t)
-    reviews = [e.t for e in ordered if is_review(e, ours, markers, ignore, maintainers, maintainer_prefix, owner)]
+    reviews = [e.t for e in ordered
+               if is_review(e, ours, markers, ignore, maintainers, maintainer_prefix, owner, housekeeping)]
     replies = [e.t for e in ordered if is_reply(e, ours, markers, housekeeping, maintainers, maintainer_prefix, owner)]
     return (reviews[-1] if reviews else ""), (replies[-1] if replies else "")
 
@@ -296,7 +299,7 @@ def unanswered(events: list[Event], ours: set[str], markers: list[str], housekee
     seen, before = acknowledged(events, ours_l, markers, housekeeping, maintainers, maintainer_prefix, owner)
 
     def review(e: Event) -> bool:
-        return is_review(e, ours_l, markers, ignore, maintainers, maintainer_prefix, owner)
+        return is_review(e, ours_l, markers, ignore, maintainers, maintainer_prefix, owner, housekeeping)
     reviewing = {e.review_id for e in events if e.ref.startswith("review-") and review(e)}
     # The board's own AI reviews supersede one another: only the latest one (whatever its verdict) can
     # still wait for an answer; an earlier one, of an older head or of a disputed head reviewed again,
