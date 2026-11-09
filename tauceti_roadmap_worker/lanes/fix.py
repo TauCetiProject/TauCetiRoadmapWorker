@@ -20,8 +20,8 @@ from .. import board, gates, gitops, prreviews, replies
 from ..board import Job
 from .base import (CONTENT_COMMENT, CONTENT_PUSH, PULL_REQUEST, PUSH, SUBMITTED, Context, Lane, LaneError, Workspace,
                    board_reports, checkout_board_pr, count, dropped_names, ensure_in_order_logged, load_order, merged_for,
-                   open_roadmap_prs, order_path, owe, owes, repair_order_file, scan_problems, settle, sibling_checkouts,
-                   sibling_readmes)
+                   open_cycle_inputs, open_roadmap_prs, order_path, owe, owes, repair_order_file, scan_problems, settle,
+                   sibling_checkouts, sibling_readmes)
 from .package import PACKAGE_FILES, elaboration_problems, package_gate, package_scan
 from .pr import fresh_worktree, pr_branch_worktree, remove_worktree
 
@@ -351,7 +351,7 @@ class RedTeamFixLane(Lane):
                                              carry=True))
         opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
                                              siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]),
-                                             merged=merged_for(ctx, ws))
+                                             merged=merged_for(ctx, ws), **open_cycle_inputs(ctx, ws))
         result = gates.run_gate(ws.workdir, job.name, opts, base=f"origin/{ctx.cfg.project.branch}",
                                 build_cmd=ctx.cfg.gates.build)
         ws.extra["gate"] = result

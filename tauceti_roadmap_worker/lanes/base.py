@@ -263,6 +263,37 @@ def sibling_readmes(state: Path, active_dir: str, prs: list[dict] | None = None)
     return out
 
 
+OPEN_CYCLE_INDEX_AGE = 600      # seconds: the oldest index of open pull requests the gate's cycle check reads
+
+
+def open_cycle_inputs(ctx: Context, ws: Workspace) -> dict:
+    """`GateOptions.from_config` keywords for the gate's check of supplier cycles through other open pull
+    requests: the READMEs on main and at the head of every open roadmap pull request, from the host's
+    index and mirror, and the pull request the job works on. The gate runs at the end of a round that
+    may have taken an hour, and a cycle reported from a head that has since been repaired would have
+    this roadmap drop a citation for nothing: an index older than `OPEN_CYCLE_INDEX_AGE` is rebuilt
+    first (one listing, shared by the host's workers). Best effort: on a host with no index yet, or
+    when the mirror cannot be read, the gate runs without that check; a refresh that fails leaves the
+    last index in use."""
+    if not ctx.cfg.gates.require_depcheck:
+        return {}
+    try:
+        index = openroadmaps.load(ctx.state)
+        if index and ctx.gh is not None and not ctx.dry_run:
+            try:
+                index = openroadmaps.refresh(ctx.gh, ctx.cfg, max_age=OPEN_CYCLE_INDEX_AGE)
+            except Exception as exc:  # noqa: BLE001 - GitHub or git: the last index stands
+                print(f"{ws.job_dir.name}: the index of open roadmap pull requests was not refreshed for the gate "
+                      f"({type(exc).__name__}: {str(exc)[:160]}); using the last one")
+        texts = overlaps.readmes(ctx.state, index) if index else []
+    except Exception as exc:  # noqa: BLE001 - an extra check: its failure must never fail the round
+        print(f"{ws.job_dir.name}: cycles through open pull requests not checked "
+              f"({type(exc).__name__}: {str(exc)[:160]})")
+        return {}
+    pr = ws.extra.get("pr")
+    return {"open_readmes": texts, "pull_request": pr if isinstance(pr, int) else 0}
+
+
 def order_path(cfg: Config, ws_board: Path, ws_content: Path) -> Path:
     base = {"packages": ws_board, "content": ws_content, "local": cfg.state_dir()}[cfg.roadmap.merge_order_repo]
     return base / cfg.roadmap.merge_order_file
@@ -916,8 +947,9 @@ class Lane:
         content = ("--content", str(ws.content))
         if job.kind in ("target", "design") or board.artefact_of(job.id) == "DESIGN":
             return ctx.cli("gate", "--candidate", readme, "--only", job.name, "--order", str(order_file), *content)
+        pr = ws.extra.get("pr")
         return ctx.cli("gate", "--depcheck", readme, "--name", job.name, "--order", str(order_file), "--movable",
-                       *content)
+                       *content, *(("--pr", str(pr)) if isinstance(pr, int) and pr else ()))
 
     def fetch_command(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """The command line an agent runs to fetch a source through the service."""

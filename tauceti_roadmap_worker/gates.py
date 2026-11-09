@@ -1042,9 +1042,16 @@ class GateOptions:
     merged: set[str] = field(default_factory=set)
     # The statement-hygiene scan of Suggested.lean (`[prreview] statement_hygiene`).
     statement_hygiene: bool = True
+    # `(where, roadmap, README)` of every roadmap on main and at the head of every open pull request
+    # (`overlaps.readmes`), and the pull request that carries this roadmap (0: none yet, or unknown):
+    # the dependency check then also looks for cycles through other open pull requests
+    # (`depgraph.open_cycles`), which neither the merge order nor `sibling_readmes` can show.
+    open_readmes: list[tuple[str, str, str]] = field(default_factory=list)
+    pull_request: int = 0
 
     @classmethod
-    def from_config(cls, cfg, order=None, siblings=None, dropped=None, tauceti=None, merged=None) -> "GateOptions":
+    def from_config(cls, cfg, order=None, siblings=None, dropped=None, tauceti=None, merged=None,
+                    open_readmes=None, pull_request: int = 0) -> "GateOptions":
         g = cfg.gates
         return cls(content_repo=cfg.repositories.content, active_dir=cfg.roadmap.active_dir,
                    max_lean_lines=g.max_lean_lines, forbid_mathlib_subimports=g.forbid_mathlib_subimports,
@@ -1052,7 +1059,8 @@ class GateOptions:
                    outside_folder_allow=list(g.outside_folder_allow), order=order if g.require_depcheck else None,
                    sibling_readmes=dict(siblings or {}), main_extended=list(cfg.roadmap.main_extended),
                    tauceti_sources=tauceti, roadmap_files=list(g.roadmap_files), merged=set(merged or ()),
-                   statement_hygiene=cfg.prreview.statement_hygiene)
+                   statement_hygiene=cfg.prreview.statement_hygiene,
+                   open_readmes=list(open_readmes or []) if g.require_depcheck else [], pull_request=pull_request)
 
 
 def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateResult:
@@ -1083,11 +1091,17 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
     r.add("long-fences", scan_long_fences(readme))
     r.add("layer-ids", scan_layer_ids(readme))
     r.add("target-ids", scan_target_ids(readme))
-    if opts.order is not None:
-        readmes = dict(opts.sibling_readmes)
-        readmes[name] = readme
-        edges = depgraph.supplier_edges(readmes, set(opts.order), set(opts.main_extended))
-        r.add("depcheck", depgraph.check_order(edges, opts.order, only={name}, merged=opts.merged))
+    if opts.order is not None or opts.open_readmes:
+        problems = []
+        if opts.order is not None:
+            readmes = dict(opts.sibling_readmes)
+            readmes[name] = readme
+            edges = depgraph.supplier_edges(readmes, set(opts.order), set(opts.main_extended))
+            problems += depgraph.check_order(edges, opts.order, only={name}, merged=opts.merged)
+        if opts.open_readmes:
+            problems += depgraph.open_cycles(name, readme, opts.open_readmes, opts.merged, opts.pull_request,
+                                             set(opts.main_extended))
+        r.add("depcheck", problems)
     return r
 
 
@@ -1139,7 +1153,12 @@ GATE_RULES = {
     "depcheck": "every supplier the README names comes before this roadmap in the merge order (an UPWARD edge or a "
                 "CYCLE is a design defect: break it by moving ownership), and the roadmap is listed there; a roadmap "
                 "on the content repository's main is a supplier available to all, never upward; the merge-order "
-                "file is not yours to edit, so a `NOT IN ORDER` line is the board's to settle: report it",
+                "file is not yours to edit, so a `NOT IN ORDER` line is the board's to settle: report it; a `CYCLE "
+                "through open pull requests` line lists citations, each of a roadmap that is not on main yet, that "
+                "close a circle through other open pull requests, so that none of them could merge first: withdraw "
+                "the citation this README makes and state the item here, in this roadmap's own words (the special "
+                "case stays where it is: an acyclic merge order comes before citing the more general form), and "
+                "never ask another pull request to change",
 }
 
 

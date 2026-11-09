@@ -210,8 +210,9 @@ def age(index: dict, now: dt.datetime | None = None) -> float:
     return ((now or dt.datetime.now(dt.UTC)) - built).total_seconds()
 
 
-def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any_file: bool = False) -> dict:
-    """The index of open roadmap pull requests, rebuilt when older than MAX_AGE (or `force`): the
+def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any_file: bool = False,
+            max_age: float = MAX_AGE) -> dict:
+    """The index of open roadmap pull requests, rebuilt when older than `max_age` (or `force`): the
     listing from GitHub, every head fetched into the shared mirror, stale heads dropped. With
     `any_file`, it also lists the pull requests whose only changes under the roadmap directories are
     other files (an extra Lean file of a roadmap: `inventory`). Raises on a GitHub or git failure; the
@@ -220,7 +221,7 @@ def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any
     dirs = (cfg.roadmap.active_dir, cfg.roadmap.completed_dir)
     with _lock(state):
         current = load(state)
-        if not force and current.get("repo") == repo and age(current, now) < MAX_AGE:
+        if not force and current.get("repo") == repo and age(current, now) < max_age:
             return current
         prs = inventory(gh, repo, dirs, any_file=any_file)    # GitHub first: nothing is cloned when it cannot be read
         if not (mirror(state) / "HEAD").exists():

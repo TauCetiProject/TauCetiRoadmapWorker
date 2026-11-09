@@ -402,6 +402,19 @@ every round syncs to main; `tauceti-roadmap gate <worktree> <Name>` from the wor
 `origin/<branch>` (or `--content <checkout>`), and the agents' `gate --depcheck` from the
 `--content` checkout their brief names.
 
+The merge order lists the board's roadmaps and the managed pull requests, so a roadmap that exists
+only in another author's open pull request is invisible to it. The gate therefore also reads the
+README of every roadmap at the head of every open roadmap pull request (the host's index and mirror
+of `tauceti-roadmap roadmaps`, rebuilt first when older than ten minutes) and reports a
+`CYCLE through open pull requests` line, counted under `depcheck`, when the citations of the roadmap
+under check close a circle: a pull request waits for another when one of its READMEs cites a roadmap
+that is not on main and that the other adds, the folders of one pull request merge together, and of
+several pull requests carrying the same new roadmap the oldest adds it. The line names each citation
+of the circle. The repair is on the side that is checked: the README withdraws its citation and
+states the item itself (the special case stays where it is; an acyclic merge order comes before
+citing the more general form). The agents' `gate --depcheck` prints the same line (`--pr N` names the
+pull request that carries the roadmap). A host with no index yet makes no such check.
+
 The outside-folder check diffs a pull request's branch against the merge base with the branch it
 merges into. For most that is the project branch; a stacked pull request, whose base is another
 roadmap pull request's branch (`roadmap/<parent>`), carries the parent's folder relative to main, so

@@ -21,6 +21,10 @@ functions over README texts (no /tmp lists, no hard-coded pull requests or bundl
   is never UPWARD, it is not checked as a consumer, and a cycle among such roadmaps alone is not
   reported. The merge order is the order of the open pull requests; where it lists a roadmap on
   main means nothing.
+* `open_cycles(name, readme, texts, ...)` reports the cycles of one roadmap through other open pull
+  requests, from the READMEs at their heads: the merge order lists the board's roadmaps and the
+  managed pull requests, so a roadmap that exists only in another author's open pull request, and
+  cites this one back, is invisible to `check_order`.
 * `move_after_suppliers(...)` and `repair_upward(...)` repair an UPWARD edge of a listed roadmap by
   moving it right after its last supplier, unless one of its consumers comes no later than that
   supplier (the move would put a supplier after a consumer).
@@ -295,6 +299,94 @@ def check_order(edges: dict[str, dict[str, set[int]]], order: list[str], only: s
             continue
         problems.append("CYCLE among: " + ", ".join(comp))
     return problems
+
+
+OPEN_CYCLE = "CYCLE through open pull requests"
+
+
+def open_cycles(name: str, readme: str, texts, merged: set[str] | frozenset = frozenset(), pull_request: int = 0,
+                main_extended: set[str] | frozenset = frozenset(), limit: int = 3) -> list[str]:
+    """CYCLE lines for the supplier cycles of `name` that run through other open pull requests (empty =
+    none). The merge order and the snapshots of the managed pull requests cannot show them: a roadmap
+    that exists only in somebody else's open pull request is in neither (2026-11-09: four accepted
+    pull requests each cited a roadmap of another author's open pull request that cited them back,
+    directly or through two more pull requests).
+
+    `texts`: `(where, roadmap, README)` for every roadmap on main (`where` = "main") and every roadmap
+    folder an open pull request carries at its head (`where` = "#123"), as `overlaps.readmes` gives
+    them. `readme` is the candidate text of `name` and replaces every copy of it. `merged`: the
+    roadmaps on main. `pull_request`: the one that carries `name` (0: the only open one that carries
+    it, if there is exactly one; else the roadmap stands alone).
+
+    A pull request waits for another when one of its READMEs cites a roadmap that is not on main and
+    that the other adds; a citation of a roadmap on main constrains nothing. The folders of one pull
+    request merge together, so the cycles are those between pull requests, found from the citations
+    `readme` makes. Of several pull requests that carry the same new roadmap (a branch stacked on
+    another against main carries its parent's folders), the oldest is the one that adds it."""
+    carried: dict[int, dict[str, str]] = defaultdict(dict)
+    for where, roadmap, text in texts:
+        if where.startswith("#") and where[1:].isdigit() and roadmap != name:
+            carried[int(where[1:])].setdefault(roadmap, text)
+    holders = sorted(int(w[1:]) for w, roadmap, _t in texts if roadmap == name and w.startswith("#") and w[1:].isdigit())
+    own = pull_request or (holders[0] if len(holders) == 1 else 0)
+    carried[own] = {**carried.get(own, {}), name: readme}
+    merged = set(merged) | {roadmap for where, roadmap, _t in texts if where == "main"}
+    adder: dict[str, int] = {}
+    for number in sorted(carried, key=lambda n: (n != own, n)):      # the candidate's pull request first, then oldest first
+        for roadmap in carried[number]:
+            if roadmap not in merged:
+                adder.setdefault(roadmap, number)
+    new = set(adder)
+    waits: dict[int, dict[int, tuple[str, str]]] = {}
+
+    def suppliers(roadmap: str, text: str) -> list[str]:
+        return sorted(s for s in supplier_edges({roadmap: text}, new | {roadmap}, main_extended).get(roadmap, {})
+                      if s in new and s != roadmap)
+
+    def waits_for(number: int) -> dict[int, tuple[str, str]]:
+        """The pull requests `number` waits for, each with one citation (consumer, supplier) that says so."""
+        if number not in waits:
+            found: dict[int, tuple[str, str]] = {}
+            for roadmap, text in sorted(carried.get(number, {}).items()):
+                for s in suppliers(roadmap, text):
+                    if adder[s] != number:
+                        found.setdefault(adder[s], (roadmap, s))
+            waits[number] = found
+        return waits[number]
+
+    def hop(number: int, cite: tuple[str, str]) -> str:
+        return f"{cite[0]} (#{number}) cites {cite[1]}" if number else f"{cite[0]} cites {cite[1]}"
+
+    lines = []
+    for first in suppliers(name, readme):
+        start = adder[first]
+        if start == own:
+            continue
+        # breadth first from the supplier's pull request back to the candidate's: the shortest circle
+        back: dict[int, tuple[int, tuple[str, str]] | None] = {start: None}
+        queue, closing = [start], None
+        while queue and closing is None:
+            at = queue.pop(0)
+            for nxt, cite in sorted(waits_for(at).items()):
+                if nxt == own:
+                    closing = (at, cite)
+                    break
+                if nxt not in back:
+                    back[nxt] = (at, cite)
+                    queue.append(nxt)
+        if closing is None:
+            continue
+        path = [hop(*closing)]
+        at = closing[0]
+        while back[at] is not None:
+            prev, cite = back[at]
+            path.append(hop(prev, cite))
+            at = prev
+        path.append(hop(own, (name, first)))
+        lines.append(f"{OPEN_CYCLE}: " + "; ".join(reversed(path)) + " (no merge order exists while all of these stand)")
+        if len(lines) >= limit:
+            break
+    return lines
 
 
 def remove_from_order(text: str, names: set[str]) -> str:
