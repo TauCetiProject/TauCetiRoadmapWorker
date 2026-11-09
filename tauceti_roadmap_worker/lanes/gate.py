@@ -34,6 +34,7 @@ from .base import (
     fetch_pr_base,
     load_order,
     merged_for,
+    open_cycle_inputs,
     open_roadmap_prs,
     order_path,
     owe,
@@ -241,7 +242,7 @@ class GateLane(Lane):
         order = load_order(order_path(ctx.cfg, ws.board, ws.content))
         opts = gates.GateOptions.from_config(ctx.cfg, order=order or None, dropped=dropped_names(ctx.cfg),
                                              siblings=sibling_readmes(ctx.state, ctx.cfg.roadmap.active_dir, ws.extra["prs"]),
-                                             merged=merged_for(ctx, ws))
+                                             merged=merged_for(ctx, ws), **open_cycle_inputs(ctx, ws))
         found, ws.extra["gate"] = gate_problems(ctx, ws, job.name, ws.extra.get("folder") or job.name, opts)
         return found
 

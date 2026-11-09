@@ -74,6 +74,7 @@ from .base import (
     load_order,
     merged_for,
     on_main_note,
+    open_cycle_inputs,
     open_roadmap_prs,
     owe,
     owes,
@@ -595,7 +596,7 @@ class PRReviewLane(Lane):
         order = load_order(gate_order_file(cfg, ws, job.name))
         opts = gates.GateOptions.from_config(cfg, order=order or None, dropped=dropped_names(cfg),
                                              siblings=sibling_readmes(ctx.state, cfg.roadmap.active_dir, ws.extra["prs"]),
-                                             merged=merged_for(ctx, ws))
+                                             merged=merged_for(ctx, ws), **open_cycle_inputs(ctx, ws))
         opts.folder = board.prreview_folder(job)
         active = re.escape(cfg.roadmap.active_dir)
         opts.outside_folder_allow.extend(rf"^{active}/{re.escape(f)}/" for f in other_folders(job))
