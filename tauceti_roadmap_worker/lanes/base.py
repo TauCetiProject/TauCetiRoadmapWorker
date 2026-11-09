@@ -33,6 +33,7 @@ from .. import (
     gitops,
     openroadmaps,
     overlaps,
+    libsearch,
     prompts,
     prreviews,
     references,
@@ -775,6 +776,25 @@ class Lane:
         rel = readme.relative_to(ws.board) if readme.is_relative_to(ws.board) else readme.name
         path.write_text(openroadmaps.report(citations, names, why, index, str(rel)), encoding="utf-8")
         ws.extra["citations"] = (path, len(citations) + len(names))
+        self.prepare_library_matches(job, ctx, ws, lean)
+
+    def prepare_library_matches(self, job: Job, ctx: Context, ws: Workspace, lean: Path) -> None:
+        """`scratch/library-matches.md`: what Loogle and LeanSearch return for every declaration of the
+        roadmap's `Suggested.lean` (`libsearch`), so a target the pins already prove under another name is
+        a lead the reviewer opens rather than a memory test. Off with `[prreview] library_search = false`;
+        best effort, like the citations."""
+        if not getattr(ctx.cfg.prreview, "library_search", True) or ctx.dry_run or not lean.is_file():
+            return
+        try:
+            found, note = libsearch.search(lean.read_text(encoding="utf-8"))
+            rel = lean.relative_to(ws.board) if lean.is_relative_to(ws.board) else lean.name
+            text, strong = libsearch.report(found, note, str(rel))
+        except Exception as exc:  # noqa: BLE001 - a tool for the agent: its failure must never fail the round
+            print(f"{ws.job_dir.name}: the library near-matches were not computed ({type(exc).__name__}: {str(exc)[:160]})")
+            return
+        path = ws.scratch / "library-matches.md"
+        path.write_text(text, encoding="utf-8")
+        ws.extra["library"] = (path, strong, len(found))
 
     def prepare_overlaps(self, job: Job, ctx: Context, ws: Workspace, index: dict, readme: Path) -> None:
         """`scratch/overlaps.md`: the other open pull requests that change this roadmap and whether
@@ -870,6 +890,14 @@ class Lane:
                             "under \"Overlap with open pull requests\" say." if found[1]
                             else f" For this roadmap the worker found none (`{found[0]}` has the closest roadmaps).")
             lines.append(overlap)
+            found = ws.extra.get("library")
+            if found:
+                lines.append(
+                    f"- **Library near-matches**: `{found[0]}` lists, for each of the {found[2]} declarations of "
+                    "`Suggested.lean`, what Loogle returns for the constants of its conclusion and what LeanSearch returns "
+                    f"for its docstring ({found[1]} with a same-name hit). Leads, not verdicts: open each candidate at the "
+                    "pinned Mathlib or Tau Ceti commit and compare statements. A target the pin already proves is a finding "
+                    "(the roadmap cites it and drops the target); a weaker or more special library statement is not.")
         sigs = ws.extra.get("signatures")
         if sigs:
             path, total, flagged, reason = sigs

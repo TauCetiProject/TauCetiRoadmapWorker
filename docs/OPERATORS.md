@@ -675,6 +675,7 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 | `skip_authors` | `[]` | never these authors' pull requests |
 | `operator_prs` | `[]` | pull request numbers whose review rounds an operator files by hand (a serial chain over a many-folder pull request); `board sync` files none for them |
 | `parent_roadmaps` | `[]` | roadmap folders that carry sub-roadmaps below them yet are roadmaps in their own right: their README stays under review instead of being read as a family index |
+| `library_search` | `true` | before a PR review, ask Loogle and LeanSearch about every declaration of the roadmap's `Suggested.lean` and hand the reviewer `scratch/library-matches.md` (leads for targets Mathlib or Tau Ceti already prove under another name) |
 | `max_folders` | `10` | a pull request editing more roadmap folders than this is a chore and not reviewed, unless it adds the README.md of every one of them |
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |

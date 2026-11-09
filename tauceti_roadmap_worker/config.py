@@ -272,6 +272,7 @@ class PRReview:
     skip_authors: list[str] = field(default_factory=list)   # never these authors' pull requests
     operator_prs: list[int] = field(default_factory=list)   # pull requests whose review rounds an operator files; `board sync` files none for them
     parent_roadmaps: list[str] = field(default_factory=list)  # roadmaps that carry sub-roadmaps yet are roadmaps themselves (reviewed), not family indexes
+    library_search: bool = True      # ask Loogle and LeanSearch about every declaration of the roadmap's Lean file for the reviewer (`scratch/library-matches.md`)
     # A pull request that edits more roadmap folders than this is a chore and is not reviewed, unless
     # it adds the README.md of every one of them (a bundle of new roadmaps).
     max_folders: int = 10
