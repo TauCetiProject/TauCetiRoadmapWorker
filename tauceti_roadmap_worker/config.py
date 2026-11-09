@@ -270,6 +270,8 @@ class PRReview:
     per_run: int = 3                 # new jobs filed per `board sync` run, oldest pull request first
     authors: list[str] = field(default_factory=list)        # only these authors' pull requests (empty: all)
     skip_authors: list[str] = field(default_factory=list)   # never these authors' pull requests
+    operator_prs: list[int] = field(default_factory=list)   # pull requests whose review rounds an operator files; `board sync` files none for them
+    parent_roadmaps: list[str] = field(default_factory=list)  # roadmaps that carry sub-roadmaps yet are roadmaps themselves (reviewed), not family indexes
     # A pull request that edits more roadmap folders than this is a chore and is not reviewed, unless
     # it adds the README.md of every one of them (a bundle of new roadmaps).
     max_folders: int = 10
@@ -493,6 +495,11 @@ def validate(cfg: Config) -> None:
         if any(not isinstance(a, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", a)
                for a in getattr(cfg.prreview, key)):
             problems.append(f"prreview.{key} must list GitHub logins")
+    if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in cfg.prreview.operator_prs):
+        problems.append("prreview.operator_prs must list pull request numbers")
+    if any(not isinstance(a, str) or not re.fullmatch(r"[A-Z][A-Za-z0-9]*(/[A-Z][A-Za-z0-9]*)*", a)
+           for a in cfg.prreview.parent_roadmaps):
+        problems.append("prreview.parent_roadmaps must list roadmap folder names")
     if cfg.worker.idle_seconds < 30:
         problems.append("worker.idle_seconds must be at least 30")
     if cfg.worker.writes_per_minute < 0 or cfg.worker.writes_per_hour < 0:

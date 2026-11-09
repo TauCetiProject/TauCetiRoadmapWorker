@@ -1551,7 +1551,8 @@ OPEN_ROUND = ("available", "claimed", "submitted")     # a review or gate round 
 CHORE_TITLE = re.compile(r"^\s*(?:chore|archive)\b", re.IGNORECASE)
 
 
-def review_folders(entry: dict, active_dir: str, completed_dir: str, on_main: set[str]) -> dict[str, str]:
+def review_folders(entry: dict, active_dir: str, completed_dir: str, on_main: set[str],
+                   parents: set[str] | frozenset[str] = frozenset()) -> dict[str, str]:
     """The roadmap folders a pull request adds or edits, relative to `active_dir`, each with the change
     of its README.md in the pull request ('' when the pull request leaves it alone), from its
     `openroadmaps.inventory` entry and `on_main`, the folders holding a README.md on main
@@ -1579,7 +1580,9 @@ def review_folders(entry: dict, active_dir: str, completed_dir: str, on_main: se
             folder = path[len(active):-len("/README.md")]
             (readmes.discard if change == "removed" else readmes.add)(folder)
     roadmaps = {d for d in readmes if d and re.fullmatch(board.NAME_RE, d.rsplit("/", 1)[-1])}
-    index = {d for d in roadmaps if any(other.startswith(d + "/") for other in roadmaps)}
+    # a roadmap with sub-roadmaps below it is a family index (its README is a table of contents, not reviewed)
+    # unless the configuration names it as a roadmap in its own right (`prreview.parent_roadmaps`)
+    index = {d for d in roadmaps if any(other.startswith(d + "/") for other in roadmaps)} - set(parents)
     touched: dict[str, list[tuple[str, str]]] = {}
     for path, change in changes.items():
         parts = path[len(active):].split("/")[:-1]
@@ -1602,7 +1605,8 @@ def review_plan(entry: dict, cfg, on_main: set[str]) -> tuple[dict[str, str], st
     report, a change under `completed_dir`). A chore has none: a pull request titled as one
     (`CHORE_TITLE`), or one that edits more than `[prreview] max_folders` roadmap folders, unless it
     adds the README.md of every one of them (a bundle of new roadmaps)."""
-    folders = review_folders(entry, cfg.roadmap.active_dir, cfg.roadmap.completed_dir, on_main)
+    folders = review_folders(entry, cfg.roadmap.active_dir, cfg.roadmap.completed_dir, on_main,
+                             set(cfg.prreview.parent_roadmaps))
     if not folders:
         return {}, ""
     if CHORE_TITLE.match(entry.get("title") or ""):
@@ -1953,6 +1957,9 @@ def sync_pr_reviews(ctx) -> list[str]:
             out.append(f"#{number}: not reviewed ({why})")
             continue
         if not folders or not author_reviewed(p, author) or not head:
+            continue
+        if number in p.operator_prs:
+            out.append(f"#{number}: rounds filed by the operator (prreview.operator_prs)")
             continue
         if number in carried_prs:
             continue             # small repairs on an accepted head: the acceptance carries, no round

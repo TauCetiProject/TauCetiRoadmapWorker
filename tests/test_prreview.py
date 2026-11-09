@@ -1626,3 +1626,33 @@ def test_plan_and_manifest_edit_guards():
         lp.manifest_edit_problems(MANIFEST_BEFORE, "[[source")[0].startswith("sources.toml does not parse")
     assert lp.manifest_edit_problems(MANIFEST_BEFORE, MANIFEST_BEFORE.replace("2001", "1999"))[0].startswith(
         "sources.toml: a repair keeps the author's entries")
+
+
+# --- operator-filed rounds and parent roadmaps ----------------------------------------------------
+
+def test_the_operator_files_the_rounds_of_a_listed_pull_request():
+    out, fake = sync(ContentGH([node(617, H1)]), operator_prs=[617])
+    assert fake.created == [] and out == ["#617: rounds filed by the operator (prreview.operator_prs)"]
+    _out, fake = sync(ContentGH([node(617, H1)]), operator_prs=[9])
+    assert created(fake) == [("PRREVIEW-Foo~1", "Foo")]
+
+
+def test_a_parent_roadmap_keeps_its_own_readme_under_review():
+    entry = {"files": [{"path": "TauCetiRoadmap/Family/README.md", "change": "added"},
+                       {"path": "TauCetiRoadmap/Family/Inner/README.md", "change": "added"}]}
+    assert intake.review_folders(entry, "TauCetiRoadmap", "Completed", set()) == {"Family/Inner": "added"}
+    assert intake.review_folders(entry, "TauCetiRoadmap", "Completed", set(), {"Family"}) == {
+        "Family": "added", "Family/Inner": "added"}
+    paths = [(f"TauCetiRoadmap/Family/{p}", "ADDED") for p in ("README.md", "Inner/README.md")]
+    _out, fake = sync(ContentGH([node(44, H2, paths=paths)]), per_run=20, parent_roadmaps=["Family"])
+    assert sorted(folder for _id, folder in created(fake)) == ["Family", "Family/Inner"]
+
+
+def test_operator_prs_and_parent_roadmaps_parse_and_are_checked():
+    parsed = config.parse('[project]\nname = "P"\n[prreview]\noperator_prs = [617, 1854]\n'
+                          'parent_roadmaps = ["RiemannianGeometry"]\n', "x.toml").prreview
+    assert (parsed.operator_prs, parsed.parent_roadmaps) == ([617, 1854], ["RiemannianGeometry"])
+    for bad, why in (("operator_prs = [0]", "prreview.operator_prs"), ('operator_prs = ["617"]', "prreview.operator_prs"),
+                     ('parent_roadmaps = ["not a folder"]', "prreview.parent_roadmaps")):
+        with pytest.raises(config.ConfigError, match=re.escape(why)):
+            config.parse(f'[project]\nname = "P"\n[prreview]\n{bad}\n', "x.toml")
