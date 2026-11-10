@@ -386,9 +386,18 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
     if job.kind == "port":
         # A package accepted before the board pull requests (its port follows the review, not a
         # red-team fix): the red team runs on the roadmap pull request, as it did then.
-        if redteam_rounds < 1 or not outcome.pr or any(a.startswith("FIX-RT-") for a in job.after):
+        # `redteam_round`: the round a merge of the board pull request cut short (boardpr.redteam_after_port);
+        # the red team resumes there, with the earlier passes and their repair to verify.
+        resume = int(job.inputs.get("redteam_round") or 0)
+        if redteam_rounds < 1 or not outcome.pr or resume > redteam_rounds:
             return []
-        return redteam_round(1, [job.id], [job.id], {"pr": outcome.pr, "operator": outcome.operator})
+        if not resume and any(a.startswith("FIX-RT-") for a in job.after):
+            return []
+        inputs = {"pr": outcome.pr, "operator": outcome.operator}
+        repair = job.inputs.get("repair", "") if resume > 1 else ""
+        if repair:
+            inputs.update(previous=list(job.inputs.get("previous", [])), repair=repair)
+        return redteam_round(resume or 1, [job.id], [job.id] + ([repair] if repair else []), inputs)
     if job.kind == "redteam":
         if not outcome.round_complete:
             return []

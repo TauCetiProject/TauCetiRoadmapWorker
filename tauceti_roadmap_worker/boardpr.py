@@ -849,12 +849,17 @@ def retry_merges(ctx, number: int, pr: dict, jobs: list[Job], comments: list[dic
 
 
 def merged_by_hand(ctx, open_numbers: set[int], jobs: list[Job], shared, yes: bool) -> list[str]:
-    """Review jobs whose board pull request was merged on GitHub (not by the intake): finished from
-    their recorded or last accepting review, and what follows created, never reopened. A package
+    """Jobs whose board pull request was merged on GitHub (not by the intake). A review with an
+    accepting review is finished from it, and what follows created, never reopened. A package
     merged that way skips the board red team (there is no open pull request for it): its port
-    follows, and the red team runs on the roadmap pull request."""
+    follows, and the red team runs on the roadmap pull request.
+
+    Nothing can run on a closed pull request, so the rounds a merge cut short go on as rounds did
+    before the board pull requests: a review without an accepting review reads the board's main
+    (`review_on_main`), a repair reads its review there and is a submission (`fix_on_main`), and a
+    red-team round resumes on the roadmap pull request after the port (`redteam_after_port`)."""
     out = []
-    pending = [j for j in jobs if j.kind == "review" and j.state != "done" and j.inputs.get("board_pr")
+    pending = [j for j in jobs if j.kind in ("review", "redteam", "fix") and j.state != "done" and j.inputs.get("board_pr")
                and int(j.inputs["board_pr"]) not in open_numbers]
     for number in sorted({int(j.inputs["board_pr"]) for j in pending}):
         try:
@@ -865,9 +870,11 @@ def merged_by_hand(ctx, open_numbers: set[int], jobs: list[Job], shared, yes: bo
         except GHError:
             continue
         sub = board.decode_submission(pr.get("body") or "") or {}
-        for job in [j for j in pending if int(j.inputs["board_pr"]) == number]:
+        mine = [j for j in pending if int(j.inputs["board_pr"]) == number]
+        for job in [j for j in mine if j.kind == "review"]:
             reviews = accepted_reviews(ctx, job, comments, shared, (job.inputs.get("merge_pending") or {}).get("comments"))
             if not reviews:
+                out += review_on_main(ctx, job, number, yes)
                 continue
             if not yes:
                 out.append(f"#{number}: merged on GitHub; would finish {job.id} from its accepted review (dry run)")
@@ -883,7 +890,98 @@ def merged_by_hand(ctx, open_numbers: set[int], jobs: list[Job], shared, yes: bo
                 job.inputs.pop("board_pr", None)     # no open pull request to red-team: the port and its red team follow
             out.append(f"#{number}: merged on GitHub; " + after_verdict(ctx, job, "accepted", reviews, number, pr, jobs,
                                                                      open_pr=False))
+        for fix in [j for j in mine if j.kind == "fix" and board.artefact_of(j.id)]:
+            out += fix_on_main(ctx, fix, number, pr, jobs, comments, yes)
+        passes = [j for j in mine if j.kind == "redteam"]
+        if passes:
+            out += redteam_after_port(ctx, passes, number, pr, jobs, yes)
     return out
+
+
+MERGED_FIRST = "Intake: #{number} was merged on GitHub before this {what} ran."
+
+
+def off_the_pull_request(ctx, job: Job) -> None:
+    """The job no longer names its (merged) board pull request: its lane works on the board's main."""
+    for key in ("board_pr", "after_comment", "base_head", "merge_pending"):
+        job.inputs.pop(key, None)
+    ctx.board.update_spec(job)
+
+
+def review_on_main(ctx, job: Job, number: int, yes: bool) -> list[str]:
+    """A review that has no accepting review on its merged pull request: it reviews the board's
+    main, where the merge put the design or package, and its report is a submission. One that was
+    submitted (a comment the merge left unread, or one that was not counted) is run again."""
+    if job.state not in ("available", "submitted"):
+        return []                           # claimed: its worker is refused and releases it; blocked: a human's
+    if not yes:
+        return [f"#{number}: merged on GitHub; {job.id} would review the board's main (dry run)"]
+    note_ = MERGED_FIRST.format(number=number, what="review") + " It reviews the board's main; its report is a submission."
+    if job.state == "submitted":
+        ctx.board.set_state(job, "available", note_)
+    else:
+        ctx.board.comment(job.number, note_)
+    off_the_pull_request(ctx, job)
+    return [f"#{number}: merged on GitHub; {job.id} reviews the board's main"]
+
+
+def fix_on_main(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], comments: list[dict], yes: bool) -> list[str]:
+    """A repair of a design or package whose pull request was merged. Pushed before the merge
+    (`submitted`): it is on the main, so it is done and the next review reads the main. Not run yet
+    (`available`, or `blocked` for a human): it repairs the board's main, and is a submission."""
+    if fix.state not in ("available", "blocked", "submitted"):
+        return []
+    if not yes:
+        return [f"#{number}: merged on GitHub; {fix.id} would go on on the board's main (dry run)"]
+    if fix.state != "submitted":
+        ctx.board.comment(fix.number, MERGED_FIRST.format(number=number, what="repair")
+                          + " It repairs the board's main; it is a submission.")
+        off_the_pull_request(ctx, fix)
+        return [f"#{number}: merged on GitHub; {fix.id} repairs the board's main"]
+    from .intake import advance
+    record_pusher(ctx, fix, number, comments)
+    off_the_pull_request(ctx, fix)
+    finish_job(ctx, fix, f"Intake: fix pushed to #{number} at `{pr['head']['sha'][:7]}`, which was merged on GitHub.")
+    return [f"#{number}: merged on GitHub; {fix.id} done; " + advance(ctx, fix, Outcome(), jobs)]
+
+
+def redteam_after_port(ctx, passes: list[Job], number: int, pr: dict, jobs: list[Job], yes: bool) -> list[str]:
+    """A red-team round whose pull request was merged before every pass was done: the package's
+    verdict is written and its authors are done (as when the intake merges it), its port is
+    created, and the passes are closed as superseded. The port names the round (`redteam_round`,
+    with the earlier passes and their repair), so the red team resumes there on the roadmap pull
+    request. A pass a worker holds waits for the next scan (the worker is refused and releases it)."""
+    from .intake import add_to_order_for_port, order_ports_after_suppliers, supersede
+    if any(j.state not in ("available", "submitted") for j in passes):
+        return []
+    first = min(passes, key=lambda j: (board.parse_job_id(j.id).round, j.id))
+    name, round_ = first.name, board.parse_job_id(first.id).round
+    if not yes:
+        return [f"#{number}: merged on GitHub; would port {name} and resume its red team at round {round_} on the "
+                "roadmap pull request (dry run)"]
+    out = []
+    port = new_port(name, first, round_)
+    if not any(j.id == port.id for j in jobs):
+        merged(ctx, number, pr, jobs, accepted_verdict(ctx, first, number, jobs))
+        deferred = order_ports_after_suppliers(ctx, [port], jobs)
+        made = board.made_note(ctx.board, port, ctx.board.create(port))
+        out.append(f"#{number}: merged on GitHub; created {made} (red team from round {round_} on the roadmap pull request)"
+                   + ("; " + "; ".join(deferred) if deferred else "") + "; " + add_to_order_for_port(ctx, name))
+    for job in passes:
+        if supersede(ctx, job, f"#{number} was merged on GitHub: the red team of {name} runs on the roadmap pull request, "
+                               f"after `{port.id}`", expect=job.state, closing="This pass is no longer needed"):
+            out.append(f"#{number}: {job.id} superseded")
+    return out
+
+
+def new_port(name: str, first: Job, round_: int) -> Job:
+    """The port that follows a package whose red-team round `round_` did not finish on the board."""
+    inputs = {"redteam_round": round_}
+    if round_ > 1:
+        inputs.update(previous=list(first.inputs.get("previous", [])), repair=first.inputs.get("repair", ""))
+    [port] = board.inherit_origin(first, [board.new_job(board.make_id("port", name), after=list(first.after),
+                                                         inputs=inputs)])
+    return port
 
 
 def scan(ctx, shared=None, yes: bool = False) -> list[str]:
