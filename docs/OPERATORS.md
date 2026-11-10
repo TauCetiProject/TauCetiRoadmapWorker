@@ -1015,6 +1015,13 @@ done, labelled `superseded` and closed with `Superseded by GATE-<Name>~k, which 
 references` (logged `GATE-<Name>~j: superseded by GATE-<Name>~k (waits on the same references)`;
 `; dry run: not written` without `--yes`). A round a worker took meanwhile is left alone.
 
+No gate round is filed for a pull request that revises a completed roadmap in place: one whose head
+holds `<completed_dir>/<Name>/README.md` and no `<active_dir>/<Name>/` (logged `#N: gate round not
+filed: <Name> is a completed roadmap revised in place (answered by hand)`). The gate lane works under
+`<active_dir>` only, so such a round could never pass; its review is answered by hand, and the
+awaiting-author label stays until it is. A gate round whose roadmap folder has no README.md at the
+pull request's head fails before its agent runs (`#N: no <active_dir>/<Name>/README.md at its head`).
+
 `board sync` reads the open roadmap pull requests by GraphQL, `[board] graphql_batch` (default 15)
 per query: each with its draft flag, labels, head, reviews, inline review comments and issue
 comments, handed to the label, gate and review code in the shapes the REST reads give. A pull request

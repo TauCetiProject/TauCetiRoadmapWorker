@@ -225,6 +225,12 @@ class GateLane(Lane):
         ws.workdir = wt
         base_ref = mine.get("base") or ctx.cfg.project.branch
         folder = roadmap_folder_for(ctx, wt, job.name, base_ref)
+        if not (wt / ctx.cfg.roadmap.active_dir / folder / "README.md").is_file():
+            # Nothing for the agent to repair and nothing the gate can pass (2026-11-10: a round for a
+            # pull request that revises a completed roadmap in place ran its agent for 17 minutes, then
+            # failed on missing files).
+            raise LaneError(f"#{pr}: no `{ctx.cfg.roadmap.active_dir}/{folder}/README.md` at its head: "
+                            "this round cannot answer its review")
         ws.extra.update(prs=prs, siblings=sibling_checkouts(ctx, prs, skip=job.name), pr=pr, branch=mine["branch"],
                         head=head, owner=mine["owner"], answerers=sorted(authors), base_ref=base_ref, folder=folder,
                         head_repo=mine.get("head_repo") or "", readme=wt / ctx.cfg.roadmap.active_dir / folder / "README.md")
