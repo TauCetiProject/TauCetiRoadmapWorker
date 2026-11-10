@@ -1662,6 +1662,176 @@ def test_a_carried_repair_that_fails_the_gate_on_the_moved_head_is_not_pushed(hu
     assert sh(rh.content, "rev-parse", f"{moved}^") == head and len(rh.comments[905]) == 1 and rh.labels == []
 
 
+# 2026-11-10: on 22 open pull requests the reviews asked for a merge of the base branch, round after round:
+# the branch pinned an older Tau Ceti than main. A repair works in its roadmap folder and could not make
+# it. The repair now starts by merging the base branch when the branch's Lake pins are behind.
+
+PINS_MOVED = {"lake-manifest.json": '{"packages": ["a newer pin"]}\n', "TauCetiRoadmap/Bar/README.md": "# Bar\n"}
+
+
+def main_moves(rh, tmp_path, files=PINS_MOVED):
+    """The content repository's main gains a commit that writes `files`; returns it."""
+    seed = tmp_path / "main-moves"
+    sh(tmp_path, "clone", "-q", "-b", "main", str(rh.content), str(seed))
+    for rel, text in files.items():
+        (seed / rel).parent.mkdir(parents=True, exist_ok=True)
+        (seed / rel).write_text(text)
+    sh(seed, "add", "-A")
+    sh(seed, "commit", "-q", "-m", "main moves")
+    sh(seed, "push", "-q", "origin", "HEAD:refs/heads/main")
+    return sh(seed, "rev-parse", "HEAD")
+
+
+def gate_bases(monkeypatch):
+    """The gates faked as passing, the `base` of each recorded."""
+    bases = []
+
+    def run_gate(*a, **k):
+        bases.append(sh(a[0], "rev-parse", k["base"]))
+        return gates.GateResult("Foo", counts={"build": 0, "depcheck": 0, "readme-ids-missing": 0})
+    monkeypatch.setattr(lane_prreview.gates, "run_gate", run_gate)
+    return bases
+
+
+@needs_git
+def test_a_repair_first_merges_the_base_branch_into_a_branch_whose_pins_are_behind(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    tip, briefs, bases = main_moves(rh, tmp_path), [], gate_bases(monkeypatch)
+    repair_agent(monkeypatch, briefs)
+    rh.fail("/issues/905/comments", None, "crash")             # the reply is posted, then the process dies
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    with pytest.raises(KeyboardInterrupt):
+        lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    new = rh.head(905)
+    merged = sh(rh.content, "rev-parse", f"{new}^")
+    # The branch is the reviewed head, the merge of main, and the repair's one commit in its folder.
+    assert sh(rh.content, "rev-parse", f"{merged}^1") == head and sh(rh.content, "rev-parse", f"{merged}^2") == tip
+    assert sh(rh.content, "log", "-1", "--format=%an|%s", merged) == "alice|Merge main into this branch"
+    assert sh(rh.content, "diff", "--name-only", merged, new).split() == ["TauCetiRoadmap/Foo/README.md"]
+    assert sh(rh.content, "show", f"{new}:lake-manifest.json") == PINS_MOVED["lake-manifest.json"].strip()
+    # The agent was told, the repair's gate took the merge as what the repair starts from, and the record keeps it.
+    [(_, brief, _)] = briefs
+    assert f"the worker merged `main` into this worktree (commit `{merged[:7]}`)" in brief
+    assert bases[-1] == merged
+    assert lane_base.read_pending(ctx, job)["repair"] == {"sha": new, "merged": merged}
+
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", lambda *a, **k: pytest.fail("the agent ran again"))
+    ctx = pool_ctx(rh)
+    result = lane_for(job).run(job, ctx)
+    assert result.status == "submitted", result.detail
+    assert rh.head(905) == new and len(rh.comments[905]) == 2 and rh.labels == ["awaiting-review"]
+    assert f"repaired at {new[:7]} with main merged at {merged[:7]} and answered the review" in result.detail
+    reply = rh.comments[905][1]["body"]
+    assert reply.startswith(f"Fixed in `{new[:7]}` (reply to the review):")
+    assert (f"The review read `{head[:7]}`, whose Lake pins were behind `main`. Before the repair, `main` was "
+            f"merged into the branch at `{merged[:7]}`") in reply
+
+
+@needs_git
+def test_a_merge_of_the_base_branch_alone_is_pushed_when_the_folder_needs_no_change(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    tip = main_moves(rh, tmp_path)
+    repair_agent(monkeypatch, [], edit=False)
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    new = rh.head(905)
+    assert result.status == "submitted", result.detail
+    assert sh(rh.content, "rev-parse", f"{new}^1") == head and sh(rh.content, "rev-parse", f"{new}^2") == tip
+    assert f"repaired at {new[:7]} with main merged at {new[:7]} and answered the review" in result.detail
+
+
+@needs_git
+@pytest.mark.parametrize("case", ["main's pins did not move", "the branch moved its own pins", "conflict", "switched off"])
+def test_a_repair_merges_no_base_branch_it_need_not_or_cannot(hub, monkeypatch, tmp_path, case):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    if case == "the branch moved its own pins":
+        work = tmp_path / "author"
+        (work / "lake-manifest.json").write_text('{"packages": ["the author\'s pin"]}\n')
+        sh(work, "add", "-A")
+        sh(work, "commit", "-q", "-m", "a pin bump of the author's")
+        sh(work, "push", "-q", "origin", f"HEAD:refs/heads/{ROADMAP_BRANCH}")
+        head = rh.head(905)
+        job.inputs["head"] = head
+    main_moves(rh, tmp_path, {"TauCetiRoadmap/Bar/README.md": "# Bar\n"} if case == "main's pins did not move"
+               else {**PINS_MOVED, ".gitignore": "build/\n"} if case == "conflict" else PINS_MOVED)
+    briefs, bases = [], gate_bases(monkeypatch)
+    repair_agent(monkeypatch, briefs)
+    ctx = pool_ctx(rh)
+    ctx.cfg.prreview.repair_merges_base = case != "switched off"
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    result = lane.deliver(job, ctx, ws)
+    new = rh.head(905)
+    assert result.status == "submitted", result.detail
+    # The repair is the one commit on the reviewed head, as before.
+    assert sh(rh.content, "rev-parse", f"{new}^") == head and sh(rh.content, "rev-list", "--count", "--merges", new) == "0"
+    assert f"repaired at {new[:7]} and answered the review" in result.detail and bases[-1] == head
+    assert "the worker merged" not in briefs[0][1] and "was merged into the branch" not in rh.comments[905][1]["body"]
+    notes = "\n".join(ws.extra.get("notes") or [])
+    assert ("main does not merge into the branch without conflicts" in notes) == (case == "conflict")
+
+
+def moving_with_main(monkeypatch, tmp_path, rh, merge=True):
+    """While the repair agent runs, another folder's repair of the same head is pushed: with `merge`,
+    its own merge of main, then its commit in the folder Bar."""
+    inner = lane_prreview.PRReviewLane.run_agent
+
+    def run_agent(self, ctx, ws, brief, label=""):
+        out, other = inner(self, ctx, ws, brief, label), tmp_path / "other"
+        if not other.exists():
+            sh(tmp_path, "clone", "-q", "-b", ROADMAP_BRANCH, str(rh.content), str(other))
+            if merge:
+                sh(other, "merge", "-q", "--no-ff", "-m", "Merge main into this branch", "origin/main")
+            (other / "TauCetiRoadmap" / "Bar").mkdir(parents=True, exist_ok=True)
+            (other / "TauCetiRoadmap" / "Bar" / "README.md").write_text("# Bar\n\nrepaired meanwhile\n")
+            sh(other, "add", "-A")
+            sh(other, "commit", "-q", "-m", "Bar: review repairs")
+            sh(other, "push", "-q", "origin", f"HEAD:refs/heads/{ROADMAP_BRANCH}")
+        return out
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", run_agent)
+
+
+@needs_git
+def test_a_repair_that_merged_the_base_branch_is_carried_onto_another_folders_repair_that_merged_it_too(
+        hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    tip = main_moves(rh, tmp_path)
+    repair_agent(monkeypatch, [])
+    moving_with_main(monkeypatch, tmp_path, rh)
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    new = rh.head(905)
+    onto = sh(rh.content, "rev-parse", f"{new}^")
+    assert result.status == "submitted", result.detail
+    # The other repair's merge and commit are kept; this repair's commit stands on them, its own merge left behind.
+    assert sh(rh.content, "log", "-1", "--format=%s", onto) == "Bar: review repairs"
+    assert sh(rh.content, "rev-parse", f"{onto}^^1") == head and sh(rh.content, "rev-parse", f"{onto}^^2") == tip
+    assert sh(rh.content, "rev-list", "--count", "--merges", new) == "1"
+    assert sh(rh.content, "diff", "--name-only", onto, new).split() == ["TauCetiRoadmap/Foo/README.md"]
+    assert f"repaired at {new[:7]} on top of {onto[:7]} and answered the review (awaiting-review)" in result.detail
+    reply = rh.comments[905][1]["body"]
+    assert f"The pull request moved to `{onto[:7]}` while this repair was made" in reply
+    assert "was merged into the branch" not in reply
+
+
+@needs_git
+def test_a_repair_that_merged_the_base_branch_is_not_carried_onto_a_head_without_that_merge(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    main_moves(rh, tmp_path)
+    repair_agent(monkeypatch, [])
+    moving_with_main(monkeypatch, tmp_path, rh, merge=False)
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    moved = rh.head(905)
+    assert result.status == "submitted", result.detail
+    assert f"; repair not pushed: the pull request moved from {head[:7]} to {moved[:7]} while the fix ran" in result.detail
+    assert sh(rh.content, "rev-parse", f"{moved}^") == head and len(rh.comments[905]) == 1 and rh.labels == []
+
+
 # --- a repair answers the findings about the pull request's title and description ---------------------------
 #
 # 2026-11-10: a repair may edit the roadmap folder only, so a finding about the description (it describes an

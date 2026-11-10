@@ -291,6 +291,11 @@ class PRReview:
     # the corrected text, and the worker puts it on the pull request with the push, keeping the generated
     # blocks and markers of the description as they are.
     repair_text: bool = True
+    # Such a repair first merges the base branch into the pull request's branch when the branch's Lake
+    # pins (manifest, toolchain, lakefile) are behind it and the branch changed none of them itself: a
+    # review's finding that the branch pins an older Tau Ceti is one no repair of the roadmap folder can
+    # answer otherwise. A merge that conflicts is not made.
+    repair_merges_base: bool = True
     # A reply on a labelled pull request that records `<!-- tauceti-roadmap-carried {"from": H0, "head": H1} -->`
     # carries the acceptance of H0 (a head an AI review accepted) to H1 when, between the two, the roadmap
     # folders changed by at most `small_change_lines` lines and nothing outside them changed: the label stays
