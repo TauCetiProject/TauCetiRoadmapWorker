@@ -1840,6 +1840,14 @@ def folders_accepted(ctx, folders, jobs: list[Job], head: str,
     return True, ""
 
 
+def next_review_round(reviews, leaf: str) -> int:
+    """The round a new review of a folder takes: one past the highest the board has for it. A count of
+    the folder's rounds names a round that exists as soon as one number is missing from the board (an
+    issue deleted or filed under another kind), and `create` then returns that finished round, so the
+    folder gets no review however often the intake runs."""
+    return 1 + max((board.parse_job_id(j.id).round for j in reviews if j.name == leaf), default=0)
+
+
 def sync_pr_reviews(ctx) -> list[str]:
     """`board sync`, with `[prreview] enabled`: the AI review of every roadmap folder an open pull
     request of the content repository adds or edits, whoever opened it, drafts included.
@@ -2022,8 +2030,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                     continue
                 if worker := head_worker(threads[number], head):
                     inputs["not_worker"] = worker
-            job = board.new_job(board.make_id("prreview", leaf, 1 + sum(1 for j in reviews if j.name == leaf)),
-                                inputs=inputs)
+            job = board.new_job(board.make_id("prreview", leaf, next_review_round(reviews, leaf)), inputs=inputs)
             issue = ctx.board.create(job)
             job.number, job.state = issue, "available"
             reviews.append(job)
