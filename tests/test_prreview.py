@@ -340,6 +340,15 @@ def test_a_new_round_is_a_re_review_of_the_head_the_latest_done_review_read():
                                                                  "rereview": True}
 
 
+def test_a_new_round_is_numbered_past_the_highest_round_when_a_number_is_missing():
+    # Round 2 is gone from the board: a count of the folder's rounds would name round 3, which exists and is
+    # done, and the board would hand that finished round back instead of filing one.
+    first, third = review_job(40, 1, 12, H1, "done"), review_job(42, 3, 11, H2, "done")
+    assert intake.next_review_round([first, third], "Foo") == 4 and intake.next_review_round([], "Foo") == 1
+    out, fake = sync(ContentGH([node(12, H3)]), [first, third])
+    assert [j.id for j, _s, _p in fake.created] == ["PRREVIEW-Foo~4"] and out == ["#12: PRREVIEW-Foo~4 created"]
+
+
 def test_the_re_review_of_a_head_a_worker_repaired_is_left_to_another_worker(tmp_path, monkeypatch):
     monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
     reply = {"id": 9, "user": {"login": "alice"},
