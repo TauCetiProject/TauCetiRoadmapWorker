@@ -86,6 +86,10 @@ def fake_git(cwd, *args, check=True, timeout=900):
         return SHA + "\n"
     if args[:2] == ("worktree", "add"):
         __import__("pathlib").Path(args[-2]).mkdir(parents=True, exist_ok=True)
+    if args[:1] == ("checkout",) and "-B" in args:      # a pull request's branch: its roadmap folder is there
+        readme = __import__("pathlib").Path(cwd) / "TauCetiRoadmap" / "Foo" / "README.md"
+        readme.parent.mkdir(parents=True, exist_ok=True)
+        readme.write_text("# Foo\n", encoding="utf-8")
     return ""
 
 
@@ -341,6 +345,55 @@ def test_no_gate_round_is_filed_while_a_review_of_a_pool_authors_pull_request_re
         cfg.roadmap.pool, cfg.prreview.repair_pool = pool, repair
         out, board = sync_pool()
         assert [j.id for j, _s, _p in board.created] == ["GATE-Foo~1"] and not any("deferred" in line for line in out)
+
+
+class ContentsGH(PullGH):
+    """PullGH with the roadmap folders at the pull request's head: `folders` maps a folder (relative to
+    the repository) to the names in it; any other folder is absent (HTTP 404)."""
+
+    def __init__(self, folders: dict, **kw):
+        super().__init__(**kw)
+        self.folders = folders
+
+    def api(self, path: str, paginate: bool = False):
+        prefix = f"repos/{REPO}/contents/"
+        if not path.startswith(prefix):
+            return super().api(path, paginate)
+        folder, _, ref = path[len(prefix):].partition("?ref=")
+        assert ref == SHA
+        if folder not in self.folders:
+            raise GHError(f"gh api {path}: gh: Not Found (HTTP 404)")
+        return [{"name": name, "type": "file"} for name in self.folders[folder]]
+
+
+def test_no_gate_round_is_filed_for_a_completed_roadmap_revised_in_place(tmp_path):
+    """The gate lane works under the active directory only: a round for a pull request that edits
+    `Completed/Foo/` in place ran its agent on a folder that does not exist, failed on missing files
+    and was offered again."""
+    files = ["README.md", "Suggested.lean"]
+    gh = ContentsGH({"Completed/Foo": files}, reviews=[REVIEW_A])
+    out, board = sync(tmp_path, gh)
+    assert "#905: gate round not filed: Foo is a completed roadmap revised in place (answered by hand)" in out
+    assert board.created == [] and "#905 Foo: awaiting-author" in out
+    # A pull request that brings the roadmap back under the active directory is gated as any other, ...
+    out, board = sync(tmp_path, ContentsGH({"Completed/Foo": files, "TauCetiRoadmap/Foo": files}, reviews=[REVIEW_A]))
+    assert "#905: GATE-Foo~1 created for @alice" in out
+    # ... as are an active roadmap, a completed folder without a README, and one whose folders cannot be read.
+    for folders in ({"TauCetiRoadmap/Foo": files}, {"Completed/Foo": ["NOTES.md"]}):
+        out, board = sync(tmp_path, ContentsGH(folders, reviews=[REVIEW_A]))
+        assert [j.id for j, _s, _p in board.created] == ["GATE-Foo~1"]
+    out, board = sync(tmp_path, PullGH(reviews=[REVIEW_A]))
+    assert [j.id for j, _s, _p in board.created] == ["GATE-Foo~1"]
+    # A 404 inside the head's sha is not the status.
+    assert not intake.NOT_FOUND.search("gh api repos/o/r/contents/TauCetiRoadmap/Foo?ref=abc404d: HTTP 502")
+
+
+def test_a_gate_round_without_its_roadmap_folder_fails_before_its_agent_runs(worker, monkeypatch):
+    def no_folder(cwd, *args, check=True, timeout=900):
+        return fake_git(cwd, *(a for a in args if a != "-B"), check=check, timeout=timeout)
+    monkeypatch.setattr(gitops, "git", no_folder)
+    with pytest.raises(lane_base.LaneError, match=r"#905: no `TauCetiRoadmap/Foo/README.md` at its head"):
+        prepare(worker(PullGH(reviews=[REVIEW_A])), gate_job())
 
 
 def gate_round(n: int, state: str, name: str = "Foo"):

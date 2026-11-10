@@ -39,6 +39,10 @@ def fake_git(cwd, *args, check=True, timeout=900):
     if args[:2] == ("worktree", "add"):
         path = args[-2]
         __import__("pathlib").Path(path).mkdir(parents=True, exist_ok=True)
+    if args[:1] == ("checkout",) and "-B" in args:      # a pull request's branch: its roadmap folder is there
+        readme = __import__("pathlib").Path(cwd) / "TauCetiRoadmap" / "Foo" / "README.md"
+        readme.parent.mkdir(parents=True, exist_ok=True)
+        readme.write_text("# Foo\n", encoding="utf-8")
     return ""
 
 

@@ -1475,6 +1475,35 @@ def supersede_waiting_gates(ctx, yes: bool = False) -> list[str]:
     return out
 
 
+NOT_FOUND = re.compile(r"\bHTTP 404\b")     # the status GitHub answers, never a 404 inside a path or a sha
+
+
+def revises_completed(ctx, p: dict) -> bool:
+    """Whether an open roadmap pull request revises its roadmap in place under `completed_dir`: at
+    its head the roadmap's folder holds a README.md there and `active_dir` has no folder of its name
+    (two REST reads). A completed roadmap is the maintainers' to judge, and the gate lane works under
+    `active_dir` only, so a gate round for such a pull request can never pass: its review is answered
+    by hand (2026-11-10: a round ran its agent for 17 minutes on a folder that does not exist, failed
+    on missing files and was offered again). False whenever a read fails for another reason than the
+    active folder's absence, and for a pull request that brings the roadmap back under `active_dir`."""
+    cfg = ctx.cfg
+    repo, head = cfg.repositories.content, quote(p["head"], safe="")
+    completed, active = cfg.roadmap.completed_dir.strip("/"), cfg.roadmap.active_dir.strip("/")
+    if not completed:
+        return False
+    try:
+        items = ctx.gh.api(f"repos/{repo}/contents/{completed}/{p['name']}?ref={head}")
+    except GHError:
+        return False
+    if not any(isinstance(i, dict) and i.get("name") == "README.md" for i in items or []):
+        return False
+    try:
+        ctx.gh.api(f"repos/{repo}/contents/{active}/{p['name']}?ref={head}")
+    except GHError as exc:
+        return bool(NOT_FOUND.search(str(exc)))
+    return False
+
+
 def repairing_review(cfg, jobs: list[Job], number: int, owner: str) -> Job | None:
     """The review of pull request #number that is claimed while its author is in the pool and
     `[prreview] repair_pool` is on: a review that asks for changes goes on to repair the pull request
@@ -1488,7 +1517,8 @@ def repairing_review(cfg, jobs: list[Job], number: int, owner: str) -> Job | Non
 def sync_pull_requests(ctx) -> list[str]:
     """The awaiting-author / awaiting-review labels of every open roadmap pull request the workers
     manage (`open_roadmap_prs`), a GATE job when a review waits for a reply (none while a pool
-    review repairs it: `repairing_review`), and held pull requests back to draft. Each pull request,
+    review repairs it: `repairing_review`; none for a completed roadmap revised in place:
+    `revises_completed`), and held pull requests back to draft. Each pull request,
     its reviews, issue comments and inline comments are read `[board] graphql_batch` at a time by
     GraphQL (`prbatch.PullReader`; REST for the rest)."""
     cfg, out = ctx.cfg, []
@@ -1540,6 +1570,9 @@ def sync_pull_requests(ctx) -> list[str]:
                 out.append(f"#{number}: gate round not filed: {waiting.id} is waiting for references")
             elif repairing is not None:
                 out.append(f"#{number}: gate round deferred: review {repairing.id} is repairing")
+            elif not open_round and revises_completed(ctx, p):
+                out.append(f"#{number}: gate round not filed: {p['name']} is a completed roadmap revised in place "
+                           "(answered by hand)")
             elif not open_round:
                 operator = p.get("operator", p["owner"])
                 gate = board.new_job(board.make_id("gate", p["name"], len(mine) + 1), requires_operator=operator,
