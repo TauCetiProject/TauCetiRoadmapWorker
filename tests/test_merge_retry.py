@@ -149,6 +149,18 @@ def test_a_review_stranded_by_a_merge_on_github_reviews_the_boards_main():
     assert boardpr.scan(ctx, yes=True) == []                                   # off the pull request: nothing to scan
 
 
+def test_rounds_stranded_on_two_merged_pull_requests_both_go_on():
+    one = new_job("REV-PKG-Foo~2", inputs={"board_pr": 12, "operator": "alice"})
+    two = new_job("REV-PKG-Bar~2", inputs={"board_pr": 13, "operator": "alice"})
+    (one.number, one.state), (two.number, two.state) = (5, "available"), (6, "available")
+    ctx, _board, gh = merged_package(one, two)
+    api = gh.api                                                               # the second pull request reads as the first
+    gh.api = lambda path, *a, **k: api(path.replace("/pulls/13", "/pulls/12").replace("/issues/13/", "/issues/12/"), *a, **k)
+    assert boardpr.scan(ctx, yes=True) == ["#12: merged on GitHub; REV-PKG-Foo~2 reviews the board's main",
+                                           "#13: merged on GitHub; REV-PKG-Bar~2 reviews the board's main"]
+    assert "board_pr" not in one.inputs and "board_pr" not in two.inputs
+
+
 def test_a_claimed_review_of_a_merged_pull_request_is_left_to_its_worker():
     rev = new_job("REV-PKG-Foo~2", inputs={"board_pr": 12, "operator": "alice"})
     rev.number, rev.state = 5, "claimed"

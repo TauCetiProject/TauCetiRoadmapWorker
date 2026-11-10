@@ -861,7 +861,10 @@ def merged_by_hand(ctx, open_numbers: set[int], jobs: list[Job], shared, yes: bo
     out = []
     pending = [j for j in jobs if j.kind in ("review", "redteam", "fix") and j.state != "done" and j.inputs.get("board_pr")
                and int(j.inputs["board_pr"]) not in open_numbers]
-    for number in sorted({int(j.inputs["board_pr"]) for j in pending}):
+    by_pr: dict[int, list[Job]] = {}        # grouped first: a round that goes on on the main stops naming its pull request
+    for j in pending:
+        by_pr.setdefault(int(j.inputs["board_pr"]), []).append(j)
+    for number, mine in sorted(by_pr.items()):
         try:
             pr = ctx.gh.api(f"repos/{repo(ctx)}/pulls/{number}") or {}
             if not pr.get("merged"):
@@ -870,7 +873,6 @@ def merged_by_hand(ctx, open_numbers: set[int], jobs: list[Job], shared, yes: bo
         except GHError:
             continue
         sub = board.decode_submission(pr.get("body") or "") or {}
-        mine = [j for j in pending if int(j.inputs["board_pr"]) == number]
         for job in [j for j in mine if j.kind == "review"]:
             reviews = accepted_reviews(ctx, job, comments, shared, (job.inputs.get("merge_pending") or {}).get("comments"))
             if not reviews:
