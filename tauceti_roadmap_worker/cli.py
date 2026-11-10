@@ -618,6 +618,25 @@ def merge_order(args) -> int:
     return 0
 
 
+def summary_cmd(args) -> int:
+    """Write the summary block of the pull requests named (or, with --all, of the open ones whose
+    block is of the wrong kind; with --missing also of those without a block)."""
+    from . import summary
+    cfg = _load(args)
+    ctx = _bot_context(args, cfg, args.dry_run)
+    if not args.pr and not args.all:
+        print("summary: name a pull request with --pr, or pass --all", file=sys.stderr)
+        return 2
+    numbers = sorted(set(args.pr)) if args.pr else summary.candidates(ctx, missing=args.missing)
+    agent = args.agent or "claude"
+    model = args.model or (cfg.agents.codex_model if agent == "codex" else cfg.agents.claude_model)
+    lines = summary.refresh(ctx, numbers, agent=agent, model=model, force=args.force,
+                            missing=args.missing or bool(args.pr), listing=args.list)
+    for line in lines:
+        print(line)
+    return 1 if any("refused" in line or "failed" in line for line in lines) else 0
+
+
 def sources_cmd(args) -> int:
     cfg = _load(args)
     s = cfg.sources
@@ -1092,6 +1111,18 @@ def parser() -> argparse.ArgumentParser:
     m.add_argument("--list", action="store_true")
     m.add_argument("--pr", type=int, default=0)
 
+    sm = sub.add_parser("summary", help="write the summary block that opens a roadmap pull request's description: "
+                        "of the roadmap when the pull request adds it, of the change when it revises one")
+    sm.add_argument("--pr", type=int, action="append", default=[], help="a pull request (repeatable); a block "
+                    "of the wrong kind is rewritten and a missing one written")
+    sm.add_argument("--all", action="store_true", help="every open pull request with a summary block: rewrite "
+                    "the blocks of the wrong kind")
+    sm.add_argument("--missing", action="store_true", help="with --all: also write a block where there is none")
+    sm.add_argument("--force", action="store_true", help="rewrite a block of the right kind too")
+    sm.add_argument("--list", action="store_true", help="say what would be written; run no agent")
+    sm.add_argument("--agent", choices=["claude", "codex"], default="claude")
+    sm.add_argument("--model", default="", help="default: the configured model of the agent")
+
     s = sub.add_parser("sources", help="fetch a legal source, check a manifest, classify a URL, cache a manifest's "
                                        "texts, OCR a scan, render a needs-references request")
     s.add_argument("action", choices=["fetch", "check", "classify", "cache", "ocr", "request"])
@@ -1170,7 +1201,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     handlers = {"doctor": doctor, "targets": targets, "work": work, "gate": gate, "merge-order": merge_order,
-                "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd,
+                "summary": summary_cmd, "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd,
                 "usage": usage_cmd, "roadmaps": roadmaps_cmd, "throttle": throttle_cmd}
     try:
         return handlers[args.command](args)

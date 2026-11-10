@@ -501,6 +501,7 @@ def description_brief(ws: Workspace) -> str:
 MENTION = re.compile(r"(?<![\w`/])@[A-Za-z][\w-]*")
 GENERATED_BLOCK = re.compile(r"<!--[ \t]*([\w-]+)[ \t]*-->.*?<!--[ \t]*/\1[ \t]*-->", re.DOTALL)
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+SUMMARY_BLOCK = "roadmap-summary"      # the block `summary` writes; it stays first in a description
 
 
 def read_description(path: Path, ctx: Context) -> tuple[dict | None, list[str]]:
@@ -536,20 +537,21 @@ def read_description(path: Path, ctx: Context) -> tuple[dict | None, list[str]]:
 
 
 def merged_description(prose: str, old: str) -> str:
-    """The description a repair delivers: its prose, then what the worker and the operator's tools keep
-    in the present description `old`, verbatim and in their order: every generated block
+    """The description a repair delivers: the summary block of the present description `old` (it
+    opens a description: `summary.MARK_OPEN`), then the repair's prose, then what else the worker and
+    the operator's tools keep in `old`, verbatim and in their order: every other generated block
     (`<!-- name -->` … `<!-- /name -->`), every other HTML comment (a marker), and the attribution
     line it ends with (a last line that opens with 🤖)."""
-    kept, pos = [], 0
+    first, kept, pos = [], [], 0
     while (m := HTML_COMMENT.search(old, pos)) is not None:
         block = GENERATED_BLOCK.match(old, m.start())
         end = block.end() if block else m.end()
-        kept.append(old[m.start():end].strip())
+        (first if block and block.group(1) == SUMMARY_BLOCK else kept).append(old[m.start():end].strip())
         pos = end
     last = (old[pos:].strip().splitlines() or [""])[-1].strip()
     if last.startswith("🤖") and last not in prose:
         kept.append(last)
-    return "\n\n".join([prose.strip(), *kept]) + "\n"
+    return "\n\n".join([*first, prose.strip(), *kept]) + "\n"
 
 
 def description_prose(body: str) -> str:

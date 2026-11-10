@@ -499,6 +499,25 @@ open pull requests cannot be read, no paragraph is written (`merge-order` says s
 names it in its summary). A roadmap missing from the merge order gets no paragraph, and only the
 port lane's pull requests get one from the tool.
 
+`summary` writes the block that opens a roadmap pull request's description,
+`<!-- roadmap-summary -->` … `<!-- /roadmap-summary -->`: three short paragraphs by an agent, which
+is given the material as files and whose text is checked (three headed paragraphs, a word limit, no
+pull-request number, date, file name or review history) before anything is written. What it
+summarises depends on the pull request's files. One that adds a roadmap's README gets a summary of
+the roadmap, read from the README at its head (**What this roadmap builds.**, **Why Tau Ceti wants
+it.**, **Approach and generality.**). One that changes the README or `Suggested.lean` of a roadmap
+already on its base branch gets a summary of the revision, read from the two texts, their
+differences against the merge base and the author's description (**What this revision changes.**,
+**Why the change is made.**, **What the roadmap keeps.**). A pull request that changes no roadmap
+text, or that adds several unrelated roadmaps without a marker naming one, gets none. A block of the
+right kind is left alone (`--force` rewrites it); a block of the other kind, such as a summary of the
+whole roadmap on a revision, is replaced; a description without a block gets one for a pull request
+named with `--pr`, and with `--all` only under `--missing`. The block is placed first, in place of
+any earlier one wherever it stood, and the rest of the description is kept as it is; the description
+is read again just before the write, and one that reads empty or as an API error is never rewritten.
+`--list` reports what would be done and runs no agent. The material and the result of each run stay
+under `summaries/pr-<n>/` in the state directory.
+
 Only the operator who opened a pull request can push to its branch, so the fix rounds on a board
 pull request and the gate rounds on a roadmap pull request name that operator (`requires_operator`).
 The red-team passes of one round name different agents and models (`requires_agent`,
@@ -784,7 +803,8 @@ that is not in that form, is over 200 characters of title or 12000 of descriptio
 comment, a path of the machine or an @-mention, or would read as a review; the refusal goes to the
 repair's second pass like any failed check. After the push (or with no push, when the files needed
 no change) and before the reply, the worker writes the title and the description onto the pull
-request: the agent's prose, then, verbatim and in their order, every generated block of the present
+request: the summary block when the description has one (it stays first), the agent's prose, then,
+verbatim and in their order, every other generated block of the present
 description (`<!-- name -->` … `<!-- /name -->`: a dependency task list, the merge-order paragraph),
 every other HTML comment (the worker's marker) and the attribution line it ends with. Prose outside
 those blocks is replaced. A description whose prose is no longer the one the repair read (another
@@ -999,6 +1019,7 @@ tauceti-roadmap --conf $CONF board intake --yes    # take in submissions (design
 tauceti-roadmap --conf $CONF board references --yes   # only the needs-references answers
 tauceti-roadmap --conf $CONF board stale --release --yes   # release lapsed claims and closed submissions
 tauceti-roadmap --conf $CONF merge-order           # refresh the chain paragraph on open roadmap PRs
+tauceti-roadmap --conf $CONF summary --all --list  # summary blocks of the wrong kind; drop --list to rewrite them
 tauceti-roadmap --conf $CONF targets import-intentions --yes   # intentions → TARGET jobs (10 per run)
 tauceti-roadmap --conf $CONF board import-explorer --from ~/tauceti-explorer --yes   # see below
 tauceti-roadmap --conf $CONF board errata seed [--limit N] --yes   # an ERRATA-<Name> job per roadmap on main or
