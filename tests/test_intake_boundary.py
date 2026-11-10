@@ -10,6 +10,7 @@ import pytest
 
 from tauceti_roadmap_worker import board, boardpr, explorer, intake
 from tauceti_roadmap_worker.board import encode_submission, new_job
+from tauceti_roadmap_worker.gh import GHError
 
 from .fakes import bot_context, example_config, head_tree
 from .test_boardpr import GH, Board
@@ -183,3 +184,43 @@ def test_a_malformed_marker_does_not_stop_the_pull_requests_after_it(tmp_path):
     assert intake.intake_open(ctx, yes=True, log=logged.append) == []
     assert any(line.startswith("#12: merged REV-PKG-Foo") for line in logged), logged
     assert gh.merged and rev.state == "done"
+
+
+class ConflictingGH(ListingGH):
+    """A submission GitHub refuses to merge, as it does one that conflicts with main."""
+
+    def __init__(self, error, dirty):
+        super().__init__()
+        self.error = error
+        self.pr["mergeable"], self.pr["mergeable_state"] = (False, "dirty") if dirty else (True, "clean")
+
+    def write(self, method, path, payload=None):
+        if path.endswith("/pulls/12/merge"):
+            raise GHError(self.error)
+        return super().write(method, path, payload)
+
+
+def test_a_submission_that_conflicts_with_main_is_squashed_onto_it_and_its_job_finished(monkeypatch):
+    gh = ConflictingGH("gh api -X PUT: gh: Pull Request is not mergeable (HTTP 405)", dirty=True)
+    ctx, rev = review_context(gh)
+    squashed = []
+    monkeypatch.setattr(boardpr, "squash_with_main", lambda ctx, number, pr: (squashed.append(number), (True, "abc1234"))[1])
+    assert intake.intake(ctx, 12, yes=True).startswith("#12: merged REV-PKG-Foo")
+    assert squashed == [12] and rev.state == "done"
+
+
+def test_a_conflict_the_squash_cannot_resolve_leaves_the_job_submitted(monkeypatch):
+    gh = ConflictingGH("gh api -X PUT: gh: Pull Request has merge conflicts (HTTP 405)", dirty=True)
+    ctx, rev = review_context(gh)
+    monkeypatch.setattr(boardpr, "squash_with_main", lambda ctx, number, pr: (False, f"conflicts with main in {REPORT}"))
+    line = intake.intake(ctx, 12, yes=True)
+    assert line == f"#12: not merged: conflicts with main in {REPORT}" and rev.state == "submitted"
+
+
+def test_a_refused_merge_of_a_clean_submission_is_an_error(monkeypatch):
+    gh = ConflictingGH("gh api -X PUT: gh: HTTP 502: Bad Gateway", dirty=False)
+    ctx, rev = review_context(gh)
+    monkeypatch.setattr(boardpr, "squash_with_main", lambda ctx, number, pr: pytest.fail("squashed a clean pull request"))
+    with pytest.raises(GHError):
+        intake.intake(ctx, 12, yes=True)
+    assert rev.state == "submitted"
