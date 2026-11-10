@@ -226,6 +226,10 @@ def write_material(workdir: Path, subject: Subject, read, description: str = "")
         shutil.rmtree(workdir / stale, ignore_errors=True)
     for stale in (OUT_NAME, "README.md", "description.md"):
         (workdir / stale).unlink(missing_ok=True)
+    # An earlier run's logs go too: the agent runner appends to a log and reads the whole of it for a
+    # usage-limit message, so a limit met once would refuse every later run of this pull request.
+    for stale in workdir.glob("run-*"):
+        stale.unlink(missing_ok=True)
     workdir.mkdir(parents=True, exist_ok=True)
     written = []
 
