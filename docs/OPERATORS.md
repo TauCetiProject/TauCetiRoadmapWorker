@@ -776,8 +776,10 @@ no change) and before the reply, the worker writes the title and the description
 request: the agent's prose, then, verbatim and in their order, every generated block of the present
 description (`<!-- name -->` … `<!-- /name -->`: a dependency task list, the merge-order paragraph),
 every other HTML comment (the worker's marker) and the attribution line it ends with. Prose outside
-those blocks is replaced. A write GitHub refuses is noted (`title and description not written:
-<why>`) and not retried; the files' repair and its reply stand. The round's summary says `title and
+those blocks is replaced. A description whose prose is no longer the one the repair read (another
+folder's repair rewrote it meanwhile, or the author did) is left as it is, since the repair's text
+would undo that change. That, like a write GitHub refuses, is noted (`title and description not
+written: <why>`) and not retried; the files' repair and its reply stand. The round's summary says `title and
 description rewritten` (or which of the two). When the pull request's branch moved while the repair
 ran, the repair is carried onto the new head if the move is not its own folder's: the branch only
 gained commits, those change files under the roadmap directory only and none in the folder reviewed

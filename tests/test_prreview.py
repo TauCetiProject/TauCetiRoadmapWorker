@@ -1743,6 +1743,37 @@ def test_a_refused_description_write_leaves_the_repair_and_its_reply(hub, monkey
 
 
 @needs_git
+def test_a_description_changed_while_the_repair_ran_is_not_overwritten(hub, monkeypatch, tmp_path):  # noqa: F811
+    # 2026-11-10: three folders of one pull request were repaired at once; each repair's description was
+    # written from the text all three had read, so the last one delivered would have undone the others'.
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [], description=[NEW_TEXT])
+    inner = lane_prreview.PRReviewLane.run_agent
+    theirs = PR_TEXT["body"].replace("\n\n", " Another folder's repair says more here.\n\n", 1)
+
+    def run_agent(self, ctx, ws, brief, label=""):
+        out = inner(self, ctx, ws, brief, label)
+        rh.__dict__.setdefault("text", dict(PR_TEXT))["body"] = theirs
+        return out
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", run_agent)
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted", result.detail
+    assert "title and description not written: the description was changed while the repair ran" in result.detail
+    assert rh.head(905) != head and len(rh.comments[905]) == 2 and "patches" not in rh.__dict__
+    assert rh.text["body"] == theirs and lane_base.read_pending(ctx, job) is None
+
+
+def test_the_prose_of_a_description_leaves_out_what_the_worker_keeps():
+    body = "\n\n".join(["States  Layer 1.", DEPENDS_BLOCK, "Closes #5.  ", PR_MARKER_LINE, FOOTER])
+    assert lane_prreview.description_prose(body) == "States Layer 1.\nCloses #5."
+    assert lane_prreview.description_prose(lane_prreview.merged_description("States Layer 1.\n\nCloses #5.", body)) == \
+        lane_prreview.description_prose(body)
+
+
+@needs_git
 def test_with_repair_text_off_the_brief_does_not_offer_it_and_a_description_is_ignored(hub, monkeypatch, tmp_path):  # noqa: F811
     rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
     briefs = []

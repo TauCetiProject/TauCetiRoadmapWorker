@@ -504,6 +504,16 @@ def merged_description(prose: str, old: str) -> str:
     return "\n\n".join([prose.strip(), *kept]) + "\n"
 
 
+def description_prose(body: str) -> str:
+    """The prose of a description, what a repair reads and rewrites: without the generated blocks, the
+    markers and the attribution line that `merged_description` keeps, and with its whitespace folded."""
+    lines = [" ".join(x.split()) for x in HTML_COMMENT.sub("", GENERATED_BLOCK.sub("", body)).splitlines()]
+    lines = [x for x in lines if x]
+    if lines and lines[-1].startswith("🤖"):
+        lines.pop()
+    return "\n".join(lines)
+
+
 def save_gate(path: Path, head: str, result: gates.GateResult) -> None:
     data = {"head": head, "name": result.name, "counts": result.counts, "notes": result.notes,
             "details": {k: [f"line {h.line}: {h.text}" if getattr(h, "line", 0) else str(getattr(h, "text", h))
@@ -583,6 +593,7 @@ class PRReviewLane(Lane):
                         siblings=sibling_checkouts(ctx, prs, skip=job.name), folder=folder,
                         readme=folder / "README.md", lean=leans[0], leans=leans)
         (ws.scratch / PULL_REQUEST_TEXT).write_text(pull_request_document(number, data, owner), encoding="utf-8")
+        ws.extra["pr_prose"] = description_prose(data.get("body") or "")
         self.write_changes(job, ctx, ws)
         ws.extra["previous_report"] = self.previous_report(job, ctx, ws)
         ws.extra["mode"] = review_mode(job, cfg, ws.extra)
@@ -999,19 +1010,27 @@ class PRReviewLane(Lane):
         """The title and description the repair recorded (`run_repair`), written onto the pull request
         once its branch is at the repaired head and before the reply that reports them (effect
         REPAIR_TEXT): the repair's prose, then the generated blocks and markers of the description as it
-        is now (`merged_description`). A write GitHub refuses is noted and not retried: the files'
-        repair stands, and the next review finds the description as it was. Returns the summary's words."""
+        is now (`merged_description`). A description whose prose is no longer the one the repair read
+        (another roadmap folder's repair rewrote it, or its author did) is left alone, since the repair's
+        text would undo that change; so is one GitHub refuses to write. Either is noted and not retried:
+        the files' repair stands, and the next review reads the description as it then is. Returns the
+        summary's words."""
         if not owes(ctx, job, REPAIR_TEXT):
             return ""
         record, line = ws.job_dir / REPAIR_DESCRIPTION, ""
         if record.is_file():
             want = json.loads(record.read_text(encoding="utf-8"))
+            read = want.pop("read", None)
             path = f"repos/{ctx.cfg.repositories.content}/pulls/{ws.extra['pr']}"
             try:
                 now = ctx.gh.api(path) or {}
+                found = description_prose(now.get("body") or "")
+                wrote = found == description_prose(want["body"])
                 want["body"] = merged_description(want["body"], now.get("body") or "")
                 fields = {k: v for k, v in want.items() if v.strip() != (now.get(k) or "").strip()}
-                if fields:
+                if fields and read is not None and found != read and not wrote:
+                    line = "title and description not written: the description was changed while the repair ran"
+                elif fields:
                     ctx.gh.write("PATCH", path, fields)
                     names = {"title": "title", "body": "description"}
                     line = " and ".join(names[k] for k in names if k in fields) + " rewritten"
@@ -1081,7 +1100,8 @@ class PRReviewLane(Lane):
         new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
         save_gate(ws.job_dir / REPAIR_GATE, new, gate)
         if text:
-            record.write_text(json.dumps(text, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+            record.write_text(json.dumps({**text, "read": ws.extra.get("pr_prose", "")}, indent=1,
+                                         sort_keys=True) + "\n", encoding="utf-8")
         owe(ctx, job, ws, (), content={"sha": new, "base": head, "branch": ws.extra["branch"]})
         settle(ctx, job, REPAIR, repair={"sha": new})
 
