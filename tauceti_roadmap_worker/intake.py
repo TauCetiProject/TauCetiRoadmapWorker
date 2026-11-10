@@ -334,7 +334,17 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None, shared=N
     if job.state != "submitted":
         # `submitted` before the merge is what `reconcile_merged` finishes from.
         ctx.board.set_state(job, "submitted", f"Submitted: #{number} is being merged (this issue said `state:{job.state}`).")
-    ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash", "sha": pr["head"]["sha"]})
+    try:
+        ctx.gh.write("PUT", f"repos/{repo}/pulls/{number}/merge", {"merge_method": "squash", "sha": pr["head"]["sha"]})
+    except GHError as exc:
+        # Two rounds on one roadmap each change its sources.toml: the second to merge conflicts with
+        # main and GitHub never merges it, so its job stayed `submitted` for good. It is squashed onto
+        # main in a checkout, the manifest merged by key, as an accepted board pull request is.
+        if "conflict" not in str(exc).lower() and not boardpr.conflicts_with_main(ctx, number, pr):
+            raise
+        done, detail = boardpr.squash_with_main(ctx, number, pr)
+        if not done:
+            return f"#{number}: not merged: {detail}"
     ctx.board.comment(job.number, merged_note(number, author, sub))
     return f"#{number}: merged {job.id}; " + complete_merged(ctx, job, pr, jobs)
 
