@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from .. import gates, gitops, prompts, replies
@@ -110,11 +111,12 @@ def gate_problems(ctx: Context, ws: Workspace, name: str, folder: str,
 
 def push_and_reply(lane: Lane, ctx: Context, job: Job, ws: Workspace, report: str, answered: dict[str, str],
                    gate: gates.GateResult, *, branch: str, base: str, moved: bool, push: str = CONTENT_PUSH,
-                   reply: str = CONTENT_COMMENT) -> str:
+                   reply: str = CONTENT_COMMENT, after_push: Callable[[], object] | None = None) -> str:
     """The answer on the pull request (`ws.extra` `pr`, `head_repo`, `owner`, `answerers`), effect by
     effect as the job's record still owes them: the worktree's HEAD pushed onto `branch` of the pull
     request's head repository (the operator's fork when it names none) while that branch is still at
-    `base` (effect `push`, when the answer `moved` the head), the finding-by-finding reply from
+    `base` (effect `push`, when the answer `moved` the head), then `after_push` (the caller's own
+    effects between the two: what the reply reports besides the files), the finding-by-finding reply from
     `report` with the record of what it answers (`answered`), the worker and the head (effect
     `reply`), and the awaiting-* labels. Returns the label now wanted."""
     cfg, pr, repo = ctx.cfg, ws.extra["pr"], ctx.cfg.repositories.content
@@ -127,6 +129,8 @@ def push_and_reply(lane: Lane, ctx: Context, job: Job, ws: Workspace, report: st
         settle(ctx, job, push, content={"repo": fork})
     if moved:
         lane.await_pr_head(ctx, repo, pr, new, then="not replying")
+    if after_push is not None:
+        after_push()
     intro = "reply to the review" if moved else "reply to the review, no change needed"
     text = replies.build_reply(new[:7], report, replies.validation_sentence(new[:7], gate), intro,
                                cfg.replies.review_markers)

@@ -165,7 +165,10 @@ checkout, submits a PR to the board, and the intake advances the state.
     in the same job, after its comment and before its board submission: the gate lane's steps
     answer that comment on the same worktree (the gate brief, its checks, the push with the lease on
     the reviewed head, the reply with its answered record, the labels), each an effect of the job's
-    record so a stopped run finishes without a second push or reply. A repair that fails is not
+    record so a stopped run finishes without a second push or reply. With `repair_text` on (the
+    default) the repair also answers findings about the title and description: its agent writes the
+    corrected text, and the worker checks it and writes it onto the pull request between the push
+    and the reply, keeping the description's generated blocks and markers verbatim. A repair that fails is not
     pushed and the review is submitted all the same. While the review job is claimed, `board sync`
     files no gate round for the pull request; the next review of the repaired head is filed as a
     re-review with `not_worker`, the worker whose reply names that head, which may not take it.

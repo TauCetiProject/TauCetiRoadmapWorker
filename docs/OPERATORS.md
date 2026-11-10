@@ -693,6 +693,7 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
+| `repair_text` | `true` | such a repair also answers the findings about the pull request's title and description: the agent writes the corrected text and the worker puts it on the pull request, keeping the generated blocks and markers |
 | `statement_hygiene` | `true` | the push gate's statement-hygiene scan of Suggested.lean (count `statement-hygiene`; every push gate and `tauceti-roadmap gate` run it): `Nonempty`/`∃` isomorphism headlines, choice in data, `letI`/`haveI` in signatures, `[Fintype k]` beside `[Field k]`, `ULift`, instance removals, `HEq`/`cast`/`eqToHom` conclusions (P3), duplicate statements (P2); each hit names its line, severity and repair, and a review reports it as a finding |
 
 The review runs on the review models: `[agents.lanes.prreview]` pins them, and without that table the
@@ -760,8 +761,24 @@ The worker then pushes onto the pull request's branch in its head repository whi
 the head reviewed, posts the finding-by-finding reply (`Fixed in <sha7> (reply to the review): …`)
 whose answered record names the review comment, the worker and the new head, and sets
 awaiting-review. Each step is an effect of the job's record (`repair`, `content-push`,
-`repair-comment`), so an attempt that stopped part-way finishes without running the agent again,
-pushing twice or replying twice. A repair that fails its checks, or whose push or reply is
+`repair-text`, `repair-comment`), so an attempt that stopped part-way finishes without running the agent again,
+pushing twice or replying twice.
+
+A repair edits the roadmap folder, so a finding about the pull request's own text (a description of
+an earlier head, a supplier it names that the roadmap no longer has, a stale build report, a title
+that no longer names the change) used to come back round after round. With `repair_text` on, the
+brief lets the agent answer such a finding by writing `scratch/description.md`: a first line
+`Title: <the title>`, a blank line, then the whole description as prose. The worker refuses a text
+that is not in that form, is over 200 characters of title or 12000 of description, carries an HTML
+comment, a path of the machine or an @-mention, or would read as a review; the refusal goes to the
+repair's second pass like any failed check. After the push (or with no push, when the files needed
+no change) and before the reply, the worker writes the title and the description onto the pull
+request: the agent's prose, then, verbatim and in their order, every generated block of the present
+description (`<!-- name -->` … `<!-- /name -->`: a dependency task list, the merge-order paragraph),
+every other HTML comment (the worker's marker) and the attribution line it ends with. Prose outside
+those blocks is replaced. A write GitHub refuses is noted (`title and description not written:
+<why>`) and not retried; the files' repair and its reply stand. The round's summary says `title and
+description rewritten` (or which of the two). A repair that fails its checks, or whose push or reply is
 refused (the author pushed meanwhile, a token without write access), is not pushed: the worktree
 goes back to the head reviewed, the review is submitted as it is, and the round's summary ends
 `repair not pushed: <why>` (`repair pushed, not answered: <why>` when only the reply failed: the

@@ -100,8 +100,12 @@ GATE_REPORT = "gate.md"
 CHANGES = "changes.md"                    # in the scratch folder: the change since the previous reviewed head
 # The repair of a pool author's pull request after a review that asks for changes: its effects, in
 # order, between the review's comment and the board submission (`PRReviewLane.repair`).
-REPAIR, REPAIR_COMMENT = "repair", "repair-comment"
-REPAIR_EFFECTS = (REPAIR, CONTENT_PUSH, REPAIR_COMMENT)
+REPAIR, REPAIR_TEXT, REPAIR_COMMENT = "repair", "repair-text", "repair-comment"
+REPAIR_EFFECTS = (REPAIR, CONTENT_PUSH, REPAIR_TEXT, REPAIR_COMMENT)
+# The repair's rewrite of the pull request's title and description: as its agent wrote it (in the
+# scratch directory), and as the worker checked and recorded it (in the job directory).
+DESCRIPTION, REPAIR_DESCRIPTION = "description.md", "repair-description.json"
+TITLE_LIMIT, DESCRIPTION_LIMIT = 200, 12000
 REPAIR_REPORT = "repair-report.md"        # in the job folder: the repair's report, H01… per finding
 REPAIR_GATE = "repair-gate.json"          # in the job folder: the gate's result at the repaired head
 
@@ -415,6 +419,79 @@ def board_edits_brief(job: Job, ctx: Context, ws: Workspace) -> str:
             f"lacks, fetched through the legal sources service; never change or remove an existing record). "
             f"The worker delivers these two edits with the review; every other change to the board checkout is "
             f"discarded. Do not commit in the board checkout.")
+
+
+def description_brief(ws: Workspace) -> str:
+    """The paragraph of the repair brief on the pull request's title and description, for findings about them."""
+    return (f"The pull request's title and description as well (the one exception to \"no pull-request text\"), "
+            f"for findings about them only: a description of an earlier head, a statement of the change that is "
+            f"wrong or missing, a stale validation report, a title that no longer names the change. They are quoted "
+            f"in `{ws.scratch / PULL_REQUEST_TEXT}`. Write `{ws.scratch / DESCRIPTION}`: its first line "
+            f"`Title: <the title>` (the present one when nothing is wrong with it; keep its form), a blank line, "
+            f"then the whole description as it should now read, in plain Markdown. It describes the pull request at "
+            f"the head you leave, in the present tense: what it changes in each roadmap folder and why, and what a "
+            f"reader must know to review it; a `Closes #N` line and an attribution line that are still right stay. "
+            f"No history of earlier heads, no review round, no build log, no local path, no @-mention, and at most "
+            f"{DESCRIPTION_LIMIT} characters. Write the prose only: the worker keeps, after your text and as they "
+            f"are, every generated block of the present description (`<!-- name -->` … `<!-- /name -->`: the "
+            f"dependency task list, the merge order) and every marker comment, so copy none of them and write no "
+            f"HTML comment. A finding about the content of a generated block is not yours to repair: say in its "
+            f"section that the block is generated. Check every statement of the new text against the head, as you "
+            f"would a README line. With no finding about the title or description, do not write the file.")
+
+
+MENTION = re.compile(r"(?<![\w`/])@[A-Za-z][\w-]*")
+GENERATED_BLOCK = re.compile(r"<!--[ \t]*([\w-]+)[ \t]*-->.*?<!--[ \t]*/\1[ \t]*-->", re.DOTALL)
+HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def read_description(path: Path, ctx: Context) -> tuple[dict | None, list[str]]:
+    """(the title and description a repair wrote in `path`, why they cannot be delivered): None with no
+    problem when the repair wrote none. The text goes onto a pull request under the author's name, so it
+    is refused, for the repair's second pass to put right, when it is not in the form asked, carries an
+    HTML comment (a marker), a machine path or an @-mention, or would read as a review."""
+    if not path.is_file() or not path.read_text(encoding="utf-8").strip():
+        return None, []
+    first, _, rest = path.read_text(encoding="utf-8").strip().partition("\n")
+    title, body = first.removeprefix("Title:").strip(), rest.strip()
+    problems = []
+    if not first.startswith("Title:") or not title:
+        problems.append("its first line is not `Title: <the title>`")
+    if len(title) > TITLE_LIMIT:
+        problems.append(f"its title is over {TITLE_LIMIT} characters")
+    if not body:
+        problems.append("it has a title and no description")
+    if len(body) > DESCRIPTION_LIMIT:
+        problems.append(f"its description is over {DESCRIPTION_LIMIT} characters")
+    text = title + "\n" + body
+    if "<!--" in text or "-->" in text:
+        problems.append("it carries an HTML comment (the worker keeps the generated blocks and markers itself)")
+    if scrub_paths(text, ctx.state, Path.home()) != text:
+        problems.append("it names a path of this machine")
+    if MENTION.search(text):
+        problems.append("it carries an @-mention (write a login without the @)")
+    if not replies.reply_is_safe(body, ctx.cfg.replies.review_markers):
+        problems.append("it would read as a review")
+    if problems:
+        return None, [f"{DESCRIPTION}: {x}" for x in problems]
+    return {"title": title, "body": body}, []
+
+
+def merged_description(prose: str, old: str) -> str:
+    """The description a repair delivers: its prose, then what the worker and the operator's tools keep
+    in the present description `old`, verbatim and in their order: every generated block
+    (`<!-- name -->` … `<!-- /name -->`), every other HTML comment (a marker), and the attribution
+    line it ends with (a last line that opens with 🤖)."""
+    kept, pos = [], 0
+    while (m := HTML_COMMENT.search(old, pos)) is not None:
+        block = GENERATED_BLOCK.match(old, m.start())
+        end = block.end() if block else m.end()
+        kept.append(old[m.start():end].strip())
+        pos = end
+    last = (old[pos:].strip().splitlines() or [""])[-1].strip()
+    if last.startswith("🤖") and last not in prose:
+        kept.append(last)
+    return "\n\n".join([prose.strip(), *kept]) + "\n"
 
 
 def save_gate(path: Path, head: str, result: gates.GateResult) -> None:
@@ -811,8 +888,8 @@ class PRReviewLane(Lane):
         """After the review's comment, before the board submission (the job stays claimed meanwhile, so
         the board files no gate round for the review): the gate lane's answer to the review just posted,
         on the same worktree (`answer_values`, `answer_problems`, `gate_problems`, `push_and_reply`).
-        Each step is an effect of the job's record (REPAIR, CONTENT_PUSH, REPAIR_COMMENT), so a run that
-        stops part-way is finished without a second push or reply. A repair that fails its checks, or
+        Each step is an effect of the job's record (REPAIR, CONTENT_PUSH, REPAIR_TEXT, REPAIR_COMMENT), so
+        a run that stops part-way is finished without a second push or reply. A repair that fails its checks, or
         whose push or reply GitHub refuses, is not pushed: the review stands and is submitted, and the
         line says why. Returns the summary's line."""
         try:
@@ -838,10 +915,42 @@ class PRReviewLane(Lane):
         if not new or gate is None or not report.is_file():
             raise LaneError("the repair's record is incomplete")
         answered = json.loads((ws.job_dir / ANSWERED).read_text(encoding="utf-8"))
+        text = []
         label = push_and_reply(self, ctx, job, ws, report.read_text(encoding="utf-8"), answered, gate,
-                               branch=ws.extra["pr_branch"], base=head, moved=new != head, reply=REPAIR_COMMENT)
-        return (f"repaired at {new[:7]} and answered the review ({label})" if new != head
+                               branch=ws.extra["pr_branch"], base=head, moved=new != head, reply=REPAIR_COMMENT,
+                               after_push=lambda: text.append(self.deliver_text(job, ctx, ws)))
+        wrote = "".join(f", {x}" for x in text if x)
+        return (f"repaired at {new[:7]}{wrote} and answered the review ({label})" if new != head
+                else f"answered the review, no change to the files needed{wrote} ({label})" if wrote
                 else f"answered the review, no change needed ({label})")
+
+    def deliver_text(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        """The title and description the repair recorded (`run_repair`), written onto the pull request
+        once its branch is at the repaired head and before the reply that reports them (effect
+        REPAIR_TEXT): the repair's prose, then the generated blocks and markers of the description as it
+        is now (`merged_description`). A write GitHub refuses is noted and not retried: the files'
+        repair stands, and the next review finds the description as it was. Returns the summary's words."""
+        if not owes(ctx, job, REPAIR_TEXT):
+            return ""
+        record, line = ws.job_dir / REPAIR_DESCRIPTION, ""
+        if record.is_file():
+            want = json.loads(record.read_text(encoding="utf-8"))
+            path = f"repos/{ctx.cfg.repositories.content}/pulls/{ws.extra['pr']}"
+            try:
+                now = ctx.gh.api(path) or {}
+                want["body"] = merged_description(want["body"], now.get("body") or "")
+                fields = {k: v for k, v in want.items() if v.strip() != (now.get(k) or "").strip()}
+                if fields:
+                    ctx.gh.write("PATCH", path, fields)
+                    names = {"title": "title", "body": "description"}
+                    line = " and ".join(names[k] for k in names if k in fields) + " rewritten"
+            except GHError as exc:
+                line = "title and description not written: " + scrub_paths(
+                    (str(exc).strip().splitlines() or ["refused"])[0], ctx.state, Path.home())[:200]
+            if line:
+                self.note(ws, f"pull request #{ws.extra['pr']}: {line}")
+        settle(ctx, job, REPAIR_TEXT)
+        return line
 
     def run_repair(self, job: Job, ctx: Context, ws: Workspace, report: Path) -> None:
         """The repair agent on the gate brief, given the review comment as the review to answer (its
@@ -859,8 +968,13 @@ class PRReviewLane(Lane):
         (ws.job_dir / ANSWERED).write_text(json.dumps(replies.versions([event]), indent=1, sort_keys=True) + "\n",
                                            encoding="utf-8")
         report.unlink(missing_ok=True)
+        described, record = ws.scratch / DESCRIPTION, ws.job_dir / REPAIR_DESCRIPTION
+        described.unlink(missing_ok=True)
+        record.unlink(missing_ok=True)
+        edits_brief = board_edits_brief(job, ctx, ws) + (
+            "\n\n" + description_brief(ws) if ctx.cfg.prreview.repair_text else "")
         values = {**self.common_values(job, ctx, ws), **answer_values(ctx, ws, job.name, folder, reviews, report),
-                  "BOARD_EDITS": board_edits_brief(job, ctx, ws)}
+                  "BOARD_EDITS": edits_brief}
         brief = prompts.render("gate", values)
         (ws.job_dir / "brief-repair.md").write_text(brief, encoding="utf-8")
         gate, problems = None, []
@@ -885,7 +999,8 @@ class PRReviewLane(Lane):
                 self.note(ws, "board edits delivered with the review: " + ", ".join(sorted(edits)))
             if result.limited or result.exit_code != 0:
                 raise LaneError("the repair agent " + ("hit a usage limit" if result.limited else f"exited {result.exit_code}"))
-            problems = ([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report)
+            text, text_problems = read_description(described, ctx) if ctx.cfg.prreview.repair_text else (None, [])
+            problems = ([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report) + text_problems
             if not problems:
                 problems, gate = gate_problems(ctx, ws, job.name, folder, self.gate_options(job, ctx, ws), base=head)
             if not problems:
@@ -894,6 +1009,8 @@ class PRReviewLane(Lane):
             raise LaneError("its checks failed: " + "; ".join(problems[:3]))
         new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
         save_gate(ws.job_dir / REPAIR_GATE, new, gate)
+        if text:
+            record.write_text(json.dumps(text, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         owe(ctx, job, ws, (), content={"sha": new, "base": head, "branch": ws.extra["branch"]})
         settle(ctx, job, REPAIR, repair={"sha": new})
 

@@ -1324,6 +1324,14 @@ def test_an_incremental_re_review_accounts_for_every_finding_of_the_previous_rep
 
 # --- the repair of a pool author's pull request -----------------------------------------------------
 
+DEPENDS_BLOCK = "<!-- depends-on -->\n**Depends on**\n- [ ] #77 Bar\n<!-- /depends-on -->"
+PR_MARKER_LINE = '<!-- tauceti-roadmap-pr {"roadmap": "Foo"} -->'
+FOOTER = "🤖 Generated with a tool"
+PR_TEXT = {"title": "Foo: first layers", "body": "\n\n".join([
+    "Adds Layers 1 and 2. Validation: built at the first head.", DEPENDS_BLOCK,
+    "A stale paragraph between the blocks.", PR_MARKER_LINE, FOOTER]) + "\n"}
+
+
 class RepairHub(ReviewHub):
     """The review hub, with the content pull request's (empty) reviews and inline comments, label
     removal, and the time of each comment."""
@@ -1331,11 +1339,19 @@ class RepairHub(ReviewHub):
     def api(self, path, paginate=False):
         if path.split("?")[0] in (f"repos/{CONTENT}/pulls/905/reviews", f"repos/{CONTENT}/pulls/905/comments"):
             return []
+        if path == f"repos/{CONTENT}/pulls/905":
+            return {**super().api(path, paginate), **self.__dict__.setdefault("text", dict(PR_TEXT))}
         return super().api(path, paginate)
 
     def write(self, method, path, payload=None):
         if method == "DELETE" and f"repos/{CONTENT}/issues/905/labels/" in path:
             self.labels.remove(path.rsplit("/", 1)[1])
+            return {}
+        if method == "PATCH" and path == f"repos/{CONTENT}/pulls/905":
+            if self.fault(path) == "refuse":
+                raise GHError(f"gh api -X PATCH {path}: HTTP 503: Service Unavailable")
+            self.__dict__.setdefault("text", dict(PR_TEXT)).update(payload)
+            self.__dict__.setdefault("patches", []).append((dict(payload), len(self.comments[905])))
             return {}
         stamp = f"2026-10-28T10:00:{len(self.comments[905]):02d}Z"
         made = super().write(method, path, payload)
@@ -1408,9 +1424,12 @@ def seed_board_plan_and_manifest(rh, tmp_path):
 
 
 def repair_agent(monkeypatch, briefs, report=REPAIR_LINE, edit=True, stray=False, forget_commit_once=False,
-                 board_edits=None):
+                 board_edits=None, description=()):
+    """`description`: what the agent writes as the pull request's new text, run by run (the last one from then on)."""
     def run_agent(self, ctx, ws, brief, label=""):
         briefs.append((label, brief, (ws.scratch / "reviews.md").read_text()))
+        if description:
+            (ws.scratch / lane_prreview.DESCRIPTION).write_text(description[min(len(briefs), len(description)) - 1])
         for rel, text in (board_edits or {}).items():
             (ws.board / rel).write_text(text)
         if edit:
@@ -1498,7 +1517,7 @@ def test_a_repair_stopped_after_its_push_is_finished_without_a_second_push_or_re
         lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
     new = rh.head(905)
     record = lane_base.read_pending(ctx, job)
-    assert record["done"] == ["content-comment", "repair", "content-push"] and record["repair"] == {"sha": new}
+    assert record["done"] == ["content-comment", "repair", "content-push", "repair-text"] and record["repair"] == {"sha": new}
     assert record["outstanding"] == ["repair-comment", "push", "pull-request", "submitted"]
 
     monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", lambda *a, **k: pytest.fail("the agent ran again"))
@@ -1507,6 +1526,132 @@ def test_a_repair_stopped_after_its_push_is_finished_without_a_second_push_or_re
     assert result.status == "submitted", result.detail
     assert rh.head(905) == new and len(rh.comments[905]) == 2 and rh.labels == ["awaiting-review"]
     assert ctx.board.states == [(job.id, "submitted")] and lane_base.read_pending(ctx, job) is None
+
+
+# --- a repair answers the findings about the pull request's title and description ---------------------------
+#
+# 2026-11-10: a repair may edit the roadmap folder only, so a finding about the description (it describes an
+# earlier head, it names a supplier the roadmap no longer has) was "disputed" or left to the author round
+# after round: one pull request carried such a finding through thirty-two reviews, and the repairs' reports
+# drafted the replacement text nobody posted. The repair now writes it and the worker puts it on the pull
+# request, keeping the generated blocks.
+
+NEW_TEXT = "Title: Foo: the hypothesis on p\n\nStates Layer 1 for every odd prime p.\n\nCloses #5.\n"
+
+
+@needs_git
+def test_a_repair_rewrites_the_title_and_description_and_keeps_the_generated_blocks(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    briefs = []
+    repair_agent(monkeypatch, briefs, description=[NEW_TEXT])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    result = lane.deliver(job, ctx, ws)
+    new = rh.head(905)
+    assert result.status == "submitted", result.detail
+    assert f"repaired at {new[:7]}, title and description rewritten and answered the review (awaiting-review)" in result.detail
+    [(_label, brief, _reviews)] = briefs
+    assert "The pull request's title and description as well" in brief
+    assert str(ws.scratch / "pull-request.md") in brief and str(ws.scratch / "description.md") in brief
+    # One write, after the push and before the reply: the prose, then the blocks, the marker and the footer as they were.
+    [(payload, comments_then)] = rh.patches
+    assert comments_then == 1 and len(rh.comments[905]) == 2
+    assert payload == {"title": "Foo: the hypothesis on p", "body": "\n\n".join([
+        "States Layer 1 for every odd prime p.\n\nCloses #5.", DEPENDS_BLOCK, PR_MARKER_LINE, FOOTER]) + "\n"}
+    assert "pull request #905: title and description rewritten" in ws.extra["notes"]
+    assert lane_base.read_pending(ctx, job) is None
+
+
+@needs_git
+def test_a_description_alone_is_delivered_when_the_files_need_no_change(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [], edit=False, description=["Title: Foo: first layers\n\nStates Layer 1 for every odd prime p.\n"])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert result.status == "submitted", result.detail
+    assert "answered the review, no change to the files needed, description rewritten (awaiting-review)" in result.detail
+    [(payload, _n)] = rh.patches
+    assert rh.head(905) == head and list(payload) == ["body"] and payload["body"].startswith("States Layer 1")
+
+
+@needs_git
+def test_a_description_the_worker_refuses_goes_back_to_the_repair(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    briefs = []
+    repair_agent(monkeypatch, briefs, description=[
+        "Title: Foo\n\nFixed, thanks @carol.\n\n<!-- depends-on -->\n- [x] #77\n<!-- /depends-on -->\n", NEW_TEXT])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert result.status == "submitted", result.detail
+    assert [label for label, _b, _r in briefs] == ["repair", "repair-2"]
+    assert "- description.md: it carries an HTML comment" in briefs[1][1]
+    assert "- description.md: it carries an @-mention" in briefs[1][1]
+    [(payload, _n)] = rh.patches
+    assert payload["title"] == "Foo: the hypothesis on p" and DEPENDS_BLOCK in payload["body"] and "[x] #77" not in payload["body"]
+
+
+@needs_git
+def test_a_refused_description_write_leaves_the_repair_and_its_reply(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [], description=[NEW_TEXT])
+    rh.fail("/pulls/905", "refuse")
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted", result.detail
+    assert "title and description not written: " in result.detail and "HTTP 503" in result.detail
+    assert rh.head(905) != head and len(rh.comments[905]) == 2 and "patches" not in rh.__dict__
+    assert rh.text == PR_TEXT and lane_base.read_pending(ctx, job) is None
+
+
+@needs_git
+def test_with_repair_text_off_the_brief_does_not_offer_it_and_a_description_is_ignored(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    briefs = []
+    repair_agent(monkeypatch, briefs, description=[NEW_TEXT])
+    ctx = pool_ctx(rh)
+    ctx.cfg.prreview.repair_text = False
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert result.status == "submitted" and "rewritten" not in result.detail
+    assert "title and description as well" not in briefs[0][1] and "patches" not in rh.__dict__
+
+
+def test_the_description_keeps_blocks_markers_and_the_attribution_line_in_their_order():
+    old = "\n\n".join(["Old prose.", DEPENDS_BLOCK, "More old prose.", "<!-- merge-order -->\n**Merge order.** #77 → this.\n<!-- /merge-order -->",
+                       PR_MARKER_LINE, FOOTER])
+    assert lane_prreview.merged_description("New prose.\n", old) == "\n\n".join([
+        "New prose.", DEPENDS_BLOCK, "<!-- merge-order -->\n**Merge order.** #77 → this.\n<!-- /merge-order -->",
+        PR_MARKER_LINE, FOOTER]) + "\n"
+    assert lane_prreview.merged_description("New prose.", "Old prose, no block.") == "New prose.\n"
+    assert lane_prreview.merged_description(f"New prose.\n\n{FOOTER}", f"Old.\n\n{FOOTER}") == f"New prose.\n\n{FOOTER}\n"
+    # an unclosed marker is kept as a comment; the line under it is prose and goes
+    assert lane_prreview.merged_description("New.", "Old.\n\n<!-- x -->\nits line\n") == "New.\n\n<!-- x -->\n"
+
+
+@pytest.mark.parametrize("text,problem", [
+    ("", None), ("Title: Foo: a\n\nIt adds §2 and cites `@[simp]` and user@example.org.\n", None),
+    ("Foo: a\n\nIt adds §2.\n", "its first line is not `Title: <the title>`"),
+    ("Title: Foo\n", "it has a title and no description"),
+    ("Title: " + "x" * 201 + "\n\nIt adds §2.\n", "its title is over 200 characters"),
+    ("Title: Foo\n\n" + "x" * 12001, "its description is over 12000 characters"),
+    ("Title: Foo\n\nSee <!-- tauceti-roadmap-pr {} -->\n", "it carries an HTML comment"),
+    ("Title: Foo\n\nBuilt in HOME/work.\n", "it names a path of this machine"),
+    ("Title: Foo\n\nAs @carol asked.\n", "it carries an @-mention"),
+])
+def test_a_description_is_read_only_in_the_form_asked(tmp_path, text, problem):
+    ctx = lane_ctx(tmp_path)
+    path = tmp_path / "description.md"
+    path.write_text(text.replace("HOME", str(Path.home())))
+    got, problems = lane_prreview.read_description(path, ctx)
+    if problem is None:
+        assert problems == [] and (got is None) == (not text)
+    else:
+        assert got is None and any(problem in p for p in problems), problems
 
 
 @pytest.mark.parametrize("change,repairs", [
