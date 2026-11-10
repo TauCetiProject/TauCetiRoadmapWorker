@@ -1090,6 +1090,23 @@ class Board:
             pass
         self.gh.write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"state": "closed"})
 
+    def reopen(self, job: Job, as_: Job, comment: str) -> None:
+        """A job the board closed as `superseded` runs after all: its issue is open again and
+        available, with the spec of `as_` (the same job id; what it works on now) and without the
+        label. A label that cannot be removed does not stop it."""
+        job.after, job.independent_of, job.inputs = list(as_.after), list(as_.independent_of), dict(as_.inputs)
+        job.requires_agent, job.requires_model, job.requires_operator = (as_.requires_agent, as_.requires_model,
+                                                                         as_.requires_operator)
+        self.gh.write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"state": "open"})
+        self.update_spec(job)
+        try:
+            self.gh.write("DELETE", f"repos/{self.repo}/issues/{job.number}/labels/{quote(SUPERSEDED_LABEL, safe=':')}")
+        except GHError:
+            pass
+        job.labels = [label for label in job.labels if label != SUPERSEDED_LABEL]
+        self.set_state(job, "available", comment)
+        job.closed = False
+
     def comments(self, number: int) -> list[dict]:
         return self.gh.api(f"repos/{self.repo}/issues/{number}/comments?per_page=100", paginate=True)
 

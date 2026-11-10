@@ -167,6 +167,13 @@ class FakeBoard:
         job.labels = [*job.labels, label]
         self.closed = [*getattr(self, "closed", []), job.id]
 
+    def reopen(self, job, as_, comment: str) -> None:
+        job.after, job.independent_of, job.inputs = list(as_.after), list(as_.independent_of), dict(as_.inputs)
+        job.labels = [label for label in job.labels if label != "superseded"]
+        job.closed = False
+        self.reopened = [*getattr(self, "reopened", []), job.id]
+        self.set_state(job, "available", comment)
+
     def list_jobs(self, states=("available",), kinds=None):
         return [j for j in self.jobs if j.state in states and (not kinds or j.kind in kinds)]
 
