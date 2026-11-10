@@ -1555,6 +1555,113 @@ def test_a_repair_stopped_after_its_push_is_finished_without_a_second_push_or_re
     assert ctx.board.states == [(job.id, "submitted")] and lane_base.read_pending(ctx, job) is None
 
 
+# --- a repair is carried onto a head that moved outside its folder -------------------------------------------
+#
+# 2026-11-10: the three roadmap folders of one pull request were reviewed in parallel. The first repair's
+# push moved the head, and the two other repairs, which change other folders, were not pushed. A repair is
+# now put on top of such a head, checked there, and pushed; any other move still stops the push.
+
+def moving(monkeypatch, tmp_path, rh, rel, text="changed meanwhile\n"):
+    """The pull request's branch gains a commit that writes `rel` while the repair agent runs."""
+    inner = lane_prreview.PRReviewLane.run_agent
+
+    def run_agent(self, ctx, ws, brief, label=""):
+        out, other = inner(self, ctx, ws, brief, label), tmp_path / "other"
+        if not other.exists():
+            sh(tmp_path, "clone", "-q", "-b", ROADMAP_BRANCH, str(rh.content), str(other))
+            (other / rel).parent.mkdir(parents=True, exist_ok=True)
+            (other / rel).write_text(text)
+            sh(other, "add", "-A")
+            sh(other, "commit", "-q", "-m", "a change made meanwhile")
+            sh(other, "push", "-q", "origin", f"HEAD:refs/heads/{ROADMAP_BRANCH}")
+        return out
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", run_agent)
+
+
+@needs_git
+def test_a_repair_is_carried_onto_a_head_that_moved_in_another_roadmap_folder(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [])
+    moving(monkeypatch, tmp_path, rh, "TauCetiRoadmap/Bar/README.md")
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    result = lane.deliver(job, ctx, ws)
+    new = rh.head(905)
+    onto = sh(rh.content, "rev-parse", f"{new}^")
+    assert result.status == "submitted", result.detail
+    # The other folder's commit is kept, the repair is the one commit on top of it, and it changes this folder only.
+    assert onto != head and sh(rh.content, "rev-parse", f"{onto}^") == head
+    assert sh(rh.content, "diff", "--name-only", onto, new).split() == ["TauCetiRoadmap/Foo/README.md"]
+    assert sh(rh.content, "show", f"{new}:TauCetiRoadmap/Bar/README.md") == "changed meanwhile"
+    assert f"repaired at {new[:7]} on top of {onto[:7]} and answered the review (awaiting-review)" in result.detail
+    # The reply names the carried head, says what happened, and records that head as the one answered at.
+    review, reply = rh.comments[905]
+    assert reply["body"].startswith(f"Fixed in `{new[:7]}` (reply to the review):")
+    assert (f"The review read `{head[:7]}`. The pull request moved to `{onto[:7]}` while this repair was made, by "
+            "changes outside `Foo/`") in reply["body"]
+    assert replies.answered_record(reply["body"])["head"] == new
+    assert rh.labels == ["awaiting-review"] and lane_base.read_pending(ctx, job) is None
+
+
+@needs_git
+def test_a_carried_repair_stopped_after_its_push_is_finished_with_the_same_reply(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [])
+    moving(monkeypatch, tmp_path, rh, "TauCetiRoadmap/Bar/README.md")
+    rh.fail("/issues/905/comments", None, "crash")             # the reply is posted, then the process dies
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    with pytest.raises(KeyboardInterrupt):
+        lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    new = rh.head(905)
+    onto = sh(rh.content, "rev-parse", f"{new}^")
+    assert onto != head and lane_base.read_pending(ctx, job)["repair"] == {"sha": new, "onto": onto}
+
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", lambda *a, **k: pytest.fail("the agent ran again"))
+    ctx = pool_ctx(rh)
+    result = lane_for(job).run(job, ctx)
+    assert result.status == "submitted", result.detail
+    assert rh.head(905) == new and len(rh.comments[905]) == 2 and rh.labels == ["awaiting-review"]
+    assert f"The pull request moved to `{onto[:7]}` while this repair was made" in rh.comments[905][1]["body"]
+    assert f"repaired at {new[:7]} on top of {onto[:7]}" in result.detail
+
+
+@needs_git
+@pytest.mark.parametrize("rel", ["TauCetiRoadmap/Foo/Suggested.lean", "lake-manifest.json"])
+def test_a_repair_is_not_carried_over_a_change_to_its_folder_or_outside_the_roadmaps(hub, monkeypatch, tmp_path, rel):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [])
+    moving(monkeypatch, tmp_path, rh, rel)
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    moved = rh.head(905)
+    assert result.status == "submitted", result.detail
+    assert f"; repair not pushed: the pull request moved from {head[:7]} to {moved[:7]} while the fix ran" in result.detail
+    assert sh(rh.content, "rev-parse", f"{moved}^") == head and len(rh.comments[905]) == 1 and rh.labels == []
+
+
+@needs_git
+def test_a_carried_repair_that_fails_the_gate_on_the_moved_head_is_not_pushed(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [])
+    moving(monkeypatch, tmp_path, rh, "TauCetiRoadmap/Bar/README.md")
+    calls = []
+
+    def run_gate(*a, **k):                  # the review's gate and the repair's pass; the carried head's fails
+        calls.append(a)
+        return gates.GateResult("Foo", counts={"build": int(len(calls) > 2), "depcheck": 0, "readme-ids-missing": 0})
+    monkeypatch.setattr(lane_prreview.gates, "run_gate", run_gate)
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    moved = rh.head(905)
+    assert result.status == "submitted", result.detail
+    assert f"; repair not pushed: the pull request moved to {moved[:7]} while the fix ran, and on that head its checks failed: build=1" in result.detail
+    assert sh(rh.content, "rev-parse", f"{moved}^") == head and len(rh.comments[905]) == 1 and rh.labels == []
+
+
 # --- a repair answers the findings about the pull request's title and description ---------------------------
 #
 # 2026-11-10: a repair may edit the roadmap folder only, so a finding about the description (it describes an
@@ -1633,6 +1740,37 @@ def test_a_refused_description_write_leaves_the_repair_and_its_reply(hub, monkey
     assert "title and description not written: " in result.detail and "HTTP 503" in result.detail
     assert rh.head(905) != head and len(rh.comments[905]) == 2 and "patches" not in rh.__dict__
     assert rh.text == PR_TEXT and lane_base.read_pending(ctx, job) is None
+
+
+@needs_git
+def test_a_description_changed_while_the_repair_ran_is_not_overwritten(hub, monkeypatch, tmp_path):  # noqa: F811
+    # 2026-11-10: three folders of one pull request were repaired at once; each repair's description was
+    # written from the text all three had read, so the last one delivered would have undone the others'.
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [], description=[NEW_TEXT])
+    inner = lane_prreview.PRReviewLane.run_agent
+    theirs = PR_TEXT["body"].replace("\n\n", " Another folder's repair says more here.\n\n", 1)
+
+    def run_agent(self, ctx, ws, brief, label=""):
+        out = inner(self, ctx, ws, brief, label)
+        rh.__dict__.setdefault("text", dict(PR_TEXT))["body"] = theirs
+        return out
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", run_agent)
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted", result.detail
+    assert "title and description not written: the description was changed while the repair ran" in result.detail
+    assert rh.head(905) != head and len(rh.comments[905]) == 2 and "patches" not in rh.__dict__
+    assert rh.text["body"] == theirs and lane_base.read_pending(ctx, job) is None
+
+
+def test_the_prose_of_a_description_leaves_out_what_the_worker_keeps():
+    body = "\n\n".join(["States  Layer 1.", DEPENDS_BLOCK, "Closes #5.  ", PR_MARKER_LINE, FOOTER])
+    assert lane_prreview.description_prose(body) == "States Layer 1.\nCloses #5."
+    assert lane_prreview.description_prose(lane_prreview.merged_description("States Layer 1.\n\nCloses #5.", body)) == \
+        lane_prreview.description_prose(body)
 
 
 @needs_git
