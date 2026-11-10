@@ -778,7 +778,14 @@ description (`<!-- name -->` … `<!-- /name -->`: a dependency task list, the m
 every other HTML comment (the worker's marker) and the attribution line it ends with. Prose outside
 those blocks is replaced. A write GitHub refuses is noted (`title and description not written:
 <why>`) and not retried; the files' repair and its reply stand. The round's summary says `title and
-description rewritten` (or which of the two). A repair that fails its checks, or whose push or reply is
+description rewritten` (or which of the two). When the pull request's branch moved while the repair
+ran, the repair is carried onto the new head if the move is not its own folder's: the branch only
+gained commits, those change files under the roadmap directory only and none in the folder reviewed
+(another folder of the same pull request, repaired by its own review), the repair's commits apply
+on top of them unchanged, and the push gate passes there. The summary then reads `repaired at X on
+top of Y`, and the reply says which head the review read and which the repair stands on. Any other
+move (a merge of main, a rewritten branch, a change to the folder reviewed or to a file outside the
+roadmaps) is not carried. A repair that fails its checks, or whose push or reply is
 refused (the author pushed meanwhile, a token without write access), is not pushed: the worktree
 goes back to the head reviewed, the review is submitted as it is, and the round's summary ends
 `repair not pushed: <why>` (`repair pushed, not answered: <why>` when only the reply failed: the

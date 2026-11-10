@@ -30,9 +30,10 @@ A review that asks for changes (never a rejection) on a pull request whose autho
 by a pool operator with `[prreview] repair_pool` on, goes on in the same job, before the board
 submission, so the job stays claimed meanwhile: the gate lane's steps (`lanes.gate`) answer the
 review comment just posted on the same worktree, check the repair (push gate, elaboration, a clean
-worktree), push it onto the pull request's branch while that is still at the head reviewed, and post
-the finding-by-finding reply whose record names what it answers, the worker and the new head. A
-repair that fails is not pushed and the review is submitted all the same.
+worktree), push it onto the pull request's branch while that is still at the head reviewed (or
+at a head that differs from it only outside the folder reviewed, onto which the repair is carried and
+checked again: `carry`), and post the finding-by-finding reply whose record names what it answers,
+the worker and the new head. A repair that fails is not pushed and the review is submitted all the same.
 
 The reviewer is not the pull request's author: an operator never reviews their own pull request,
 except under `[review] separation = "agent"`, where the review models `[agents.lanes.prreview]` pins
@@ -88,6 +89,7 @@ from .base import (
     settle,
     sibling_checkouts,
     sibling_readmes,
+    write_pending,
 )
 from .gate import ANSWERED, answer_problems, answer_values, gate_problems, push_and_reply, reviews_document
 from .pr import pr_branch_worktree
@@ -108,6 +110,7 @@ DESCRIPTION, REPAIR_DESCRIPTION = "description.md", "repair-description.json"
 TITLE_LIMIT, DESCRIPTION_LIMIT = 200, 12000
 REPAIR_REPORT = "repair-report.md"        # in the job folder: the repair's report, H01… per finding
 REPAIR_GATE = "repair-gate.json"          # in the job folder: the gate's result at the repaired head
+CARRIES = 2                               # times a repair is carried onto a head that moved under it (`carry`)
 
 
 def report_head(name: str, pr: int, head: str) -> str:
@@ -327,6 +330,12 @@ def unaccounted_findings(previous: str, report: str) -> list[str]:
 def repaired_head(ctx: Context, job: Job) -> str:
     """The head the job's repair committed and checked, from its record ('' before one is)."""
     return str(kept_commit(read_pending(ctx, job) or {}, "repair").get("sha") or "")
+
+
+def carried_onto(ctx: Context, job: Job) -> str:
+    """The head the job's repair was carried onto after the pull request moved under it (`carry`), from
+    its record ('' when the repair stands on the head the review read)."""
+    return str(kept_commit(read_pending(ctx, job) or {}, "repair").get("onto") or "")
 
 
 def board_snapshot(job: Job, ctx: Context, ws: Workspace) -> dict[str, bytes]:
@@ -917,13 +926,74 @@ class PRReviewLane(Lane):
             raise LaneError("the repair's record is incomplete")
         answered = json.loads((ws.job_dir / ANSWERED).read_text(encoding="utf-8"))
         text = []
-        label = push_and_reply(self, ctx, job, ws, report.read_text(encoding="utf-8"), answered, gate,
-                               branch=ws.extra["pr_branch"], base=head, moved=new != head, reply=REPAIR_COMMENT,
-                               after_push=lambda: text.append(self.deliver_text(job, ctx, ws)))
+        for attempt in range(CARRIES + 1):
+            if new != head and owes(ctx, job, CONTENT_PUSH):
+                new, gate = self.carry(job, ctx, ws, head, new, gate)
+            onto = carried_onto(ctx, job)
+            note = onto and (f"The review read `{head[:7]}`. The pull request moved to `{onto[:7]}` while this repair "
+                             f"was made, by changes outside `{board.prreview_folder(job)}/`, so the repair is applied "
+                             "on top of that head, unchanged, and its checks were run again there.")
+            try:
+                label = push_and_reply(self, ctx, job, ws, report.read_text(encoding="utf-8"), answered, gate,
+                                       branch=ws.extra["pr_branch"], base=onto or head, moved=new != head,
+                                       reply=REPAIR_COMMENT, note=note,
+                                       after_push=lambda: text.append(self.deliver_text(job, ctx, ws)))
+                break
+            except gitops.BranchMoved:
+                if attempt == CARRIES:
+                    raise
         wrote = "".join(f", {x}" for x in text if x)
+        if onto:
+            wrote = f" on top of {onto[:7]}{wrote}"
         return (f"repaired at {new[:7]}{wrote} and answered the review ({label})" if new != head
                 else f"answered the review, no change to the files needed{wrote} ({label})" if wrote
                 else f"answered the review, no change needed ({label})")
+
+    def carry(self, job: Job, ctx: Context, ws: Workspace, head: str, new: str,
+              gate: gates.GateResult) -> tuple[str, gates.GateResult]:
+        """Before the repair's push: (the repaired head, its gate result), carried onto the pull
+        request's branch when that moved while the repair ran and the move is not this folder's
+        (2026-11-10: the three folders of one pull request were reviewed in parallel, the first
+        repair's push moved the head, and the other two repairs were thrown away). The repair is
+        carried when the branch only gained commits on top of the head the repair was built on, those
+        commits change files under the active directory only and none in the folder reviewed, the
+        repair's commits apply on top of them as they are, and the gate passes there. Its record then
+        names the carried commit and the head it stands on (`carried_onto`), which the push expects.
+        Any other move leaves the worktree at the repair and raises BranchMoved: a merge of the base
+        branch, a rewritten branch, a change to this folder or to a file outside the roadmaps."""
+        wt, branch, cfg = ws.workdir, ws.extra["pr_branch"], ctx.cfg
+        start = carried_onto(ctx, job) or head
+        found = gitops.remote_head(wt, ws.extra["head_repo"], branch)
+        if found in ("", start, new):
+            return new, gate
+        moved = gitops.BranchMoved(branch, start, found)
+        gitops.git(wt, "fetch", "-q", "fork", f"refs/heads/{branch}", check=False)
+        if gitops.git(wt, "merge-base", start, found, check=False).strip() != start:
+            raise moved
+        active, folder = cfg.roadmap.active_dir.strip("/") + "/", board.prreview_folder(job)
+        changed = gitops.git(wt, "diff", "--name-only", start, found, check=False).splitlines()
+        if not changed or any(not path.startswith(active) or path.startswith(f"{active}{folder}/") for path in changed):
+            raise moved
+        try:
+            gitops.git(wt, "reset", "-q", "--hard", found)
+            gitops.git(wt, "cherry-pick", "--allow-empty", f"{start}..{new}")
+        except gitops.GitError:
+            gitops.git(wt, "cherry-pick", "--abort", check=False)
+            gitops.git(wt, "reset", "-q", "--hard", new, check=False)
+            raise moved from None
+        problems, gate = gate_problems(ctx, ws, job.name, folder, self.gate_options(job, ctx, ws), base=found)
+        if problems:
+            gitops.git(wt, "reset", "-q", "--hard", new, check=False)
+            raise LaneError(f"the pull request moved to {found[:7]} while the fix ran, and on that head "
+                            "its checks failed: " + "; ".join(problems[:3]))
+        carried = gitops.git(wt, "rev-parse", "HEAD").strip()
+        save_gate(ws.job_dir / REPAIR_GATE, carried, gate)
+        owe(ctx, job, ws, (), content={"sha": carried})
+        entry = read_pending(ctx, job) or {}
+        entry["repair"] = {**kept_commit(entry, "repair"), "sha": carried, "onto": found}
+        write_pending(ctx, job, entry)
+        self.note(ws, f"repair carried from {start[:7]} onto {found[:7]}: the pull request moved outside {folder}/")
+        return carried, gate
 
     def deliver_text(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """The title and description the repair recorded (`run_repair`), written onto the pull request
