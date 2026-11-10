@@ -358,6 +358,37 @@ def test_a_new_round_is_a_re_review_of_the_head_the_latest_done_review_read():
                                                                  "rereview": True}
 
 
+def test_a_head_reviewed_twice_gets_a_check_round_only_for_a_rewritten_description():
+    # 2026-11-10: the second review of an unmoved head asked for a corrected description; the answer corrected
+    # it without a push, and the revision stayed unapproved because a head reviewed twice got no further round.
+    first, second = review_job(40, 1, 12, H1, "done"), review_job(41, 2, 12, H1, "done")
+    second.inputs["dispute_rereview"] = True
+
+    def answer(job, **record):
+        return {"id": 9, "user": {"login": "alice"},
+                "body": "Fixed in `1111111` (reply to the review, no change needed):\n\n- **R01** (applied) — done.\n"
+                        + replies.answered_marker(job, {"comment-8": "abc"}, worker="alice-1", head=H1, **record)}
+
+    def run(comment, jobs, status="needs_changes"):
+        gh = ContentGH([node(12, H1)], comments={12: [comment]}, files=verdict_file(second, status, H1))
+        return sync(gh, jobs)
+
+    out, fake = run(answer("PRREVIEW-Foo~2", text=True), [first, second])
+    [(job, _s, _p)] = fake.created
+    assert job.id == "PRREVIEW-Foo~3" and out == ["#12: PRREVIEW-Foo~3 created"]
+    assert job.inputs == {"pr": 12, "head": H1, "owner": "carol", "name": "Foo", "folder": "Foo", "rereview": True,
+                          "previous_head": H1, "previous_job": "PRREVIEW-Foo~2", "text_rereview": True,
+                          "not_worker": "alice-1"}
+    # One check round: whatever it finds, the head is then settled.
+    third = review_job(42, 3, 12, H1, "done")
+    third.inputs["text_rereview"] = True
+    assert run(answer("PRREVIEW-Foo~3", text=True), [first, second, third])[1].created == []
+    # A second dispute, an answer to the first review only, and an accepted head file nothing.
+    assert run(answer("PRREVIEW-Foo~2"), [first, second])[1].created == []
+    assert run(answer("PRREVIEW-Foo~1", text=True), [first, second])[1].created == []
+    assert run(answer("PRREVIEW-Foo~2", text=True), [first, second], status="accepted")[1].created == []
+
+
 def test_a_new_round_is_numbered_past_the_highest_round_when_a_number_is_missing():
     # Round 2 is gone from the board: a count of the folder's rounds would name round 3, which exists and is
     # done, and the board would hand that finished round back instead of filing one.
@@ -1282,6 +1313,29 @@ def test_the_mode_follows_the_threshold_and_the_brief_renders_it(dry_ctx, tmp_pa
 
 
 @needs_git
+def test_the_check_round_of_a_rewritten_description_is_incremental_and_says_what_to_read(dry_ctx, tmp_path, monkeypatch):  # noqa: F811
+    repo, _first, second = repaired_repo(tmp_path)
+    real_git_in(repo, monkeypatch)
+    job = rereview_job(second, second, round_=3)
+    job.inputs["text_rereview"] = True
+    gh = ContentGH(pulls={905: {"number": 905, "state": "open", "head": {"sha": second}}},
+                   files={"packages/Foo/reports/PRREVIEW-Foo~2.md": PREVIOUS_REPORT})
+    ctx = dataclasses.replace(dry_ctx, gh=gh)
+    lane = lane_for(job)
+    ws = lane.prepare(job, ctx)
+    assert ws.extra["change_lines"] == 0 and ws.extra["mode"] == "incremental"
+    text = prompts.render("prreview", {**lane.common_values(job, ctx, ws), **lane.values(job, ctx, ws)})
+    assert "**An incremental re-review.**" in text
+    assert "**The files are unchanged; the title and description were rewritten.**" in text
+    assert f"They are quoted in `{ws.scratch / 'pull-request.md'}`." in text
+    # An ordinary incremental re-review does not carry the paragraph.
+    plain = rereview_job(second, second, round_=3)
+    ws = lane.prepare(plain, ctx)
+    assert "the title and description were rewritten" not in prompts.render(
+        "prreview", {**lane.common_values(plain, ctx, ws), **lane.values(plain, ctx, ws)})
+
+
+@needs_git
 def test_a_re_review_without_the_previous_report_on_the_board_is_a_full_review(dry_ctx, tmp_path, monkeypatch):  # noqa: F811
     repo, first, second = repaired_repo(tmp_path)
     real_git_in(repo, monkeypatch)
@@ -1878,6 +1932,32 @@ def test_a_description_alone_is_delivered_when_the_files_need_no_change(hub, mon
     assert "answered the review, no change to the files needed, description rewritten (awaiting-review)" in result.detail
     [(payload, _n)] = rh.patches
     assert rh.head(905) == head and list(payload) == ["body"] and payload["body"].startswith("States Layer 1")
+    # The head did not move, so the reply's record is what tells the intake that the text did.
+    record = replies.answered_record(rh.comments[905][-1]["body"])
+    assert record["head"] == head and record["text"] is True
+
+
+@needs_git
+def test_a_description_delivered_before_a_crash_is_reported_the_same_by_the_next_attempt(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [], edit=False, description=["Title: Foo: first layers\n\nStates Layer 1 for every odd prime p.\n"])
+    rh.fail("/issues/905/comments", None, "crash")             # the reply is posted, then the process dies
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    with pytest.raises(KeyboardInterrupt):
+        lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert lane_base.read_pending(ctx, job)["text"] == {"line": "description rewritten"}
+    assert lane_prreview.text_rewritten(lane_prreview.delivered_text(ctx, job))
+    assert not lane_prreview.text_rewritten("title and description not written: the description was changed while the repair ran")
+
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", lambda *a, **k: pytest.fail("the agent ran again"))
+    ctx = pool_ctx(rh)
+    result = lane_for(job).run(job, ctx)
+    assert result.status == "submitted", result.detail
+    assert "answered the review, no change to the files needed, description rewritten (awaiting-review)" in result.detail
+    # The record still says the text was rewritten, so the reply already posted is recognised: no second one.
+    assert len(rh.comments[905]) == 2 and len(rh.patches) == 1
+    assert replies.answered_record(rh.comments[905][-1]["body"])["text"] is True
 
 
 @needs_git
