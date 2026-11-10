@@ -291,8 +291,10 @@ def write_summary(workdir: Path, subject: Subject, title: str, written: list[str
 
 
 def refresh(ctx, numbers: list[int], *, agent: str, model: str, force: bool = False, missing: bool = False,
-            listing: bool = False, launch=None) -> list[str]:
+            listing: bool = False, launch=None, known: dict[int, dict] | None = None, report=None) -> list[str]:
     """Write the summary block of each pull request in `numbers` and return a line for each.
+    `known` holds pull requests already read (a listing's), which saves a read each; `report` is
+    called with each line as it is settled, so a long pass shows its progress.
 
     A block of the right kind is left alone unless `force`; a block of the wrong kind (a summary of
     the whole roadmap on a revision, or the reverse) is rewritten; a description without a block gets
@@ -300,17 +302,21 @@ def refresh(ctx, numbers: list[int], *, agent: str, model: str, force: bool = Fa
     lines = []
     for n in numbers:
         try:
-            lines.append(_refresh_one(ctx, n, agent=agent, model=model, force=force, missing=missing,
-                                      listing=listing, launch=launch))
+            line = _refresh_one(ctx, n, agent=agent, model=model, force=force, missing=missing,
+                                listing=listing, launch=launch, pr=(known or {}).get(n))
         except GHError as exc:
-            lines.append(f"#{n}: read failed ({exc}); skipped")
+            line = f"#{n}: read failed ({exc}); skipped"
+        lines.append(line)
+        if report:
+            report(line)
     return lines
 
 
-def _refresh_one(ctx, n: int, *, agent: str, model: str, force: bool, missing: bool, listing: bool, launch) -> str:
+def _refresh_one(ctx, n: int, *, agent: str, model: str, force: bool, missing: bool, listing: bool, launch,
+                 pr: dict | None = None) -> str:
     cfg, repo = ctx.cfg, ctx.cfg.repositories.content
     unreadable = f"#{n}: the description read looks empty or like an API error; skipped"
-    pr = ctx.gh.api(f"repos/{repo}/pulls/{n}") or {}
+    pr = pr or ctx.gh.api(f"repos/{repo}/pulls/{n}") or {}
     body = pr.get("body") or ""
     if looks_unreadable(body):
         return unreadable
@@ -360,15 +366,15 @@ def _refresh_one(ctx, n: int, *, agent: str, model: str, force: bool, missing: b
     return f"#{n} {names}: wrote {what} ({len(text.split())} words)"
 
 
-def candidates(ctx, missing: bool = False) -> list[int]:
-    """The open pull requests worth a look when none is named: those with a summary block, and with
-    `missing` every one that carries the roadmap marker. One listing read; the kind is settled per
-    pull request from its files."""
+def candidates(ctx, missing: bool = False) -> dict[int, dict]:
+    """The open pull requests worth a look when none is named, by number: those with a summary block,
+    and with `missing` every one that carries the roadmap marker. One listing read; the kind is
+    settled per pull request from its files."""
     repo = ctx.cfg.repositories.content
     items = ctx.gh.api(f"repos/{repo}/pulls?state=open&per_page=100", paginate=True) or []
-    out = []
+    out = {}
     for pr in items:
         body = pr.get("body") or ""
         if block_kind(body) or (missing and marked_roadmap(body)):
-            out.append(pr["number"])
-    return sorted(out)
+            out[pr["number"]] = pr
+    return dict(sorted(out.items()))

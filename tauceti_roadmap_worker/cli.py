@@ -627,13 +627,13 @@ def summary_cmd(args) -> int:
     if not args.pr and not args.all:
         print("summary: name a pull request with --pr, or pass --all", file=sys.stderr)
         return 2
-    numbers = sorted(set(args.pr)) if args.pr else summary.candidates(ctx, missing=args.missing)
+    known = {} if args.pr else summary.candidates(ctx, missing=args.missing)
+    numbers = sorted(set(args.pr)) if args.pr else list(known)
     agent = args.agent or "claude"
     model = args.model or (cfg.agents.codex_model if agent == "codex" else cfg.agents.claude_model)
     lines = summary.refresh(ctx, numbers, agent=agent, model=model, force=args.force,
-                            missing=args.missing or bool(args.pr), listing=args.list)
-    for line in lines:
-        print(line)
+                            missing=args.missing or bool(args.pr), listing=args.list, known=known,
+                            report=lambda line: print(line, flush=True))
     return 1 if any("refused" in line or "failed" in line for line in lines) else 0
 
 

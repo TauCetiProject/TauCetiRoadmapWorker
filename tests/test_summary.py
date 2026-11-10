@@ -248,3 +248,22 @@ def test_a_repair_keeps_the_summary_block_first_in_the_description_it_delivers()
     old = "\n\n".join(["Old prose.", "<!-- depends-on -->\n- [ ] #5 Bravo\n<!-- /depends-on -->", block(REV_TEXT), MARKER])
     assert lane_prreview.merged_description("New prose.", old) == "\n\n".join([
         block(REV_TEXT), "New prose.", "<!-- depends-on -->\n- [ ] #5 Bravo\n<!-- /depends-on -->", MARKER]) + "\n"
+
+
+def test_a_pass_over_the_open_pull_requests_reads_each_once_and_reports_as_it_goes(tmp_path):
+    readme = f"{ACTIVE}/Alpha/README.md"
+    hub = Hub(f"{block(NEW_TEXT)}\n\n{BODY}", [changed(readme)])
+    listed = {"number": 7, "title": "Alpha: orient the boundary", "body": hub.body,
+              "base": {"sha": "basetip"}, "head": {"sha": "headsha"}}
+    plain = {"number": 8, "title": "Bravo", "body": "No block and no marker."}
+    marked = {"number": 9, "title": "Charlie", "body": BODY}
+    hub.api = lambda path, paginate=False, real=hub.api: (
+        [plain, marked, listed] if path.endswith("/pulls?state=open&per_page=100") else real(path, paginate))
+    ctx = context(hub, tmp_path)
+    known = summary.candidates(ctx)
+    assert list(known) == [7] and list(summary.candidates(ctx, missing=True)) == [7, 9]
+    hub.reads.clear()
+    seen = []
+    lines = summary.refresh(ctx, list(known), agent="claude", model="m", listing=True, known=known, report=seen.append)
+    assert seen == lines == ["#7 Alpha: would write a revision summary in place of its new block"]
+    assert hub.reads == ["repos/org/content/pulls/7/files?per_page=100"]       # the listing's record is not read again
