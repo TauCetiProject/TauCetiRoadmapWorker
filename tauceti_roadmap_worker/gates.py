@@ -1147,6 +1147,10 @@ GATE_RULES = {
     "long-fences": "no fenced block of more than 40 lines that is neither Lean nor a table: quote a locator, not "
                    "a passage",
     "layer-ids": "a layer heading reads `Layer N: title`: its id, before the colon, is a bare label",
+    "metadata": "the topic file `metadata.toml` sits in the roadmap directory directly under the active directory "
+                "and nowhere below it: a nested roadmap is filed under that directory's topic, so delete a "
+                "`metadata.toml` in a nested folder and never add one there; one is missing only from a directory "
+                "directly under the active directory that holds a README",
     "stray-files": "a roadmap folder holds only README.md, Suggested.lean, metadata.toml (`[gates] roadmap_files`), "
                    "other `*.lean` files and the folders of nested roadmaps: delete anything else (SOURCES.md, "
                    "PROGRESS.md, STATUS.md, notes, scratch, other subfolders); sources are the README's references",
@@ -1232,12 +1236,23 @@ def build_targets(root: Path, active_dir: str, folder: str) -> str:
 
 
 def metadata_problems(root: Path, active_dir: str, folder: str) -> list[str]:
-    """A roadmap folder has its metadata.toml; a nested roadmap may share its family's, in a folder
-    above it under the active directory (`RepresentationTheory/metadata.toml`)."""
-    rel = folder.removeprefix(active_dir.rstrip("/") + "/").strip("/").split("/")
-    if any((root / active_dir / Path(*rel[:k]) / "metadata.toml").is_file() for k in range(len(rel), 0, -1)):
-        return []
-    return [f"{folder}/metadata.toml missing"]
+    """The topic file is where the content repository's topic check reads it: in the roadmap directory
+    directly under the active directory, and nowhere below it. A nested roadmap is filed under that
+    directory's topic, so a `metadata.toml` of its own, or of a folder between the two, fails the check.
+    When the directory above a nested roadmap has no README in the tree, its roadmap arrives with another
+    pull request and brings the topic with it: nothing is missing here, and a file added to the nested
+    folder to fill the gap is the error the check rejects once the two meet."""
+    base = active_dir.strip("/")
+    rel = folder.removeprefix(base + "/").strip("/").split("/")
+    top = root / base / rel[0]
+    if len(rel) == 1:
+        return [] if (top / "metadata.toml").is_file() else [f"{folder}/metadata.toml missing"]
+    out = [f"{base}/{'/'.join(rel[:k])}/metadata.toml: a nested roadmap is filed under the topic of {base}/{rel[0]} "
+           "and carries no metadata.toml"
+           for k in range(len(rel), 1, -1) if (root / base / Path(*rel[:k]) / "metadata.toml").is_file()]
+    if (top / "README.md").is_file() and not (top / "metadata.toml").is_file():
+        out.append(f"{base}/{rel[0]}/metadata.toml missing")
+    return out
 
 
 def stray_files(root: Path, folder: str, allowed: list[str]) -> list[str]:
