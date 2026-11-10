@@ -18,6 +18,12 @@ These planning principles are the product's contract, not advice:
   consumers are later; cycles are design defects and are broken by moving ownership.
 - Statements are the author's own words with exact locators into legal sources. No source
   passages are copied. Mathematical background is welcome; computational algorithms are not.
+- The organisation is the roadmap's own, derived from the mathematics: the layers are what the
+  final targets need, worked backwards, and each is named by its mathematics. A source's
+  arrangement (its chapter order, its expository sequence) is never the plan: a roadmap does not
+  say it follows a source and no layer is named after a source's chapter. An order the
+  dependencies force is kept, whichever source shares it. Results that appear in a source are
+  cited with exact locators.
 - `Suggested.lean` is the roadmap's acceptance test, not an API catalogue: it states the
   headline theorems the finished roadmap will prove, each with `sorry`, against the pinned
   Mathlib and Tau Ceti, with only the simple definitions they need, a single `import Mathlib`,
@@ -75,6 +81,10 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
    suppliers below says). Declared supplier gaps are contracts, not unowned prerequisites (below).
 6. **Shape and completeness**: every definition has its API and at least three discriminating
    Checks; every theorem its exact hypotheses and a locator; every layer its dependencies; the
+   organisation is the roadmap's own (a README that says it follows a source, a layer named after
+   a source's chapter, or a run of layers in a source's chapter order that their dependency lines
+   do not force is P2; the witness is the sentence or heading, or the layers and the dependency
+   lines that leave the order free; an order the dependencies force is no finding); the
    README shape and house style below; for a package, the Lean form below, elaborated with
    `__ELABORATE__` (`sorry` the only warning; say so if the command is not available).
 7. **Headline theorems and padding** (a package). List the roadmap's headline theorems from the
