@@ -256,6 +256,10 @@ diff_cap_lines = 2000
 # while the review job is claimed, and the next review of the repaired head is another worker's.
 repair_pool = true
 repair_text = true
+# Such a repair first merges the base branch into the pull request's branch when the branch's Lake pins
+# are behind it and the branch changed none of them itself (a merge that conflicts is not made): the
+# finding that a branch pins an older Tau Ceti than main is one no repair of the folder can answer.
+repair_merges_base = true
 # The push gate's statement-hygiene scan of each Suggested.lean (count `statement-hygiene`), one hit
 # per occurrence with its line, severity and repair: a theorem concluding `Nonempty (A ≅ B)` (`≃`,
 # `≌`) or `∃ e : A ≃ B, …` unless named `nonempty_*`/`exists_*`; choice (`Classical.choose`, `h.some`,

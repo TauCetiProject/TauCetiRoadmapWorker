@@ -188,10 +188,12 @@ def versions(events: list[Event]) -> dict[str, str]:
     return {e.ref: e.version for e in events if e.ref}
 
 
-def answered_marker(job: str, answered: dict[str, str], worker: str = "", head: str = "") -> str:
+def answered_marker(job: str, answered: dict[str, str], worker: str = "", head: str = "", text: bool = False) -> str:
     """The record a reply carries of the exact reviews and comments it answers (`versions`), and of the
-    worker that wrote it and the head it answers at, when given."""
-    data = {"job": job, "answered": answered, **({"worker": worker} if worker else {}), **({"head": head} if head else {})}
+    worker that wrote it and the head it answers at, when given; `text` when the answer rewrote the pull
+    request's title or description."""
+    data = {"job": job, "answered": answered, **({"worker": worker} if worker else {}), **({"head": head} if head else {}),
+            **({"text": True} if text else {})}
     return f"<!-- {ANSWERED_MARK} {json.dumps(data, sort_keys=True)} -->"
 
 

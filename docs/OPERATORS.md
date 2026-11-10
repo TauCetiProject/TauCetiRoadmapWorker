@@ -678,6 +678,16 @@ moves on or closes; a claimed or submitted one finishes. The log reads `#N: PRRE
 created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N: ai-approved removed
 (head moved)`.
 
+A head already reviewed gets a further round in two cases only, both read from the answered record
+of the reply on the pull request. A review that did not accept and was answered without moving the
+head (the record names the reviewed head: a dispute) gets one more round, a full review by another
+worker (`dispute_rereview`). When the answer to that second review rewrote the pull request's title
+or description (`repair_text`; its record then carries `"text": true`), the head gets one check
+round (`text_rereview`, with `rereview`, `previous_head` equal to the head and `previous_job` the
+second review): an incremental re-review of an unchanged folder whose brief says that the title and
+description are what changed. After that the head is settled, whatever the check round finds, until
+it moves.
+
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | file and retire review jobs and keep the label (nothing is read while off) |
@@ -695,6 +705,7 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
 | `repair_text` | `true` | such a repair also answers the findings about the pull request's title and description, and puts right what its own change makes wrong in them: the agent writes the corrected text and the worker puts it on the pull request, keeping the generated blocks and markers |
 | `statement_hygiene` | `true` | the push gate's statement-hygiene scan of Suggested.lean (count `statement-hygiene`; every push gate and `tauceti-roadmap gate` run it): `Nonempty`/`∃` isomorphism headlines, choice in data, `letI`/`haveI` in signatures, `[Fintype k]` beside `[Field k]`, `ULift`, instance removals, `HEq`/`cast`/`eqToHom` conclusions (P3), duplicate statements (P2); each hit names its line, severity and repair, and a review reports it as a finding |
+| `repair_merges_base` | `true` | a repair of a pool author's pull request (`repair_pool`) first merges the base branch into the pull request's branch when the branch's Lake pins (manifest, toolchain, lakefile) are behind it and the branch changed none of them itself; a merge that conflicts is not made |
 
 The review runs on the review models: `[agents.lanes.prreview]` pins them, and without that table the
 lane uses `[agents.lanes.review]`'s. For example
@@ -797,7 +808,27 @@ gained commits, those change files under the roadmap directory only and none in 
 on top of them unchanged, and the push gate passes there. The summary then reads `repaired at X on
 top of Y`, and the reply says which head the review read and which the repair stands on. Any other
 move (a merge of main, a rewritten branch, a change to the folder reviewed or to a file outside the
-roadmaps) is not carried. A repair that fails its checks, or whose push or reply is
+roadmaps) is not carried.
+
+A review often finds that the branch pins an older Tau Ceti than main (a declaration the README
+cites is not in the pinned revision yet, or one the roadmap restates has landed since) and asks for
+a merge of main, which no repair of the roadmap folder can make. With `repair_merges_base` on, the
+repair therefore starts, before its agent runs, by merging the base branch into the worktree, when
+the pull request merges into the project branch, that branch changed a pin file (`lake-manifest.json`,
+`lean-toolchain`, the lakefile) since the pull request's branch left it, and the pull request's
+branch changed none itself. The worktree is relinked to the shared Lake packages of the new pin,
+the brief tells the agent of the merge (a finding asking for it is answered by it, and a folder
+that no longer builds against the newer pins is repaired), the repair's push gate takes the merge
+commit as what the repair starts from, and the push carries the merge and the repair's commits
+together, onto the head reviewed. The summary reads `repaired at X with main merged at M`, and the
+reply says that the reviewed head's pins were behind and where main was merged. A merge that
+conflicts is given up (`main does not merge into the branch without conflicts`) and the repair runs
+on the branch as it is; a pull request stacked on another branch, or one that bumps a pin itself,
+is never merged into. Such a repair is carried onto a moved head as above, from its merge commit:
+the moved head must differ from it only in other roadmap folders (another folder's repair, which
+made the same merge), and the repair's own commits go on top of it.
+
+A repair that fails its checks, or whose push or reply is
 refused (the author pushed meanwhile, a token without write access), is not pushed: the worktree
 goes back to the head reviewed, the review is submitted as it is, and the round's summary ends
 `repair not pushed: <why>` (`repair pushed, not answered: <why>` when only the reply failed: the

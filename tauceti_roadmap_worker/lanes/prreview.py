@@ -93,7 +93,8 @@ from .base import (
     write_pending,
 )
 from .gate import ANSWERED, answer_problems, answer_values, gate_problems, push_and_reply, reviews_document
-from .pr import pr_branch_worktree
+from .lake import PIN_FILES, LakeSetup
+from .pr import pr_branch_worktree, wire_worktree
 from .review import SAMPLE_SIZE, review_summary, sample_items, seeded_sample, verdict_problems
 
 GATE_RECORD = "gate.json"                 # in the job folder: the gate's result at the head reviewed
@@ -367,13 +368,26 @@ full review: check that the updates are correct.
 Every deliverable below is the same as in a full review."""
 
 
+TEXT_ROUND = """
+
+**The files are unchanged; the title and description were rewritten.** The previous review of `{since}` \
+was answered without a push: the answer rewrote the pull request's title and description, which no \
+review has read since. They are quoted in `{pr_text}`. For each previous finding about the title or the \
+description, judge the text as it stands there now (step 1); a previous finding about the files is \
+judged against the files, which are as that review read them. The rewritten title and description are \
+the changed passages of step 2: check every claim they make against the head."""
+
+
 def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
     """The brief's MODE: what the review covers, an incremental re-review (`INCREMENTAL`) or a full
     review, saying why a re-review is not incremental and offering the change set as context."""
     previous, changes, lines = extra.get("previous_report"), extra.get("changes"), extra.get("change_lines")
     since, small = str(job.inputs.get("previous_head") or "")[:7], cfg.prreview.small_change_lines
     if mode == "incremental":
-        return INCREMENTAL.format(previous=previous, since=since, lines=lines, small=small, changes=changes)
+        text = INCREMENTAL.format(previous=previous, since=since, lines=lines, small=small, changes=changes)
+        if job.inputs.get("text_rereview"):
+            text += TEXT_ROUND.format(since=since, pr_text=extra.get("pr_text") or "the pull request's text")
+        return text
     text = "**A full review.**"
     if job.inputs.get("rereview"):
         why = (f"the head the previous review read, `{since}`, cannot be compared with this one" if lines is None
@@ -408,6 +422,24 @@ def carried_onto(ctx: Context, job: Job) -> str:
     """The head the job's repair was carried onto after the pull request moved under it (`carry`), from
     its record ('' when the repair stands on the head the review read)."""
     return str(kept_commit(read_pending(ctx, job) or {}, "repair").get("onto") or "")
+
+
+def merged_base(ctx: Context, job: Job) -> str:
+    """The commit by which the job's repair merged the base branch into the pull request's branch before
+    its agent ran (`merge_base_branch`), from its record ('' when it merged nothing, or when the repair
+    was carried onto another head since, which leaves that commit behind)."""
+    return str(kept_commit(read_pending(ctx, job) or {}, "repair").get("merged") or "")
+
+
+def delivered_text(ctx: Context, job: Job) -> str:
+    """What the job's repair did to the pull request's title and description (`deliver_text`), from its
+    record: '' when it wrote nothing, or before that step."""
+    return str(kept_commit(read_pending(ctx, job) or {}, "text").get("line") or "")
+
+
+def text_rewritten(line: str) -> bool:
+    """Whether a `deliver_text` line reports a title or description actually written."""
+    return line.endswith(" rewritten")
 
 
 def board_snapshot(job: Job, ctx: Context, ws: Workspace) -> dict[str, bytes]:
@@ -488,6 +520,22 @@ def board_edits(job: Job, ctx: Context, ws: Workspace) -> tuple[dict[str, bytes]
         else:
             keep[rel] = after
     return keep, notes
+
+
+def base_branch(ctx: Context, ws: Workspace) -> str:
+    """The branch the pull request merges into (the project branch when it names none)."""
+    return ws.extra.get("base_ref") or ctx.cfg.project.branch
+
+
+def merged_brief(ctx: Context, ws: Workspace, merged: str) -> str:
+    """The paragraph of the repair brief on the merge the worker made before the agent started."""
+    name = base_branch(ctx, ws)
+    return (f"Before you started, the worker merged `{name}` into this worktree (commit `{merged[:7]}`), because "
+            f"the branch's Lake pins were behind `{name}`'s: the worktree is no longer at the head named above, "
+            f"and it builds against the Tau Ceti and Mathlib that `{name}` pins. A finding that asks for this "
+            "merge, or that rests only on the older pin, is answered by it: say so under its H section, after "
+            "checking that what the finding names now holds. Do not undo, redo or amend the merge. If the "
+            "roadmap folder no longer builds against the newer pins, repairing that is part of this repair.")
 
 
 def board_edits_brief(job: Job, ctx: Context, ws: Workspace) -> str:
@@ -673,6 +721,7 @@ class PRReviewLane(Lane):
                         readme=folder / "README.md", lean=leans[0], leans=leans)
         change = base_change(wt, fetch_pr_base(ctx, ws), f"{cfg.roadmap.active_dir}/{board.prreview_folder(job)}")
         (ws.scratch / PULL_REQUEST_TEXT).write_text(pull_request_document(number, data, owner, change), encoding="utf-8")
+        ws.extra["pr_text"] = str(ws.scratch / PULL_REQUEST_TEXT)
         ws.extra["pr_prose"] = description_prose(data.get("body") or "")
         self.write_changes(job, ctx, ws)
         ws.extra["previous_report"] = self.previous_report(job, ctx, ws)
@@ -1001,8 +1050,10 @@ class PRReviewLane(Lane):
             for effect in REPAIR_EFFECTS:
                 settle(ctx, job, effect)
             if not repaired_head(ctx, job):
+                gitops.git(ws.workdir, "merge", "--abort", check=False)
                 gitops.git(ws.workdir, "reset", "-q", "--hard", ws.extra["head"], check=False)
                 gitops.git(ws.workdir, "clean", "-qfd", check=False)
+                self.relink(ctx, ws)
             line = f"repair pushed, not answered: {why}" if pushed else f"repair not pushed: {why}"
             self.note(ws, line)
             return line
@@ -1020,22 +1071,29 @@ class PRReviewLane(Lane):
         for attempt in range(CARRIES + 1):
             if new != head and owes(ctx, job, CONTENT_PUSH):
                 new, gate = self.carry(job, ctx, ws, head, new, gate)
-            onto = carried_onto(ctx, job)
+            onto, merged = carried_onto(ctx, job), merged_base(ctx, job)
             note = onto and (f"The review read `{head[:7]}`. The pull request moved to `{onto[:7]}` while this repair "
                              f"was made, by changes outside `{board.prreview_folder(job)}/`, so the repair is applied "
                              "on top of that head, unchanged, and its checks were run again there.")
+            if merged and not onto:
+                note = (f"The review read `{head[:7]}`, whose Lake pins were behind `{base_branch(ctx, ws)}`. Before "
+                        f"the repair, `{base_branch(ctx, ws)}` was merged into the branch at `{merged[:7]}`; the "
+                        "repair was made and its checks were run on the merged branch.")
             try:
                 label = push_and_reply(self, ctx, job, ws, report.read_text(encoding="utf-8"), answered, gate,
                                        branch=ws.extra["pr_branch"], base=onto or head, moved=new != head,
                                        reply=REPAIR_COMMENT, note=note,
-                                       after_push=lambda: text.append(self.deliver_text(job, ctx, ws)))
+                                       after_push=lambda: text.append(self.deliver_text(job, ctx, ws)),
+                                       text_changed=lambda: any(text_rewritten(x) for x in text))
                 break
             except gitops.BranchMoved:
                 if attempt == CARRIES:
                     raise
-        wrote = "".join(f", {x}" for x in text if x)
+        wrote = "".join(f", {x}" for x in dict.fromkeys(text) if x)
         if onto:
             wrote = f" on top of {onto[:7]}{wrote}"
+        elif merged:
+            wrote = f" with {base_branch(ctx, ws)} merged at {merged[:7]}{wrote}"
         return (f"repaired at {new[:7]}{wrote} and answered the review ({label})" if new != head
                 else f"answered the review, no change to the files needed{wrote} ({label})" if wrote
                 else f"answered the review, no change needed ({label})")
@@ -1051,9 +1109,16 @@ class PRReviewLane(Lane):
         repair's commits apply on top of them as they are, and the gate passes there. Its record then
         names the carried commit and the head it stands on (`carried_onto`), which the push expects.
         Any other move leaves the worktree at the repair and raises BranchMoved: a merge of the base
-        branch, a rewritten branch, a change to this folder or to a file outside the roadmaps."""
+        branch, a rewritten branch, a change to this folder or to a file outside the roadmaps.
+
+        A repair that merged the base branch first (`merge_base_branch`) is carried in the same way from
+        its merge commit: the moved head must differ from that commit only in other roadmap folders
+        (another folder's repair of the same head, which made the same merge), and the repair's own
+        commits, the ones after the merge, are put on top of it. The merge commit is then no longer in
+        the branch, and the record drops it."""
         wt, branch, cfg = ws.workdir, ws.extra["pr_branch"], ctx.cfg
         start = carried_onto(ctx, job) or head
+        since = merged_base(ctx, job) or start      # the commit the repair's own commits stand on
         found = gitops.remote_head(wt, ws.extra["head_repo"], branch)
         if found in ("", start, new):
             return new, gate
@@ -1062,12 +1127,12 @@ class PRReviewLane(Lane):
         if gitops.git(wt, "merge-base", start, found, check=False).strip() != start:
             raise moved
         active, folder = cfg.roadmap.active_dir.strip("/") + "/", board.prreview_folder(job)
-        changed = gitops.git(wt, "diff", "--name-only", start, found, check=False).splitlines()
+        changed = gitops.git(wt, "diff", "--name-only", since, found, check=False).splitlines()
         if not changed or any(not path.startswith(active) or path.startswith(f"{active}{folder}/") for path in changed):
             raise moved
         try:
             gitops.git(wt, "reset", "-q", "--hard", found)
-            gitops.git(wt, "cherry-pick", "--allow-empty", f"{start}..{new}")
+            gitops.git(wt, "cherry-pick", "--allow-empty", f"{since}..{new}")
         except gitops.GitError:
             gitops.git(wt, "cherry-pick", "--abort", check=False)
             gitops.git(wt, "reset", "-q", "--hard", new, check=False)
@@ -1081,7 +1146,8 @@ class PRReviewLane(Lane):
         save_gate(ws.job_dir / REPAIR_GATE, carried, gate)
         owe(ctx, job, ws, (), content={"sha": carried})
         entry = read_pending(ctx, job) or {}
-        entry["repair"] = {**kept_commit(entry, "repair"), "sha": carried, "onto": found}
+        entry["repair"] = {**{k: v for k, v in kept_commit(entry, "repair").items() if k != "merged"},
+                           "sha": carried, "onto": found}
         write_pending(ctx, job, entry)
         self.note(ws, f"repair carried from {start[:7]} onto {found[:7]}: the pull request moved outside {folder}/")
         return carried, gate
@@ -1094,9 +1160,10 @@ class PRReviewLane(Lane):
         (another roadmap folder's repair rewrote it, or its author did) is left alone, since the repair's
         text would undo that change; so is one GitHub refuses to write. Either is noted and not retried:
         the files' repair stands, and the next review reads the description as it then is. Returns the
-        summary's words."""
+        summary's words, which the job's record keeps (`delivered_text`): an attempt resumed after this
+        step reports them again, in its summary and in the reply's record."""
         if not owes(ctx, job, REPAIR_TEXT):
-            return ""
+            return delivered_text(ctx, job)
         record, line = ws.job_dir / REPAIR_DESCRIPTION, ""
         if record.is_file():
             want = json.loads(record.read_text(encoding="utf-8"))
@@ -1119,7 +1186,7 @@ class PRReviewLane(Lane):
                     (str(exc).strip().splitlines() or ["refused"])[0], ctx.state, Path.home())[:200]
             if line:
                 self.note(ws, f"pull request #{ws.extra['pr']}: {line}")
-        settle(ctx, job, REPAIR_TEXT)
+        settle(ctx, job, REPAIR_TEXT, text={"line": line})
         return line
 
     def run_repair(self, job: Job, ctx: Context, ws: Workspace, report: Path) -> None:
@@ -1133,6 +1200,7 @@ class PRReviewLane(Lane):
         body = comment.get("body") or ""
         event = replies.Event(comment.get("created_at") or "", f"AI review {job.id}", body,
                               ref=f"comment-{comment['id']}", version=replies.text_version(body))
+        merged = self.merge_base_branch(job, ctx, ws)
         reviews = ws.scratch / "reviews.md"
         reviews.write_text(reviews_document([event]), encoding="utf-8")
         (ws.job_dir / ANSWERED).write_text(json.dumps(replies.versions([event]), indent=1, sort_keys=True) + "\n",
@@ -1146,6 +1214,8 @@ class PRReviewLane(Lane):
             if ctx.cfg.prreview.repair_text else "")
         values = {**self.common_values(job, ctx, ws), **answer_values(ctx, ws, job.name, folder, reviews, report),
                   "BOARD_EDITS": edits_brief}
+        if merged:
+            values["BOARD_EDITS"] = merged_brief(ctx, ws, merged) + "\n\n" + edits_brief
         brief = prompts.render("gate", values)
         (ws.job_dir / "brief-repair.md").write_text(brief, encoding="utf-8")
         gate, problems = None, []
@@ -1173,7 +1243,8 @@ class PRReviewLane(Lane):
             text, text_problems = read_description(described, ctx) if ctx.cfg.prreview.repair_text else (None, [])
             problems = ([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report) + text_problems
             if not problems:
-                problems, gate = gate_problems(ctx, ws, job.name, folder, self.gate_options(job, ctx, ws), base=head)
+                problems, gate = gate_problems(ctx, ws, job.name, folder, self.gate_options(job, ctx, ws),
+                                               base=merged or head)
             if not problems:
                 break
         if problems:
@@ -1184,7 +1255,63 @@ class PRReviewLane(Lane):
             record.write_text(json.dumps({**text, "read": ws.extra.get("pr_prose", "")}, indent=1,
                                          sort_keys=True) + "\n", encoding="utf-8")
         owe(ctx, job, ws, (), content={"sha": new, "base": head, "branch": ws.extra["branch"]})
-        settle(ctx, job, REPAIR, repair={"sha": new})
+        settle(ctx, job, REPAIR, repair={"sha": new, **({"merged": merged} if merged else {})})
+
+    def merge_base_branch(self, job: Job, ctx: Context, ws: Workspace) -> str:
+        """Before the repair agent runs: the base branch merged into the worktree, when `[prreview]
+        repair_merges_base` is on and the branch's Lake pins are behind it. Returns the merge commit
+        ('' when nothing was merged).
+
+        2026-11-10: on 22 open pull requests the reviews asked, round after round, for a merge of the
+        base branch: the branch pinned an older Tau Ceti than the one whose declarations the README
+        cites or that the folder is to be read against. A repair confined to its roadmap folder cannot
+        make that merge, so the finding came back with every review.
+
+        The merge is made when the pull request merges into the project branch, that branch changed a
+        pin file (`lake.PIN_FILES`) since the pull request's branch left it, and the pull request's
+        branch changed none itself (a pin bump is its author's business). A merge that conflicts is
+        given up, and so is one that leaves a worktree which built without packages for its new pin:
+        the repair then runs on the branch as it is, as before, and a note says why. The worktree is
+        relinked to the shared packages of the pin it now has."""
+        cfg, wt, head = ctx.cfg, ws.workdir, ws.extra["head"]
+        if not cfg.prreview.repair_merges_base or base_branch(ctx, ws) != cfg.project.branch:
+            return ""
+        base = pr_base(ctx, ws)
+        tip = gitops.git(wt, "rev-parse", "-q", "--verify", f"{base}^{{commit}}", check=False).strip()
+        fork = gitops.git(wt, "merge-base", head, tip, check=False).strip() if tip else ""
+        if not fork or fork == tip:
+            return ""
+
+        def pins_changed(to: str) -> bool:
+            return bool(gitops.git(wt, "diff", "--name-only", fork, to, "--", *PIN_FILES, check=False).strip())
+        if not pins_changed(tip) or pins_changed(head):
+            return ""
+        try:
+            gitops.git(wt, *gitops.identity(ctx.operator), "merge", "-q", "--no-ff", "--no-edit",
+                       "-m", f"Merge {cfg.project.branch} into this branch", tip)
+        except gitops.GitError:
+            gitops.git(wt, "merge", "--abort", check=False)
+            gitops.git(wt, "reset", "-q", "--hard", head, check=False)
+            self.note(ws, f"{cfg.project.branch} does not merge into the branch without conflicts; "
+                          "the repair runs on the branch as it is")
+            return ""
+        before = ws.extra.get("lake")
+        setup = self.relink(ctx, ws)
+        if before is not None and before.ready and not setup.ready:
+            gitops.git(wt, "reset", "-q", "--hard", head, check=False)
+            self.relink(ctx, ws)
+            self.note(ws, f"{cfg.project.branch} not merged into the branch ({setup.reason}); "
+                          "the repair runs on the branch as it is")
+            return ""
+        merged = gitops.git(wt, "rev-parse", "HEAD").strip()
+        self.note(ws, f"{cfg.project.branch} ({tip[:7]}) merged into the branch at {merged[:7]} before the repair: "
+                      "its Lake pins were behind")
+        return merged
+
+    def relink(self, ctx: Context, ws: Workspace) -> LakeSetup | None:
+        """The worktree linked to the shared Lake packages of the pin it has now, after a merge of the
+        base branch or its undoing (None in a lane run that links none)."""
+        return wire_worktree(ctx, ws.content, ws.workdir, ws) if "lake" in ws.extra else None
 
     def posted_review(self, job: Job, ctx: Context, ws: Workspace) -> dict:
         """The review's comment on the pull request, as an earlier attempt posted it ({} when none is)."""

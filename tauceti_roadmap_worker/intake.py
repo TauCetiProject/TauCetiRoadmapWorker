@@ -1733,6 +1733,22 @@ def dispute_pending(jobs: list[Job], comments: list[dict], head: str, verdict: d
     return bool(head_worker(comments, head))
 
 
+def text_pending(jobs: list[Job], comments: list[dict], head: str, verdict: dict | None) -> bool:
+    """Whether the reviews of `head` among `jobs` (one folder's, all finished) were last answered by a
+    rewrite of the pull request's title or description that no round has read: the latest verdict of
+    `head` does not accept, and the latest reply recording `head` as the head it answered at answers
+    the latest of those reviews and records that it rewrote the text (`text`, `replies.answered_marker`).
+    The head did not move, so nothing else tells the intake that what the review read has changed."""
+    if not dispute_pending(jobs, comments, head, verdict):
+        return False
+    last = max(jobs, key=lambda j: (board.parse_job_id(j.id).round, j.number or 0))
+    for c in reversed(comments):
+        record = replies.answered_record(c.get("body") or "")
+        if record and record.get("head") == head and record.get("worker"):
+            return bool(record.get("text")) and record.get("job") == last.id
+    return False
+
+
 def head_worker(comments: list[dict], head: str) -> str:
     """The worker whose reply on a pull request records `head` as the head it answered at (its
     answered record, `replies.answered_record`: a gate round's, or a review's repair), the latest such
@@ -2022,25 +2038,34 @@ def sync_pr_reviews(ctx) -> list[str]:
             if any(j.under_way(OPEN_ROUND) for j in ours):
                 continue
             same = [j for j in ours if j.inputs.get("head") == head]
-            dispute = False
+            dispute = text_round = False
             if same and settled:
                 continue
             if same:
                 # 2026-11-02: a review answered without moving the head (the reply's answered record names the
                 # reviewed head: a dispute) gets one more round, a full review by another worker; a head whose
-                # reply moved it is re-reviewed by the ordinary path, and a head reviewed twice is settled
-                if any(j.inputs.get("dispute_rereview") for j in same):
+                # reply moved it is re-reviewed by the ordinary path, and a head reviewed twice is settled.
+                # 2026-11-10: unless the answer to the second review rewrote the title or description (its
+                # record says `text`): that text gets one check round, an incremental one, and then the head
+                # is settled (a revision whose second review asked only for a corrected description had it
+                # corrected and stayed unapproved, with no round left to read the correction)
+                if any(j.inputs.get("text_rereview") for j in same):
                     continue
+                twice = any(j.inputs.get("dispute_rereview") for j in same)
                 if number not in threads:
                     try:
                         threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
                     except GHError as exc:
                         out.append(f"#{number}: comments not read ({str(exc).splitlines()[0][:160]})")
                         continue
+                if threads[number] is None:
+                    continue             # an earlier step of this run could not read its comments
                 verdict = latest_verdict(ctx, same, head, texts)
-                if not dispute_pending(same, threads[number], head, verdict):
+                if twice and not text_pending(same, threads[number], head, verdict):
                     continue
-                dispute = True
+                if not twice and not dispute_pending(same, threads[number], head, verdict):
+                    continue
+                dispute, text_round = not twice, twice
             if made >= p.per_run:
                 waiting += 1
                 continue
@@ -2051,6 +2076,8 @@ def sync_pr_reviews(ctx) -> list[str]:
             inputs.update(rereview_inputs(ours))
             if dispute:
                 inputs.update({"rereview": False, "dispute_rereview": True})
+            if text_round:
+                inputs["text_rereview"] = True
             if inputs["rereview"] or dispute:
                 if number not in threads:
                     try:
