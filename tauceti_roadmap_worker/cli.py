@@ -993,6 +993,13 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
             print("skipped (GitHub errors; the next run tries again): " + ", ".join(dict.fromkeys(skipped)))
             return 1
         return 0
+    if args.action == "resume":
+        names = tuple(n.strip() for n in args.names.split(",") if n.strip())
+        if not names:
+            raise SystemExit("board resume needs --names A,B (the roadmaps to resume)")
+        for line in intake.resume_unfollowed(ctx, names, yes=write):
+            print(line)
+        return 0
     if args.action == "import-explorer":
         if not args.source:
             raise SystemExit("board import-explorer needs --from <path to a checkout of the explorer>")
@@ -1183,12 +1190,14 @@ def parser() -> argparse.ArgumentParser:
     u.add_argument("--json", action="store_true")
 
     b = sub.add_parser("board", help="board maintenance for the bot or a maintainer (dry run unless --yes)")
-    b.add_argument("action", choices=["intake", "references", "sync", "stale", "import-explorer", "errata"])
+    b.add_argument("action", choices=["intake", "references", "sync", "stale", "import-explorer", "errata",
+                                             "resume"])
     b.add_argument("step", nargs="?", default="", help="errata: seed (an errata job per roadmap not yet covered)")
     b.add_argument("--pr", type=int, default=0)
     b.add_argument("--from", dest="source", default="", help="import-explorer: a checkout of CBirkbeck/tauceti-explorer")
     b.add_argument("--kinds", default="", help="import-explorer: package,design,target (default: all)")
-    b.add_argument("--names", default="", help="import-explorer: only these roadmaps (comma list)")
+    b.add_argument("--names", default="", help="import-explorer: only these roadmaps (comma list); resume: the roadmaps whose last "
+                                                  "finished job released nothing")
     b.add_argument("--limit", type=int, default=0, help="errata seed: at most this many jobs per run (0: all)")
     b.add_argument("--yes", action="store_true")
     b.add_argument("--release", action="store_true")

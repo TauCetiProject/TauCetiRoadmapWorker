@@ -1160,6 +1160,18 @@ from the recorded (or last) accepting review, closes the jobs that wrote it and 
 (the package for a design; for a package, its port, since no pull request is left for the board red
 team, which then runs on the roadmap pull request); the review is never reopened.
 
+A roadmap that stands still with every job done (its last job was finished and nothing was created
+after it: a submission merged by hand before the intake read it, or a run that stopped between
+finishing a job and creating what follows) is resumed by name: `board resume --names A,B` prints
+what its last job would release, and `--yes` creates it, as the intake would have then, from the
+verdict at the head of the review's report on the board's main. When the job's board pull request
+is merged, what follows works on the board's main (a review or a repair names no pull request), an
+accepted package is ported with its red team on the roadmap pull request, and a package merged
+between two red-team rounds is ported with the next round there. A roadmap with an open job, a
+ported one, and one whose last review rejected it are left as they are. A red-team pass that was
+closed as `superseded` when its board pull request was merged is reopened, not created again, when
+its round resumes after the port.
+
 A GitHub blip never costs a run: every read is tried again after a 5xx answer or a timeout (2, 5
 and 15 seconds later); a pull request whose reads still fail is skipped with a line in the log and
 the run goes on with the next one (a sync step likewise), and the command exits 1 at the end listing
