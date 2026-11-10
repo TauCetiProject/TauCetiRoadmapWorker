@@ -1238,6 +1238,66 @@ def test_the_change_counts_insertions_and_deletions_and_a_fence_holds_any_backti
     assert lane_prreview.fenced(text, "diff").startswith("````diff\n```lean") and lane_prreview.fenced(text).endswith("```\n````")
 
 
+def base_repo(tmp_path):
+    """A content repository whose `origin/main` holds Foo, and whose head drops Foo's Layer 2 and `b`,
+    adds Layer 3 and `d`, restates `a`, leaves `c`, and adds a roadmap Bar."""
+    repo = tmp_path / "repo"
+    foo, bar = repo / "TauCetiRoadmap" / "Foo", repo / "TauCetiRoadmap" / "Bar"
+    foo.mkdir(parents=True)
+    sh(tmp_path, "init", "-q", str(repo))
+    (foo / "README.md").write_text("# Foo\n\n## Layer 1\n\ntext\n\n## Layer 2\n\ntext\n")
+    (foo / "Suggested.lean").write_text("theorem a : True := trivial\n\ntheorem b : True := trivial\n\n"
+                                        "noncomputable def c : Nat := 0\n")
+    sh(repo, "add", "-A")
+    sh(repo, "commit", "-q", "-m", "main")
+    sh(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (foo / "README.md").write_text("# Foo\n\n## Layer 1\n\ntext\n\n## Layer 3\n\ntext\n")
+    (foo / "Suggested.lean").write_text("theorem a (p : Nat) : True := trivial\n\n-- theorem b is gone\n\n"
+                                        "noncomputable def c : Nat := 0\n\n@[simp] theorem d : True := trivial\n")
+    bar.mkdir()
+    (bar / "README.md").write_text("# Bar\n\n## One\n\n## Two\n")
+    sh(repo, "add", "-A")
+    sh(repo, "commit", "-q", "-m", "head")
+    return repo
+
+
+@needs_git
+def test_the_pull_request_text_comes_with_the_folders_change_against_its_base(tmp_path, monkeypatch):
+    repo = base_repo(tmp_path)
+    text = lane_prreview.base_change(repo, "origin/main", "TauCetiRoadmap/Foo")
+    assert text.startswith("## The change to `TauCetiRoadmap/Foo/` against `origin/main` (computed by the worker)\n")
+    assert "The roadmap is on `origin/main`: this pull request revises it." in text
+    assert "Headings: 1 removed, 1 added. Lean declarations: 1 removed, 1 added, 1 restated." in text
+    assert "```text\n- ## Layer 2\n+ ## Layer 3\n```" in text and "Layer 1" not in text
+    assert "```text\n- b\n+ d\n~ a\n```" in text and " c\n" not in text
+    assert "TauCetiRoadmap/Foo/Suggested.lean |" in text and "diff origin/main...HEAD -- TauCetiRoadmap/Foo` shows" in text
+    # A roadmap the base does not hold is added; each list is cut at LISTED, the rest counted.
+    monkeypatch.setattr(lane_prreview, "LISTED", 2)
+    text = lane_prreview.base_change(repo, "origin/main", "TauCetiRoadmap/Bar")
+    assert "The roadmap is not on `origin/main`: this pull request adds it." in text
+    assert "```text\n+ # Bar\n+ ## One\n+ [... 1 more]\n```" in text and "```text\n(none)\n```" in text
+    # A base this checkout cannot compare with the head is said so.
+    assert "`origin/gone` cannot be compared with this head" in lane_prreview.base_change(
+        repo, "origin/gone", "TauCetiRoadmap/Foo")
+
+
+@needs_git
+def test_every_review_reads_the_pull_requests_text_against_the_head(dry_ctx, tmp_path, monkeypatch):  # noqa: F811
+    repo, first, second = repaired_repo(tmp_path)
+    real_git_in(repo, monkeypatch)
+    job = rereview_job(first, second)
+    ctx = rereview_ctx(dry_ctx, second, 20)
+    lane = lane_for(job)
+    ws = lane.prepare(job, ctx)
+    assert ws.extra["mode"] == "incremental"
+    pr_text = (ws.scratch / "pull-request.md").read_text()
+    assert pr_text.index("## Description") < pr_text.index("## The change to `TauCetiRoadmap/Foo/` against `origin/main`")
+    text = prompts.render("prreview", {**lane.common_values(job, ctx, ws), **lane.values(job, ctx, ws)})
+    assert "8. **The pull request's text.** Read the title and the description's prose against the folder's" in text
+    # An incremental re-review checks it too: a repair makes the text wrong without touching it.
+    assert "3. **The pull request's text** is not untouched text" in text and "6. **The verdict.**" in text
+
+
 PREVIOUS_REPORT = ("# Review of Foo (pull request #905 at 1111111)\n\n**Verdict:** needs changes\n\n"
                    "## R01 (P1) — the hypothesis on p is missing\n\nLocation: README line 4.\n\n"
                    "## R02 (P3) — a locator names no page\n\nLocation: README line 9.\n\n"
@@ -1688,6 +1748,11 @@ def test_a_repair_rewrites_the_title_and_description_and_keeps_the_generated_blo
     [(_label, brief, _reviews)] = briefs
     assert "The pull request's title and description as well" in brief
     assert str(ws.scratch / "pull-request.md") in brief and str(ws.scratch / "description.md") in brief
+    # The repair also rewrites what its own change makes wrong, and is told how to see that change.
+    assert "and for what your own repair makes wrong in them" in brief
+    assert f"`git -C {ws.workdir} diff --stat origin/main...HEAD -- TauCetiRoadmap/Foo` shows it at yours" in brief
+    assert "When neither a finding nor your repair makes the title or description wrong" in brief
+    assert "The roadmap is on `origin/main`: this pull request revises it." in (ws.scratch / "pull-request.md").read_text()
     # One write, after the push and before the reply: the prose, then the blocks, the marker and the footer as they were.
     [(payload, comments_then)] = rh.patches
     assert comments_then == 1 and len(rh.comments[905]) == 2

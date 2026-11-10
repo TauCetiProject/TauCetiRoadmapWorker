@@ -693,7 +693,7 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
-| `repair_text` | `true` | such a repair also answers the findings about the pull request's title and description: the agent writes the corrected text and the worker puts it on the pull request, keeping the generated blocks and markers |
+| `repair_text` | `true` | such a repair also answers the findings about the pull request's title and description, and puts right what its own change makes wrong in them: the agent writes the corrected text and the worker puts it on the pull request, keeping the generated blocks and markers |
 | `statement_hygiene` | `true` | the push gate's statement-hygiene scan of Suggested.lean (count `statement-hygiene`; every push gate and `tauceti-roadmap gate` run it): `Nonempty`/`∃` isomorphism headlines, choice in data, `letI`/`haveI` in signatures, `[Fintype k]` beside `[Field k]`, `ULift`, instance removals, `HEq`/`cast`/`eqToHom` conclusions (P3), duplicate statements (P2); each hit names its line, severity and repair, and a review reports it as a finding |
 
 The review runs on the review models: `[agents.lanes.prreview]` pins them, and without that table the
@@ -711,10 +711,17 @@ claude_model = "fable"
 The lane reviews one roadmap folder. It checks the head the job names out read-only, runs the push
 gate on that folder with the targeted build of its Suggested module (`TauCetiRoadmap.<folder,
 dotted>.Suggested`; a nested roadmap may share its family's `metadata.toml`), and gives the agent the
-gate's result and the pull request's title and description as data. The agent reviews the folder's
+gate's result and the pull request's title and description as data, followed by the folder's change
+against the pull request's base (whether the roadmap is on the base, the diffstat, and the headings
+and Lean declarations the change removes and adds). The agent reviews the folder's
 README and every Lean file in it (Suggested.lean and any `*Targets.lean`) as a package review does;
 the pull request's other roadmap folders, and a nested roadmap's family index files, are named as
-its own, not as changes outside the folder. It writes its report (first line `# Review of <Leaf>
+its own, not as changes outside the folder. It also reads the title and the description's prose
+against that change and the head: a sentence the head contradicts, or a change a reader must know
+of that the text leaves unstated (whether it adds a roadmap or revises one on main, sections removed or
+renumbered, headline theorems or `Suggested.lean` declarations removed, a supplier added or dropped),
+is a P3 finding, so an acceptance means the description matches the head. Generated blocks are
+outside that check. It writes its report (first line `# Review of <Leaf>
 (pull request #N at <head7>)`, then `Folder: <path>/` for a nested roadmap) and verdict
 (`packages/<Leaf>/reports/PRREVIEW-<Leaf>~k.md` and `.json`, the head, pull request and `folder`
 named in the verdict); an acceptance needs the adversarial table, no P1 or P2 finding and a passing
@@ -740,7 +747,9 @@ changes and what cites or depends on them (names, section numbers, suppliers, th
 touched), runs the gate and the elaboration, carries the previous report's adversarial rows for the
 statements left untouched and adds rows for every changed one, and accepts when no blocking finding
 remains and the gate passes, its verdict notes saying `incremental re-review of <N> changed lines
-since <sha7>`. The worker refuses a report that leaves an earlier finding unaccounted for
+since <sha7>`. The title and description are checked against the head in every re-review: a change
+makes them wrong without touching them, so a stale sentence is a finding, not a remark on untouched
+text. The worker refuses a report that leaves an earlier finding unaccounted for
 (`incremental re-review: finding R03 of the previous report is not accounted for`). Every other
 rule of the report and the verdict is that of a full review. A larger change, a previous head that
 cannot be read, or a previous report not on the board yet gives a full review, with `changes.md`
@@ -767,7 +776,8 @@ pushing twice or replying twice.
 A repair edits the roadmap folder, so a finding about the pull request's own text (a description of
 an earlier head, a supplier it names that the roadmap no longer has, a stale build report, a title
 that no longer names the change) used to come back round after round. With `repair_text` on, the
-brief lets the agent answer such a finding by writing `scratch/description.md`: a first line
+brief lets the agent answer such a finding, or put right a sentence its own repair makes false or a
+change of its own the text leaves unstated, by writing `scratch/description.md`: a first line
 `Title: <the title>`, a blank line, then the whole description as prose. The worker refuses a text
 that is not in that form, is over 200 characters of title or 12000 of description, carries an HTML
 comment, a path of the machine or an @-mention, or would read as a review; the refusal goes to the

@@ -287,9 +287,9 @@ class PRReview:
     # pool operator, goes on in the same job to repair it as a gate round would (push onto its branch,
     # reply finding by finding); the next review of the repaired head is another worker's.
     repair_pool: bool = True
-    # Such a repair also answers findings about the pull request's title and description: its agent writes
-    # the corrected text, and the worker puts it on the pull request with the push, keeping the generated
-    # blocks and markers of the description as they are.
+    # Such a repair also answers findings about the pull request's title and description, and puts right what
+    # its own change makes wrong in them: its agent writes the corrected text, and the worker puts it on the
+    # pull request with the push, keeping the generated blocks and markers of the description as they are.
     repair_text: bool = True
     # A reply on a labelled pull request that records `<!-- tauceti-roadmap-carried {"from": H0, "head": H1} -->`
     # carries the acceptance of H0 (a head an AI review accepted) to H1 when, between the two, the roadmap
