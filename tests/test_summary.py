@@ -229,6 +229,17 @@ def test_a_description_without_a_block_gets_one_only_when_asked(tmp_path):
     assert hub.body.startswith(block(REV_TEXT))
 
 
+def test_a_usage_limit_met_by_an_earlier_run_does_not_refuse_the_next_one(tmp_path):
+    hub = revision_hub(BODY)
+    ctx = context(hub, tmp_path)
+    work = tmp_path / "state" / "summaries" / "pr-7"
+    work.mkdir(parents=True)
+    (work / "run-1.out").write_text("START\nYou've hit your weekly limit · resets 3pm (UTC)\nEXIT 1\n")
+    lines = summary.refresh(ctx, [7], agent="claude", model="m", missing=True, launch=agent_writing(REV_TEXT))
+    assert lines == ["#7 Alpha: wrote a revision summary (45 words)"] and hub.body.startswith(block(REV_TEXT))
+    assert "weekly limit" not in (work / "run-1.out").read_text()
+
+
 def test_a_refused_summary_leaves_the_description_alone(tmp_path):
     hub = revision_hub(f"{block(NEW_TEXT)}\n\n{BODY}")
     lines = summary.refresh(context(hub, tmp_path), [7], agent="claude", model="m", launch=agent_writing(NEW_TEXT))
