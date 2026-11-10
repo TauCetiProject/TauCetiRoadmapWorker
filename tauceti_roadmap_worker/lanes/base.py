@@ -1588,19 +1588,26 @@ class Lane:
         record follows a pushed branch only after a few seconds, so its head is read again every
         `poll` seconds until it is the pushed `sha`. `seen` is a head already in hand (the answer
         that opened the pull request), counted as the first read. A transient read error counts as
-        a read that did not show it. LaneError (ending with `then`) once `wait` seconds (HEAD_WAIT)
-        have passed without it."""
+        a read that did not show it. When `wait` seconds (HEAD_WAIT) have passed without it, GitHub
+        is asked once to read the branch again (`resync_pr`) and the head is awaited for a second
+        window: a record can keep the old head for a quarter of an hour, with the branch already at
+        the pushed commit. LaneError (ending with `then`) once that window has passed too."""
         wait = HEAD_WAIT if wait is None else wait
         poll = max(1, HEAD_POLL if poll is None else poll)
         live = seen if seen is not None else pr_head(ctx, repo, number)
-        waited = 0
-        while live != sha and waited < wait:
-            self.sleep(poll)
-            waited += poll
-            live = pr_head(ctx, repo, number)
+        for window in (1, 2):
+            waited = 0
+            while live != sha and waited < wait:
+                self.sleep(poll)
+                waited += poll
+                live = pr_head(ctx, repo, number)
+            if live == sha or window == 2:
+                break
+            resync_pr(ctx, repo, number)
         if live != sha:
             raise LaneError(f"#{number}: the pull request head did not update to the pushed {sha[:7]} within "
-                            f"{wait} s (it is still {live[:7] or 'unreadable'})" + (f"; {then}" if then else ""))
+                            f"{2 * wait} s, a request to read the branch again included (it is still "
+                            f"{live[:7] or 'unreadable'})" + (f"; {then}" if then else ""))
 
     sleep = staticmethod(time.sleep)
 
@@ -1698,6 +1705,19 @@ def pr_head(ctx: Context, repo: str, number: int) -> str:
         if not transient(exc):
             raise
         return ""
+
+
+def resync_pr(ctx: Context, repo: str, number: int) -> None:
+    """Ask GitHub to read pull request #number's branch again, by writing the base it already has:
+    the write changes nothing and the record comes back with the branch's head (2026-11-10: a
+    review's repair was pushed to #1807, the record kept the previous head past the wait and the
+    reply was not posted). An error is left alone: the wait that follows reports the head."""
+    try:
+        base = ((ctx.gh.api(f"repos/{repo}/pulls/{number}") or {}).get("base") or {}).get("ref", "")
+        if base:
+            ctx.gh.write("PATCH", f"repos/{repo}/pulls/{number}", {"base": base})
+    except GHError:
+        pass
 
 
 def same_job_and_head(text: str, marker: dict) -> bool:
