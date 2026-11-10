@@ -157,7 +157,8 @@ def gate_tree(tmp_path, folder, metadata_at=None):
     ("", "Toy", "TauCetiRoadmap.Toy.Suggested", 0),                        # every other lane: unchanged
     ("", None, "TauCetiRoadmap.Toy.Suggested", 1),
     ("Family/Toy", "Family", "TauCetiRoadmap.Family.Toy.Suggested", 0),    # a family's metadata covers its roadmaps
-    ("Family/Toy", None, "TauCetiRoadmap.Family.Toy.Suggested", 1),
+    ("Family/Toy", None, "TauCetiRoadmap.Family.Toy.Suggested", 0),       # the family arrives with its own topic
+    ("Family/Toy", "Family/Toy", "TauCetiRoadmap.Family.Toy.Suggested", 1),   # a nested roadmap carries none
 ])
 def test_the_gate_reads_a_nested_folder_when_told_and_builds_its_dotted_module(tmp_path, monkeypatch, folder, metadata_at,
                                                                                module, missing):
@@ -168,6 +169,23 @@ def test_the_gate_reads_a_nested_folder_when_told_and_builds_its_dotted_module(t
     assert built == [f"lake build {module}"] and result.counts["metadata"] == missing
     assert "missing-files" not in result.counts
     assert gates.GateOptions().folder == "" and gates.roadmap_module("TauCetiRoadmap", "Toy") == "TauCetiRoadmap.Toy.Suggested"
+
+
+def test_the_topic_file_belongs_to_the_directory_under_the_active_directory(tmp_path):
+    """The content repository's topic check reads `metadata.toml` only from a roadmap directory directly
+    under the active directory and rejects one anywhere below. A repair once answered `metadata.toml
+    missing` on a nested roadmap, whose parent was in another pull request, by writing the file into the
+    nested folder; the required check failed as soon as the parent reached main."""
+    root = gate_tree(tmp_path, "Family/Toy", "Family/Toy")
+    nested = gates.metadata_problems(root, "TauCetiRoadmap", "TauCetiRoadmap/Family/Toy")
+    assert len(nested) == 1 and nested[0].startswith("TauCetiRoadmap/Family/Toy/metadata.toml: a nested roadmap")
+    (root / "TauCetiRoadmap" / "Family" / "README.md").write_text("# Family\n")      # the parent is in the tree
+    (root / "TauCetiRoadmap" / "Family" / "Toy" / "metadata.toml").unlink()
+    assert gates.metadata_problems(root, "TauCetiRoadmap", "TauCetiRoadmap/Family/Toy") == [
+        "TauCetiRoadmap/Family/metadata.toml missing"]
+    (root / "TauCetiRoadmap" / "Family" / "metadata.toml").write_text('topic = "math.GR"\n')
+    assert gates.metadata_problems(root, "TauCetiRoadmap", "TauCetiRoadmap/Family/Toy") == []
+    assert "never add one there" in gates.GATE_RULES["metadata"]
 
 
 def test_the_gate_command_takes_a_nested_folder(tmp_path, monkeypatch, capsys):
