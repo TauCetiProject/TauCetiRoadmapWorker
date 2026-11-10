@@ -678,6 +678,16 @@ moves on or closes; a claimed or submitted one finishes. The log reads `#N: PRRE
 created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N: ai-approved removed
 (head moved)`.
 
+A head already reviewed gets a further round in two cases only, both read from the answered record
+of the reply on the pull request. A review that did not accept and was answered without moving the
+head (the record names the reviewed head: a dispute) gets one more round, a full review by another
+worker (`dispute_rereview`). When the answer to that second review rewrote the pull request's title
+or description (`repair_text`; its record then carries `"text": true`), the head gets one check
+round (`text_rereview`, with `rereview`, `previous_head` equal to the head and `previous_job` the
+second review): an incremental re-review of an unchanged folder whose brief says that the title and
+description are what changed. After that the head is settled, whatever the check round finds, until
+it moves.
+
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | file and retire review jobs and keep the label (nothing is read while off) |

@@ -112,7 +112,7 @@ def gate_problems(ctx: Context, ws: Workspace, name: str, folder: str,
 def push_and_reply(lane: Lane, ctx: Context, job: Job, ws: Workspace, report: str, answered: dict[str, str],
                    gate: gates.GateResult, *, branch: str, base: str, moved: bool, push: str = CONTENT_PUSH,
                    reply: str = CONTENT_COMMENT, after_push: Callable[[], object] | None = None,
-                   note: str = "") -> str:
+                   note: str = "", text_changed: Callable[[], bool] | None = None) -> str:
     """The answer on the pull request (`ws.extra` `pr`, `head_repo`, `owner`, `answerers`), effect by
     effect as the job's record still owes them: the worktree's HEAD pushed onto `branch` of the pull
     request's head repository (the operator's fork when it names none) while that branch is still at
@@ -120,7 +120,9 @@ def push_and_reply(lane: Lane, ctx: Context, job: Job, ws: Workspace, report: st
     effects between the two: what the reply reports besides the files), the finding-by-finding reply from
     `report` with the record of what it answers (`answered`), the worker and the head (effect
     `reply`), and the awaiting-* labels. `note` is a paragraph the reply ends with, after the checks'
-    sentence. Returns the label now wanted."""
+    sentence. `text_changed`, asked after `after_push`, says whether the answer rewrote the pull request's
+    title or description; the reply's record then says so (`text`), since a head that did not move hides
+    that change from the intake. Returns the label now wanted."""
     cfg, pr, repo = ctx.cfg, ws.extra["pr"], ctx.cfg.repositories.content
     new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
     if moved and owes(ctx, job, push):
@@ -138,7 +140,8 @@ def push_and_reply(lane: Lane, ctx: Context, job: Job, ws: Workspace, report: st
                                intro, cfg.replies.review_markers)
     if not replies.reply_is_safe(text, cfg.replies.review_markers):
         raise LaneError("the reply would read as a review; not posting")
-    text += replies.answered_marker(job.id, answered, worker=ctx.worker_id, head=new) + "\n"
+    text += replies.answered_marker(job.id, answered, worker=ctx.worker_id, head=new,
+                                    text=bool(text_changed and text_changed())) + "\n"
     if owes(ctx, job, reply):
         lane.comment_once(ctx, repo, pr, text, lambda body: body.strip() == text.strip())
         settle(ctx, job, reply)

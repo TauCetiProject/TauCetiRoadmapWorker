@@ -296,13 +296,26 @@ full review: check that the updates are correct.
 Every deliverable below is the same as in a full review."""
 
 
+TEXT_ROUND = """
+
+**The files are unchanged; the title and description were rewritten.** The previous review of `{since}` \
+was answered without a push: the answer rewrote the pull request's title and description, which no \
+review has read since. They are quoted in `{pr_text}`. For each previous finding about the title or the \
+description, judge the text as it stands there now (step 1); a previous finding about the files is \
+judged against the files, which are as that review read them. The rewritten title and description are \
+the changed passages of step 2: check every claim they make against the head."""
+
+
 def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
     """The brief's MODE: what the review covers, an incremental re-review (`INCREMENTAL`) or a full
     review, saying why a re-review is not incremental and offering the change set as context."""
     previous, changes, lines = extra.get("previous_report"), extra.get("changes"), extra.get("change_lines")
     since, small = str(job.inputs.get("previous_head") or "")[:7], cfg.prreview.small_change_lines
     if mode == "incremental":
-        return INCREMENTAL.format(previous=previous, since=since, lines=lines, small=small, changes=changes)
+        text = INCREMENTAL.format(previous=previous, since=since, lines=lines, small=small, changes=changes)
+        if job.inputs.get("text_rereview"):
+            text += TEXT_ROUND.format(since=since, pr_text=extra.get("pr_text") or "the pull request's text")
+        return text
     text = "**A full review.**"
     if job.inputs.get("rereview"):
         why = (f"the head the previous review read, `{since}`, cannot be compared with this one" if lines is None
@@ -344,6 +357,17 @@ def merged_base(ctx: Context, job: Job) -> str:
     its agent ran (`merge_base_branch`), from its record ('' when it merged nothing, or when the repair
     was carried onto another head since, which leaves that commit behind)."""
     return str(kept_commit(read_pending(ctx, job) or {}, "repair").get("merged") or "")
+
+
+def delivered_text(ctx: Context, job: Job) -> str:
+    """What the job's repair did to the pull request's title and description (`deliver_text`), from its
+    record: '' when it wrote nothing, or before that step."""
+    return str(kept_commit(read_pending(ctx, job) or {}, "text").get("line") or "")
+
+
+def text_rewritten(line: str) -> bool:
+    """Whether a `deliver_text` line reports a title or description actually written."""
+    return line.endswith(" rewritten")
 
 
 def board_snapshot(job: Job, ctx: Context, ws: Workspace) -> dict[str, bytes]:
@@ -617,6 +641,7 @@ class PRReviewLane(Lane):
                         siblings=sibling_checkouts(ctx, prs, skip=job.name), folder=folder,
                         readme=folder / "README.md", lean=leans[0], leans=leans)
         (ws.scratch / PULL_REQUEST_TEXT).write_text(pull_request_document(number, data, owner), encoding="utf-8")
+        ws.extra["pr_text"] = str(ws.scratch / PULL_REQUEST_TEXT)
         ws.extra["pr_prose"] = description_prose(data.get("body") or "")
         self.write_changes(job, ctx, ws)
         ws.extra["previous_report"] = self.previous_report(job, ctx, ws)
@@ -978,12 +1003,13 @@ class PRReviewLane(Lane):
                 label = push_and_reply(self, ctx, job, ws, report.read_text(encoding="utf-8"), answered, gate,
                                        branch=ws.extra["pr_branch"], base=onto or head, moved=new != head,
                                        reply=REPAIR_COMMENT, note=note,
-                                       after_push=lambda: text.append(self.deliver_text(job, ctx, ws)))
+                                       after_push=lambda: text.append(self.deliver_text(job, ctx, ws)),
+                                       text_changed=lambda: any(text_rewritten(x) for x in text))
                 break
             except gitops.BranchMoved:
                 if attempt == CARRIES:
                     raise
-        wrote = "".join(f", {x}" for x in text if x)
+        wrote = "".join(f", {x}" for x in dict.fromkeys(text) if x)
         if onto:
             wrote = f" on top of {onto[:7]}{wrote}"
         elif merged:
@@ -1054,9 +1080,10 @@ class PRReviewLane(Lane):
         (another roadmap folder's repair rewrote it, or its author did) is left alone, since the repair's
         text would undo that change; so is one GitHub refuses to write. Either is noted and not retried:
         the files' repair stands, and the next review reads the description as it then is. Returns the
-        summary's words."""
+        summary's words, which the job's record keeps (`delivered_text`): an attempt resumed after this
+        step reports them again, in its summary and in the reply's record."""
         if not owes(ctx, job, REPAIR_TEXT):
-            return ""
+            return delivered_text(ctx, job)
         record, line = ws.job_dir / REPAIR_DESCRIPTION, ""
         if record.is_file():
             want = json.loads(record.read_text(encoding="utf-8"))
@@ -1079,7 +1106,7 @@ class PRReviewLane(Lane):
                     (str(exc).strip().splitlines() or ["refused"])[0], ctx.state, Path.home())[:200]
             if line:
                 self.note(ws, f"pull request #{ws.extra['pr']}: {line}")
-        settle(ctx, job, REPAIR_TEXT)
+        settle(ctx, job, REPAIR_TEXT, text={"line": line})
         return line
 
     def run_repair(self, job: Job, ctx: Context, ws: Workspace, report: Path) -> None:
