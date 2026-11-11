@@ -17,7 +17,9 @@ request of a batch whose query fails. A bot's login reads as REST has it (`githu
 a deleted account as `ghost`.
 
 `verdict_texts` reads files of the board's main the same way (`object(expression:)` blobs): the
-verdict records of finished pull-request reviews, which `board sync` reads every run.
+verdict records of finished pull-request reviews, which `board sync` reads every run. `tree_ids` reads
+the git object ids of folders at given commits, by which `board sync` tells a head that only moved
+(a rebase, a merge of the base branch) from one whose roadmap folders changed.
 """
 
 from __future__ import annotations
@@ -199,4 +201,30 @@ def verdict_texts(gh, repo: str, paths: list[str], batch: int, ref: str = "main"
             if f"f{i}" in nodes:          # null: no such file
                 blob = nodes[f"f{i}"]
                 out[p] = blob.get("text") if isinstance(blob, dict) else None
+    return out
+
+
+def tree_ids(gh, repo: str, wanted: list[tuple[str, str]], batch: int) -> dict[tuple[str, str], str | None]:
+    """The git object id of each path at each commit (`wanted`: (commit, path) pairs), read as
+    `object(expression: "<commit>:<path>") { oid }`, four times `batch` pairs per GraphQL query. A
+    folder's id is its tree's, so two commits hold the same files under a path exactly when its two
+    ids agree. None for a path, or a commit, that is not there; a pair of a batch whose query failed
+    is left out (the caller then knows nothing about it, which is not the same as a difference)."""
+    out: dict[tuple[str, str], str | None] = {}
+    if not wanted or not hasattr(gh, "graphql"):
+        return out
+    owner, name = repo.split("/", 1)
+    for chunk in chunks(sorted(set(wanted)), max(batch, 1) * 4):
+        fields = " ".join(f"t{i}: object(expression: {json.dumps(f'{sha}:{path}')}) {{ oid }}"
+                          for i, (sha, path) in enumerate(chunk))
+        try:
+            data = gh.graphql(f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) "
+                              f"{{ {fields} }} }}", owner=owner, name=name)
+        except GHError:
+            continue
+        nodes = (data or {}).get("repository") or {}
+        for i, pair in enumerate(chunk):
+            if f"t{i}" in nodes:          # null: no such path at that commit
+                node = nodes[f"t{i}"]
+                out[pair] = str(node["oid"]) if isinstance(node, dict) and node.get("oid") else None
     return out

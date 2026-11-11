@@ -153,7 +153,9 @@ checkout, submits a PR to the board, and the intake advances the state.
     other roadmap folders named as its own, and the worker posts one comment per folder (`Verdict:
     APPROVE`, `CHANGES NEEDED` or `REJECT`) and records the verdict on the board. The pull request
     carries the `ai-approved` label exactly while an accepted review of its current head covers every
-    one of its roadmap folders (the lane adds it when the last folder accepts, `board sync` otherwise);
+    one of its roadmap folders (the lane adds it when the last folder accepts, `board sync` otherwise;
+    a head that only moved, with every roadmap folder's git tree that of an accepted head, counts as
+    that head: a rebase or a merge of the base branch costs neither the label nor a review);
     a review that asks for changes reads, to the gate lane, as a review to answer. It never commits,
     pushes, approves or merges, and it never touches the awaiting-author and awaiting-review labels:
     the final approval and the merge stay a human's. The author's operator does not review their own
