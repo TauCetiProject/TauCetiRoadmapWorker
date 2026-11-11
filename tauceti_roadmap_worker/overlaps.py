@@ -322,7 +322,9 @@ def _changes(state: Path, index: dict, *, only: str = "", pr: int = 0) -> tuple[
     since its merge base with main (`only` and `pr` narrow it to one roadmap or pull request). A head
     the mirror lacks is skipped. A copy: a roadmap main has now and had neither at the head's path nor
     at its own when the pull request branched, which the head adds all the same (it moves no roadmap
-    there): main gained it since, from another pull request.
+    there): main gained it since, from another pull request. The pull request's own listing must name
+    the README as added: one opened against the branch of the pull request that merged lists it as
+    changed or not at all, and is a revision waiting for a new base, no copy.
 
     The README is read where the head has it (`folders_of`, by full path): at the merge base there, and
     on main there too, or, when main has moved the roadmap since (no README at that path on main, none
@@ -351,7 +353,9 @@ def _changes(state: Path, index: dict, *, only: str = "", pr: int = 0) -> tuple[
                                    on_main, dirs)
             if source:
                 base, main = _batch(state, [f"{bases[p['pr']]}:{source}/README.md", f"{main_ref}:{source}/README.md"])
-            elif base_there is None and head and (main or main_there) and head != (main or main_there):
+            elif (base_there is None and head and (main or main_there) and head != (main or main_there)
+                  and any(f.get("path") == f"{folder}/README.md" and f.get("change") == "added"
+                          for f in p.get("files") or [])):
                 copies.append(Copy(p, name, folder, bases[p["pr"]], main or main_there, head))
         if main is None or base is None:
             continue                     # the roadmap is not on main, or not yet where the head branched
