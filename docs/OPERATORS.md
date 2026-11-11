@@ -740,6 +740,7 @@ it moves.
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
 | `carry_minor` | `false` | a review whose every finding is P3 ends with its repair: no further review of that folder is filed for the repaired head, and the pull request is labelled once every folder is settled (below) |
 | `carry_unchanged` | `true` | a head that moved without changing the pull request's roadmap folders (a rebase, a merge of the base branch) keeps the acceptance of the head it came from: the label stays and no review of the new head is filed (below) |
+| `carry_unchanged_folders` | `true` | the same folder by folder, on a pull request with several roadmap folders: a folder whose latest review settled the files it still holds is not reviewed again when another folder's repair moves the head, and counts as accepted there (below) |
 | `defer_outside` | `false` | a repair may settle a finding as `outside this folder: <where>`; the review's verdict records it and later reviews of the folder do not raise it again (below) |
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
 | `repair_models` | `{}` | the model such a repair runs on, by the model that reviewed: `{ fable = "claude-opus-5-5" }` has a worker reviewing with `fable` run the repair with `claude-opus-5-5` (a model of the same agent; the usage record names the model that ran). A reviewing model that is not listed repairs with itself |
@@ -846,6 +847,22 @@ new head is. When GitHub does not give the trees, nothing is changed in that run
 earlier head)`, the label is left as it is and no review is filed. The build of the unchanged
 folders on the new base is not read again by a reviewer: the content repository's own checks run on
 the new head.
+
+With `carry_unchanged_folders`, the same holds folder by folder. On a pull request with several
+roadmap folders a repair of one folder moves the head for all of them. A folder whose latest
+finished review settled it (accepted it, or under `carry_minor` found P3 points only and had its
+repair) is compared, by git tree, with what that review read or left: when the folder holds the same
+files at the new head, no review of it is filed there, and for the label it counts as accepted. Only
+the folders whose files changed since their last review are read again, so the label comes when the
+last of those is accepted (`ai-approved added (every roadmap folder at <sha7> holds the files its
+last review settled)`), and a review of an unchanged folder that was filed for the new head and
+not yet taken is closed as superseded. The review that counts for a folder is its latest finished one: a later
+review that asked for changes is never passed over for an earlier acceptance, and a folder with a
+review under way is left to that review. What this gives up is the second reading of an accepted
+folder after a sibling folder changed: a citation from the accepted folder into the repaired one is
+checked by the repaired folder's own review and by the gate, not by a new review of the accepted
+folder. Set `carry_unchanged_folders = false` to have every folder reviewed at every head again. The
+operator's own filing (`operator_prs`) should apply the same test: `intake.unchanged_folders`.
 
 With `defer_outside`, the repair brief offers one more disposition, `outside this folder: <where
 the change belongs>`, for a point that no edit of the files the repair may change can settle

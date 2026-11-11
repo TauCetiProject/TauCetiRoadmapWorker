@@ -339,6 +339,13 @@ class PRReview:
     # the build on the new base is the continuous integration's to check. A finished review of the new
     # head that asks for changes stands.
     carry_unchanged: bool = True
+    # The same, folder by folder, on a pull request with several roadmap folders: a folder whose latest
+    # finished review settled it (accepted it, or under `carry_minor` found P3 points only and had its
+    # repair) at a head where the folder held the files it holds now is not reviewed again when a repair
+    # of another folder, or a merge of the base branch, moves the head, and it counts as accepted at the
+    # new head for `label`. Only the folders whose files changed since their last review are read again.
+    # Off: every folder of a pull request is reviewed at every head one of its folders' repairs leaves.
+    carry_unchanged_folders: bool = True
     # A repair may settle a finding as `outside this folder: <where>` when no edit of the files it may
     # change can act on it. The review's verdict records it (`deferred`), each later review of the folder
     # is told of it, does not raise it again and does not count it against acceptance, and it leaves the
