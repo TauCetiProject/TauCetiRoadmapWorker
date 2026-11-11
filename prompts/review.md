@@ -47,6 +47,14 @@ each repaired pattern in the rest of the __SUBJECT__. For the text no repair tou
 earlier round's adversarial table only where its rows carry computed values; any section the
 earlier review summarised without them is reviewed in full now, as are the sampled targets below.
 
+Notes a maintainer left for the reviews of this roadmap, if any: __NOTES__. They are claims, not
+findings: nobody checked them against the texts. Check each one against the files it names, at the
+heads you have (a line number in a note may come from an earlier head: find the passage by its
+section and wording). Raise those that hold as findings like any other, with your own witness and at
+the priority the rubric gives; list the others in the report, one line each, with what you read that
+refutes it. A note that records which roadmap owns a construction is the maintainer's decision:
+review the files against it and do not reopen it.
+
 Context, read-only: the roadmap repository at its main branch `__CONTENT__`; open roadmap pull
 requests at their heads: __SIBLINGS__; the board's packages `__PACKAGES__` (that checkout holds one
 pull request's branch: every package under review, with the pull request and head where its README

@@ -213,3 +213,31 @@ def test_padding_probe_replaces_theorem_sorries_and_reads_the_warnings():
     out = "x/Suggested.lean:9:8: warning: declaration uses 'sorry'\n"
     assert gates.padding_hits(out, probed) == ["foo (line 5)"]
     assert gates.padding_hits("x/Suggested.lean:5:8: error: unknown identifier\n", probed) == []
+
+
+def test_maintainer_notes_reach_the_reviewer_from_the_boards_main(tmp_path):
+    """A maintainer's notes for a roadmap's reviews are read from the board's main (the checkout may
+    be a pull request's branch) into the scratch folder; without the file the brief says none."""
+    from types import SimpleNamespace
+
+    from tauceti_roadmap_worker import prompts
+    from tauceti_roadmap_worker.gh import GHError
+    from tauceti_roadmap_worker.lanes.review import maintainer_notes
+
+    asked = []
+
+    def raw_file(repo, path, ref=""):
+        asked.append((repo, path))
+        if "Foo" in path:
+            return "- §2.1 cites Bar §3 for a statement Bar §3 does not make.\n"
+        raise GHError("404 Not Found")
+
+    cfg = SimpleNamespace(board=SimpleNamespace(packages_dir="packages"),
+                          repositories=SimpleNamespace(packages_repo=lambda: "org/jobs"))
+    ctx = SimpleNamespace(cfg=cfg, gh=SimpleNamespace(raw_file=raw_file))
+    ws = SimpleNamespace(scratch=tmp_path / "scratch", board=tmp_path / "board")
+    path = maintainer_notes(ctx, ws, "Foo")
+    assert path == tmp_path / "scratch" / "maintainer-notes.md" and "Bar §3" in path.read_text()
+    assert asked == [("org/jobs", "packages/Foo/reports/MAINTAINER-NOTES.md")]
+    assert maintainer_notes(ctx, ws, "Baz") is None
+    assert "NOTES" in prompts.placeholders("review")
