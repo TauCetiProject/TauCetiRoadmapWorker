@@ -331,6 +331,14 @@ class PRReview:
     # is settled at its head: accepted there, or brought there by such repairs, which changed no other
     # folder's files. The repaired head is checked by the repair's gate, not read again by a reviewer.
     carry_minor: bool = False
+    # A head that moved without changing the pull request's roadmap folders (a rebase, a merge of the base
+    # branch, a push that touches only files outside them) keeps what an earlier head had: when the git
+    # tree of every roadmap folder is the one of a head that was accepted (reviewed and accepted there, or
+    # settled there by `carry_accept` or `carry_minor`), the label stays, or is put back, and no review of
+    # the new head is filed. What a review reads is the folder, and it is byte for byte what was accepted;
+    # the build on the new base is the continuous integration's to check. A finished review of the new
+    # head that asks for changes stands.
+    carry_unchanged: bool = True
     # A repair may settle a finding as `outside this folder: <where>` when no edit of the files it may
     # change can act on it. The review's verdict records it (`deferred`), each later review of the folder
     # is told of it, does not raise it again and does not count it against acceptance, and it leaves the

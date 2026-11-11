@@ -709,7 +709,8 @@ bundle is reviewed as a whole across runs. A review nobody has taken is closed a
 done, with a comment `Superseded: #N is at <head7>` or `Closed: #N is closed`) when its pull request
 moves on or closes; a claimed or submitted one finishes. The log reads `#N: PRREVIEW-<Leaf>~1
 created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N: ai-approved removed
-(head moved)`.
+(head moved)`. A head that moved without changing the roadmap folders is not such a move
+(`carry_unchanged`, below).
 
 A head already reviewed gets a further round in two cases only, both read from the answered record
 of the reply on the pull request. A review that did not accept and was answered without moving the
@@ -738,6 +739,7 @@ it moves.
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
 | `carry_minor` | `false` | a review whose every finding is P3 ends with its repair: no further review of that folder is filed for the repaired head, and the pull request is labelled once every folder is settled (below) |
+| `carry_unchanged` | `true` | a head that moved without changing the pull request's roadmap folders (a rebase, a merge of the base branch) keeps the acceptance of the head it came from: the label stays and no review of the new head is filed (below) |
 | `defer_outside` | `false` | a repair may settle a finding as `outside this folder: <where>`; the review's verdict records it and later reviews of the folder do not raise it again (below) |
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
 | `repair_models` | `{}` | the model such a repair runs on, by the model that reviewed: `{ fable = "claude-opus-5-5" }` has a worker reviewing with `fable` run the repair with `claude-opus-5-5` (a model of the same agent; the usage record names the model that ran). A reviewing model that is not listed repairs with itself |
@@ -821,6 +823,29 @@ nor `outside`. The pull request gets `label` once every folder is settled at its
 reads `ai-approved added (every roadmap folder is settled at <sha7>: …)`. The repaired head is
 checked by the repair's gate and not read again by a reviewer; a review with one P1 or P2 finding
 is followed by a re-review as before, and so is any later push.
+
+With `carry_unchanged`, a head that only moved keeps what the head it came from had. A rebase, a
+merge of the base branch, or a push that touches only files outside the pull request's roadmap
+folders leaves every one of those folders with the git tree it had, so what a review reads is byte
+for byte what was accepted. `board sync` compares the tree of each roadmap folder at the new head
+with its tree at the earlier heads that could have been accepted (the last three at which every
+folder has a finished review, the heads P3-only repairs left under `carry_minor`, and on a labelled
+pull request the heads its carried records name under `carry_accept`): one GraphQL query per pull
+request whose head has no accepting review of its own. When all trees agree with an earlier head
+that was accepted, the label stays (`ai-approved kept (the roadmap folders at <sha7> are those of
+<sha7>, whose acceptance stands: the head only moved, no review filed)`), or is put back when an
+earlier run took it off (`ai-approved added (the roadmap folders …)`), the reviews of the new head
+that nobody took are closed as superseded, and none is filed. A finished review of the new head that
+asks for changes stands, and a review of it that is under way is left to finish and decides for its
+folder, while the other folders get no review. So does a folder's latest finished review when it read
+these same files at another head and asked for changes: an acceptance is never carried past a later
+review of the same files. A folder that differs at all (the base branch changed
+a roadmap the pull request also edits, or the rebase resolved a conflict in it) is reviewed as any
+new head is. When GitHub does not give the trees, nothing is changed in that run: the log reads
+`ai-approved not checked (the roadmap folders at <sha7> could not be compared with those of an
+earlier head)`, the label is left as it is and no review is filed. The build of the unchanged
+folders on the new base is not read again by a reviewer: the content repository's own checks run on
+the new head.
 
 With `defer_outside`, the repair brief offers one more disposition, `outside this folder: <where
 the change belongs>`, for a point that no edit of the files the repair may change can settle

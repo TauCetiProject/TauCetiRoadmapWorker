@@ -2071,14 +2071,13 @@ def carried_record(verdict: dict | None, small: int) -> dict | None:
     return record
 
 
-def settled_folders(ctx, folders, jobs: list[Job], head: str, small: int,
-                    texts: dict[str, str | None] | None = None) -> set[str]:
-    """With `[prreview] carry_minor`: the roadmap folders of a pull request (`jobs`: its PRREVIEW jobs)
-    that need no review at `head`. A folder's latest finished review settles it at one head: the head
-    it accepted, or the head its repair left when every finding was P3 (`carried_record`). The folder
-    is settled at `head` when that is this head, or when only such repairs of the other folders lie
-    between the two, none of which changed this folder's files or a file outside the pull request's
-    roadmap folders (a merge of the base branch is such a change). One verdict is read per folder."""
+def settle_points(ctx, folders, jobs: list[Job], small: int,
+                  texts: dict[str, str | None] | None = None
+                  ) -> tuple[dict[str, str], list[tuple[str, str, set[str], bool]]]:
+    """(folder -> the head its latest finished review settles it at, the P3-only repairs as steps
+    (from, to, the folders changed, whether a file outside them changed)): a review settles its folder
+    at the head it accepted, or at the head its repair left when every finding was P3
+    (`carried_record`). One verdict is read per folder."""
     at: dict[str, str] = {}
     steps: list[tuple[str, str, set[str], bool]] = []          # (from, to, the folders changed, changed outside them)
     for folder in folders:
@@ -2099,6 +2098,17 @@ def settled_folders(ctx, folders, jobs: list[Job], head: str, small: int,
                 steps.append((str(record.get("onto") or record["from"]), record["head"],
                               {str(f) for f in changed} if isinstance(changed, list) else set(folders),
                               bool(record.get("outside")) or not isinstance(changed, list)))
+    return at, steps
+
+
+def settled_folders(ctx, folders, jobs: list[Job], head: str, small: int,
+                    texts: dict[str, str | None] | None = None) -> set[str]:
+    """With `[prreview] carry_minor`: the roadmap folders of a pull request (`jobs`: its PRREVIEW jobs)
+    that need no review at `head`. A folder's latest finished review settles it at one head
+    (`settle_points`). The folder is settled at `head` when that is this head, or when only P3-only
+    repairs of the other folders lie between the two, none of which changed this folder's files or a
+    file outside the pull request's roadmap folders (a merge of the base branch is such a change)."""
+    at, steps = settle_points(ctx, folders, jobs, small, texts)
     out = set()
     for folder, start in at.items():
         seen, todo = {start}, [start]
@@ -2111,6 +2121,102 @@ def settled_folders(ctx, folders, jobs: list[Job], head: str, small: int,
         if head in seen:
             out.add(folder)
     return out
+
+
+REVIEWED_HEADS = 3            # earlier heads a moved head is compared with (`unchanged_acceptance`), per source
+
+
+def reviewed_heads(folders, jobs: list[Job], head: str) -> list[str]:
+    """The heads other than `head` at which every folder of `folders` has a finished review among
+    `jobs` (a pull request's PRREVIEW jobs), the most recently reviewed first."""
+    last: dict[str, int] = {}
+    per: list[set[str]] = []
+    for folder in folders:
+        heads = set()
+        for j in jobs:
+            at = j.inputs.get("head")
+            if (board.prreview_folder(j) == folder and j.state == "done" and board.SUPERSEDED_LABEL not in j.labels
+                    and at and at != head):
+                heads.add(str(at))
+                last[str(at)] = max(last.get(str(at), 0), j.number or 0)
+        per.append(heads)
+    return sorted(set.intersection(*per), key=lambda h: last[h], reverse=True) if per else []
+
+
+def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: list[Job], texts, p,
+                         threads: dict, batch: int, labelled: bool) -> tuple[str, bool]:
+    """With `[prreview] carry_unchanged`: (the earlier head whose acceptance stands at `head`, whether
+    the comparison could be made). The acceptance of an earlier head stands at `head` when the git tree
+    of every roadmap folder of the pull request is the same at both (the head only moved: a rebase, a
+    merge of the base branch, a push outside the folders) and the earlier head was accepted: every
+    folder accepted there by its review, or the head settled by `carry_accept` or `carry_minor`. The
+    earlier heads tried are the last `REVIEWED_HEADS` at which every folder has a finished review, the
+    heads P3-only repairs left (`carry_minor`), and, on a labelled pull request, the heads its carried
+    records name (`carry_accept`). A finished review of `head` itself that does not accept stands: then
+    nothing is carried. So does the latest finished review of a folder, when it read the files `head`
+    holds and did not accept them: an acceptance is not carried past a later review of the same files.
+    ('', False) when GitHub did not give the trees: nothing is known, and the caller leaves the pull
+    request as it is."""
+    for folder in folders:
+        here = [j for j in finished_reviews(jobs, head) if board.prreview_folder(j) == folder]
+        if here:
+            verdict = latest_verdict(ctx, here, head, texts)
+            if not verdict or verdict.get("status") != "accepted":
+                return "", True
+    tried = reviewed_heads(folders, jobs, head)[:REVIEWED_HEADS]
+    if p.carry_minor:
+        at, _steps = settle_points(ctx, folders, jobs, p.small_change_lines, texts)
+        tried += [h for h in at.values() if h != head]
+    marked = p.carry_accept and labelled
+    if marked:
+        if number not in threads:
+            try:
+                threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
+            except GHError:
+                threads[number] = None
+        named = []
+        for c in reversed(threads.get(number) or []):
+            record = replies.carried_record(c.get("body") or "")
+            if record and record.get("head") and record.get("head") != head and record["head"] not in named:
+                named.append(str(record["head"]))
+        tried += named[:REVIEWED_HEADS]
+    tried = list(dict.fromkeys(tried))
+    if not tried:
+        return "", True
+    path_of = {folder: f"{ctx.cfg.roadmap.active_dir.strip('/')}/{str(folder).strip('/')}" for folder in folders}
+    paths = list(path_of.values())
+    last: dict = {}             # each folder's latest finished review, of whatever earlier head
+    for folder in folders:
+        done = [j for j in jobs if board.prreview_folder(j) == folder and j.state == "done"
+                and board.SUPERSEDED_LABEL not in j.labels and j.inputs.get("head") not in ("", None, head)]
+        if done:
+            last[folder] = max(done, key=round_key)
+    ids = prbatch.tree_ids(ctx.gh, repo, [(sha, path) for sha in [head] + tried for path in paths]
+                           + [(str(job.inputs["head"]), path_of[folder]) for folder, job in last.items()], batch)
+    if any((head, path) not in ids for path in paths):
+        return "", False
+    for folder, job in last.items():
+        at, path = str(job.inputs["head"]), path_of[folder]
+        if (at, path) not in ids:
+            return "", False
+        if ids[(head, path)] and ids[(at, path)] == ids[(head, path)]:
+            verdict = latest_verdict(ctx, [job], at, texts)
+            if not verdict or verdict.get("status") != "accepted":
+                return "", True
+    known = True
+    for source in tried:
+        if any((source, path) not in ids for path in paths):
+            known = False
+            continue
+        if any(not ids[(head, path)] or ids[(source, path)] != ids[(head, path)] for path in paths):
+            continue
+        if folders_accepted(ctx, folders, jobs, source, texts)[0]:
+            return source, True
+        if marked and carried_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads, batch)[0]:
+            return source, True
+        if p.carry_minor and set(folders) <= settled_folders(ctx, folders, jobs, source, p.small_change_lines, texts):
+            return source, True
+    return "", known
 
 
 def next_review_round(reviews, leaf: str) -> int:
@@ -2139,6 +2245,11 @@ def sync_pr_reviews(ctx) -> list[str]:
       every roadmap folder it adds or edits (`folders_accepted`, from the verdicts on the board's
       main): added when the last folder's verdict lands, removed otherwise; while a review of that
       head is being finished (claimed or submitted) it is left as it is.
+      With `[prreview] carry_unchanged`, a head that only moved (a rebase, a merge of the base
+      branch: every roadmap folder's git tree is that of an accepted earlier head) counts as that
+      head does (`unchanged_acceptance`): the label stays or is put back, the reviews of the new head
+      nobody took are closed as superseded, and none is filed. When GitHub does not give the trees,
+      the pull request is left as it is for this run.
       With `[prreview] chore_review`, a chore (no folder review) carries the label while a comment by
       a pool member records an accepting chore review of its current head (`chore_accepted`).
     * `PRREVIEW-<Leaf>~N` (`<Leaf>` the folder's last component, N one more than that name's PRREVIEW
@@ -2210,6 +2321,15 @@ def sync_pr_reviews(ctx) -> list[str]:
                     latest[key] = j
         have = {w.id for w in wanted}
         wanted += [j for j in latest.values() if j.id not in have]
+    if p.carry_unchanged:        # and the reviews of the heads a moved head may be compared with
+        have = {w.id for w in wanted}
+        for entry in listed:
+            folders, head = plans[int(entry["pr"])][0], entry.get("head", "")
+            mine = [j for j in reviews if pr_of(j) == int(entry["pr"])]
+            if not folders or not head or finished_reviews(mine, head):
+                continue
+            for earlier in reviewed_heads(folders, mine, head)[:REVIEWED_HEADS]:
+                wanted += [j for j in finished_reviews(mine, earlier) if j.id not in have]
     texts = prbatch.verdict_texts(ctx.gh, cfg.repositories.packages_repo(), [
         board.prreview_verdict_path(cfg.board.packages_dir, j) for j in wanted], batch)
     minor: dict[int, set[str]] = {}
@@ -2224,6 +2344,7 @@ def sync_pr_reviews(ctx) -> list[str]:
 
     accepted_prs: set[int] = set()
     carried_prs: set[int] = set()
+    unchanged: dict[int, str] = {}          # a head that only moved: the earlier head whose acceptance stands
     threads: dict[int, list[dict] | None] = {}
     for entry in listed:
         number, head = int(entry["pr"]), entry.get("head", "")
@@ -2234,7 +2355,14 @@ def sync_pr_reviews(ctx) -> list[str]:
             continue
         mine = [j for j in reviews if pr_of(j) == number]
         if any(j.under_way(("claimed", "submitted")) and j.inputs.get("head") == head for j in mine):
-            continue             # being finished: its lane labels, or a later run does
+            # being finished: its lane labels, or a later run does. Its other folders get no review of a
+            # head that only moved (`unchanged_acceptance`): the review under way decides for its own.
+            if folders and p.carry_unchanged:
+                source, known = unchanged_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads,
+                                                     batch, labelled)
+                if source or not known:
+                    carried_prs.add(number)
+            continue
         accepted, reason = (folders_accepted(ctx, folders, mine, head, texts) if folders
                             else chore_accepted(ctx, repo, number, head, why, p, threads, batch) if chore
                             else (False, f"not reviewed: {why}" if why else "no roadmap folder to review"))
@@ -2248,13 +2376,34 @@ def sync_pr_reviews(ctx) -> list[str]:
         carried = False
         if not accepted and folders and set(folders) <= minor_settled(number, folders, mine, head):
             accepted, carried = True, True
+        if not accepted and folders and p.carry_unchanged:
+            source, known = unchanged_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads, batch,
+                                                 labelled)
+            if not known:
+                carried_prs.add(number)         # nothing is known this run: the label stays as it is, no review is filed
+                out.append(f"#{number}: {p.label} not checked (the roadmap folders at {head[:7]} could not be "
+                           "compared with those of an earlier head)")
+                continue
+            if source:
+                accepted, unchanged[number] = True, source
+                carried_prs.add(number)
+                for job in mine:
+                    if job.state == "available" and job.inputs.get("head") == head and supersede(
+                            ctx, job, f"Superseded: the roadmap folders of #{number} at {head[:7]} are those of "
+                                      f"{source[:7]}, whose acceptance stands"):
+                        out.append(f"#{number}: {job.id} superseded")
+                if labelled:
+                    out.append(f"#{number}: {p.label} kept (the roadmap folders at {head[:7]} are those of "
+                               f"{source[:7]}, whose acceptance stands: the head only moved, no review filed)")
         if accepted:
             accepted_prs.add(number)
         try:
             if accepted and not labelled:
                 ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [p.label]})
                 out.append(f"#{number}: {p.label} added ("
-                           + (f"every roadmap folder is settled at {head[:7]}: the last reviews accepted, or found "
+                           + (f"the roadmap folders at {head[:7]} are those of {unchanged[number][:7]}, whose "
+                              "acceptance stands: the head only moved" if number in unchanged
+                              else f"every roadmap folder is settled at {head[:7]}: the last reviews accepted, or found "
                               "P3 points only and their repairs are in" if carried
                               else f"the AI review of {head[:7]} accepts "
                               + (f"all {len(folders)} roadmap folders" if len(folders) > 1 else "it")) + ")")
