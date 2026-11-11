@@ -98,6 +98,11 @@ class ContentGH:
         self.writes.append((method, path, payload or {}))
 
 
+def exists(repo, ref, path) -> bool:
+    return subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{ref}:{path}"],
+                          capture_output=True, check=False).returncode == 0
+
+
 def build(tmp_path, monkeypatch, mains, prs, labels=None, bodies=None):
     """An origin whose main takes the commits `mains` in turn, and open pull requests (number, login,
     the main commit they branch from, the files they write: None deletes one, an (old, new) key moves
@@ -116,7 +121,8 @@ def build(tmp_path, monkeypatch, mains, prs, labels=None, bodies=None):
                 git(origin, "mv", *key)
         head = commit(origin, {k[1] if isinstance(k, tuple) else k: v for k, v in files.items()}, f"pr {number}")
         git(origin, "update-ref", f"refs/pull/{number}/head", head)
-        paths = [(k[1], "RENAMED") if isinstance(k, tuple) else (k, "DELETED" if v is None else "MODIFIED")
+        paths = [(k[1], "RENAMED") if isinstance(k, tuple) else
+                 (k, "DELETED" if v is None else "MODIFIED" if exists(origin, points[base], k) else "ADDED")
                  for k, v in files.items()]
         listed.append({"number": number, "title": f"PR {number}", "isDraft": False, "headRefOid": head,
                        "author": {"login": login},
@@ -748,6 +754,9 @@ def test_a_pull_request_that_adds_a_roadmap_main_gained_since_is_a_second_copy(t
     assert (copy.pr["pr"], copy.name, copy.folder) == (31, "Spheres", "TauCetiRoadmap/Spheres")
     assert [r.pr["pr"] for r in overlaps.revisions(state, index)] == [32]     # the copy is no revision
     assert overlaps.copies(state, index, pr=32) == [] and overlaps.copies(state, index, only="Lattices") == []
+    # opened against the branch that merged, the same head lists its README as changed: no copy
+    behind = {"prs": [dict(p, files=[dict(f, change="modified") for f in p["files"]]) for p in index["prs"]]}
+    assert overlaps.copies(state, {**index, **behind}) == []
 
     text, facts = overlaps.report(state, index, "Spheres", RIVAL_SPHERES, pr=31)
     assert text.index("## A second copy of a roadmap on main") < text.index("## Other open pull requests")
