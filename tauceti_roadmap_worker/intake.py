@@ -2207,7 +2207,8 @@ def sync_pr_reviews(ctx) -> list[str]:
                 key = (pr_of(j), board.prreview_folder(j))
                 if key not in latest or round_key(j) > round_key(latest[key]):
                     latest[key] = j
-        wanted += [j for j in latest.values() if j.id not in {w.id for w in wanted}]
+        have = {w.id for w in wanted}
+        wanted += [j for j in latest.values() if j.id not in have]
     texts = prbatch.verdict_texts(ctx.gh, cfg.repositories.packages_repo(), [
         board.prreview_verdict_path(cfg.board.packages_dir, j) for j in wanted], batch)
     minor: dict[int, set[str]] = {}
