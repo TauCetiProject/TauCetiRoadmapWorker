@@ -162,6 +162,11 @@ shard_max = 8
 # roadmap pull request ready for review; false: as a draft (roadmap.open_as_draft) for a human to
 # mark ready.
 ready_after = false
+# A red-team pass is independent of the package's first author, of each of the package's fix rounds
+# and of the red-team fix before it. false: not of the fix rounds (an independent review accepted the
+# package after each of them). For a single-operator project (review.separation = "agent") whose
+# pinned pass model once wrote a fix round: the pass would otherwise have no taker.
+independent_of_fix_rounds = true
 
 [design]
 # The design lane is the only expensive one: at most this many design jobs per operator per day.

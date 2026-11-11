@@ -224,13 +224,14 @@ def trusted(ctx, login: str, parsed: prreviews.Parsed, job: Job, shared=None) ->
 
 
 def independent(ctx, login: str, parsed: prreviews.Parsed, job: Job, jobs: list[Job], shared) -> bool:
-    if not job.independent_of:
+    others = board.independence_scope(job.id, job.independent_of, ctx.cfg.redteam.independent_of_fix_rounds)
+    if not others:
         return True
     mode = ctx.cfg.review.separation
     reviewer = (login, *parsed.provenance)
-    records = ctx.board.authors(job.independent_of, jobs)
+    records = ctx.board.authors(others, jobs)
     if shared:
-        for jid, rec in shared.recorded_authors(job.independent_of).items():
+        for jid, rec in shared.recorded_authors(others).items():
             records.setdefault(jid, []).append(rec)
     return all(claims.independent(mode, reviewer, claims.authorship(r)) for rs in records.values() for r in rs)
 

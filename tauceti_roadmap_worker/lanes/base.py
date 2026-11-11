@@ -638,9 +638,9 @@ class Lane:
             pool = {p.lower() for p in ctx.cfg.roadmap.pool}
             if not (job.requires_operator.lower() in pool and ctx.operator.lower() in pool):
                 return f"needs the branch owner {job.requires_operator}"
-        if job.independent_of and ctx.claims:
-            problem = claims.separation_problem(job.independent_of, ctx.operator,
-                                                ctx.claims.recorded_authors(job.independent_of),
+        others = board.independence_scope(job.id, job.independent_of, ctx.cfg.redteam.independent_of_fix_rounds)
+        if others and ctx.claims:
+            problem = claims.separation_problem(others, ctx.operator, ctx.claims.recorded_authors(others),
                                                 ctx.cfg.review.separation, ctx.agent, ctx.model)
             if problem:
                 return problem
@@ -648,7 +648,7 @@ class Lane:
             # A single operator: the pinned red-team passes must stay independent of what this worker writes.
             pinned = board.blocked_redteam_pass(job.id, ctx.agent, ctx.model,
                                                 [(p.agent, p.model) for p in ctx.cfg.redteam.passes],
-                                                ctx.cfg.redteam.rounds)
+                                                ctx.cfg.redteam.rounds, ctx.cfg.redteam.independent_of_fix_rounds)
             if pinned:
                 return (f"the red-team pass pinned to ({pinned}) must be independent of this job's author: "
                         f"another agent or model writes it")
