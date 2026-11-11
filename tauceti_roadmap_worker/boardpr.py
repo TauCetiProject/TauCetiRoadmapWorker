@@ -673,9 +673,9 @@ def pusher(comments: list[dict], fix: Job) -> dict:
 
 
 def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool, comments: list[dict]) -> str:
-    """A fix the pull request's owner pushed: recorded as its author, done, and the next round (or,
-    after the last red-team round, the merge and the port) follows. A fix that did not move the
-    head goes back to available."""
+    """A fix the pull request's owner pushed: recorded as its author, the next round created (or,
+    after the last red-team round, the merge and the port), then the fix done. A fix that did not
+    move the head goes back to available."""
     if not yes:
         return f"#{number}: {fix.id} pushed; the next round follows (dry run)"
     head = pr["head"]["sha"]
@@ -702,11 +702,15 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
             return f"#{number}: {fix.id} pushed, but not merged yet ({why})"
         return after_last_fix(ctx, fix, nxt, number, pr, jobs, comments)
     record_pusher(ctx, fix, number, comments)
-    if fix.state != "done":
-        finish_job(ctx, fix, f"Intake: fix pushed to #{number} at `{head[:7]}`.")
     for j in nxt:
         j.inputs["board_pr"] = number
-    return open_for_review(ctx, number, pr, nxt, jobs, yes).replace("open for review", f"{fix.id} done; next round")
+    # The fix becomes done last: a run stopped on the way leaves it submitted, and the next scan
+    # comes here again (the board creates no job twice). Done first, a stopped run left an open
+    # pull request that no unfinished job named, which no scan reads.
+    opened = open_for_review(ctx, number, pr, nxt, jobs, yes)
+    if fix.state != "done":
+        finish_job(ctx, fix, f"Intake: fix pushed to #{number} at `{head[:7]}`.")
+    return opened.replace("open for review", f"{fix.id} done; next round")
 
 
 def accepted_verdict(ctx, fix: Job, number: int, jobs: list[Job]) -> dict | None:
