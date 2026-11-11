@@ -118,6 +118,9 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   `workers/<id>/worker.lock` for its lifetime, so a second one started with the same id on the same
   machine (a `--dry-run` too, which resets the same checkouts) exits at once with `worker <id> is
   already running here (pid N on <host>; ...)`.
+* `--overflow prreview=30,review=45` makes a worker the overflow for those kinds: it takes a job of
+  the kind only once the job's issue is that many minutes old, so the workers started without the
+  option (the ones on cheaper accounts) get it first. A job named with `--job` is taken at once.
 * `--only` pins a worker to some kinds (`target, design, package, review, fix, port, redteam, gate,
   errata, prreview`); without it the worker takes whatever is most useful: first the jobs whose
   roadmap descends from a target a human filed (origin `target:<issue>`), then imported ones
@@ -716,11 +719,15 @@ it moves.
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
 | `skip_authors` | `[]` | never these authors' pull requests |
 | `operator_prs` | `[]` | pull request numbers whose review rounds an operator files by hand (a serial chain over a many-folder pull request); `board sync` files none for them |
+| `late_authors` | `[]` | authors whose pull requests' reviews a worker takes only after every other job it could take |
+| `late_except` | `[]` | pull request numbers of those authors that keep their ordinary place (the ones other roadmaps wait for) |
 | `parent_roadmaps` | `[]` | roadmap folders that carry sub-roadmaps below them yet are roadmaps in their own right: their README stays under review instead of being read as a family index |
 | `library_search` | `true` | before a PR review, ask Loogle and LeanSearch about every declaration of the roadmap's `Suggested.lean` and hand the reviewer `scratch/library-matches.md` (leads for targets Mathlib or Tau Ceti already prove under another name) |
 | `max_folders` | `10` | a pull request editing more roadmap folders than this is a chore and not reviewed, unless it adds the README.md of every one of them |
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
+| `carry_minor` | `false` | a review whose every finding is P3 ends with its repair: no further review of that folder is filed for the repaired head, and the pull request is labelled once every folder is settled (below) |
+| `defer_outside` | `false` | a repair may settle a finding as `outside this folder: <where>`; the review's verdict records it and later reviews of the folder do not raise it again (below) |
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
 | `repair_models` | `{}` | the model such a repair runs on, by the model that reviewed: `{ fable = "claude-opus-5-5" }` has a worker reviewing with `fable` run the repair with `claude-opus-5-5` (a model of the same agent; the usage record names the model that ran). A reviewing model that is not listed repairs with itself |
 | `repair_text` | `true` | such a repair also answers the findings about the pull request's title and description, and puts right what its own change makes wrong in them: the agent writes the corrected text and the worker puts it on the pull request, keeping the generated blocks and markers; a finding about the summary block is answered by a new text for the block |
@@ -787,6 +794,35 @@ rule of the report and the verdict is that of a full review. A larger change, a 
 cannot be read, or a previous report not on the board yet gives a full review, with `changes.md`
 offered as context. The first line of an incremental re-review's comment ends `(incremental re-review
 since <sha7>)`, and every review's marker carries `mode`: `incremental` or `full`.
+
+With `carry_minor`, a review that finds P3 points only ends the loop for its folder. When its repair
+was pushed and answered (or answered without a change) and changed at most `small_change_lines`
+lines of the folder, the worker writes `carried` into the review's verdict record: `from` (the head
+reviewed), `head` (the head the repair left), `findings`, `lines`, `folders` (the pull request's
+roadmap folders the push changed), `onto` (the head the repair was carried onto, when the pull
+request moved meanwhile) and `outside` (the push changed a file outside those folders: a merge of
+the base branch, a family index). The reply says so (`Every finding of this review is P3 and …, so
+no further review of this folder is filed for this head.`). `board sync` then counts the folder as
+settled at `head`: it files no review of it there, and no dispute round when the answer changed
+nothing. A folder settled at an earlier head (accepted there, or brought there by such a repair)
+stays settled across the P3-only repairs of the pull request's other folders that list neither it
+nor `outside`. The pull request gets `label` once every folder is settled at its head; the log line
+reads `ai-approved added (every roadmap folder is settled at <sha7>: …)`. The repaired head is
+checked by the repair's gate and not read again by a reviewer; a review with one P1 or P2 finding
+is followed by a re-review as before, and so is any later push.
+
+With `defer_outside`, the repair brief offers one more disposition, `outside this folder: <where
+the change belongs>`, for a point that no edit of the files the repair may change can settle
+(another roadmap's folder, another pull request, the library). The section begins with the
+review's number for the finding (`F03:`). The worker enters each such finding in the review's
+verdict record under `deferred` (`id` D01…, `severity`, `title`, `where`, `raised`: the job), after
+those standing from the folder's previous review. Every later review of the folder is given the
+list: it does not raise those findings again, does not count them against acceptance, and writes
+one line each under `## Deferred findings` (`- D01 — stands` or `- D01 — resolved: …`); a finding
+it does not call resolved stays in its own verdict's `deferred`. The record is the place to track
+them: the latest `packages/<Name>/reports/PRREVIEW-<Name>~k.json` of a folder lists what is still
+open, and `git grep -l '"deferred"' -- 'packages/*/reports/PRREVIEW-*.json'` on the board's main
+finds the folders that have any.
 
 On a pull request whose author is in `[roadmap] pool`, a review that asks for changes goes on to
 repair it in the same job, so that no gate round waits in the queue for it, when `repair_pool` is

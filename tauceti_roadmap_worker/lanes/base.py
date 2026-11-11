@@ -66,6 +66,9 @@ class Context:
     agent_fixed: bool = True   # False: each job runs on its lane's configured agent (or the one it requires)
     model_fixed: bool = False  # True: --model pinned; jobs whose lane pins another model are skipped
     transport: object = None   # the sources service's HTTP transport (None: urllib); tests pass a fake
+    # kind -> minutes: this worker is the overflow for jobs of that kind, and takes one only once it has
+    # waited that long for the workers that have it first (`work --overflow`)
+    overflow: dict = field(default_factory=dict)
 
     def sources_fetcher(self) -> fetcher.Fetcher:
         return fetcher.Fetcher(fetcher.client_from_config(self.cfg, self.transport), sources.cache_root(self.state),

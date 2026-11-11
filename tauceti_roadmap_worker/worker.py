@@ -105,8 +105,10 @@ OPEN_STATES = ("available", "claimed", "submitted", "needs-references", "blocked
 
 
 def rank(jobs: list[Job], order: list[str] | None = None, priority: list[str] | tuple[str, ...] = STAGE_ORDER,
-         human_first: bool = True, known: dict[str, str] | None = None) -> list[Job]:
-    """The jobs in the order a worker takes them: those whose roadmap descends from a target a human
+         human_first: bool = True, known: dict[str, str] | None = None, late=None) -> list[Job]:
+    """The jobs in the order a worker takes them: the reviews `late` picks out (`late_review`: pull
+    requests by `[prreview] late_authors`) after every other job; before them, those whose roadmap
+    descends from a target a human
     filed first (`human_first`), then imported ones (an unknown origin counts as imported); within
     each, by stage in `priority` (closest to delivery first, unlisted stages after), then the
     re-reviews of a repaired head before the other reviews of roadmap pull requests (`rereview`), the
@@ -120,9 +122,24 @@ def rank(jobs: list[Job], order: list[str] | None = None, priority: list[str] | 
         human = board.origin_of(j, known).startswith("target:")
         first_review = j.kind == "prreview" and not j.inputs.get("rereview")
         on_main = j.kind == "errata" and not j.inputs.get("pr")
-        return (0 if human or not human_first else 1, stage.get(board.stage_of(j.id), len(stage)), first_review,
-                on_main, j.number)
+        return (bool(late and late(j)), 0 if human or not human_first else 1,
+                stage.get(board.stage_of(j.id), len(stage)), first_review, on_main, j.number)
     return sorted(jobs, key=key)
+
+
+def late_review(p):
+    """Whether a job is a review of a pull request by one of `[prreview] late_authors` that
+    `late_except` does not name (`p`: the `[prreview]` table)."""
+    authors, kept = {a.lower() for a in p.late_authors}, {int(n) for n in p.late_except}
+
+    def late(job: Job) -> bool:
+        if job.kind != "prreview" or str(job.inputs.get("owner") or "").lower() not in authors:
+            return False
+        try:
+            return int(job.inputs.get("pr") or 0) not in kept
+        except (TypeError, ValueError):
+            return True
+    return late
 
 
 class WorkerBusy(Exception):
@@ -194,15 +211,46 @@ def other_family(ctx: Context, job: Job, lane, paused: dict | None = None) -> Co
     return None
 
 
+def waited_minutes(job: Job, now: dt.datetime | None = None) -> float | None:
+    """How long a job can have waited: the minutes since its issue was filed (`Job.filed`; a job
+    released by the worker that had it has waited since then at least); None when the board did not
+    say. The filing time, not the issue's last change: a comment or a relabel must not keep a job
+    from the overflow workers for ever."""
+    try:
+        since = dt.datetime.fromisoformat(job.filed.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=dt.UTC)
+    return ((now or dt.datetime.now(dt.UTC)) - since).total_seconds() / 60
+
+
+def held_back(base: Context, job: Job, now: dt.datetime | None = None) -> bool:
+    """Whether this worker leaves `job` to the workers that have its kind first: the worker is the
+    overflow for that kind (`Context.overflow`: kind -> minutes) and the job has waited less than
+    that. A job whose wait the board does not give is taken."""
+    minutes = (base.overflow or {}).get(job.kind)
+    if not minutes:
+        return False
+    waited = waited_minutes(job, now)
+    return waited is not None and waited < minutes
+
+
 def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", order: list[str] | None = None,
               log=print, avoid: set[str] | None = None, paused: dict[str, dt.datetime] | None = None,
               noted: dict[str, dt.datetime] | None = None) -> LaneResult:
     """One round. `avoid`: jobs this process already failed to set up (left alone, silently).
     `paused`: agent families out of quota, until when; their jobs are skipped, logged once per pause
-    (`noted` keeps which pauses were logged)."""
+    (`noted` keeps which pauses were logged). A worker that is the overflow for a kind (`work
+    --overflow`, `held_back`) leaves the jobs of that kind that have not waited long enough, silently;
+    a job named with `job_id` is taken whatever its wait."""
     jobs = base.board.list_jobs(("available",), tuple(only) if only else None)
     if job_id:
         jobs = [j for j in jobs if j.id == job_id]
+    waiting = 0
+    if not job_id and base.overflow:
+        kept = [j for j in jobs if not held_back(base, j)]
+        waiting, jobs = len(jobs) - len(kept), kept
     failed_before = failures(base)
     known = board.origins(jobs)
     if any(not board.origin_of(j, known) for j in jobs):
@@ -211,7 +259,7 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
         except (GHError, AttributeError):
             pass
     cfg = base.cfg.board
-    for job in rank(jobs, order or [], cfg.priority, cfg.human_first, known):
+    for job in rank(jobs, order or [], cfg.priority, cfg.human_first, known, late_review(base.cfg.prreview)):
         if avoid and job.id in avoid:
             continue
         if failed_before.get(job.id, 0) >= MAX_ATTEMPTS:
@@ -247,7 +295,8 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
             log(f"{job.id}: the lease could not be registered; proceeding unclaimed (fail-open)"
                 + (f": {ctx.claims.last_push_error}" if getattr(ctx.claims, "last_push_error", "") else ""))
         return run_job(ctx, job, lane, key, log, held=status == claims.ACQUIRED)
-    return LaneResult("", "idle", "no eligible job")
+    return LaneResult("", "idle", "no eligible job" + (f" ({waiting} left to the workers that have them first)"
+                                                       if waiting else ""))
 
 
 # Outcomes after which the job goes back to `state:available`: the lane stopped before it submitted

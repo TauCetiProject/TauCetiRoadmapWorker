@@ -424,6 +424,15 @@ def not_actionable(report: str) -> dict[str, tuple[str, str]]:
     return out
 
 
+OUTSIDE = re.compile(r"^outside (?:this|the) folder\b", re.IGNORECASE)
+
+
+def outside_where(how: str) -> str:
+    """Where the change belongs, from the disposition `outside this folder: <where>` ('' when it names
+    no place)."""
+    return re.sub(r"^outside (?:this|the) folder\s*[:.—–-]*\s*", "", how.strip(), flags=re.IGNORECASE).strip()
+
+
 def build_reply(head7: str, report: str, validation: str, intro: str = "reply to the review",
                 markers: list[str] | None = None) -> str:
     lines = [f"Fixed in `{head7}` ({intro}):", ""]

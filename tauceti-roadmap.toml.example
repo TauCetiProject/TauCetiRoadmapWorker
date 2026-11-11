@@ -253,6 +253,14 @@ max_folders = 10
 # earlier finding and reviews the changed passages and what depends on them; otherwise it is a full
 # review. The reviewer gets the folder's diff since that head, cut at `diff_cap_lines` lines.
 small_change_lines = 150
+# A review whose every finding is P3 ends with its repair (no further review of that folder for the
+# repaired head; the label follows once every folder is settled), and a repair may settle a finding
+# as `outside this folder`, recorded once in the verdict and not raised again. Both off by default.
+# carry_minor = true
+# defer_outside = true
+# Authors whose pull requests' reviews are taken after every other job, and their exceptions.
+# late_authors = []
+# late_except = []
 diff_cap_lines = 2000
 # A review that asks for changes on a pull request whose author is in `[roadmap] pool`, run by a pool
 # operator, goes on in the same job to repair it as a gate round would: the repair agent answers the
