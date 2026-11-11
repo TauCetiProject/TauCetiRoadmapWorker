@@ -23,8 +23,15 @@ renumbers the sections other roadmaps cite. This module states the mechanical pa
   it names as suppliers that are not on main, the open revisions whose numbering it cites, and the
   pull requests its description names as dependencies (`declared_dependencies`). `deplabels` keeps the
   dependency label by it, recomputed from the current heads and descriptions on every run.
-* `neighbours`: the open roadmap folders whose READMEs share the most vocabulary with a README
-  (tf-idf cosine over words), where two roadmaps that plan the same objects are likeliest to be.
+* `copies`: an open pull request adds a roadmap folder that main has gained since the pull request
+  branched (the README is on main, not at the merge base, and the head does not move it there): a
+  second copy of a merged roadmap, which no review of its statements can make mergeable.
+* `neighbours`: the roadmap folders, at open heads or on main, whose READMEs share the most vocabulary
+  with a README (tf-idf cosine over words), where two roadmaps that plan the same objects are
+  likeliest to be.
+* `subject_neighbours`: the same, by the results a README names (capitalised names: "Hecke",
+  "Kervaire-Milnor") and the words of its headings, its supplier section aside. Two plans of one
+  subject under different titles share these whatever their prose.
 
 Whether two roadmaps both own an object, or each hand it to the other, is mathematics, for the
 review; these facts say where to look. `report` writes them for one roadmap (a brief's
@@ -39,7 +46,7 @@ import subprocess
 from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
-from itertools import combinations
+from itertools import combinations, pairwise
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -49,6 +56,11 @@ from . import openroadmaps as o
 NEIGHBOURS = 5          # closest open roadmaps listed for a README
 MIN_SIMILARITY = 0.08   # below this cosine two READMEs share only the house style
 COMMON = 0.25           # a word in more than this share of the READMEs carries no signal
+MAIN_NEIGHBOURS = 3     # closest roadmaps on main listed for a README
+SUBJECT_NEIGHBOURS = 5  # roadmaps listed as closest in named results and headings
+MIN_SUBJECT = 0.5       # name cosine + heading cosine (at most 2): below it two READMEs share only a field
+SUBJECT_COMMON = 0.2    # a name or heading word in more than this share of the roadmaps carries no signal
+SUBJECT_TERMS = 400     # the heaviest names, and heading terms, kept for a README
 
 # A link to a heading of another roadmap's README: `[...](../Name/README.md#anchor)`, at any depth.
 LINK = re.compile(r"\]\((?:[^)\s#]*/)?(?P<name>[A-Za-z][A-Za-z0-9]*)/README\.md#(?P<anchor>[^)\s]+)\)")
@@ -56,6 +68,16 @@ HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
 HTML_ANCHOR = re.compile(r"<a\s+(?:id|name)=\"([^\"]+)\"")
 FENCE = re.compile(r"^\s*(```|~~~)")
 WORD = re.compile(r"[a-zà-ÿ][a-zà-ÿ'\-]{3,}")
+NAMED = re.compile(r"\b[A-Z][a-zà-ÿ]{3,}(?:[-–][A-Z][a-zà-ÿ]+)*\b")
+SUPPLIER_SECTION = re.compile(r"(?ms)^## (?:Exact )?[Ss]upplier.*?(?=^## |\Z)")
+SUBHEADING = re.compile(r"(?m)^#{2,4}\s+(.*)$")
+HOUSE_HEADING = re.compile(r"(?i)(?:from |examples|dependencies|scope|conventions|how to read|sources|references)")
+# Capitalised words of the house style and of English sentences: no result is named by them.
+HOUSE_NAMES = frozenset(NAMED.findall(
+    "Roadmap Layer Mathlib Ceti Lean Theorem Lemma Definition Proposition Corollary Section Chapter Examples "
+    "Dependencies Sources Scope Conventions From Part Suggested Exact Type Prop This That Then There These Those "
+    "When With Under Over Proof Source Statement Target Targets Remark Example Note Notes Here They Both Such "
+    "Given Each Every Only Also Where Which What Supplier Suppliers Owned Build Read Check Checks Needs Stage"))
 
 
 @dataclass(frozen=True)
@@ -112,6 +134,20 @@ class Revision:
 
     def adds(self, c: Citation) -> bool:
         return defines(self.head, c) and not defines(self.base, c) and not defines(self.main, c)
+
+
+@dataclass(frozen=True)
+class Copy:
+    pr: dict             # the open pull request, as the index lists it
+    name: str            # the roadmap on main it adds again
+    folder: str          # where its head has the folder
+    base: str            # the merge base of main and the head, which has no such roadmap
+    main: str            # the README on main
+    head: str            # the README at the head
+
+    def lacks(self, c: Citation) -> bool:
+        """Main defines the id and the head neither defines nor maps it."""
+        return defines(self.main, c) and not defines(self.head, c) and not mapped(self.head, c)
 
 
 # --- reading the mirror ---------------------------------------------------------------------------
@@ -281,9 +317,12 @@ def rename_source(state: Path, base: str, ref: str, folder: str, files: list[dic
     return None
 
 
-def revisions(state: Path, index: dict, *, only: str = "", pr: int = 0) -> list[Revision]:
-    """Each roadmap on main whose README an open pull request changes since its merge base with main
-    (`only` and `pr` narrow it to one roadmap or pull request). A head the mirror lacks is skipped.
+def _changes(state: Path, index: dict, *, only: str = "", pr: int = 0) -> tuple[list[Revision], list[Copy]]:
+    """(revisions, copies). A revision: a roadmap on main whose README an open pull request changes
+    since its merge base with main (`only` and `pr` narrow it to one roadmap or pull request). A head
+    the mirror lacks is skipped. A copy: a roadmap main has now and had neither at the head's path nor
+    at its own when the pull request branched, which the head adds all the same (it moves no roadmap
+    there): main gained it since, from another pull request.
 
     The README is read where the head has it (`folders_of`, by full path): at the merge base there, and
     on main there too, or, when main has moved the roadmap since (no README at that path on main, none
@@ -301,7 +340,7 @@ def revisions(state: Path, index: dict, *, only: str = "", pr: int = 0) -> list[
              for at, path in ((bases[p["pr"]], folder), (main_ref, folder), (bases[p["pr"]], on_main[name]),
                               (main_ref, on_main[name]), (o.pr_ref(p["pr"]), folder))]
     texts = _batch(state, specs)
-    out = []
+    out, copies = [], []
     for i, (p, name, folder) in enumerate(found):
         base, main, base_there, main_there, head = texts[5 * i:5 * i + 5]
         if base is not None:
@@ -312,11 +351,25 @@ def revisions(state: Path, index: dict, *, only: str = "", pr: int = 0) -> list[
                                    on_main, dirs)
             if source:
                 base, main = _batch(state, [f"{bases[p['pr']]}:{source}/README.md", f"{main_ref}:{source}/README.md"])
+            elif base_there is None and head and (main or main_there) and head != (main or main_there):
+                copies.append(Copy(p, name, folder, bases[p["pr"]], main or main_there, head))
         if main is None or base is None:
             continue                     # the roadmap is not on main, or not yet where the head branched
         if (head or "") != base:
             out.append(Revision(p, name, main, base, head or ""))
-    return out
+    return out, copies
+
+
+def revisions(state: Path, index: dict, *, only: str = "", pr: int = 0) -> list[Revision]:
+    """Each roadmap on main whose README an open pull request changes since its merge base with main
+    (`_changes`)."""
+    return _changes(state, index, only=only, pr=pr)[0]
+
+
+def copies(state: Path, index: dict, *, only: str = "", pr: int = 0) -> list[Copy]:
+    """Each roadmap main has gained since an open pull request branched that the pull request adds
+    again (`_changes`): two texts of one roadmap, of which main's is the merged one."""
+    return _changes(state, index, only=only, pr=pr)[1]
 
 
 def removals(state: Path, index: dict, *, texts: list[tuple[str, str, str]] | None = None, only: str = "",
@@ -564,10 +617,11 @@ def _vector(tf: Counter, df: Counter, n: int) -> dict[str, float]:
 
 
 def neighbours(texts: list[tuple[str, str, str]], readme: str, *, own: str = "", own_pr: int = 0,
-               k: int = NEIGHBOURS) -> list[tuple[float, str, str]]:
+               k: int = NEIGHBOURS, on_main: bool = False) -> list[tuple[float, str, str]]:
     """The `k` open roadmap folders (where, roadmap) whose README is closest to `readme` in vocabulary,
     as (cosine, where, roadmap), closest first; `texts` as `readmes` gives them. The roadmaps on main
-    weigh the words but are not listed, nor is `own` or anything `own_pr` carries."""
+    weigh the words but are not listed, nor is `own` or anything `own_pr` carries. With `on_main` it
+    is the converse: the `k` closest roadmaps on main, the open heads weighing the words."""
     counts = [Counter(WORD.findall(text.lower())) for _w, _n, text in texts]
     mine_tf = Counter(WORD.findall(readme.lower()))
     df = Counter(mine_tf.keys())
@@ -577,7 +631,7 @@ def neighbours(texts: list[tuple[str, str, str]], readme: str, *, own: str = "",
     mine = _vector(mine_tf, df, n)
     scored = []
     for (where, name, _text), tf in zip(texts, counts):
-        if where == "main" or name == own or where == f"#{own_pr}":
+        if (where == "main") != on_main or name == own or where == f"#{own_pr}":
             continue
         theirs = _vector(tf, df, n)
         small, big = (mine, theirs) if len(mine) < len(theirs) else (theirs, mine)
@@ -585,6 +639,61 @@ def neighbours(texts: list[tuple[str, str, str]], readme: str, *, own: str = "",
         if score >= MIN_SIMILARITY:
             scored.append((round(score, 3), where, name))
     return sorted(scored, key=lambda s: (-s[0], s[1], s[2]))[:k]
+
+
+def _subject(text: str) -> tuple[Counter, Counter]:
+    """(the results a README names, the words and word pairs of its headings), its supplier section
+    aside: two roadmaps that share suppliers do not share a subject for that."""
+    text = SUPPLIER_SECTION.sub("", text)
+    names = Counter(w for w in NAMED.findall(text) if w not in HOUSE_NAMES)
+    heads: Counter = Counter()
+    for h in SUBHEADING.findall(text):
+        if HOUSE_HEADING.match(h.strip()):
+            continue
+        words = WORD.findall(h.lower())
+        heads.update(words)
+        heads.update(f"{a} {b}" for a, b in pairwise(words))
+    return names, heads
+
+
+def _heaviest(tf: Counter, df: Counter, n: int) -> dict[str, float]:
+    v = {w: (1 + math.log(k)) * math.log(n / df[w]) for w, k in tf.items() if 2 <= df[w] <= SUBJECT_COMMON * n}
+    v = dict(sorted(v.items(), key=lambda kv: (-kv[1], kv[0]))[:SUBJECT_TERMS])
+    norm = math.sqrt(sum(x * x for x in v.values())) or 1.0
+    return {w: x / norm for w, x in v.items()}
+
+
+def subject_neighbours(texts: list[tuple[str, str, str]], readme: str, *, own: str = "", own_pr: int = 0,
+                       k: int = SUBJECT_NEIGHBOURS) -> list[tuple[float, str, str]]:
+    """The `k` roadmaps, on main or at an open head, closest to `readme` in the results they name and
+    in their headings, as (name cosine + heading cosine, where, roadmap), closest first. A roadmap read
+    at several places (main and its open revisions) counts once in the weights and is listed once, at
+    its closest place. Neither `own` nor anything `own_pr` carries is listed."""
+    subjects = [_subject(text) for _w, _n, text in texts]
+    mine = _subject(readme)
+    seen: dict[str, tuple[set, set]] = {own or "": (set(mine[0]), set(mine[1]))}
+    for (_where, name, _text), (names, heads) in zip(texts, subjects):
+        a, b = seen.setdefault(name, (set(), set()))
+        a.update(names)
+        b.update(heads)
+    n = len(seen)
+    df = [Counter(w for sets in seen.values() for w in sets[i]) for i in (0, 1)]
+    mine_v = [_heaviest(mine[i], df[i], n) for i in (0, 1)]
+    best: dict[str, tuple[float, str]] = {}
+    for (where, name, _text), subject in zip(texts, subjects):
+        if name == own or where == f"#{own_pr}":
+            continue
+        score = 0.0
+        for i in (0, 1):
+            theirs = _heaviest(subject[i], df[i], n)
+            small, big = (mine_v[i], theirs) if len(mine_v[i]) < len(theirs) else (theirs, mine_v[i])
+            score += sum(x * big.get(w, 0.0) for w, x in small.items())
+        score = round(score, 3)
+        if score >= MIN_SUBJECT and (name not in best or (score, where == "main") > (best[name][0],
+                                                                                    best[name][1] == "main")):
+            best[name] = (score, where)
+    return sorted(((score, where, name) for name, (score, where) in best.items()),
+                  key=lambda s: (-s[0], s[1], s[2]))[:k]
 
 
 # --- reports --------------------------------------------------------------------------------------
@@ -614,14 +723,46 @@ def _citers(found: list[Removal]) -> str:
     return "; ".join(f"{citer} ({', '.join(sorted(set(p)))})" for citer, p in sorted(places.items()))
 
 
+def _copy_text(copy: Copy, texts: list[tuple[str, str, str]]) -> list[str]:
+    """What a second copy is, in a report: where the two texts are, how much of main's the head has,
+    and the ids main defines that the head lacks and other roadmaps cite."""
+    main_lines = {line.strip() for line in copy.main.splitlines() if line.strip()}
+    head_lines = {line.strip() for line in copy.head.splitlines() if line.strip()}
+    kept = round(100 * len(main_lines & head_lines) / max(len(main_lines), 1))
+    lines = [(f"- #{copy.pr['pr']} (@{copy.pr.get('author', '?')}) adds `{copy.folder}`, and main has the roadmap "
+              f"{copy.name} already: it was not there when this pull request branched (merge base {copy.base[:7]}), "
+              "so another pull request merged it since. The README has "
+              f"{len(copy.main.splitlines())} lines on main and {len(copy.head.splitlines())} at this head, which "
+              f"has {kept}% of main's lines. The two texts cannot both merge: this one becomes a revision of "
+              "main's (main merged into the branch, every id main defines kept or mapped), or is closed in its "
+              "favour. A head that has nearly all of main's lines was stacked on the pull request that merged, "
+              "and merging main into it is the whole repair.")]
+    missing: dict[str, list[Removal]] = {}
+    for where, citer, text in texts:
+        if citer == copy.name:
+            continue
+        for c in citations(text, {copy.name}, where=where, citer=citer):
+            if copy.lacks(c):
+                missing.setdefault(c.label(), []).append(Removal(copy.pr["pr"], copy.pr.get("author", ""), c))
+    if missing:
+        lines.append(f"- Ids main defines that this head lacks and other roadmaps cite ({len(missing)}):")
+        lines += [f"  - {label}: cited by {_citers(rs)}" for label, rs in sorted(missing.items())]
+    return lines
+
+
 def report(state: Path, index: dict, name: str, readme: str, *, pr: int = 0,
            texts: list[tuple[str, str, str]] | None = None) -> tuple[str, int]:
     """(Markdown, number of facts) for the roadmap `name` whose README is `readme`, at the head of open
     pull request `pr` when it is one: the other open pull requests that change its folder, the ids it
     cites that an open pull request drops or that only an open revision defines, the ids `pr` drops
-    that other roadmaps cite, and its closest open neighbours."""
+    that other roadmaps cite, and its closest neighbours, open and on main. First of all, when `pr`
+    adds a roadmap main already has, that it is a second copy."""
     texts = readmes(state, index) if texts is None else texts
     lines, facts = _header(index, f"Overlaps of {name} with the open roadmap pull requests"), 0
+
+    for copy in (copies(state, index, only=name, pr=pr) if pr > 0 else []):
+        facts += 1
+        lines += ["## A second copy of a roadmap on main", "", *_copy_text(copy, texts), ""]
 
     others = [s for s in shared(state, index, only=name) if not pr or pr in s.prs]
     carried = [p for p in index.get("prs", []) if name in p.get("roadmaps", []) and p["pr"] != pr]
@@ -674,6 +815,14 @@ def report(state: Path, index: dict, name: str, readme: str, *, pr: int = 0,
     near = neighbours(texts, readme, own=name, own_pr=pr)
     lines += ["## Open roadmaps closest in vocabulary", ""]
     lines += ([f"- {where} {roadmap} ({score:.2f})" for score, where, roadmap in near] or ["None."])
+    near = neighbours(texts, readme, own=name, own_pr=pr, k=MAIN_NEIGHBOURS, on_main=True)
+    lines += ["", "## Roadmaps on main closest in vocabulary", ""]
+    lines += ([f"- {where} {roadmap} ({score:.2f})" for score, where, roadmap in near] or ["None."])
+    near = subject_neighbours(texts, readme, own=name, own_pr=pr)
+    lines += ["", "## Roadmaps closest in the results they name and in their headings", "",
+              ("Open or on main; the score is at most 2, and the higher it is the likelier a second plan of "
+               "the same subject."), ""]
+    lines += ([f"- {where} {roadmap} ({score:.2f})" for score, where, roadmap in near] or ["None."])
     return "\n".join(lines) + "\n", facts
 
 
@@ -687,6 +836,11 @@ def report_all(state: Path, index: dict, *, merge: bool = True) -> str:
         lines += [f"  - {_conflict_text(pair, merge)}" for pair, merge in sorted(s.conflicts.items())]
     if not folders:
         lines.append("None.")
+    lines += ["", "## Open pull requests that add a roadmap main already has", ""]
+    again = copies(state, index)
+    lines += [f"- #{c.pr['pr']} (@{c.pr.get('author', '?')}) adds `{c.folder}`: main has {c.name} since the pull "
+              f"request branched ({len(c.main.splitlines())} lines on main, {len(c.head.splitlines())} at the head)"
+              for c in sorted(again, key=lambda c: c.pr["pr"])] or ["None."]
     lines += ["", "## Ids an open pull request drops that other roadmaps cite", ""]
     found = removals(state, index)
     by_pr: dict[int, dict[str, list[Removal]]] = {}

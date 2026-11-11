@@ -232,11 +232,22 @@ brief, never a failed round):
   not follow a mapping: a link to it lands at the top of the README); the ids it cites that only an open revision
   defines, which make that revision a dependency; when the job is on a pull request of the content
   repository (never a board pull request), the ids it drops from a roadmap on main that other
-  roadmaps cite, on main or at an open head; and the five open roadmaps closest to it in vocabulary
-  (tf-idf cosine over the README words), where a second owner of the same objects is likeliest. The
-  rules in the briefs' "Overlap with open pull requests" say what each item asks of the author and,
-  in a review, which finding it is. With no name, `roadmaps overlaps` lists every shared roadmap
-  folder and every dropped id that is cited somewhere, for the maintainers. The merge-order paragraph
+  roadmaps cite, on main or at an open head; and the closest roadmaps, where a second owner of the
+  same objects is likeliest: the five open ones and the three on main closest in vocabulary (tf-idf
+  cosine over the README words), and the five, open or on main, closest in the results they name
+  and in their headings (`overlaps.subject_neighbours`: capitalised names and heading words, the
+  supplier section aside; two plans of one subject under different titles share these whatever
+  their prose). First of all, when the pull request adds a roadmap main has gained since it
+  branched, the report says it is a second copy (`overlaps.copies`: the README is on main, not at
+  the merge base, and the head moves no roadmap there), with the share of main's lines the head has
+  and the ids main defines that the head lacks and other roadmaps cite: a review reports that as
+  its one P1 finding and reviews nothing else of the copy. The rules in the briefs' "Overlap with
+  open pull requests" say what each item asks of the author and, in a review, which finding it is.
+  A review closes its duplication audit with one line, `Overlap check:`, naming the listed roadmaps
+  whose scope it read and the owner of each shared object; an acceptance without it is refused
+  (`Lane.overlap_line_problem`) when the round had the report and its brief asked for the line.
+  With no name, `roadmaps overlaps` lists every shared roadmap folder, every pull request that adds
+  a roadmap main already has, and every dropped id that is cited somewhere, for the maintainers. The merge-order paragraph
   and the port lane's Dependencies sentence name the open revisions whose numbering a README cites
   (`mergeorder.revision_facts`), so the dependency the rule creates is written by the worker;
 * `scratch/signatures.md` (lanes that elaborate, with the pin's Lake packages ready): the elaborated
