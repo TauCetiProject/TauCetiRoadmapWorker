@@ -17,6 +17,7 @@ import tomllib
 
 from .. import board, gitops, prreviews, sources
 from ..board import Job
+from ..gh import GHError
 from ..gates import readme_targets
 from .base import Context, Lane, Workspace, board_reports, checkout_board_pr, count
 from .design import manifest_problems
@@ -96,6 +97,30 @@ def review_summary(what: str, verdict: dict, report: str) -> str:
     return f"{what}: {status}, {tally}"
 
 
+NOTES_FILE = "MAINTAINER-NOTES.md"
+
+
+def maintainer_notes(ctx: Context, ws: Workspace, name: str):
+    """The notes a maintainer left for the reviews of this roadmap
+    (`packages/<Name>/reports/MAINTAINER-NOTES.md` on the board's main), fetched into the scratch
+    folder; None when there are none. Read from main, like the earlier reviews, since the checkout may
+    be a pull request's branch. The notes are claims for the reviewer to check, never findings."""
+    pkg = board.package_dir(ctx.cfg.board.packages_dir, name)
+    try:
+        text = ctx.gh.raw_file(ctx.cfg.repositories.packages_repo(), f"{pkg}/reports/{NOTES_FILE}") if ctx.gh else ""
+    except GHError:
+        text = ""
+    local = ws.board / pkg / "reports" / NOTES_FILE
+    if not text and not ctx.gh and local.is_file():
+        text = local.read_text(encoding="utf-8")
+    if not text.strip():
+        return None
+    path = ws.scratch / "maintainer-notes.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 class ReviewLane(Lane):
     kind = "review"
     prompt = "review"
@@ -171,7 +196,8 @@ class ReviewLane(Lane):
             previous = f"`{prev_path}` (its repair report: `{fix_path}`)"
         return {"SUBJECT": self.subject(job), "FILES": "\n".join(f"- `{f}`" for f in self.files(job, ctx, ws)),
                 "SAMPLE": "; ".join(f"“{s}”" for s in sample) or f"a random sample of {SAMPLE_SIZE} targets (none found by heading)",
-                "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)), "PREVIOUS": previous or "none"}
+                "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)), "PREVIOUS": previous or "none",
+                "NOTES": f"`{notes}`" if (notes := maintainer_notes(ctx, ws, job.name)) else "none"}
 
     def accepts(self, job: Job, ctx: Context, ws: Workspace) -> bool:
         try:
