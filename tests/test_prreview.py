@@ -1564,11 +1564,15 @@ def seed_board_plan_and_manifest(rh, tmp_path):
     sh(seed, "push", "-q", "origin", "HEAD:refs/heads/main")
 
 
+REPAIR_MODELS = []     # the model each repair run was asked for ('' = the worker's own)
+
+
 def repair_agent(monkeypatch, briefs, report=REPAIR_LINE, edit=True, stray=False, forget_commit_once=False,
                  board_edits=None, description=(), summary=()):
     """`description`: what the agent writes as the pull request's new text, run by run (the last one from then on);
     `summary`: the same for the summary block."""
-    def run_agent(self, ctx, ws, brief, label=""):
+    def run_agent(self, ctx, ws, brief, label="", model=""):
+        REPAIR_MODELS.append(model)
         briefs.append((label, brief, (ws.scratch / "reviews.md").read_text()))
         if description:
             (ws.scratch / lane_prreview.DESCRIPTION).write_text(description[min(len(briefs), len(description)) - 1])
@@ -1585,6 +1589,19 @@ def repair_agent(monkeypatch, briefs, report=REPAIR_LINE, edit=True, stray=False
         (ws.job_dir / lane_prreview.REPAIR_REPORT).write_text(report)
         return SimpleNamespace(exit_code=0, limited=False, seconds=1.0, timed_out=False)
     monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", run_agent)
+
+
+@needs_git
+def test_the_repair_runs_on_the_model_configured_for_the_reviewing_model(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [])
+    ctx = pool_ctx(rh)
+    ctx.cfg.prreview.repair_models = {ctx.model: "claude-opus-5-5", "another-model": "x"}
+    lane = lane_for(job)
+    lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert REPAIR_MODELS[-1] == "claude-opus-5-5"
+    ctx.cfg.prreview.repair_models = {"another-model": "x"}          # a reviewing model not listed repairs with itself
+    assert ctx.cfg.prreview.repair_models.get(ctx.model, "") == ""
 
 
 @needs_git
@@ -1682,7 +1699,7 @@ def moving(monkeypatch, tmp_path, rh, rel, text="changed meanwhile\n"):
     """The pull request's branch gains a commit that writes `rel` while the repair agent runs."""
     inner = lane_prreview.PRReviewLane.run_agent
 
-    def run_agent(self, ctx, ws, brief, label=""):
+    def run_agent(self, ctx, ws, brief, label="", model=""):
         out, other = inner(self, ctx, ws, brief, label), tmp_path / "other"
         if not other.exists():
             sh(tmp_path, "clone", "-q", "-b", ROADMAP_BRANCH, str(rh.content), str(other))
@@ -1895,7 +1912,7 @@ def moving_with_main(monkeypatch, tmp_path, rh, merge=True):
     its own merge of main, then its commit in the folder Bar."""
     inner = lane_prreview.PRReviewLane.run_agent
 
-    def run_agent(self, ctx, ws, brief, label=""):
+    def run_agent(self, ctx, ws, brief, label="", model=""):
         out, other = inner(self, ctx, ws, brief, label), tmp_path / "other"
         if not other.exists():
             sh(tmp_path, "clone", "-q", "-b", ROADMAP_BRANCH, str(rh.content), str(other))
@@ -2242,7 +2259,7 @@ def test_a_description_changed_while_the_repair_ran_is_not_overwritten(hub, monk
     inner = lane_prreview.PRReviewLane.run_agent
     theirs = PR_TEXT["body"].replace("\n\n", " Another folder's repair says more here.\n\n", 1)
 
-    def run_agent(self, ctx, ws, brief, label=""):
+    def run_agent(self, ctx, ws, brief, label="", model=""):
         out = inner(self, ctx, ws, brief, label)
         rh.__dict__.setdefault("text", dict(PR_TEXT))["body"] = theirs
         return out

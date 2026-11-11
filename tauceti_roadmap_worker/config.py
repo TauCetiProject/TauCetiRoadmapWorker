@@ -292,6 +292,10 @@ class PRReview:
     # pool operator, goes on in the same job to repair it as a gate round would (push onto its branch,
     # reply finding by finding); the next review of the repaired head is another worker's.
     repair_pool: bool = True
+    # The model such a repair runs on, by the model that reviewed: `{ fable = "claude-opus-5-5" }` has
+    # a worker that reviews with `fable` repair with `claude-opus-5-5` (a model of the same agent). A
+    # reviewing model that is not listed repairs with itself.
+    repair_models: dict[str, str] = field(default_factory=dict)
     # Such a repair also answers findings about the pull request's title and description, and puts right what
     # its own change makes wrong in them: its agent writes the corrected text, and the worker puts it on the
     # pull request with the push, keeping the generated blocks and markers of the description as they are.
@@ -506,6 +510,8 @@ def validate(cfg: Config) -> None:
         problems.append("prreview.max_folders must be at least 1")
     if cfg.prreview.small_change_lines < 0:
         problems.append("prreview.small_change_lines must be >= 0")
+    if any(not (isinstance(k, str) and isinstance(v, str) and k and v) for k, v in cfg.prreview.repair_models.items()):
+        problems.append("prreview.repair_models maps a reviewing model to the model that repairs: both non-empty strings")
     if cfg.prreview.diff_cap_lines < 1:
         problems.append("prreview.diff_cap_lines must be at least 1")
     if cfg.prreview.enabled and not re.fullmatch(r"[^\s,][^,]{0,49}", cfg.prreview.label or ""):

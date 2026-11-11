@@ -123,6 +123,12 @@ def test_every_run_of_a_lane_is_recorded(tmp_path, monkeypatch):
     assert rows[0]["job"] == "REV-PKG-Foo~2" and rows[0]["kind"] == "review" and rows[0]["label"] == "repair"
     assert rows[1]["label"] == "main" and rows[1]["output_tokens"] == 7 and rows[1]["brief_chars"] == len("the brief")
     assert (ws.job_dir / "usage.jsonl").read_text() == (tmp_path / "w1" / "usage.jsonl").read_text()
+    # One brief on another model of the same agent (a review's repair): the agent is launched with it and the record names it.
+    seen = []
+    monkeypatch.setattr(agents, "run_agent", lambda task: seen.append(task.model) or agents.AgentResult(exit_code=0, seconds=1))
+    lane.run_agent(Ctx(), ws, "the brief", "repair", model="claude-opus-5-5")
+    last = json.loads((tmp_path / "w1" / "usage.jsonl").read_text().splitlines()[-1])
+    assert seen == ["claude-opus-5-5"] and last["model"] == "claude-opus-5-5" and rows[0]["model"] == "fable"
 
 
 def test_summary_by_lane_and_the_command(tmp_path, monkeypatch, capsys):

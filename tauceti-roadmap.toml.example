@@ -260,6 +260,9 @@ diff_cap_lines = 2000
 # is posted (a repair that fails is not pushed; the review stands). The board files no gate round
 # while the review job is claimed, and the next review of the repaired head is another worker's.
 repair_pool = true
+# The model such a repair runs on, by the model that reviewed (a model of the same agent); a reviewing
+# model that is not listed repairs with itself. Example: { fable = "claude-opus-5-5" }.
+repair_models = {}
 repair_text = true
 # Such a repair first merges the base branch into the pull request's branch when the branch's Lake pins
 # are behind it and the branch changed none of them itself (a merge that conflicts is not made): the

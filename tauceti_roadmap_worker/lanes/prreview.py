@@ -353,14 +353,17 @@ full review: check that the updates are correct.
    in untouched text that the previous review passed is NOT a finding of an incremental re-review
    (a review that found nothing wrong with it has had its say): mention it in one line under
    `## Verified sound` as a remark, without an R-number and without asking for a change.
+   The report of an incremental re-review is short: its findings, the `## Previous findings`
+   bullets, the rows for what changed, the gate result.
 3. **The pull request's text** is not untouched text: a change makes the title and description
    wrong whenever it changes what they describe, though they did not change themselves. Check them
    against this head as step 8 of the full review does, in every re-review: a sentence the head
    contradicts, or a change of the pull request they leave unstated, is a finding, not a remark.
 4. **The gate and the elaboration** run as in a full review.
-5. **The adversarial table** carries forward the previous report's rows for the statements the diff
-   leaves untouched, each citing the previous report, and adds a row with computed values for every
-   changed statement.
+5. **The adversarial table** has a row with computed values for every statement the diff changes
+   or that a finding touches (when the diff changes no statement: one row for a statement the
+   changed text cites). Do not copy the previous report's rows for untouched statements: one line
+   after the table says that they stand as in the previous review, of `{since}`.
 6. **The verdict.** Accept when no finding remains at all (new, or carried from the previous report)
    and the gate passes — remarks on untouched text do not block acceptance; the verdict file's `notes` say "incremental re-review of {lines} changed lines
    since {since}", then what was checked.
@@ -1317,7 +1320,7 @@ class PRReviewLane(Lane):
                          + "\n\nRepair these too, commit, and rewrite the report (every H section, as before).\n")
                 (ws.job_dir / f"brief-{label}.md").write_text(brief, encoding="utf-8")
             kept = board_snapshot(job, ctx, ws)
-            result = self.run_agent(ctx, ws, brief, label)
+            result = self.run_agent(ctx, ws, brief, label, model=ctx.cfg.prreview.repair_models.get(ctx.model, ""))
             edits, dropped = board_edits(job, ctx, ws)
             restore_board(ws, kept)
             for rel, data in edits.items():
