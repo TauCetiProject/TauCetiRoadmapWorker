@@ -644,6 +644,14 @@ class Lane:
                                                 ctx.cfg.review.separation, ctx.agent, ctx.model)
             if problem:
                 return problem
+        if ctx.cfg.review.separation == "agent":
+            # A single operator: the pinned red-team passes must stay independent of what this worker writes.
+            pinned = board.blocked_redteam_pass(job.id, ctx.agent, ctx.model,
+                                                [(p.agent, p.model) for p in ctx.cfg.redteam.passes],
+                                                ctx.cfg.redteam.rounds)
+            if pinned:
+                return (f"the red-team pass pinned to ({pinned}) must be independent of this job's author: "
+                        f"another agent or model writes it")
         if builds(job):
             free = free_gb(ctx.state)
             if free is not None and free < MIN_FREE_GB_BUILD:

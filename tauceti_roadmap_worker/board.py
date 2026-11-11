@@ -156,6 +156,20 @@ def redteam_passes(name: str, round_: int, count: int) -> list[str]:
     return [format_job_id(JobId("RT", name, round_, "", chr(ord("a") + i))) for i in range(count)]
 
 
+def blocked_redteam_pass(job_id: str, agent: str, model: str, passes: list[tuple[str, str]], rounds: int) -> str:
+    """The pinned red-team pass ("agent, model") that writing `job_id` with `agent` and `model` would
+    leave without a taker under separation by agent, else ''. A red-team pass is independent of the
+    package's authors (the package and each of its fix rounds) and of the red-team fix before it, and
+    a pinned pass runs on one agent and model only: once that agent and model has written one of
+    those, the operator has nothing left to run the pass with."""
+    j = parse_job_id(job_id)
+    writes = (j.prefix == "PKG" or j.prefix == "FIX" and j.subject == "PKG"
+              or j.prefix == "FIX" and j.subject == "RT" and j.round < rounds)
+    if not writes or rounds < 1 or not agent or not model:
+        return ""
+    return next((f"{a}, {m}" for a, m in passes if m and (a, m) == (agent, model)), "")
+
+
 # --- job specs ------------------------------------------------------------------------------------
 
 @dataclass
