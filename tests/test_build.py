@@ -106,6 +106,33 @@ def test_the_board_workflow_runs_the_three_commands_with_its_own_token():
     assert "issue_comment:" not in text and "\n  issues:\n" not in text
 
 
+# --- a job asked for by name ----------------------------------------------------------------------------
+
+def test_a_job_asked_for_by_name_is_looked_for_again_when_the_listing_lags(tmp_path, monkeypatch):
+    """A supervisor files a round and starts `work --job` at once; the listing shows the new issue
+    only on a later reading. The worker waits and takes it; it does not end the round idle."""
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    cfg = example_config()
+    gh = FakeIssuesGH([job_issue(1, "TARGET-Other", "available")])
+    ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=FakeClaims(), worker_id="chris-2", operator="chris",
+                  agent="codex", model="m")
+    waits, lines = [], []
+
+    def lagging(seconds):       # the issue appears in the listing during the second wait
+        waits.append(seconds)
+        if len(waits) == 2:
+            gh.issues[2] = {"state": "open", **job_issue(2, "TARGET-New", "available")}
+    monkeypatch.setattr(worker.time, "sleep", lagging)
+    monkeypatch.setattr(worker, "lane_for", lambda job: BrokenBrief())
+    taken = worker.work_once(ctx, None, log=lines.append, job_id="TARGET-New")
+    assert taken.job == "TARGET-New" and waits == list(worker.NAMED_JOB_WAITS[:2])
+    assert lines[0] == ("TARGET-New is not in the listing of available jobs yet: "
+                        f"reading the board again in {worker.NAMED_JOB_WAITS[0]} s")
+    # A job the first listing shows is taken without a wait.
+    waits.clear()
+    assert worker.work_once(ctx, None, log=lines.append, job_id="TARGET-Other").job == "TARGET-Other" and not waits
+
+
 # --- the overflow workers and the late reviews --------------------------------------------------------
 
 def waiting_issue(number, job_id, filed, **spec):
@@ -132,6 +159,11 @@ def test_an_overflow_worker_leaves_young_jobs_of_its_kinds_to_the_others(tmp_pat
     assert idle.status == "idle" and "1 left to the workers that have them first" in idle.detail
     named = worker.work_once(ctx, None, log=lambda line: None, job_id="TARGET-Young")
     assert named.job == "TARGET-Young"                            # a job asked for by name is taken whatever its wait
+    # A job asked for by name that no listing shows: the board is read again three times, then the round is idle.
+    waits: list[int] = []
+    monkeypatch.setattr(worker.time, "sleep", waits.append)
+    absent = worker.work_once(ctx, None, log=lambda line: None, job_id="TARGET-Nowhere")
+    assert (absent.status, waits) == ("idle", list(worker.NAMED_JOB_WAITS))
     # Another kind, a worker that is nobody's overflow, a job whose filing time the board did not give: taken.
     other = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=FakeClaims(), worker_id="chris-3", operator="chris",
                     agent="codex", model="m", overflow={"prreview": 30})

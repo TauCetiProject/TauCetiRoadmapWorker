@@ -120,7 +120,9 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   already running here (pid N on <host>; ...)`.
 * `--overflow prreview=30,review=45` makes a worker the overflow for those kinds: it takes a job of
   the kind only once the job's issue is that many minutes old, so the workers started without the
-  option (the ones on cheaper accounts) get it first. A job named with `--job` is taken at once.
+  option (the ones on cheaper accounts) get it first. A job named with `--job` is taken at once. When the
+  listing of available jobs does not show it yet (GitHub's listing can lag an issue filed seconds ago), the
+  worker reads the board again after 15, 30 and 45 seconds before it ends the round idle.
 * `--only` pins a worker to some kinds (`target, design, package, review, fix, port, redteam, gate,
   errata, prreview`); without it the worker takes whatever is most useful: first the jobs whose
   roadmap descends from a target a human filed (origin `target:<issue>`), then imported ones
