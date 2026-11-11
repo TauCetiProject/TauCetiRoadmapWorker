@@ -1104,22 +1104,23 @@ held prints `intake already running (intake:run-<id or host>, since <time>); not
 board held (with `[prreview] enabled`) prints `intake already running (...); pull-request reviews
 only` and still reads the pull-request reviews (the review label, superseded rounds, new rounds),
 since an intake with many submissions to merge holds the board for most of an hour, run after run.
-That step has a lock of its own (`roadmap/<project>/board/reviews`), which a full sync takes for
-the same step, so it runs once at a time: a run that finds it held prints `pull-request reviews
-already running (...); left to that run`. A run that cannot take the board lock (no push access to
-the board
-repository, no network) prints `board lock not taken (the lock ref could not be written); nothing
-done` and exits 1. A run whose lock is lost (a renewal finds another owner, or every renewal fails
-until the 15 minutes run out) stops at its next write with `stopped: the lease ... was lost: <why>;
-the next run carries on` and exits 1. Every job creation
-re-reads the live board first and skips a job whose issue exists (logged `already on the board as
-#n`), and each intake closes an open job issue that duplicates another open one (`Duplicate of #n`,
-labelled `duplicate`); a `state:done` twin is never closed. The twin kept is the one that got
-furthest, not the older one: the twin an open submission pull request names (`Refs #n`, or
+That step has a lock of its own (`roadmap/<project>/board/reviews`), which a full sync takes for the
+same step, so it runs once at a time: a run that finds it held prints `pull-request reviews already
+running (...); left to that run`. `board sync --reviews-only --yes` is that step and nothing else,
+and never takes the board lock: use it in a schedule that runs beside the hosted board run, where a
+plain sync landing between two hosted runs would take the board from the next one. A run that cannot
+take the board lock (no push access to the board repository, no network) prints `board lock not
+taken (the lock ref could not be written); nothing done` and exits 1. A run whose lock is lost (a
+renewal finds another owner, or every renewal fails until the 15 minutes run out) stops at its next
+write with `stopped: the lease ... was lost: <why>; the next run carries on` and exits 1. Every job
+creation re-reads the live board first and skips a job whose issue exists (logged `already on the
+board as #n`), and each intake closes an open job issue that duplicates another open one (`Duplicate
+of #n`, labelled `duplicate`); a `state:done` twin is never closed. The twin kept is the one that
+got furthest, not the older one: the twin an open submission pull request names (`Refs #n`, or
 `state:submitted`), else the one a worker claimed and still holds the lease of, else any claimed or
 parked one, else the oldest; the kept twin takes over the closed twin's pull request and state
-(`submitted` while its submission is open, `claimed` while its lease is live), and the job's lease is
-left alone (it is keyed by the job id, so it belongs to the worker on the kept twin).
+(`submitted` while its submission is open, `claimed` while its lease is live), and the job's lease
+is left alone (it is keyed by the job id, so it belongs to the worker on the kept twin).
 
 ### The board workflow
 

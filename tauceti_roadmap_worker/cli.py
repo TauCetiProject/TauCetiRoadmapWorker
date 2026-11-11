@@ -17,7 +17,7 @@
     tauceti-roadmap sources check <sources.toml> | classify <url> | request <needs-references.toml> --job ID
     tauceti-roadmap sources fetch <DOI | arXiv id | URL | "Authors, Title, Year"> [--manifest sources.toml] [--id KEY]
     tauceti-roadmap sources cache <sources.toml> | ocr <file.pdf>
-    tauceti-roadmap board intake [--pr N] | references | sync [--prune-order] | stale [--release]   (board bot / maintainer; --yes to write)
+    tauceti-roadmap board intake [--pr N] | references | sync [--prune-order | --reviews-only] | stale [--release]   (board bot / maintainer; --yes to write)
     tauceti-roadmap board errata seed [--limit N] [--yes]
     tauceti-roadmap board import-explorer --from <explorer checkout> [--kinds package,design,target] [--names A,B] [--yes]
     tauceti-roadmap targets file-many --from <targets.toml | targets.jsonl> [--yes]
@@ -915,6 +915,8 @@ def board_cmd(args) -> int:
         raise SystemExit(f"board {args.action}: unexpected argument {args.step!r}")
     if args.prune_order and args.action != "sync":
         raise SystemExit("--prune-order goes with `board sync`")
+    if args.reviews_only and (args.action != "sync" or args.prune_order):
+        raise SystemExit("--reviews-only goes with `board sync`, without --prune-order")
     cfg = _load(args)
     ctx = _bot_context(args, cfg, dry=args.dry_run or not args.yes)
     try:
@@ -934,11 +936,19 @@ def board_run(args, cfg, ctx) -> int:
     One step does not wait for the board: a `board sync` that finds it held still reads the
     pull-request reviews (`_reviews_only`). An intake with many submissions to merge holds the board
     for most of an hour, run after run, and the reviews of pull requests repaired meanwhile would
-    otherwise be filed, and the review label set, once per intake."""
+    otherwise be filed, and the review label set, once per intake. `board sync --reviews-only` is
+    that step and nothing else, whoever holds the board: a schedule that runs beside a hosted board
+    run asks for it, so that it never takes the board from the run it is running beside."""
     from . import intake
     write = args.yes and not args.dry_run
+    if args.reviews_only and not write:
+        for out in intake.sync_pr_reviews(ctx):
+            print(out)
+        return 0
     if not write or (args.action == "stale" and not args.release):
         return _board_steps(args, cfg, ctx, intake, write)
+    if args.reviews_only:
+        return _reviews_only(cfg, ctx, intake, intake.board_lock(cfg, ctx))
     lock, key = intake.board_lock(cfg, ctx), intake.lock_key(cfg.project.name)
     status, line = intake.take_lock(lock, cfg.project.name)
     if status == claims.HELD and args.action == "sync" and cfg.prreview.enabled:
@@ -959,10 +969,10 @@ def board_run(args, cfg, ctx) -> int:
 
 
 def _reviews_only(cfg, ctx, intake, lock) -> int:
-    """`board sync` while another run holds the board: the pull-request reviews alone, under the
-    reviews lock (`intake.take_reviews_lock`), which a full sync takes for the same step. That step
-    reads the board and the content repository, sets the review label, and closes or files
-    PRREVIEW jobs, which no other board step creates."""
+    """`board sync` while another run holds the board, or with `--reviews-only`: the pull-request
+    reviews alone, under the reviews lock (`intake.take_reviews_lock`), which a full sync takes for
+    the same step. That step reads the board and the content repository, sets the review label, and
+    closes or files PRREVIEW jobs, which no other board step creates."""
     key = intake.reviews_key(cfg.project.name)
     status, line = intake.take_reviews_lock(lock, cfg.project.name)
     if line:
@@ -1236,6 +1246,9 @@ def parser() -> argparse.ArgumentParser:
     b.add_argument("--limit", type=int, default=0, help="errata seed: at most this many jobs per run (0: all)")
     b.add_argument("--yes", action="store_true")
     b.add_argument("--release", action="store_true")
+    b.add_argument("--reviews-only", action="store_true",
+                   help="sync: only the pull-request reviews (the review label, superseded and new rounds), "
+                        "without the board lock; safe beside a running intake")
     b.add_argument("--prune-order", action="store_true",
                    help="sync: first remove from the merge order every roadmap on the content repository's main "
                         "(dry run unless --yes)")

@@ -183,6 +183,30 @@ def test_a_sync_that_finds_the_board_held_still_reads_the_pull_request_reviews(m
     assert ran == [] and lock.released == [] and [k for k, _ in lock.acquired] == [board_key, board_key]
 
 
+def test_a_reviews_only_sync_never_takes_the_board_lock(monkeypatch, capsys):
+    cfg = example_config()
+    cfg.prreview.enabled = True
+    board_key, reviews_key = intake.lock_key(cfg.project.name), intake.reviews_key(cfg.project.name)
+    monkeypatch.setattr(cli, "_board_steps", lambda *a, **k: pytest.fail("a full sync ran"))
+    ran = []
+    monkeypatch.setattr(intake, "sync_pr_reviews", lambda ctx: ran.append("reviews") or ["#7: ai-approved added"])
+    # the board is free: the run still leaves it alone, and takes the reviews lock only
+    lock = Lock(claims.ACQUIRED)
+    monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: lock)
+    assert cli.board_run(board_args("sync", "--reviews-only", "--yes"), cfg, run_context(cfg)) == 0
+    assert capsys.readouterr().out.splitlines() == ["#7: ai-approved added"]
+    assert ran == ["reviews"] and lock.released == [reviews_key]
+    assert [k for k, _ in lock.acquired] == [reviews_key] and board_key != reviews_key
+    # a dry run reads the reviews with no lock at all
+    lock = Lock(claims.ACQUIRED)
+    assert cli.board_run(board_args("sync", "--reviews-only"), cfg, run_context(cfg)) == 0
+    assert ran == ["reviews", "reviews"] and lock.acquired == [] and lock.released == []
+    # the option belongs to `board sync` alone
+    for extra in (["intake", "--reviews-only"], ["sync", "--reviews-only", "--prune-order"]):
+        with pytest.raises(SystemExit):
+            cli.board_cmd(board_args(*extra))
+
+
 def test_a_full_sync_reads_the_pull_request_reviews_under_the_reviews_lock(monkeypatch):
     cfg = example_config()
     ctx = run_context(cfg)
