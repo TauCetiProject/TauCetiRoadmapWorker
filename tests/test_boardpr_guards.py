@@ -114,6 +114,28 @@ def test_a_fix_pushed_during_the_pass_is_not_released_on_the_stale_listing():
     assert fix.state == "done"
 
 
+def test_a_run_stopped_before_the_next_review_is_created_leaves_the_fix_for_the_next_scan():
+    """The next round is created before the fix is done: a run stopped between the two leaves the fix
+    submitted, so the next scan creates the review (2026-11-10: a package repair was marked done, the
+    run stopped, and its open pull request waited with no job naming it)."""
+    c, gh, b, _pkg, _rt = flow()
+    b.jobs.remove(_rt)
+    fix = new_job("FIX-PKG-Foo~2", inputs={"board_pr": 12, "operator": "alice", "base_head": "c" * 40, "authors": ["PKG-Foo"]})
+    fix.number, fix.state = 8, "submitted"
+    b.jobs.append(fix)
+    create = b.create
+
+    def stopped(job, state="available", preamble=""):
+        raise GHError("502 Bad Gateway")
+    b.create = stopped
+    out = boardpr.scan(c, yes=True)
+    assert "skipped" in out[0] and fix.state == "submitted" and b.find("REV-PKG-Foo~2") is None
+    b.create = create
+    out = boardpr.scan(c, yes=True)
+    assert out[0].startswith("#12: FIX-PKG-Foo~2 done; next round; created REV-PKG-Foo~2")
+    assert fix.state == "done" and b.find("REV-PKG-Foo~2").inputs["board_pr"] == 12
+
+
 def test_a_stale_worker_review_releases_its_job():
     rev = new_job("REV-PKG-Foo", inputs={"board_pr": 12})
     rev.number, rev.state = 5, "submitted"
