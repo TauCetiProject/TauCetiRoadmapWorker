@@ -236,6 +236,24 @@ def held_back(base: Context, job: Job, now: dt.datetime | None = None) -> bool:
     return waited is not None and waited < minutes
 
 
+NAMED_JOB_WAITS = (15, 30, 45)     # seconds between readings of the board for a job asked for by name
+
+
+def named_job(base: Context, job_id: str, only: tuple[str, ...] | None, jobs: list[Job], log=print,
+              pause=None) -> list[Job]:
+    """The job asked for by name, as a list of at most one. GitHub's listing can lag an issue filed
+    seconds ago, and a supervisor that files a round and starts its worker at once found nothing and
+    ended idle with the round left untaken: the board is read again, a few times, before giving up."""
+    for wait in (*NAMED_JOB_WAITS, 0):
+        found = [j for j in jobs if j.id == job_id]
+        if found or not wait:
+            return found
+        log(f"{job_id} is not in the listing of available jobs yet: reading the board again in {wait} s")
+        (pause or time.sleep)(wait)
+        jobs = base.board.list_jobs(("available",), tuple(only) if only else None)
+    return []
+
+
 def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", order: list[str] | None = None,
               log=print, avoid: set[str] | None = None, paused: dict[str, dt.datetime] | None = None,
               noted: dict[str, dt.datetime] | None = None) -> LaneResult:
@@ -243,10 +261,11 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
     `paused`: agent families out of quota, until when; their jobs are skipped, logged once per pause
     (`noted` keeps which pauses were logged). A worker that is the overflow for a kind (`work
     --overflow`, `held_back`) leaves the jobs of that kind that have not waited long enough, silently;
-    a job named with `job_id` is taken whatever its wait."""
+    a job named with `job_id` is taken whatever its wait, and looked for again when the listing does
+    not show it yet (`named_job`)."""
     jobs = base.board.list_jobs(("available",), tuple(only) if only else None)
     if job_id:
-        jobs = [j for j in jobs if j.id == job_id]
+        jobs = named_job(base, job_id, only, jobs, log)
     waiting = 0
     if not job_id and base.overflow:
         kept = [j for j in jobs if not held_back(base, j)]
