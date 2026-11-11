@@ -929,20 +929,28 @@ def board_run(args, cfg, ctx) -> int:
     its whole length, one run at a time, hosted or local: a heartbeat renews it, and once it is lost
     (another run took it over, or no renewal succeeded before it expired) every further GitHub write
     raises and the run stops, exit 1. A run that finds the lock held says so and exits 0 having done
-    nothing; one that cannot take it (no push access, no network) does nothing either, exit 1."""
+    nothing; one that cannot take it (no push access, no network) does nothing either, exit 1.
+
+    One step does not wait for the board: a `board sync` that finds it held still reads the
+    pull-request reviews (`_reviews_only`). An intake with many submissions to merge holds the board
+    for most of an hour, run after run, and the reviews of pull requests repaired meanwhile would
+    otherwise be filed, and the review label set, once per intake."""
     from . import intake
     write = args.yes and not args.dry_run
     if not write or (args.action == "stale" and not args.release):
         return _board_steps(args, cfg, ctx, intake, write)
     lock, key = intake.board_lock(cfg, ctx), intake.lock_key(cfg.project.name)
     status, line = intake.take_lock(lock, cfg.project.name)
+    if status == claims.HELD and args.action == "sync" and cfg.prreview.enabled:
+        print(line.removesuffix("nothing done") + "pull-request reviews only")
+        return _reviews_only(cfg, ctx, intake, lock)
     if line:
         print(line)
     if status != claims.ACQUIRED:
         return 0 if status == claims.HELD else 1
     try:
         with claims.Heartbeat(lock, key, intake.LOCK_TTL, intake.LOCK_RENEW, gh=ctx.gh, log=print):
-            return _board_steps(args, cfg, ctx, intake, write)
+            return _board_steps(args, cfg, ctx, intake, write, lock=lock)
     except claims.LeaseLost as exc:
         print(f"stopped: {exc}; the next run carries on")
         return 1
@@ -950,7 +958,33 @@ def board_run(args, cfg, ctx) -> int:
         lock.release(key)
 
 
-def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
+def _reviews_only(cfg, ctx, intake, lock) -> int:
+    """`board sync` while another run holds the board: the pull-request reviews alone, under the
+    reviews lock (`intake.take_reviews_lock`), which a full sync takes for the same step. That step
+    reads the board and the content repository, sets the review label, and closes or files
+    PRREVIEW jobs, which no other board step creates."""
+    key = intake.reviews_key(cfg.project.name)
+    status, line = intake.take_reviews_lock(lock, cfg.project.name)
+    if line:
+        print(line)
+    if status != claims.ACQUIRED:
+        return 0 if status == claims.HELD else 1
+    try:
+        with claims.Heartbeat(lock, key, intake.LOCK_TTL, intake.LOCK_RENEW, gh=ctx.gh, log=print):
+            for out in intake.sync_pr_reviews(ctx):
+                print(out)
+        return 0
+    except GHError as exc:
+        print(f"sync pull-request reviews: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]})")
+        return 1
+    except claims.LeaseLost as exc:
+        print(f"stopped: {exc}; the next run carries on")
+        return 1
+    finally:
+        lock.release(key)
+
+
+def _board_steps(args, cfg, ctx, intake, write: bool, lock=None) -> int:
     shared = None
     if cfg.repositories.claims:
         shared = claims.Claims(repo=cfg.repositories.claims,
@@ -1024,7 +1058,8 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
                  ("leases", lambda: intake.sync_leases(ctx, shared)),
                  ("waiting gate rounds", lambda: intake.supersede_waiting_gates(ctx, yes=write)),
                  ("pull requests", lambda: intake.sync_pull_requests(ctx)),
-                 ("pull-request reviews", lambda: intake.sync_pr_reviews(ctx)),
+                 ("pull-request reviews", lambda: (intake.locked_pr_reviews(ctx, lock) if lock is not None
+                                                   else intake.sync_pr_reviews(ctx))),
                  ("max rounds", lambda: intake.repark_capped(ctx)), ("origins", lambda: intake.sync_origins(ctx)),
                  ("gap registry", lambda: intake.note_gap_registry_blocks(ctx)),
                  ("review queue", lambda: boardpr.review_queue(ctx, yes=write)),

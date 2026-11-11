@@ -1100,7 +1100,14 @@ board repository (the workers' lease mechanism; the hosted workflow's token and 
 both push it), renews it every three minutes while it runs, and releases it at the end, so the
 hosted run and a maintainer's shell never interleave, however long a run takes. A run that finds it
 held prints `intake already running (intake:run-<id or host>, since <time>); nothing done` and exits
-0: wait, or let the schedule pick things up. A run that cannot take it (no push access to the board
+0: wait, or let the schedule pick things up. One step does not wait: a `board sync` that finds the
+board held (with `[prreview] enabled`) prints `intake already running (...); pull-request reviews
+only` and still reads the pull-request reviews (the review label, superseded rounds, new rounds),
+since an intake with many submissions to merge holds the board for most of an hour, run after run.
+That step has a lock of its own (`roadmap/<project>/board/reviews`), which a full sync takes for
+the same step, so it runs once at a time: a run that finds it held prints `pull-request reviews
+already running (...); left to that run`. A run that cannot take the board lock (no push access to
+the board
 repository, no network) prints `board lock not taken (the lock ref could not be written); nothing
 done` and exits 1. A run whose lock is lost (a renewal finds another owner, or every renewal fails
 until the 15 minutes run out) stops at its next write with `stopped: the lease ... was lost: <why>;

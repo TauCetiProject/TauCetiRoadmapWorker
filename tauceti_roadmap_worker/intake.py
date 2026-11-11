@@ -1336,13 +1336,47 @@ def take_lock(lock, project: str) -> tuple[int, str]:
     key = lock_key(project)
     status = lock.acquire(key, LOCK_TTL)
     if status == claims.HELD:
-        lease = lock.read(key) or {}
-        since = dt.datetime.fromtimestamp(int(lease.get("acquired_at", 0) or 0), dt.UTC)
-        return status, (f"intake already running ({lease.get('owner', '?')}, since {since:%Y-%m-%d %H:%M:%SZ}); "
-                        "nothing done")
+        return status, held_line(lock, key, "intake") + "; nothing done"
     if status == claims.ERROR:
         return status, "board lock not taken (the lock ref could not be written); nothing done"
     return status, ""
+
+
+def reviews_key(project: str) -> str:
+    return f"roadmap/{project}/board/reviews"
+
+
+def held_line(lock, key: str, what: str) -> str:
+    lease = lock.read(key) or {}
+    since = dt.datetime.fromtimestamp(int(lease.get("acquired_at", 0) or 0), dt.UTC)
+    return f"{what} already running ({lease.get('owner', '?')}, since {since:%Y-%m-%d %H:%M:%SZ})"
+
+
+def take_reviews_lock(lock, project: str) -> tuple[int, str]:
+    """The reviews lock, a second lease next to the board lock: whoever reads the pull-request
+    reviews (`sync_pr_reviews`: the review label, superseded rounds, new rounds) holds it, so that
+    step runs once at a time while a `board sync` that finds the board held by a long intake still
+    runs it. (The acquisition's `claims` status, line to log), as `take_lock`."""
+    key = reviews_key(project)
+    status = lock.acquire(key, LOCK_TTL)
+    if status == claims.HELD:
+        return status, held_line(lock, key, "pull-request reviews") + "; left to that run"
+    if status == claims.ERROR:
+        return status, "pull-request reviews: not read (the reviews lock could not be written)"
+    return status, ""
+
+
+def locked_pr_reviews(ctx, lock) -> list[str]:
+    """The pull-request reviews step of a full `board sync` that writes, under the reviews lock. The
+    step is short next to the lock's lifetime, so nothing renews it; `Board.create` re-reads the
+    board before every creation in any case."""
+    status, line = take_reviews_lock(lock, ctx.cfg.project.name)
+    if status != claims.ACQUIRED:
+        return [line]
+    try:
+        return sync_pr_reviews(ctx)
+    finally:
+        lock.release(reviews_key(ctx.cfg.project.name))
 
 
 # --- duplicate jobs ---------------------------------------------------------------------------------
