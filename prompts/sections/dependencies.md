@@ -29,6 +29,14 @@ your report that ownership against open pull requests was not checked.
 pull requests do to this roadmap and it to them, read from their heads (check each item before you
 act on it):
 
+- a second copy of a roadmap on main (the pull request adds this folder, and main has gained the
+  roadmap since the pull request branched): read main's folder and confirm it (a branch that has
+  merged main since, so that its text is main's with changes, is a revision and no copy). While it holds,
+  nothing else about this text matters, because it cannot merge: the pull request becomes a revision
+  of main's text (main merged into the branch, the README main's with this pull request's changes
+  made in it, every id main defines kept or mapped) or is closed in its favour, and which is the
+  author's decision. Repairing the statements of the copy is wasted work: a reviewer reports the
+  second copy and what this text has that main lacks, and stops there; nobody else edits the copy;
 - an id this roadmap cites that an open pull request drops (a revision renumbers or deletes the
   section, layer or target, or renames the heading): the citation breaks when that pull request
   merges. Cite the id as it is at that head (where the content now is); when the content is gone,
@@ -46,12 +54,14 @@ act on it):
 - another open pull request that changes this roadmap: when the heads conflict, or the two change
   the same targets differently, one is rebased on the other before either merges; say which, and do
   not restate what the other already changes;
-- the closest open roadmaps in vocabulary: read their scope and ownership and compare what each says
-  it owns with what this roadmap owns. An object two roadmaps both own, or that each hands to the
-  other, has no single owner: settle it as any other duplication, with one owner earlier in the
-  merge order and a citation from the other. A roadmap on main is earlier than every open one: when
-  it and an open roadmap both own something, the open roadmap cites the one on main (or narrows its
-  own statement), never the reverse, whichever pull request is older.
+- the closest roadmaps (three lists: open ones by vocabulary, those on main by vocabulary, and open
+  or on main by the results they name and their headings, where the higher the score the likelier a
+  second plan of the same subject under another title): read their scope and ownership and compare
+  what each says it owns with what this roadmap owns. An object two roadmaps both own, or that each
+  hands to the other, has no single owner: settle it as any other duplication, with one owner
+  earlier in the merge order and a citation from the other. A roadmap on main is earlier than every
+  open one: when it and an open roadmap both own something, the open roadmap cites the one on main
+  (or narrows its own statement), never the reverse, whichever pull request is older.
 
 **Citations are resolved, not remembered.** Check every cross-roadmap citation (roadmap, section or
 target, declaration name) against the cited roadmap as it is now, every round: on main, or at the

@@ -362,6 +362,7 @@ UNREADABLE_NOTE = ("the text was fetched, but it is a scan this worker could not
 # rewritten before the gate; README and Lean content is never rewritten (a path there is a defect).
 SCRUBBED = ("target.md", "review.json", "sources.toml")
 TEMP_ROOTS = re.compile(board.TEMP_ROOT)
+OVERLAP_LINE = re.compile(r"(?m)^[\s>*_-]*Overlap check\**\s*:")      # the line a review closes its overlap audit with
 
 
 def scrub_paths(text: str, state: Path, home: Path) -> str:
@@ -880,6 +881,19 @@ class Lane:
         path.write_text(text, encoding="utf-8")
         ws.extra["overlaps"] = (path, facts)
 
+    def overlap_line_problem(self, ws: Workspace, report: str) -> str | None:
+        """What an acceptance lacks when its round had `scratch/overlaps.md` and its brief asked for the
+        `Overlap check:` line: the line. It is the trace that the closest roadmaps were read; a round
+        briefed before the line existed owes none."""
+        if not ws.extra.get("overlaps") or OVERLAP_LINE.search(report):
+            return None
+        briefs = [p.read_text(encoding="utf-8", errors="replace") for p in ws.job_dir.glob("brief*.md")]
+        if not any("`Overlap check:`" in b for b in briefs):
+            return None
+        return ("report: no `Overlap check:` line: an acceptance names the roadmaps of the closest-roadmap lists "
+                f"of `{ws.extra['overlaps'][0]}` whose scope was read and, for each object one of them shares with "
+                "this roadmap, its owner (`Overlap check: read A, B, C; nothing shared` when that is the result)")
+
     def prepare_signatures(self, job: Job, ctx: Context, ws: Workspace) -> None:
         """The elaborated type of every declaration of the roadmap's Suggested.lean, with the section
         binders it looks to have lost, written to `scratch/signatures.md` (lanes that elaborate, with
@@ -947,8 +961,10 @@ class Lane:
                        "other open pull requests that change it (and whether their heads merge), the ids its README "
                        "cites that an open pull request drops (a section, layer or target a revision renumbers or "
                        "deletes, a heading anchor it renames), the ids its pull request drops that other roadmaps "
-                       "cite, and the open roadmaps closest to it in vocabulary, where a second owner of the same "
-                       "objects is likeliest; with no name it lists every shared roadmap and dropped id.")
+                       "cite, whether its pull request adds a roadmap main has gained since it branched (a second "
+                       "copy), and the roadmaps closest to it, open and on main, in vocabulary and in the results "
+                       "they name, where a second owner of the same objects is likeliest; with no name it lists every "
+                       "shared roadmap, second copy and dropped id.")
             found = ws.extra.get("overlaps")
             if found:
                 overlap += (f" For this roadmap the worker found {found[1]} (`{found[0]}`): use each as the rules "

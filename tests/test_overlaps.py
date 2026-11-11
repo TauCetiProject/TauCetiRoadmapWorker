@@ -726,3 +726,75 @@ def test_a_rename_is_compared_with_its_true_source_not_a_folder_of_the_same_name
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
     # Compared with Other's README, the Ghost citation is new: an UPWARD edge of a roadmap on main.
     assert upward(180, "Twin", "Ghost", "#110") in out and not any("#181" in line for line in out)
+
+
+THETA_README = "TauCetiRoadmap/ThetaSeries/README.md"
+SPHERES = "TauCetiRoadmap/Spheres/README.md"
+MERGED_SPHERES = ("# Roadmap: spheres\n\n## Layer 1: groups\n\n### 1.1 The group\n\n### 1.2 Finiteness\n\n"
+                  "## Layer 2: surgery\n\n### 2.1 Framed surgery\n")
+RIVAL_SPHERES = "# Roadmap: spheres\n\n## Layer 1: groups\n\n### 1.1 The group of spheres\n"
+
+
+def test_a_pull_request_that_adds_a_roadmap_main_gained_since_is_a_second_copy(tmp_path, monkeypatch):
+    later = {SPHERES: MERGED_SPHERES, GROUPS: MAIN[GROUPS] + "Also Spheres §2.1 and Spheres §1.1.\n"}
+    stacked = MERGED_SPHERES + "\n### 2.2 The exact sequence\n"
+    cfg, index = build(tmp_path, monkeypatch, [MAIN, later],
+                       [(31, "ivy", 0, {SPHERES: RIVAL_SPHERES}),       # branched before main had Spheres
+                        (32, "jack", 1, {SPHERES: stacked}),            # a revision: its merge base has it
+                        (33, "kate", 0, {SPHERES: MERGED_SPHERES}),     # the merged text itself: no rival
+                        (34, "liam", 0, {THETA_README: THETA[THETA_README]})])
+    state = cfg.state_dir()
+    [copy] = overlaps.copies(state, index)
+    assert (copy.pr["pr"], copy.name, copy.folder) == (31, "Spheres", "TauCetiRoadmap/Spheres")
+    assert [r.pr["pr"] for r in overlaps.revisions(state, index)] == [32]     # the copy is no revision
+    assert overlaps.copies(state, index, pr=32) == [] and overlaps.copies(state, index, only="Lattices") == []
+
+    text, facts = overlaps.report(state, index, "Spheres", RIVAL_SPHERES, pr=31)
+    assert text.index("## A second copy of a roadmap on main") < text.index("## Other open pull requests")
+    assert "#31 (@ivy) adds `TauCetiRoadmap/Spheres`, and main has the roadmap Spheres already" in text
+    assert "The README has 11 lines on main and 5 at this head, which has 33% of main" in text
+    assert "- Ids main defines that this head lacks and other roadmaps cite (1):" in text
+    assert "  - Spheres §2.1: cited by Groups (main line 4)" in text and "Spheres §1.1:" not in text
+    assert facts >= 2                                                       # the copy, and #32 and #33 beside it
+    assert "A second copy" not in overlaps.report(state, index, "Spheres", stacked, pr=32)[0]
+    assert "A second copy" not in overlaps.report(state, index, "ThetaSeries", THETA[THETA_README], pr=34)[0]
+    assert "- #31 (@ivy) adds `TauCetiRoadmap/Spheres`: main has Spheres since" in overlaps.report_all(state, index)
+
+
+def test_main_neighbours_and_subject_neighbours():
+    filler = [("main", f"M{i}", f"# Roadmap {i}\n\n## Layer {i}: words{i} common{i}\n\nGauss{i} text") for i in range(12)]
+    texts = filler + [("#5", "Theta", "theta modular weight lattice poisson summation"),
+                      ("main", "Forms", "theta modular weight forms"),
+                      ("main", "Mine", "theta modular lattice poisson")]
+    near = overlaps.neighbours(texts, "theta modular lattice poisson", own="Mine", on_main=True)
+    assert [(where, name) for _s, where, name in near] == [("main", "Forms")]        # only main, never itself
+
+    plan = ("# Roadmap: effective modularity\n\n## Layer 1: Faltings heights\n\nThe theorems of Faltings and "
+            "Masser-Wüstholz bound isogenies.\n\n## Layer 2: effective Shafarevich\n\nAfter Faltings.\n")
+    twin = ("# Roadmap: comparisons\n\n## Supplier contracts\n\nKolyvagin systems from elsewhere.\n\n"
+            "## Layer 1: Faltings heights\n\nFaltings and Masser-Wüstholz again.\n\n## Layer 3: effective Shafarevich\n")
+    other = "# Roadmap: descent\n\n## Layer 1: Selmer groups\n\nKolyvagin systems bound Selmer groups.\n"
+    texts = filler + [("#7", "Comparisons", twin), ("main", "Comparisons", twin), ("#8", "Descent", other),
+                      ("main", "Descent2", other), ("#9", "Effective", plan)]
+    near = overlaps.subject_neighbours(texts, plan, own="Effective", own_pr=9)
+    assert [(where, name) for _s, where, name in near] == [("main", "Comparisons")]    # once, at main
+    assert near[0][0] > 1.0
+    assert overlaps.subject_neighbours(texts, plan, own="Effective", own_pr=7)[0][1] == "main"
+    assert overlaps.subject_neighbours(texts, other, own="Descent")[0][2] == "Descent2"
+    assert "Kolyvagin" not in overlaps._subject(twin)[0]                                # the supplier section is aside
+
+
+def test_an_acceptance_owes_the_overlap_line_only_when_its_brief_asked_for_it(world, tmp_path):
+    cfg, _index = world
+    lane, _job, ws, _ctx = lane_workspace(cfg, tmp_path, "REV-PKG-ThetaSeries~2", "# Roadmap: theta series\n")
+    report = "# Review of ThetaSeries\n\nNothing shared.\n"
+    assert lane.overlap_line_problem(ws, report) is None                    # no overlaps file this round
+    ws.extra["overlaps"] = (ws.scratch / "overlaps.md", 0)
+    (ws.job_dir / "brief.md").write_text("an older brief")
+    assert lane.overlap_line_problem(ws, report) is None                    # briefed before the line existed
+    (ws.job_dir / "brief-repair.md").write_text("Close the audit with one line, `Overlap check:`, naming ...")
+    assert "no `Overlap check:` line" in lane.overlap_line_problem(ws, report)
+    for line in ("Overlap check: read Lattices, Groups; nothing shared", "**Overlap check:** read Lattices",
+                 "- Overlap check: Lattices owns the theta function (Lattices §1.3), cited here"):
+        assert lane.overlap_line_problem(ws, report + "\n" + line + "\n") is None
+    assert lane.overlap_line_problem(ws, report + "\nThe overlap check: was not done.\n")

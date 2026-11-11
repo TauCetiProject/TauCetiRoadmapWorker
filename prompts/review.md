@@ -81,8 +81,15 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
    only an open revision defines, when neither the description nor its merge-order paragraph names
    that revision, is P3; an id this package drops that other roadmaps cite, with no old → new numbering,
    is P3; a conflicting head of another open pull request changing this roadmap, with no stated order,
-   is P3; an object this roadmap and another open roadmap both own, or hand to each other, is P2. Name
-   the other pull request and the cited file and line in the witness.
+   is P3; an object this roadmap and another roadmap, open or on main, both own, or hand to each other,
+   is P2. Name the other pull request and the cited file and line in the witness. A second copy of a
+   roadmap on main, once you have confirmed it, is P1 and is this round's only finding: give the ids
+   main defines that this text lacks and, in a few lines, what this text has that main lacks and is
+   worth carrying over; skip the remaining steps and ask for changes.
+   Close the audit with one line, `Overlap check:`, naming the roadmaps of the three closest-roadmap
+   lists whose scope you read and, for each object one of them shares with this roadmap, its owner
+   (`Overlap check: read A, B, C; nothing shared` when that is the result). An acceptance without
+   the line is refused.
 5. **Supplier-order audit**: run the dependency check below and read every `*Needs:*` line and
    supplier citation; flag upward citations, cycles, unowned prerequisites and supplier drift
    (a cited section or declaration that does not exist where it is cited, resolved as the section on

@@ -1146,6 +1146,8 @@ class PRReviewLane(Lane):
         if status == "accepted":
             if not prreviews.adversarial_rows(report):
                 problems.append("report: " + prreviews.EVIDENCE)
+            missing = self.overlap_line_problem(ws, report)
+            problems += [missing] if missing else []
             listed = [f"{severity} {title}" for severity, title, _b in findings]
             if listed:
                 problems.append("report: an acceptance lists no finding (a repair, whatever its priority, asks for "
