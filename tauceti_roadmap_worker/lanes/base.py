@@ -664,7 +664,8 @@ class Lane:
             pool = {p.lower() for p in ctx.cfg.roadmap.pool}
             if not (job.requires_operator.lower() in pool and ctx.operator.lower() in pool):
                 return f"needs the branch owner {job.requires_operator}"
-        others = board.independence_scope(job.id, job.independent_of, ctx.cfg.redteam.independent_of_fix_rounds)
+        others = board.independence_scope(job.id, job.independent_of, ctx.cfg.redteam.independent_of_fix_rounds,
+                                          ctx.cfg.review.independent_of_earlier_fix_rounds)
         if others and ctx.claims:
             problem = claims.separation_problem(others, ctx.operator, ctx.claims.recorded_authors(others),
                                                 ctx.cfg.review.separation, ctx.agent, ctx.model)

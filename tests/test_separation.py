@@ -184,3 +184,50 @@ def test_with_fix_rounds_off_the_pinned_model_takes_a_pass_on_a_package_whose_fi
     assert board.separation_problems(rt, "chris", authors, "agent", "claude", "fable")
     assert board.separation_problems(rt, "chris", authors, "agent", "claude", "fable", fix_rounds=False) == []
     assert board.separation_problems(rt, "chris", {"PKG-Foo": [wrote]}, "agent", "claude", "fable", fix_rounds=False)
+
+
+def test_with_earlier_fix_rounds_off_a_review_is_held_to_the_first_author_and_the_latest_fix_only():
+    listed = ["DESIGN-Foo", "FIX-DESIGN-Foo~2", "FIX-DESIGN-Foo~3", "FIX-DESIGN-Foo~4"]
+    assert board.independence_scope("REV-DESIGN-Foo~4", listed) == listed
+    assert board.independence_scope("REV-DESIGN-Foo~4", listed, earlier_fix_rounds=False) == [
+        "DESIGN-Foo", "FIX-DESIGN-Foo~4"]
+    assert board.independence_scope("REV-DESIGN-Foo~2", listed[:2], earlier_fix_rounds=False) == listed[:2]
+    assert board.independence_scope("REV-DESIGN-Foo", listed[:1], earlier_fix_rounds=False) == listed[:1]
+    pkg = ["PKG-Foo", "FIX-PKG-Foo~2", "FIX-PKG-Foo~3"]
+    assert board.independence_scope("REV-PKG-Foo~3", pkg, earlier_fix_rounds=False) == ["PKG-Foo", "FIX-PKG-Foo~3"]
+    # Only the reviewed artefact's own earlier rounds drop; a red-team pass keeps its own setting.
+    assert board.independence_scope("REV-PKG-Foo~3", pkg + ["FIX-DESIGN-Foo~2", "FIX-PKG-Bar~2"],
+                                    earlier_fix_rounds=False) == ["PKG-Foo", "FIX-PKG-Foo~3", "FIX-DESIGN-Foo~2",
+                                                                  "FIX-PKG-Bar~2"]
+    assert board.independence_scope("RT-Foo~2b", pkg + ["FIX-RT-Foo~1"], earlier_fix_rounds=False) == pkg + ["FIX-RT-Foo~1"]
+
+
+def test_with_earlier_fix_rounds_off_a_review_model_takes_a_review_after_its_own_early_fix_round():
+    cfg = example_config()
+    cfg.review.separation = "agent"
+    fable_rec = {"operator": "chris", "agent": "claude", "model": "fable"}
+    opus_rec = {"operator": "chris", "agent": "claude", "model": "claude-opus-5-5"}
+    records = {"DESIGN-Foo": opus_rec, "FIX-DESIGN-Foo~2": fable_rec, "FIX-DESIGN-Foo~3": opus_rec,
+               "FIX-DESIGN-Foo~4": opus_rec}
+
+    class Recorded(FakeClaims):
+        def recorded_authors(self, ids):
+            return {i: r for i, r in records.items() if i in ids}
+
+    def worker(model):
+        return Context(cfg=cfg, gh=None, board=FakeBoard(), claims=Recorded(), worker_id="chris-2",
+                       operator="chris", agent="claude", model=model)
+
+    review = new_job("REV-DESIGN-Foo~4", independent_of=list(records))
+    assert "authored FIX-DESIGN-Foo~2" in lane_for(review).eligible(review, worker("fable"))
+    assert "authored" in lane_for(review).eligible(review, worker("claude-opus-5-5"))
+    cfg.review.independent_of_earlier_fix_rounds = False
+    assert "authored" not in lane_for(review).eligible(review, worker("fable"))
+    # The first author and the author of the round under review are still refused.
+    assert "authored" in lane_for(review).eligible(review, worker("claude-opus-5-5"))
+    authors = {k: [v] for k, v in records.items()}
+    assert board.separation_problems(review, "chris", authors, "agent", "claude", "fable")
+    assert board.separation_problems(review, "chris", authors, "agent", "claude", "fable",
+                                     earlier_fix_rounds=False) == []
+    assert board.separation_problems(review, "chris", authors, "agent", "claude", "claude-opus-5-5",
+                                     earlier_fix_rounds=False)

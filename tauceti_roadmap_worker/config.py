@@ -259,6 +259,12 @@ class Review:
     # Logins whose review comments on a board pull request count (besides the board's bots and the
     # project's own workers), for example a maintainer who reviews from a browser model.
     comment_reviewers: list[str] = field(default_factory=list)
+    # Whether the review of round r of a design or a package must be independent of every fix round
+    # before r too, besides the first author and the fix that wrote round r. Each earlier round was
+    # read by an independent reviewer already. A single-operator project that separates by agent can
+    # switch this off when one of its review models once wrote an early fix round and the only other
+    # reviewer is unavailable, instead of leaving the review without a taker.
+    independent_of_earlier_fix_rounds: bool = True
 
 
 @dataclass
