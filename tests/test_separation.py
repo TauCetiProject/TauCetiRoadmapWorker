@@ -142,3 +142,45 @@ def test_under_separation_by_agent_a_worker_on_a_pinned_pass_model_leaves_the_pa
     assert "pinned to" not in lane_for(fix).eligible(fix, opus)
     assert "pinned to" not in lane_for(last_fix).eligible(last_fix, fable)
     assert "pinned to" not in lane_for(review).eligible(review, fable)
+
+
+def test_with_fix_rounds_off_a_red_team_pass_is_held_to_the_package_and_the_red_team_fix_only():
+    listed = ["PKG-Foo", "FIX-PKG-Foo~2", "FIX-PKG-Foo~3", "FIX-RT-Foo~1"]
+    assert board.independence_scope("RT-Foo~2b", listed) == listed
+    assert board.independence_scope("RT-Foo~2b", listed, fix_rounds=False) == ["PKG-Foo", "FIX-RT-Foo~1"]
+    assert board.independence_scope("RT-Foo~1a", ["PKG-Foo", "FIX-PKG-Foo~2"], fix_rounds=False) == ["PKG-Foo"]
+    # Reviews keep every author of the round they review, whatever the setting.
+    assert board.independence_scope("REV-PKG-Foo~3", listed[:3], fix_rounds=False) == listed[:3]
+    assert board.independence_scope("REV-DESIGN-Foo~2", ["DESIGN-Foo", "FIX-DESIGN-Foo~2"], fix_rounds=False) == [
+        "DESIGN-Foo", "FIX-DESIGN-Foo~2"]
+    assert board.independence_scope("RT-Foo~1b", ["PKG-Foo", "not a job id"], fix_rounds=False) == ["PKG-Foo", "not a job id"]
+    # The guard follows: with fix rounds off, the pinned model may write a package fix round, never the package.
+    passes = [("codex", "gpt-6-astra"), ("claude", "fable")]
+    assert board.blocked_redteam_pass("FIX-PKG-Foo~2", "claude", "fable", passes, 2, fix_rounds=False) == ""
+    assert board.blocked_redteam_pass("PKG-Foo", "claude", "fable", passes, 2, fix_rounds=False) == "claude, fable"
+    assert board.blocked_redteam_pass("FIX-RT-Foo~1", "claude", "fable", passes, 2, fix_rounds=False) == "claude, fable"
+
+
+def test_with_fix_rounds_off_the_pinned_model_takes_a_pass_on_a_package_whose_fix_round_it_wrote():
+    cfg = example_config()
+    cfg.review.separation = "agent"
+    cfg.redteam.passes = [RedTeamPass("codex", "gpt-6-astra"), RedTeamPass("claude", "fable")]
+    wrote = {"operator": "chris", "agent": "claude", "model": "fable"}
+    other = {"operator": "chris", "agent": "claude", "model": "claude-opus-5-5"}
+
+    class Recorded(FakeClaims):
+        def recorded_authors(self, ids):
+            return {i: r for i, r in {"PKG-Foo": other, "FIX-PKG-Foo~2": wrote}.items() if i in ids}
+
+    fable = Context(cfg=cfg, gh=None, board=FakeBoard(), claims=Recorded(), worker_id="chris-2", operator="chris",
+                    agent="claude", model="fable")
+    rt = new_job("RT-Foo~1b", independent_of=["PKG-Foo", "FIX-PKG-Foo~2"], requires_agent="claude",
+                 requires_model="fable")
+    assert "authored FIX-PKG-Foo~2" in lane_for(rt).eligible(rt, fable)
+    cfg.redteam.independent_of_fix_rounds = False
+    assert "authored" not in lane_for(rt).eligible(rt, fable)
+    # The intake applies the same scope to the submission, and still refuses the package's own author.
+    authors = {"PKG-Foo": [other], "FIX-PKG-Foo~2": [wrote]}
+    assert board.separation_problems(rt, "chris", authors, "agent", "claude", "fable")
+    assert board.separation_problems(rt, "chris", authors, "agent", "claude", "fable", fix_rounds=False) == []
+    assert board.separation_problems(rt, "chris", {"PKG-Foo": [wrote]}, "agent", "claude", "fable", fix_rounds=False)

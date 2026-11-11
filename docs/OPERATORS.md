@@ -1030,6 +1030,14 @@ those jobs (the log says "the red-team pass pinned to (agent, model) must be ind
 author"): had it written one, the operator would have nothing left to run the pass with, and the package
 would wait at that pass for ever. Give the package and fix lanes to workers on other models.
 
+`[redteam] independent_of_fix_rounds = false` narrows what a red-team pass is independent of to the
+package's first author and the red-team fix before it: the package's fix rounds (`FIX-PKG-X~k`) no
+longer count, since an independent review accepted the package after each of them before the red
+team started. The worker's eligibility check, the review-comment claim and the intake all apply it to
+the passes already on the board (their specs still list the fix rounds), and a worker on a pinned
+pass's agent and model may then take a package fix round. Use it when a pinned pass model has already
+written fix rounds and the passes wait without a taker; the default keeps the stricter rule.
+
 ## Board maintenance
 
 Run with write access to the board (a scheduled workflow, or the maintainer). Every command is a dry

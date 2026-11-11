@@ -151,6 +151,11 @@ class RedTeam:
     sharded: bool = False
     shard_max: int = 8
     ready_after: bool = False
+    # Whether a red-team pass must be independent of the package's fix rounds too (`FIX-PKG-X~k`),
+    # besides the package's first author and the red-team fix before it. An independent review
+    # accepted the package after each fix round, so a single-operator project whose pinned pass
+    # model once wrote a fix round can switch this off instead of leaving the pass without a taker.
+    independent_of_fix_rounds: bool = True
 
 
 @dataclass
