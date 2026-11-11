@@ -722,7 +722,8 @@ it moves.
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
-| `repair_text` | `true` | such a repair also answers the findings about the pull request's title and description: the agent writes the corrected text and the worker puts it on the pull request, keeping the generated blocks and markers |
+| `repair_text` | `true` | such a repair also answers the findings about the pull request's title and description: the agent writes the corrected text and the worker puts it on the pull request, keeping the generated blocks and markers; a finding about the summary block is answered by a new text for the block |
+| `repair_index` | `true` | such a repair of a nested roadmap may also edit the family's `README.md`, when the pull request itself changes that file, for findings about what the index says of the roadmap reviewed |
 | `statement_hygiene` | `true` | the push gate's statement-hygiene scan of Suggested.lean (count `statement-hygiene`; every push gate and `tauceti-roadmap gate` run it): `Nonempty`/`∃` isomorphism headlines, choice in data, `letI`/`haveI` in signatures, `[Fintype k]` beside `[Field k]`, `ULift`, instance removals, `HEq`/`cast`/`eqToHom` conclusions (P3), duplicate statements (P2); each hit names its line, severity and repair, and a review reports it as a finding |
 | `repair_merges_base` | `true` | a repair of a pool author's pull request (`repair_pool`) first merges the base branch into the pull request's branch when the branch's Lake pins (manifest, toolchain, lakefile) are behind it and the branch changed none of them itself; a merge that conflicts is not made |
 
@@ -811,7 +812,27 @@ those blocks is replaced. A description whose prose is no longer the one the rep
 folder's repair rewrote it meanwhile, or the author did) is left as it is, since the repair's text
 would undo that change. That, like a write GitHub refuses, is noted (`title and description not
 written: <why>`) and not retried; the files' repair and its reply stand. The round's summary says `title and
-description rewritten` (or which of the two). When the pull request's branch moved while the repair
+description rewritten` (or which of the two).
+
+The summary block that opens a description (`<!-- roadmap-summary -->`, written once by
+`tauceti-roadmap summary`) is the one generated block a repair may answer for, since nothing else
+rewrites it as the head moves: for a finding about it the agent writes `scratch/summary.md`, the
+block's three paragraphs under the headings of its kind, checked as `summary` checks its own (form,
+length, forbidden content) and for a path of the machine or an @-mention; a refusal goes to the
+second pass. The worker puts it in place of the present block in the same write as the description,
+and also when the prose was left alone because it changed under the repair: the block stands apart
+from what an author rewrites. The round's summary then names it (`summary rewritten`, `title,
+description and summary rewritten`), and the reply's record carries `"text": true` as for a
+rewritten description. A description with no summary block gets none from a repair.
+
+A nested roadmap's entry in its family's index is read by the review with the roadmap. With
+`repair_index` on, a repair may edit the family's `README.md` (never its other index files) when the
+pull request itself changes that file, for findings about what the index says of the roadmap
+reviewed, and commits it with the folder's files; the push gate already takes a family's index files
+as the pull request's own. An index the pull request does not change stays out of the repair's
+reach, since every roadmap of the family shares it.
+
+When the pull request's branch moved while the repair
 ran, the repair is carried onto the new head if the move is not its own folder's: the branch only
 gained commits, those change files under the roadmap directory only and none in the folder reviewed
 (another folder of the same pull request, repaired by its own review), the repair's commits apply

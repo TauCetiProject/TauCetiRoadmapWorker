@@ -291,6 +291,9 @@ class PRReview:
     # the corrected text, and the worker puts it on the pull request with the push, keeping the generated
     # blocks and markers of the description as they are.
     repair_text: bool = True
+    # Such a repair may also edit the README of the family index above a nested roadmap, when the pull
+    # request itself changes that file, for findings about what the index says of the roadmap reviewed.
+    repair_index: bool = True
     # Such a repair first merges the base branch into the pull request's branch when the branch's Lake
     # pins (manifest, toolchain, lakefile) are behind it and the branch changed none of them itself: a
     # review's finding that the branch pins an older Tau Ceti is one no repair of the roadmap folder can
