@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from .gh import GH, GHError
@@ -877,6 +878,19 @@ def camel_name(text: str) -> str:
 
 # --- I/O ------------------------------------------------------------------------------------------
 
+SINCE_MARGIN = 300      # seconds an incremental read looks back past the newest change it has seen
+
+
+def since_before(stamp: str, margin: int = SINCE_MARGIN) -> str:
+    """`stamp` (an issue's `updated_at`) moved `margin` seconds earlier, as the `since` of an issue
+    listing; empty when it is not a timestamp (then the whole listing is read)."""
+    try:
+        at = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return ""
+    return (at - timedelta(seconds=margin)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class Board:
     """Jobs on GitHub. Reads are cheap REST listings; writes go through GH.write (dry-run aware)."""
 
@@ -887,6 +901,8 @@ class Board:
         self.ns = cfg.board.namespace_label
         self.made: dict[str, int] = {}      # title key -> issue this process created (a listing may lag it)
         self.reused: dict[str, int] = {}    # job id -> the issue the live board already had at creation
+        self.incremental = False            # a batch run (`board intake`, `board sync`) sets it: see `_issues`
+        self._seen: dict[int, dict] | None = None    # issue number -> issue, once an incremental run has read them all
 
     def _job_from_issue(self, issue: dict) -> Job | None:
         """The job an issue carries. Only issues with a `state:` label are jobs: the board sets that
@@ -917,15 +933,43 @@ class Board:
                     jobs.append(job)
         return jobs
 
+    def _issues(self) -> list[dict]:
+        """Every issue of the namespace, open and closed, newest first.
+
+        A busy board is over a hundred pages, and one new issue shifts every page of the listing, so
+        the ETag cache saves nothing: an intake that read the whole listing after every job it
+        concluded advanced one pull request every three minutes, and its time limit cut it off with
+        most of them unread. With `incremental` set, the first call reads the whole listing and each
+        later one only the issues updated since the newest `updated_at` already seen (GitHub's
+        clock, never this machine's), less a margin for a listing that lags, and merges them in.
+        A long-lived worker leaves it unset: it reads the board rarely, and would hold every issue
+        in memory between reads."""
+        path = f"repos/{self.repo}/issues?labels={self.ns}&state=all&per_page=100"
+        if not self.incremental:
+            return self.gh.api(path, paginate=True) or []
+        since = since_before(max((i.get("updated_at") or "" for i in (self._seen or {}).values()), default=""))
+        if self._seen is None or not since:
+            self._seen = {int(i["number"]): i for i in self.gh.api(path, paginate=True) or []}
+        else:
+            for issue in self.gh.api(f"{path}&since={since}", paginate=True) or []:
+                self._seen[int(issue["number"])] = issue
+        return [self._seen[n] for n in sorted(self._seen, reverse=True)]
+
+    def _kind_issues(self, kind: str, issue_state: str = "all") -> list[dict]:
+        """The namespace's issues that carry `kind:<kind>`: from the issues an incremental run holds
+        (brought up to date first), otherwise one listing by that label."""
+        if self._seen is not None and issue_state == "all":
+            return [i for i in self._issues() if f"kind:{kind}" in {label["name"] for label in i.get("labels", [])}]
+        return self.gh.api(f"repos/{self.repo}/issues?labels={self.ns},kind:{kind}&state={issue_state}&per_page=100",
+                           paginate=True) or []
+
     def all_jobs(self) -> list[Job]:
-        issues = self.gh.api(f"repos/{self.repo}/issues?labels={self.ns}&state=all&per_page=100", paginate=True)
-        return [j for j in (self._job_from_issue(i) for i in issues if not i.get("pull_request")) if j]
+        return [j for j in (self._job_from_issue(i) for i in self._issues() if not i.get("pull_request")) if j]
 
     def kind_jobs(self, kind: str, issue_state: str = "all") -> list[Job]:
         """Every job of one kind, in any state (open and closed issues by default): one listing by its
         `kind:` label, where a listing by state would read every kind's issues."""
-        issues = self.gh.api(f"repos/{self.repo}/issues?labels={self.ns},kind:{kind}&state={issue_state}&per_page=100",
-                             paginate=True) or []
+        issues = self._kind_issues(kind, issue_state)
         jobs = (self._job_from_issue(i) for i in issues if not i.get("pull_request"))
         return [job for job in jobs if job and job.kind == kind]
 
@@ -944,8 +988,7 @@ class Board:
         key = title_key(title_for(job))
         if self.made.get(key):
             return self.made[key]
-        issues = self.gh.api(f"repos/{self.repo}/issues?labels={self.ns},kind:{job.kind}&state=all&per_page=100",
-                             paginate=True) or []
+        issues = self._kind_issues(job.kind)
         # A twin closed as a duplicate still stops a re-creation, but the issue named is the kept one.
         twins = sorted((DUPLICATE_LABEL in {label["name"] for label in i.get("labels", [])}, int(i["number"]))
                        for i in issues if not i.get("pull_request") and title_key(i.get("title") or "") == key)
@@ -966,6 +1009,8 @@ class Board:
         number = int(created["number"]) if created else 0
         if number:
             self.made[title_key(payload["title"])] = job.number = number
+            if self._seen is not None and created.get("updated_at"):
+                self._seen[number] = created     # held at once: the next listing may not show it yet
         return number
 
     def current_state(self, job: Job) -> str:

@@ -919,6 +919,7 @@ def board_cmd(args) -> int:
         raise SystemExit("--reviews-only goes with `board sync`, without --prune-order")
     cfg = _load(args)
     ctx = _bot_context(args, cfg, dry=args.dry_run or not args.yes)
+    ctx.board.incremental = True        # one run reads the board many times: after the first, only what changed
     try:
         return board_run(args, cfg, ctx)
     finally:

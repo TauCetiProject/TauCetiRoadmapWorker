@@ -994,7 +994,8 @@ def scan(ctx, shared=None, yes: bool = False) -> list[str]:
     pulls = ctx.gh.api(f"repos/{repo(ctx)}/pulls?state=open&per_page=100", paginate=True) or []
     out += merged_by_hand(ctx, {int(p["number"]) for p in pulls}, jobs, shared, yes)
     out += unfinished_last_fixes(ctx, {int(p["number"]) for p in pulls}, jobs, yes)
-    for pr in pulls:
+    # Oldest first: a run that its time limit cuts short has served the pull requests that waited longest.
+    for pr in sorted(pulls, key=lambda p: int(p["number"])):
         if NEEDS_REVIEW not in {label["name"] for label in pr.get("labels", [])}:
             continue
         number, head = pr["number"], pr["head"]["sha"]
