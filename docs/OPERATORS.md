@@ -1023,6 +1023,13 @@ another family installed takes a review its default family may not take with tha
 `"family"` that is what makes it independent, under `"agent"` another agent and model can be, and
 under `"operator"` it changes nothing (the operator is the same), so the review is skipped as before. A fix worker's own acceptance never counts.
 
+Under `separation = "agent"` a pinned red-team pass (`[redteam] passes` with a `model`) can only be run
+by that agent and model, and it is independent of the package, of each of the package's fix rounds and
+of the red-team fix before it. A worker running a pinned pass's agent and model therefore takes none of
+those jobs (the log says "the red-team pass pinned to (agent, model) must be independent of this job's
+author"): had it written one, the operator would have nothing left to run the pass with, and the package
+would wait at that pass for ever. Give the package and fix lanes to workers on other models.
+
 ## Board maintenance
 
 Run with write access to the board (a scheduled workflow, or the maintainer). Every command is a dry

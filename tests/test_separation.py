@@ -5,6 +5,7 @@ import dataclasses
 
 from tauceti_roadmap_worker import board, claims
 from tauceti_roadmap_worker.board import authorship_from_comments, new_job, separation_problems
+from tauceti_roadmap_worker.config import RedTeamPass
 from tauceti_roadmap_worker.lanes import Context, lane_for
 
 from .fakes import FakeBoard, FakeClaims, example_config
@@ -110,3 +111,34 @@ def test_the_configuration_accepts_family():
     from tauceti_roadmap_worker.paths import HERE
     text = (HERE / "tauceti-roadmap.toml.example").read_text().replace('separation = "operator"', 'separation = "family"')
     assert config.parse(text, "example").review.separation == "family"
+
+
+def test_a_pinned_red_team_model_never_writes_what_its_pass_must_be_independent_of():
+    passes = [("codex", "gpt-6-astra"), ("claude", "fable")]
+    blocked = lambda jid, agent, model, rounds=2: board.blocked_redteam_pass(jid, agent, model, passes, rounds)  # noqa: E731
+    for jid in ("PKG-Foo", "FIX-PKG-Foo~2", "FIX-PKG-Foo~5", "FIX-RT-Foo~1"):
+        assert blocked(jid, "claude", "fable") == "claude, fable", jid
+        assert blocked(jid, "codex", "gpt-6-astra") == "codex, gpt-6-astra", jid
+        assert blocked(jid, "claude", "claude-opus-5-5") == "", jid
+        assert blocked(jid, "codex", "fable") == "", jid
+    # The last round's fix has no pass after it; designs, ports and reviews are not what a pass is independent of.
+    for jid in ("FIX-RT-Foo~2", "DESIGN-Foo", "FIX-DESIGN-Foo~2", "PORT-Foo", "REV-PKG-Foo", "RT-Foo~1b", "GATE-Foo"):
+        assert blocked(jid, "claude", "fable") == "", jid
+    assert blocked("FIX-RT-Foo~2", "claude", "fable", rounds=3) == "claude, fable"
+    assert blocked("PKG-Foo", "claude", "fable", rounds=0) == ""
+    assert board.blocked_redteam_pass("PKG-Foo", "claude", "fable", [("codex", ""), ("claude", "")], 2) == ""  # unpinned
+
+
+def test_under_separation_by_agent_a_worker_on_a_pinned_pass_model_leaves_the_package_to_others():
+    cfg = example_config()
+    cfg.redteam.passes = [RedTeamPass("codex", "gpt-6-astra"), RedTeamPass("claude", "fable")]
+    fable = Context(cfg=cfg, gh=None, board=FakeBoard(), claims=FakeClaims(), worker_id="chris-2", operator="chris",
+                    agent="claude", model="fable")
+    opus = dataclasses.replace(fable, agent="claude", model="claude-opus-5-5")
+    fix, last_fix, review = new_job("FIX-PKG-Foo~2"), new_job("FIX-RT-Foo~2"), new_job("REV-PKG-Foo~2")
+    assert "pinned to" not in lane_for(fix).eligible(fix, fable)             # several operators: another one can run the pass
+    cfg.review.separation = "agent"
+    assert "red-team pass pinned to (claude, fable)" in lane_for(fix).eligible(fix, fable)
+    assert "pinned to" not in lane_for(fix).eligible(fix, opus)
+    assert "pinned to" not in lane_for(last_fix).eligible(last_fix, fable)
+    assert "pinned to" not in lane_for(review).eligible(review, fable)
