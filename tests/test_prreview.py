@@ -712,20 +712,24 @@ def test_a_head_that_only_moved_keeps_the_acceptance_of_the_head_it_came_from():
     gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar])
     assert out == [kept] and gh.writes == [] and created(fake) == [] and gh.tree_queries == 1
-    # One folder changed with the move: the label goes and both folders are reviewed, as before.
+    # One folder changed with the move: the label goes and that folder is reviewed (the other is what its
+    # review accepted, `carry_unchanged_folders`; both are reviewed with that off, as before).
     changed = {**same_trees(H1, H2), (H2, "TauCetiRoadmap/Bar"): "another-tree"}
     gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=changed)
     out, fake = sync(gh, [foo, bar])
     assert gh.writes == [("DELETE", f"{labels}/ai-approved", {})]
+    assert out[0] == "#1164: ai-approved removed (head moved)" and created(fake) == [("PRREVIEW-Bar~2", "Bar")]
+    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=changed)
+    out, fake = sync(gh, [foo, bar], carry_unchanged_folders=False)
     assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
-    # The earlier head was not accepted: nothing to keep, and the moved head is reviewed.
+    # The earlier head was not accepted: nothing to keep, and the folder that was refused is reviewed.
     refused = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "needs_changes", H1)}
     gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=refused, trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar])
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-approved removed (head moved)" and created(fake) == [("PRREVIEW-Bar~2", "Bar")]
     # Switched off: the head's own reviews alone count.
     gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2))
-    out, fake = sync(gh, [foo, bar], carry_unchanged=False)
+    out, fake = sync(gh, [foo, bar], carry_unchanged=False, carry_unchanged_folders=False)
     assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2 and gh.tree_queries == 0
     # A second move is compared with the reviewed head again.
     gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2, H3))
@@ -737,7 +741,7 @@ def test_a_head_that_only_moved_keeps_the_acceptance_of_the_head_it_came_from():
     asked = {**accepted, **verdict_file(later, "needs_changes", H2)}
     gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=asked, trees=same_trees(H1, H2, H3))
     out, fake = sync(gh, [foo, bar, later])
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-approved removed (head moved)" and created(fake) == [("PRREVIEW-Foo~3", "Foo")]
     # One that read other files does not: the head holds what the accepted head held.
     other = {**same_trees(H1, H3), (H2, "TauCetiRoadmap/Foo"): "repaired", (H2, "TauCetiRoadmap/Bar"): "tree-of-Bar"}
     gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=asked, trees=other)
@@ -770,6 +774,10 @@ def test_a_label_lost_to_a_move_is_put_back_and_the_untaken_reviews_of_the_moved
     gh = ContentGH([two_folder_pr(H2)], files={**accepted, **verdict_file(blocks, "needs_changes", H2)},
                    trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar, blocks])
+    assert gh.writes == [] and created(fake) == []      # nor is the other folder read again: it is as accepted
+    gh = ContentGH([two_folder_pr(H2)], files={**accepted, **verdict_file(blocks, "needs_changes", H2)},
+                   trees=same_trees(H1, H2))
+    out, fake = sync(gh, [foo, bar, blocks], carry_unchanged_folders=False)
     assert gh.writes == [] and gh.tree_queries == 0 and created(fake) == [("PRREVIEW-Bar~2", "Bar")]
     # One that accepts its folder leaves the other folder to the head it came from.
     accepts = {**accepted, **verdict_file(blocks, "accepted", H2)}
@@ -791,6 +799,77 @@ def test_trees_github_did_not_give_change_nothing():
     assert prbatch.tree_ids(ContentGH(trees={(H1, "a/b"): "x"}), REPO, [(H1, "a/b"), (H2, "a/b")], 5) == {
         (H1, "a/b"): "x", (H2, "a/b"): f"{H2[:8]}:a/b"}
     assert prbatch.tree_ids(ContentGH(trees="unread"), REPO, [(H1, "a/b")], 5) == {}
+
+
+def test_a_folder_its_last_review_settled_is_not_reviewed_again_when_another_folder_moves_the_head():
+    """`[prreview] carry_unchanged_folders`: a repair of one roadmap folder moves the head of a pull
+    request with several; a folder whose latest review accepted the files it still holds is not read
+    again, and counts as accepted at the new head."""
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar", folder="Bar")
+    first = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "needs_changes", H1)}
+    repaired = {(H1, "TauCetiRoadmap/Foo"): "foo", (H2, "TauCetiRoadmap/Foo"): "foo", (H3, "TauCetiRoadmap/Foo"): "foo",
+                (H1, "TauCetiRoadmap/Bar"): "bar", (H2, "TauCetiRoadmap/Bar"): "bar-repaired",
+                (H3, "TauCetiRoadmap/Bar"): "bar-repaired"}
+    labels = f"repos/{REPO}/issues/1164/labels"
+    # Bar's repair moved the head: Bar alone is reviewed there.
+    gh = ContentGH([two_folder_pr(H2)], files=first, trees=repaired)
+    out, fake = sync(gh, [foo, bar])
+    assert gh.writes == [] and created(fake) == [("PRREVIEW-Bar~2", "Bar")]
+    assert gh.tree_queries == 2          # the pull request as a whole (`carry_unchanged`), then folder by folder
+    # A review of Foo filed for the new head before, and not taken, is closed; one that was taken is left.
+    untaken = review_job(44, 2, 1164, H2, "available", folder="Foo")
+    out, fake = sync(ContentGH([two_folder_pr(H2)], files=first, trees=repaired), [foo, bar, untaken])
+    assert out == ["#1164: PRREVIEW-Foo~2 superseded", "#1164: PRREVIEW-Bar~2 created"]
+    taken = review_job(44, 2, 1164, H2, "claimed", folder="Foo")
+    out, fake = sync(ContentGH([two_folder_pr(H2)], files=first, trees=repaired), [foo, bar, taken])
+    assert out == ["#1164: PRREVIEW-Bar~2 created"] and fake.states == []
+    # Switched off: both are.
+    out, fake = sync(ContentGH([two_folder_pr(H2)], files=first, trees=repaired), [foo, bar], carry_unchanged_folders=False)
+    assert len(created(fake)) == 2
+    # Bar's review of the new head accepts: the label, with Foo accepted where it held these files.
+    again = review_job(43, 2, 1164, H2, "done", name="Bar", folder="Bar")
+    both = {**first, **verdict_file(again, "accepted", H2)}
+    added = f"#1164: ai-approved added (every roadmap folder at {H2[:7]} holds the files its last review settled)"
+    gh = ContentGH([two_folder_pr(H2)], files=both, trees=repaired)
+    out, fake = sync(gh, [foo, bar, again])
+    assert out == [added] and gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and created(fake) == []
+    # Labelled: kept. An untaken review of Foo at the new head is closed here too.
+    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=both, trees=repaired)
+    out, fake = sync(gh, [foo, bar, again])
+    kept = f"#1164: ai-approved kept (every roadmap folder at {H2[:7]} holds the files its last review settled: no review filed)"
+    assert out == [kept] and gh.writes == [] and created(fake) == []
+    untaken = review_job(44, 2, 1164, H2, "available", folder="Foo")
+    gh = ContentGH([two_folder_pr(H2)], files=both, trees=repaired)
+    out, fake = sync(gh, [foo, bar, again, untaken])
+    assert out == ["#1164: PRREVIEW-Foo~2 superseded", added] and fake.states == [("PRREVIEW-Foo~2", "done")]
+    assert fake.posted[0][1].startswith(f"Superseded: Foo of #1164 at {H2[:7]} holds the files of {H1[:7]}")
+    # One that is under way decides for Foo: no label until it ends.
+    gh = ContentGH([two_folder_pr(H2)], files=both, trees=repaired)
+    out, fake = sync(gh, [foo, bar, again, taken])
+    assert out == [] and gh.writes == [] and created(fake) == []
+    # The head moves again without touching either folder: the label stays, nothing is filed.
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=both, trees=repaired)
+    out, fake = sync(gh, [foo, bar, again])
+    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-approved kept")
+    # A later review of Foo that asked for changes is Foo's last word, though it read the same files.
+    later = review_job(45, 2, 1164, H2, "done", folder="Foo")
+    asked = {**both, **verdict_file(later, "needs_changes", H2)}
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=asked, trees=repaired)
+    out, fake = sync(gh, [foo, bar, again, later])
+    assert gh.writes == [("DELETE", f"{labels}/ai-approved", {})] and created(fake) == [("PRREVIEW-Foo~3", "Foo")]
+    # GitHub does not give the trees: nothing is known, so nothing is filed and the label is left.
+    gh = ContentGH([two_folder_pr(H2)], files=both, trees="unread")
+    out, fake = sync(gh, [foo, bar, again])
+    assert gh.writes == [] and created(fake) == []
+    unknown = f"#1164: ai-approved not checked (the roadmap folders at {H2[:7]} could not be compared with those "
+    assert out == [unknown + "of an earlier head)"]
+    gh = ContentGH([two_folder_pr(H2)], files=both, trees="unread")
+    out, fake = sync(gh, [foo, bar, again], carry_unchanged=False)
+    assert gh.writes == [] and created(fake) == []
+    assert out == [unknown + "their last reviews read)"]
+    gh = ContentGH([two_folder_pr(H2)], files=first, trees="unread")
+    out, fake = sync(gh, [foo, bar], carry_unchanged=False)
+    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-approved not checked")
 
 
 def test_a_moved_head_keeps_what_small_repairs_carried_to_the_head_it_came_from():
