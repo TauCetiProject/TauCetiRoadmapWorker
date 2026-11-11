@@ -2055,6 +2055,63 @@ def folders_accepted(ctx, folders, jobs: list[Job], head: str,
     return True, ""
 
 
+def carried_record(verdict: dict | None, small: int) -> dict | None:
+    """The record a review's verdict carries when the review ended with its repair (`[prreview]
+    carry_minor`; the lane's `carry_record`), or None: the verdict asks for changes, names the head it
+    reviewed as the record's `from`, and the repair changed at most `small` lines of the folder."""
+    record = (verdict or {}).get("carried")
+    if not isinstance(record, dict) or (verdict or {}).get("status") != "needs_changes":
+        return None
+    lines = record.get("lines")
+    if not record.get("head") or not isinstance(record.get("head"), str) or record.get("from") != verdict.get("head"):
+        return None
+    if isinstance(lines, bool) or not isinstance(lines, int) or not 0 <= lines <= small:
+        return None
+    return record
+
+
+def settled_folders(ctx, folders, jobs: list[Job], head: str, small: int,
+                    texts: dict[str, str | None] | None = None) -> set[str]:
+    """With `[prreview] carry_minor`: the roadmap folders of a pull request (`jobs`: its PRREVIEW jobs)
+    that need no review at `head`. A folder's latest finished review settles it at one head: the head
+    it accepted, or the head its repair left when every finding was P3 (`carried_record`). The folder
+    is settled at `head` when that is this head, or when only such repairs of the other folders lie
+    between the two, none of which changed this folder's files or a file outside the pull request's
+    roadmap folders (a merge of the base branch is such a change). One verdict is read per folder."""
+    at: dict[str, str] = {}
+    steps: list[tuple[str, str, set[str], bool]] = []          # (from, to, the folders changed, changed outside them)
+    for folder in folders:
+        done = [j for j in jobs if board.prreview_folder(j) == folder and j.state == "done"
+                and board.SUPERSEDED_LABEL not in j.labels and j.inputs.get("head")]
+        if not done:
+            continue
+        job = max(done, key=round_key)
+        verdict = prreview_verdicts(ctx, job.name, [job], "", texts).get(job.id)
+        if not verdict or verdict.get("head") != job.inputs.get("head"):
+            continue
+        if verdict.get("status") == "accepted":
+            at[folder] = str(verdict["head"])
+        elif record := carried_record(verdict, small):
+            at[folder] = record["head"]
+            if record["head"] != record["from"]:
+                changed = record.get("folders")
+                steps.append((str(record.get("onto") or record["from"]), record["head"],
+                              {str(f) for f in changed} if isinstance(changed, list) else set(folders),
+                              bool(record.get("outside")) or not isinstance(changed, list)))
+    out = set()
+    for folder, start in at.items():
+        seen, todo = {start}, [start]
+        while todo and head not in seen:
+            here = todo.pop()
+            for source, target, changed, outside in steps:
+                if source == here and target not in seen and folder not in changed and not outside:
+                    seen.add(target)
+                    todo.append(target)
+        if head in seen:
+            out.add(folder)
+    return out
+
+
 def next_review_round(reviews, leaf: str) -> int:
     """The round a new review of a folder takes: one past the highest the board has for it. A count of
     the folder's rounds names a round that exists as soon as one number is missing from the board (an
@@ -2141,9 +2198,28 @@ def sync_pr_reviews(ctx) -> list[str]:
             out.append(f"#{number}: {job.id} superseded")
 
     # The verdicts the label rule may read, all at once (`prbatch.verdict_texts`; REST for the rest).
+    wanted = [j for entry in listed if plans[int(entry["pr"])][0]
+              for j in finished_reviews([j for j in reviews if pr_of(j) == int(entry["pr"])], entry.get("head", ""))]
+    if p.carry_minor:            # and each folder's latest finished review, which may have ended at an earlier head
+        latest: dict[tuple[int, str], Job] = {}
+        for j in reviews:
+            if j.state == "done" and board.SUPERSEDED_LABEL not in j.labels and pr_of(j) in live:
+                key = (pr_of(j), board.prreview_folder(j))
+                if key not in latest or round_key(j) > round_key(latest[key]):
+                    latest[key] = j
+        wanted += [j for j in latest.values() if j.id not in {w.id for w in wanted}]
     texts = prbatch.verdict_texts(ctx.gh, cfg.repositories.packages_repo(), [
-        board.prreview_verdict_path(cfg.board.packages_dir, j) for entry in listed if plans[int(entry["pr"])][0]
-        for j in finished_reviews([j for j in reviews if pr_of(j) == int(entry["pr"])], entry.get("head", ""))], batch)
+        board.prreview_verdict_path(cfg.board.packages_dir, j) for j in wanted], batch)
+    minor: dict[int, set[str]] = {}
+
+    def minor_settled(number: int, folders, mine: list[Job], head: str) -> set[str]:
+        """The folders of #number that P3-only repairs settled at `head` (`settled_folders`), read once."""
+        if not p.carry_minor or not folders or not head:
+            return set()
+        if number not in minor:
+            minor[number] = settled_folders(ctx, folders, mine, head, p.small_change_lines, texts)
+        return minor[number]
+
     accepted_prs: set[int] = set()
     carried_prs: set[int] = set()
     threads: dict[int, list[dict] | None] = {}
@@ -2167,13 +2243,19 @@ def sync_pr_reviews(ctx) -> list[str]:
                 carried_prs.add(number)
                 out.append(f"#{number}: {p.label} kept (the acceptance of {source[:7]} carries to {head[:7]}: "
                            f"{lines} lines of repairs inside the roadmap folders, no review filed)")
+        carried = False
+        if not accepted and folders and set(folders) <= minor_settled(number, folders, mine, head):
+            accepted, carried = True, True
         if accepted:
             accepted_prs.add(number)
         try:
             if accepted and not labelled:
                 ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [p.label]})
-                out.append(f"#{number}: {p.label} added (the AI review of {head[:7]} accepts "
-                           + (f"all {len(folders)} roadmap folders)" if len(folders) > 1 else "it)"))
+                out.append(f"#{number}: {p.label} added ("
+                           + (f"every roadmap folder is settled at {head[:7]}: the last reviews accepted, or found "
+                              "P3 points only and their repairs are in" if carried
+                              else f"the AI review of {head[:7]} accepts "
+                              + (f"all {len(folders)} roadmap folders" if len(folders) > 1 else "it")) + ")")
             elif labelled and not accepted:
                 ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
                 out.append(f"#{number}: {p.label} removed ({reason})")
@@ -2203,6 +2285,8 @@ def sync_pr_reviews(ctx) -> list[str]:
             ours = [j for j in mine if board.prreview_folder(j) == folder]
             if any(j.under_way(OPEN_ROUND) for j in ours):
                 continue
+            if folder in minor_settled(number, folders, mine, head):
+                continue         # its last review accepted, or found P3 points only and the repair is in
             same = [j for j in ours if j.inputs.get("head") == head]
             dispute = text_round = False
             if same and settled:

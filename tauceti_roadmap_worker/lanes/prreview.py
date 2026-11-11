@@ -54,7 +54,7 @@ from urllib.parse import quote
 from .. import board, depgraph, gates, gitops, prompts, prreviews, references, replies, sources, summary
 from ..board import Job
 from ..depgraph import read_order
-from ..gh import GHError
+from ..gh import GHError, transient
 from .base import (
     COMMENT_LIMIT,
     CONTENT_COMMENT,
@@ -434,6 +434,103 @@ def merged_base(ctx: Context, job: Job) -> str:
     return str(kept_commit(read_pending(ctx, job) or {}, "repair").get("merged") or "")
 
 
+# --- what a round settles without another review: P3-only repairs, findings no repair of the folder can act on ---
+
+REPAIRED = ("repaired at", "answered the review")      # how `repair_steps` reports a repair that was answered
+
+def minor_note(record: dict) -> str:
+    """The reply's sentence on a review that ends with its repair (`carry_record`)."""
+    lines = record["lines"]
+    what = (f"the repair changes {lines} line{'' if lines == 1 else 's'} of the folder" if record["head"] != record["from"]
+            else "the answer changes nothing in the folder")
+    return f"Every finding of this review is P3 and {what}, so no further review of this folder is filed for this head."
+
+OUTSIDE_BRIEF = """A point that only a change outside these files can settle (another roadmap's folder, another \
+pull request, the library, a record you may not edit) is neither applied nor disputed: head its section \
+`## H0n (<reviewer's login>) — outside this folder: <where the change belongs, at most 15 words>`, begin the \
+section with the number the review gives the finding (`F03:`), and say in one sentence what has to change \
+there. Use it only when no edit of the files above can settle the point: the next review checks that, and \
+raises the point again when the folder could have settled it. Such a finding is recorded once on the board \
+and later reviews of this folder do not raise it again."""
+
+DEFERRED_BRIEF = """
+
+**Deferred findings.** Earlier reviews of this folder raised the findings below, and the repair found for each \
+that only a change outside this folder can settle it (the place is named). They are on the board's record: do \
+not raise them again, in any wording, and do not count them against acceptance. When the previous report lists \
+one, account for it as `- R0n — not repaired: deferred (D0n)` and do not write it again. Under \
+`## Deferred findings` (after this report's findings) write one line for each: `- D01 — stands`, or \
+`- D01 — resolved: <what settled it, at most 25 words>`. If a change inside this folder can settle one after \
+all, raise it as an ordinary finding of this report and mark its line `resolved: raised as R0n`.
+
+{items}"""
+
+DEFERRED_ID = re.compile(r"^D(\d+)$")
+
+
+def minor_findings(report: str) -> int:
+    """The number of findings of a review's report when every one of them is P3; 0 when it has none,
+    or one that is P1 or P2."""
+    findings = prreviews.report_findings(report)[0]
+    return len(findings) if findings and all(severity == "P3" for severity, _t, _b in findings) else 0
+
+
+def deferred_entries(value) -> list[dict]:
+    """A verdict record's `deferred` list, the well-formed entries only: {id (D01…), severity, title,
+    where, raised (the job whose repair deferred it)}."""
+    out = []
+    for item in value if isinstance(value, list) else []:
+        if isinstance(item, dict) and DEFERRED_ID.match(str(item.get("id") or "")) and str(item.get("title") or "").strip():
+            out.append({k: str(item.get(k) or "") for k in ("id", "severity", "title", "where", "raised")})
+    return out
+
+
+def deferred_resolved(report: str, fid: str) -> bool:
+    """Whether a review's report says the deferred finding `fid` is resolved (`- D01 — resolved: …`
+    under `## Deferred findings`); a finding the report does not mention stands."""
+    return bool(re.search(rf"^\s*[-*]\s*[*`]*{re.escape(fid)}[*`]*\s*[—–:-]+\s*resolved\b", report,
+                          re.IGNORECASE | re.MULTILINE))
+
+
+def deferred_text(items: list[dict]) -> str:
+    """The brief's paragraph on the deferred findings standing for the folder ('' when there are none)."""
+    if not items:
+        return ""
+    return DEFERRED_BRIEF.format(items="\n".join(
+        f"- {d['id']}" + (f" ({d['severity']}, raised by {d['raised']})" if d["severity"] else f" (raised by {d['raised']})")
+        + f" — {d['title']}. Outside this folder: {d['where'] or 'not named'}." for d in items))
+
+
+def new_deferred(review: str, repair: str, job_id: str, standing: list[dict]) -> list[dict]:
+    """The findings of a review's report (`review`) its repair's report (`repair`) settled as `outside
+    this folder: <where>` (`replies.OUTSIDE`), as entries after `standing`: numbered on from it, each
+    with the finding's severity and title, taken from the review's finding the section names first
+    (`F03`), else from the finding in the section's place when the repair has one section per finding,
+    else from the section's first sentence. A finding standing already (the same title) is not entered twice."""
+    findings = prreviews.report_findings(review)[0]
+    sections = replies.parse_findings(repair)
+    top = max((int(DEFERRED_ID.match(d["id"]).group(1)) for d in standing), default=0)
+    have = {board.title_key(d["title"]) for d in standing}
+    out = []
+    for index, (_fid, how, body) in enumerate(sections):
+        if not replies.OUTSIDE.match(how.strip()):
+            continue
+        named = re.match(r"\W*F0*(\d+)\b", body)
+        k = int(named.group(1)) - 1 if named else (index if len(sections) == len(findings) else -1)
+        if 0 <= k < len(findings):
+            severity, title = findings[k][0], findings[k][1]
+        else:
+            severity, title = "", re.split(r"(?<=[.!?])\s", " ".join(body.split()), maxsplit=1)[0]
+        title = title.strip()[:200]
+        if not title or board.title_key(title) in have:
+            continue
+        have.add(board.title_key(title))
+        top += 1
+        out.append({"id": f"D{top:02d}", "severity": severity, "title": title,
+                    "where": replies.outside_where(how)[:200], "raised": job_id})
+    return out
+
+
 def delivered_text(ctx: Context, job: Job) -> str:
     """What the job's repair did to the pull request's title and description (`deliver_text`), from its
     record: '' when it wrote nothing, or before that step."""
@@ -800,6 +897,7 @@ class PRReviewLane(Lane):
         ws.extra["pr_summary"] = summary.block_kind(data.get("body") or "")
         self.write_changes(job, ctx, ws)
         ws.extra["previous_report"] = self.previous_report(job, ctx, ws)
+        ws.extra["deferred"] = self.previous_deferred(job, ctx)
         ws.extra["mode"] = review_mode(job, cfg, ws.extra)
         self.order_for_review(ctx, ws, job.name)
         ws.extra["gate"] = self.review_gate(job, ctx, ws)
@@ -835,6 +933,38 @@ class PRReviewLane(Lane):
             previous = board.make_id("prreview", job.name, j.round - 1)
         [path] = board_reports(ctx, ws, job.name, [previous], "previous")
         return None if path.read_text(encoding="utf-8").startswith("(no report") else path
+
+    def previous_deferred(self, job: Job, ctx: Context) -> list[dict]:
+        """With `[prreview] defer_outside`: the deferred findings standing after the review this job
+        follows (`inputs.previous_job`, else the name's previous round), from that review's verdict on
+        the board's main when it reviewed this pull request; [] when there is none. A read GitHub did
+        not answer raises: a blip must not make the review raise them again."""
+        if not ctx.cfg.prreview.defer_outside or ctx.gh is None:
+            return []
+        previous = str(job.inputs.get("previous_job") or "")
+        if not previous:
+            j = board.parse_job_id(job.id)
+            if j.round <= 1:
+                return []
+            previous = board.make_id("prreview", job.name, j.round - 1)
+        path = f"{board.package_dir(ctx.cfg.board.packages_dir, job.name)}/reports/{previous}.json"
+        try:
+            review = json.loads(ctx.gh.raw_file(ctx.cfg.repositories.packages_repo(), path)).get("review")
+        except GHError as exc:
+            if transient(exc):
+                raise
+            return []
+        except (ValueError, AttributeError):
+            return []
+        if not isinstance(review, dict) or str(review.get("pr")) != str(job.inputs.get("pr")):
+            return []
+        return deferred_entries(review.get("deferred"))
+
+    def standing_deferred(self, job: Job, ctx: Context, ws: Workspace) -> list[dict]:
+        """The deferred findings that stand after this review: those it was given (`previous_deferred`)
+        less the ones its report says are resolved (`deferred_resolved`)."""
+        report = ws.report.read_text(encoding="utf-8", errors="replace") if ws.report.is_file() else ""
+        return [d for d in ws.extra.get("deferred") or [] if not deferred_resolved(report, d["id"])]
 
     def order_for_review(self, ctx: Context, ws: Workspace, name: str) -> Path:
         """The merge-order file the gate and the agent's dependency check read: the board's, with the
@@ -914,8 +1044,10 @@ class PRReviewLane(Lane):
         return []
 
     def scrub_outputs(self, job: Job, ctx: Context, ws: Workspace) -> list[Path]:
-        """The base scrub, machine paths out of the verdict record, and the roadmap folder reviewed
-        recorded in it (`folder`) when the agent left it out."""
+        """The base scrub, machine paths out of the verdict record, the roadmap folder reviewed recorded
+        in it (`folder`) when the agent left it out, and the worker's own records in it: `carried` is
+        never the agent's to write, and `deferred` is the list that stands after this review
+        (`standing_deferred`)."""
         changed = super().scrub_outputs(job, ctx, ws)
         path = self.verdict_file(job, ctx, ws)
         if path.is_file():
@@ -925,9 +1057,16 @@ class PRReviewLane(Lane):
                 data = json.loads(clean)
             except ValueError:
                 data = None
-            if isinstance(data, dict) and isinstance(data.get("review"), dict) and "folder" not in data["review"]:
-                data["review"]["folder"] = board.prreview_folder(job)
-                clean = json.dumps(data, indent=1, ensure_ascii=False) + "\n"
+            if isinstance(data, dict) and isinstance(data.get("review"), dict):
+                review, before = data["review"], json.dumps(data["review"], sort_keys=True)
+                review.setdefault("folder", board.prreview_folder(job))
+                review.pop("carried", None)
+                review.pop("deferred", None)
+                standing = self.standing_deferred(job, ctx, ws)
+                if standing:
+                    review["deferred"] = standing
+                if json.dumps(review, sort_keys=True) != before:
+                    clean = json.dumps(data, indent=1, ensure_ascii=False) + "\n"
             if clean != text:
                 path.write_text(clean, encoding="utf-8")
                 changed.append(path)
@@ -979,7 +1118,8 @@ class PRReviewLane(Lane):
                 "GATE_REPORT": str(ws.scratch / GATE_REPORT), "PR_TEXT": str(ws.scratch / PULL_REQUEST_TEXT),
                 "OUTSIDE_CHECK": f"git -C {ws.workdir} diff --stat {pr_base(ctx, ws)}...HEAD -- . {excluded}",
                 "PREVIOUS": f"`{previous}`" if previous else "none", "CHANGES": f"`{changes}`" if changes else "none",
-                "MODE": mode_text(mode, job, cfg, ws.extra), "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)),
+                "MODE": mode_text(mode, job, cfg, ws.extra) + deferred_text(ws.extra.get("deferred") or []),
+                "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)),
                 "ELABORATE": elaborate_line(cfg, dataclasses.replace(ws, content=ws.workdir)),
                 "LIBRARY": library_description(ws.workdir)}
 
@@ -1096,7 +1236,90 @@ class PRReviewLane(Lane):
                                  ws.report.read_text(encoding="utf-8") if ws.report.is_file() else "")
         # The record decides: an attempt that finishes a kept run carries on with the repair it began.
         repair = self.repair(job, ctx, ws) if any(owes(ctx, job, e) for e in REPAIR_EFFECTS) else ""
-        return summary + "".join(f"; {x}" for x in (label, repair) if x)
+        closed = self.close_round(job, ctx, ws, status, repair)
+        return summary + "".join(f"; {x}" for x in (label, repair, closed) if x)
+
+    # -- what the round settles without another review --
+    def carry_record(self, job: Job, ctx: Context, ws: Workspace) -> dict | None:
+        """With `[prreview] carry_minor`: the record that a review whose every finding is P3 ends with
+        its repair, or None when it does not (a P1 or P2 finding, or a repair that changed more than
+        `[prreview] small_change_lines` lines of the folder). `from`: the head reviewed; `head`: the
+        head the repair left (the same when it changed nothing); `onto`: the head the repair was
+        carried onto, when the pull request moved meanwhile; `folders`: the roadmap folders of the pull
+        request the repair's push changed; `outside`: it changed a file outside them (a merge of the
+        base branch, a family index); `findings` and `lines`."""
+        cfg = ctx.cfg
+        report = ws.report.read_text(encoding="utf-8", errors="replace") if ws.report.is_file() else ""
+        findings = minor_findings(report)
+        if not cfg.prreview.carry_minor or not findings:
+            return None
+        head = ws.extra["head"]
+        new, onto = repaired_head(ctx, job) or head, carried_onto(ctx, job)
+        active, own = cfg.roadmap.active_dir.strip("/"), board.prreview_folder(job)
+        record = {"from": head, "head": new, "findings": findings, "lines": 0, "folders": []}
+        if new == head:
+            return record
+        added, removed = numstat_lines(gitops.git(ws.workdir, "diff", "--numstat", f"{head}..{new}", "--",
+                                                  f"{active}/{own}", check=False))
+        record["lines"] = added + removed
+        if record["lines"] > cfg.prreview.small_change_lines:
+            return None
+        changed = gitops.git(ws.workdir, "diff", "--name-only", onto or head, new, check=False).splitlines()
+        folders = [own, *other_folders(job)]
+        record["folders"] = sorted(f for f in folders if any(p.startswith(f"{active}/{f}/") for p in changed))
+        if any(not any(p.startswith(f"{active}/{f}/") for f in folders) for p in changed if p.strip()):
+            record["outside"] = True
+        if onto:
+            record["onto"] = onto
+        return record
+
+    def close_round(self, job: Job, ctx: Context, ws: Workspace, status: str, repair: str) -> str:
+        """After a repair that was pushed and answered, or answered without a change (`repair`, the
+        line `repair_steps` returned): what the round settles without another review, written into the
+        verdict record before the board submission carries it. `carried` (`carry_record`): the intake
+        files no further review of the folder for the repaired head, and counts the folder as settled
+        there. `deferred`: the findings the repair marked `outside this folder` (`new_deferred`), after
+        those that stood already. Both are kept in the job's record, so an attempt that finishes a kept
+        run writes the same; a repair that failed settles nothing. Returns the summary's words."""
+        p = ctx.cfg.prreview
+        if status != "needs_changes" or not (p.carry_minor or p.defer_outside):
+            return ""
+        entry = read_pending(ctx, job)
+        record = (entry or {}).get("closed")
+        if not isinstance(record, dict):
+            if not repair.startswith(REPAIRED):
+                return ""
+            answer = ws.job_dir / REPAIR_REPORT
+            review = ws.report.read_text(encoding="utf-8", errors="replace") if ws.report.is_file() else ""
+            record = {"carried": self.carry_record(job, ctx, ws),
+                      "deferred": (new_deferred(review, answer.read_text(encoding="utf-8", errors="replace"), job.id,
+                                                self.standing_deferred(job, ctx, ws))
+                                   if p.defer_outside and answer.is_file() else [])}
+            if entry is not None:
+                entry["closed"] = record
+                write_pending(ctx, job, entry)
+        path = self.verdict_file(job, ctx, ws)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            review = data["review"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return ""
+        if not isinstance(review, dict):
+            return ""
+        carried, added = record.get("carried"), deferred_entries(record.get("deferred"))
+        if carried:
+            review["carried"] = carried
+        if added:
+            review["deferred"] = [d for d in deferred_entries(review.get("deferred")) if d["raised"] != job.id] + added
+        if carried or added:
+            path.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        words = []
+        if carried:
+            words.append(f"P3 only: no further review of {carried['head'][:7]} for this folder")
+        if added:
+            words.append(f"{len(added)} finding{'s' if len(added) != 1 else ''} deferred as outside the folder ("
+                         + ", ".join(d["id"] for d in added) + ")")
+        return "; ".join(words)
 
     # -- the repair of a pool author's pull request --
     def repairs(self, job: Job, ctx: Context, ws: Workspace, status: str) -> bool:
@@ -1154,6 +1377,9 @@ class PRReviewLane(Lane):
                 note = (f"The review read `{head[:7]}`, whose Lake pins were behind `{base_branch(ctx, ws)}`. Before "
                         f"the repair, `{base_branch(ctx, ws)}` was merged into the branch at `{merged[:7]}`; the "
                         "repair was made and its checks were run on the merged branch.")
+            minor = self.carry_record(job, ctx, ws)
+            if minor:
+                note = "\n\n".join(x for x in (note, minor_note(minor)) if x)
             try:
                 label = push_and_reply(self, ctx, job, ws, report.read_text(encoding="utf-8"), answered, gate,
                                        branch=ws.extra["pr_branch"], base=onto or head, moved=new != head,
@@ -1302,7 +1528,8 @@ class PRReviewLane(Lane):
         edits_brief = "\n\n".join(x for x in (
             family_brief(index, folder), board_edits_brief(job, ctx, ws),
             description_brief(ws, pr_base(ctx, ws), f"{ctx.cfg.roadmap.active_dir}/{folder}") if with_text else "",
-            summary_brief(ws) if with_text else "") if x)
+            summary_brief(ws) if with_text else "",
+            OUTSIDE_BRIEF if ctx.cfg.prreview.defer_outside else "") if x)
         values = {**self.common_values(job, ctx, ws), **answer_values(ctx, ws, job.name, folder, reviews, report),
                   "BOARD_EDITS": edits_brief}
         if merged:

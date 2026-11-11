@@ -277,6 +277,10 @@ class PRReview:
     authors: list[str] = field(default_factory=list)        # only these authors' pull requests (empty: all)
     skip_authors: list[str] = field(default_factory=list)   # never these authors' pull requests
     operator_prs: list[int] = field(default_factory=list)   # pull requests whose review rounds an operator files; `board sync` files none for them
+    # Authors whose pull requests' reviews a worker takes after every other job it could take, and the
+    # pull requests of theirs that keep their ordinary place (those other roadmaps wait for).
+    late_authors: list[str] = field(default_factory=list)
+    late_except: list[int] = field(default_factory=list)
     parent_roadmaps: list[str] = field(default_factory=list)  # roadmaps that carry sub-roadmaps yet are roadmaps themselves (reviewed), not family indexes
     library_search: bool = True      # ask Loogle and LeanSearch about every declaration of the roadmap's Lean file for the reviewer (`scratch/library-matches.md`)
     # A pull request that edits more roadmap folders than this is a chore and is not reviewed, unless
@@ -314,6 +318,18 @@ class PRReview:
     # and no review of H1 is filed. For the small repairs an accepting review lists (its P3 findings), applied
     # without a re-review at the maintainer's decision.
     carry_accept: bool = False
+    # A review whose every finding is P3 ends with its repair: once the repair is pushed and answered (or
+    # answered without a change) and changed at most `small_change_lines` lines of the folder, the review's
+    # verdict records it (`carried`: the head reviewed, the head repaired), the intake files no further
+    # review of that folder for the repaired head, and the pull request carries `label` once every folder
+    # is settled at its head: accepted there, or brought there by such repairs, which changed no other
+    # folder's files. The repaired head is checked by the repair's gate, not read again by a reviewer.
+    carry_minor: bool = False
+    # A repair may settle a finding as `outside this folder: <where>` when no edit of the files it may
+    # change can act on it. The review's verdict records it (`deferred`), each later review of the folder
+    # is told of it, does not raise it again and does not count it against acceptance, and it leaves the
+    # record when a review finds it resolved. The finding stays open in the record until then.
+    defer_outside: bool = False
     # A chore (a pull request titled `chore:`/`archive`, or one editing more roadmap folders than
     # `max_folders`) is reviewed by no folder review. With this on, it carries `label` when a comment
     # by a pool member or a `comment_reviewers` login records `<!-- tauceti-roadmap-chore-review
@@ -516,12 +532,13 @@ def validate(cfg: Config) -> None:
         problems.append("prreview.diff_cap_lines must be at least 1")
     if cfg.prreview.enabled and not re.fullmatch(r"[^\s,][^,]{0,49}", cfg.prreview.label or ""):
         problems.append("prreview.label must be a GitHub label name (1 to 50 characters, no comma)")
-    for key in ("authors", "skip_authors"):
+    for key in ("authors", "skip_authors", "late_authors"):
         if any(not isinstance(a, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", a)
                for a in getattr(cfg.prreview, key)):
             problems.append(f"prreview.{key} must list GitHub logins")
-    if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in cfg.prreview.operator_prs):
-        problems.append("prreview.operator_prs must list pull request numbers")
+    for key in ("operator_prs", "late_except"):
+        if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in getattr(cfg.prreview, key)):
+            problems.append(f"prreview.{key} must list pull request numbers")
     if any(not isinstance(a, str) or not re.fullmatch(r"[A-Z][A-Za-z0-9]*(/[A-Z][A-Za-z0-9]*)*", a)
            for a in cfg.prreview.parent_roadmaps):
         problems.append("prreview.parent_roadmaps must list roadmap folder names")

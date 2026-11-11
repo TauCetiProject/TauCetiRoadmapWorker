@@ -2481,3 +2481,235 @@ def test_operator_prs_and_parent_roadmaps_parse_and_are_checked():
                      ('parent_roadmaps = ["not a folder"]', "prreview.parent_roadmaps")):
         with pytest.raises(config.ConfigError, match=re.escape(why)):
             config.parse(f'[project]\nname = "P"\n[prreview]\n{bad}\n', "x.toml")
+
+
+# --- rounds that end without another review: P3-only repairs, findings outside the folder ----------------
+
+def carried_file(job, record, status="needs_changes"):
+    """The verdict of `job` (a review of the head it names) with the worker's `carried` record."""
+    head = job.inputs["head"]
+    return {board.prreview_verdict_path("packages", job): json.dumps({"review": {
+        "status": status, "reviewer": f"independent-review-{job.id}", "head": head, "pr": job.inputs["pr"],
+        "folder": board.prreview_folder(job), "carried": record}})}
+
+
+def test_a_p3_only_review_ends_with_its_repair():
+    """`[prreview] carry_minor`: the folder is settled at the head its P3-only repair left, the label is
+    added there and no review of that head is filed; without the setting the repaired head is reviewed."""
+    done = review_job(41, 1, 12, H1, "done")
+    record = {"from": H1, "head": H2, "findings": 2, "lines": 12, "folders": ["Foo"]}
+    labels = f"repos/{REPO}/issues/12/labels"
+    gh = ContentGH([node(12, H2)], files=carried_file(done, record))
+    out, fake = sync(gh, [done], carry_minor=True)
+    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and fake.created == []
+    assert out == [f"#12: ai-approved added (every roadmap folder is settled at {H2[:7]}: the last reviews accepted, "
+                   "or found P3 points only and their repairs are in)"]
+    # Labelled already: kept, silently.
+    gh = ContentGH([node(12, H2, labels=["ai-approved"])], files=carried_file(done, record))
+    assert sync(gh, [done], carry_minor=True)[0] == [] and gh.writes == []
+    # Off by default: the repaired head gets its review.
+    gh = ContentGH([node(12, H2)], files=carried_file(done, record))
+    out, fake = sync(gh, [done])
+    assert gh.writes == [] and created(fake) == [("PRREVIEW-Foo~2", "Foo")]
+    # An answer that changed nothing settles the head reviewed: no dispute round, and the label.
+    same = {"from": H1, "head": H1, "findings": 1, "lines": 0, "folders": []}
+    gh = ContentGH([node(12, H1)], files=carried_file(done, same))
+    out, fake = sync(gh, [done], carry_minor=True)
+    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and fake.created == []
+
+
+@pytest.mark.parametrize("record,status,head", [
+    ({"from": H1, "head": H2, "findings": 2, "lines": 12, "folders": ["Foo"]}, "needs_changes", H3),   # moved on since
+    ({"from": H1, "head": H2, "findings": 2, "lines": 151, "folders": ["Foo"]}, "needs_changes", H2),  # too big a repair
+    ({"from": H3, "head": H2, "findings": 2, "lines": 12, "folders": ["Foo"]}, "needs_changes", H2),   # not of the head reviewed
+    ({"from": H1, "head": H2, "findings": 2, "lines": "12", "folders": ["Foo"]}, "needs_changes", H2), # a malformed record
+    ({"from": H1, "head": H2, "findings": 2, "lines": 12, "folders": ["Foo"]}, "rejected", H2),        # not a repairable verdict
+    ("yes", "needs_changes", H2),
+])
+def test_a_carried_record_that_does_not_hold_settles_nothing(record, status, head):
+    done = review_job(41, 1, 12, H1, "done")
+    gh = ContentGH([node(12, head)], files=carried_file(done, record, status))
+    out, fake = sync(gh, [done], carry_minor=True)
+    assert gh.writes == [] and created(fake) == [("PRREVIEW-Foo~2", "Foo")]
+
+
+def test_a_p3_only_repair_of_one_folder_leaves_the_other_folders_settled():
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar", folder="Bar")
+    labels = f"repos/{REPO}/issues/1164/labels"
+    step = {"from": H1, "head": H2, "findings": 1, "lines": 4, "folders": ["Bar"]}
+    # Foo accepted at H1; Bar's P3-only repair moved the head to H2 and changed Bar alone: both are settled at H2.
+    gh = ContentGH([two_folder_pr(H2)], files={**verdict_file(foo, "accepted", H1), **carried_file(bar, step)})
+    out, fake = sync(gh, [foo, bar], carry_minor=True)
+    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and fake.created == []
+    # The repair's push changed Foo too, or a file outside the roadmap folders (a merge of the base branch):
+    # Foo is reviewed at the new head, Bar is not, and the label waits for Foo.
+    for wider in ({**step, "folders": ["Bar", "Foo"]}, {**step, "outside": True}, {**step, "folders": None}):
+        gh = ContentGH([two_folder_pr(H2)], files={**verdict_file(foo, "accepted", H1), **carried_file(bar, wider)})
+        out, fake = sync(gh, [foo, bar], carry_minor=True)
+        assert gh.writes == [] and created(fake) == [("PRREVIEW-Foo~2", "Foo")], wider
+    # Two P3-only repairs in a row, the second carried onto the first (`onto`): both folders are settled at H3.
+    first = {"from": H1, "head": H2, "findings": 1, "lines": 3, "folders": ["Foo"]}
+    second = {"from": H1, "onto": H2, "head": H3, "findings": 2, "lines": 6, "folders": ["Bar"]}
+    gh = ContentGH([two_folder_pr(H3)], files={**carried_file(foo, first), **carried_file(bar, second)})
+    out, fake = sync(gh, [foo, bar], carry_minor=True)
+    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and fake.created == []
+    # A folder whose review found more than P3 points is reviewed again at the head the other's repair left.
+    gh = ContentGH([two_folder_pr(H2)], files={**verdict_file(foo, "needs_changes", H1), **carried_file(bar, step)})
+    out, fake = sync(gh, [foo, bar], carry_minor=True)
+    assert gh.writes == [] and created(fake) == [("PRREVIEW-Foo~2", "Foo")]
+
+
+MINOR = "## R01 (P3) — a locator names no page\n\nLocation: README line 9.\n\n"
+
+
+def reviewed_with(lane, job, ctx, head, findings, blocking):
+    """The review as its agent left it, asking for changes, with the findings given."""
+    ws = lane.prepare(job, ctx)
+    ws.report.write_text(REPORT.format(h7=head[:7], v="needs_changes", findings=findings))
+    lane.verdict_file(job, ctx, ws).write_text(json.dumps({"review": {
+        "status": "needs_changes", "reviewer": f"independent-review-{job.id}", "head": head, "pr": 905, "folder": "Foo",
+        "date": "2026-10-28", "findings": findings.count("## R"), "blocking": blocking, "notes": "x",
+        "carried": {"from": head, "head": head, "lines": 0}, "deferred": [{"id": "D09", "title": "the agent's own"}]}}))
+    lane.scrub_outputs(job, ctx, ws)              # as the run does before it validates
+    assert lane.validate(job, ctx, ws) == []
+    return ws
+
+
+def submitted_verdict(lane, job, ctx, ws):
+    """The verdict record as the board submission carries it."""
+    rel = board.prreview_verdict_path(ctx.cfg.board.packages_dir, job)
+    assert json.loads(sh(ws.board, "show", f"HEAD:{rel}")) == json.loads(lane.verdict_file(job, ctx, ws).read_text())
+    return json.loads(lane.verdict_file(job, ctx, ws).read_text())["review"]
+
+
+@needs_git
+def test_the_lane_records_that_a_p3_only_review_ended_with_its_repair(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [])
+    ctx = pool_ctx(rh)
+    ctx.cfg.prreview.carry_minor = True
+    lane = lane_for(job)
+    ws = reviewed_with(lane, job, ctx, head, MINOR, 0)
+    result = lane.deliver(job, ctx, ws)
+    new = rh.head(905)
+    assert result.status == "submitted" and new != head, result.detail
+    assert f"P3 only: no further review of {new[:7]} for this folder" in result.detail
+    review = submitted_verdict(lane, job, ctx, ws)
+    lines = review["carried"]["lines"]
+    assert review["carried"] == {"from": head, "head": new, "findings": 1, "lines": lines, "folders": ["Foo"]}
+    assert 0 < lines <= 150 and "deferred" not in review          # what the agent wrote under those keys is gone
+    reply = rh.comments[905][-1]["body"]
+    assert (f"Every finding of this review is P3 and the repair changes {lines} line{'' if lines == 1 else 's'} of "
+            "the folder, so no further review of this folder is filed for this head.") in reply
+    # The intake reads that record as the lane wrote it.
+    assert intake.carried_record(review, 150) == review["carried"]
+
+
+@needs_git
+@pytest.mark.parametrize("findings,blocking,on", [(FINDING, 1, True), (MINOR + FINDING.replace("R01", "R02"), 1, True),
+                                                  (MINOR, 0, False)])
+def test_a_review_with_a_p1_or_p2_finding_or_the_setting_off_is_followed_by_a_review(
+        hub, monkeypatch, tmp_path, findings, blocking, on):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [])
+    ctx = pool_ctx(rh)
+    ctx.cfg.prreview.carry_minor = on
+    lane = lane_for(job)
+    ws = reviewed_with(lane, job, ctx, head, findings, blocking)
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted" and "repaired at" in result.detail and "P3 only" not in result.detail
+    assert "carried" not in submitted_verdict(lane, job, ctx, ws)
+    assert "Every finding of this review is P3" not in rh.comments[905][-1]["body"]
+
+
+OUTSIDE_LINE = ("## H01 (AI review PRREVIEW-Foo~2) — outside this folder: the Bar roadmap's README\n"
+                "F01: Bar's README has to state the hypothesis on p; nothing in this folder can.\n")
+
+
+@needs_git
+def test_a_finding_only_another_folder_can_settle_is_recorded_once(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    briefs = []
+    repair_agent(monkeypatch, briefs, report=OUTSIDE_LINE, edit=False)
+    ctx = pool_ctx(rh)
+    ctx.cfg.prreview.defer_outside = True
+    lane = lane_for(job)
+    ws = reviewed_with(lane, job, ctx, head, FINDING, 1)
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted" and rh.head(905) == head, result.detail
+    assert "1 finding deferred as outside the folder (D01)" in result.detail
+    assert "outside this folder: <where the change belongs, at most 15 words>" in briefs[0][1]
+    review = submitted_verdict(lane, job, ctx, ws)
+    assert review["deferred"] == [{"id": "D01", "severity": "P1", "title": "the hypothesis on p is missing",
+                                   "where": "the Bar roadmap's README", "raised": job.id}]
+    assert "carried" not in review
+    assert "- **H01** (outside this folder: the Bar roadmap's README)" in rh.comments[905][-1]["body"]
+
+
+def test_deferred_findings_are_numbered_on_matched_to_the_review_and_not_entered_twice():
+    review = (MINOR + "## R02 (P2) — the comparison map is owned by Bar\n\nLocation: README line 30.\n\n"
+              "## R03 (P1) — the hypothesis on p is missing\n\nLocation: README line 4.\n\n")
+    standing = [{"id": "D02", "severity": "P2", "title": "An older one", "where": "Baz", "raised": "PRREVIEW-Foo~1"}]
+    repair = ("## H01 (AI review PRREVIEW-Foo~2) — applied\nThe locator names the page.\n\n"
+              "## H02 (AI review PRREVIEW-Foo~2) — outside this folder: `Bar/README.md`, Layer 2\nF02: Bar must hand it over.\n\n"
+              "## H03 (AI review PRREVIEW-Foo~2) — Outside the folder — the library\nNo number named here.\n")
+    assert lane_prreview.new_deferred(review, repair, "PRREVIEW-Foo~2", standing) == [
+        {"id": "D03", "severity": "P2", "title": "the comparison map is owned by Bar", "where": "`Bar/README.md`, Layer 2",
+         "raised": "PRREVIEW-Foo~2"},
+        {"id": "D04", "severity": "P1", "title": "the hypothesis on p is missing", "where": "the library",
+         "raised": "PRREVIEW-Foo~2"}]
+    # One standing already under the same title is not entered again; a section naming no finding of the review
+    # (and not in a finding's place) takes its own first sentence.
+    again = [{"id": "D01", "severity": "P2", "title": "The comparison map is owned by Bar.", "where": "Bar", "raised": "x"}]
+    loose = "## H01 (carol) — outside this folder: Bar\nF02: as before.\n\n## H02 (carol) — outside this folder: Baz\nBaz owns the trace. More.\n"
+    assert lane_prreview.new_deferred(review, loose, "PRREVIEW-Foo~3", again) == [
+        {"id": "D02", "severity": "", "title": "Baz owns the trace.", "where": "Baz", "raised": "PRREVIEW-Foo~3"}]
+    assert lane_prreview.new_deferred(review, REPAIR_LINE, "PRREVIEW-Foo~2", []) == []
+    assert lane_prreview.minor_findings(MINOR) == 1 and lane_prreview.minor_findings(review) == 0
+    assert lane_prreview.minor_findings("no findings") == 0
+
+
+@needs_git
+def test_a_later_review_is_told_of_the_deferred_findings_and_keeps_those_it_does_not_resolve(dry_ctx, tmp_path, monkeypatch):  # noqa: F811
+    repo, first, second = repaired_repo(tmp_path)
+    real_git_in(repo, monkeypatch)
+    job = rereview_job(first, second)
+    ctx = rereview_ctx(dry_ctx, second)
+    ctx.cfg.prreview.defer_outside = True
+    held = [{"id": "D01", "severity": "P2", "title": "the comparison map is owned by Bar", "where": "Bar's README",
+             "raised": "PRREVIEW-Foo~1"},
+            {"id": "D02", "severity": "P1", "title": "the trace formula is missing from the library", "where": "the library",
+             "raised": "PRREVIEW-Foo~1"}]
+    ctx.gh.files["packages/Foo/reports/PRREVIEW-Foo~1.json"] = json.dumps({"review": {
+        "status": "needs_changes", "head": first, "pr": 905, "deferred": held + [{"id": "bad"}]}})
+    lane = lane_for(job)
+    ws = lane.prepare(job, ctx)
+    assert ws.extra["deferred"] == held
+    text = prompts.render("prreview", {**lane.common_values(job, ctx, ws), **lane.values(job, ctx, ws)})
+    assert "**Deferred findings.**" in text and "not raise them again" in text
+    assert "- D01 (P2, raised by PRREVIEW-Foo~1) — the comparison map is owned by Bar. Outside this folder: Bar's README." in text
+    # The review resolves one and says nothing of the other: the other stands in its verdict.
+    ws.report.write_text(REPORT.format(h7=second[:7], v="accepted", findings="")
+                         + "\n## Deferred findings\n\n- D01 — resolved: Bar's README hands the map over since its last revision\n")
+    lane.verdict_file(job, ctx, ws).parent.mkdir(parents=True, exist_ok=True)
+    lane.verdict_file(job, ctx, ws).write_text(json.dumps({"review": {
+        "status": "accepted", "reviewer": f"independent-review-{job.id}", "head": second, "pr": 905,
+        "date": "2026-10-28", "findings": 0, "blocking": 0, "notes": "x", "deferred": []}}))
+    lane.scrub_outputs(job, ctx, ws)
+    assert json.loads(lane.verdict_file(job, ctx, ws).read_text())["review"]["deferred"] == [held[1]]
+    # Another pull request's review of the same name hands nothing on; nor does the setting when off.
+    ctx.gh.files["packages/Foo/reports/PRREVIEW-Foo~1.json"] = json.dumps({"review": {"pr": 906, "deferred": held}})
+    assert lane.previous_deferred(job, ctx) == []
+    ctx.cfg.prreview.defer_outside = False
+    assert lane.previous_deferred(job, ctx) == []
+
+
+def test_the_round_settings_default_off_and_parse():
+    p = config.Config().prreview
+    assert (p.carry_minor, p.defer_outside, p.late_authors, p.late_except) == (False, False, [], [])
+    parsed = config.parse('[project]\nname = "P"\n[prreview]\ncarry_minor = true\ndefer_outside = true\n'
+                          'late_authors = ["dave"]\nlate_except = [12]\n', "x.toml").prreview
+    assert (parsed.carry_minor, parsed.defer_outside, parsed.late_authors, parsed.late_except) == (True, True, ["dave"], [12])
+    for bad, why in (('late_authors = ["not a login"]', "prreview.late_authors"), ("late_except = [0]", "prreview.late_except")):
+        with pytest.raises(config.ConfigError, match=re.escape(why)):
+            config.parse(f'[project]\nname = "P"\n[prreview]\n{bad}\n', "x.toml")

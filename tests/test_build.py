@@ -104,3 +104,57 @@ def test_the_board_workflow_runs_the_three_commands_with_its_own_token():
     assert "ref: ${{ github.event.pull_request.head" not in text      # never checks out a pull request's code
     # Comments and issue edits are no trigger: on a busy board they spent the token's 1,000 requests an hour.
     assert "issue_comment:" not in text and "\n  issues:\n" not in text
+
+
+# --- the overflow workers and the late reviews --------------------------------------------------------
+
+def waiting_issue(number, job_id, filed, **spec):
+    return {**job_issue(number, job_id, "available", **spec), "created_at": filed}
+
+
+def test_an_overflow_worker_leaves_young_jobs_of_its_kinds_to_the_others(tmp_path, monkeypatch):
+    import dataclasses
+    import datetime as dt
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    now = dt.datetime.now(dt.UTC)
+    stamp = lambda minutes: (now - dt.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+    cfg = example_config()
+    gh = FakeIssuesGH([waiting_issue(1, "TARGET-Young", stamp(5)), waiting_issue(2, "TARGET-Old", stamp(45))])
+    ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=FakeClaims(), worker_id="chris-2", operator="chris",
+                  agent="codex", model="m", overflow={"target": 30})
+    young, old = ctx.board.list_jobs(("available",))
+    assert (young.filed, worker.held_back(ctx, young), worker.held_back(ctx, old)) == (stamp(5), True, False)
+    assert 4.9 < worker.waited_minutes(young) < 5.5 and worker.waited_minutes(old) > 44
+    monkeypatch.setattr(worker, "lane_for", lambda job: BrokenBrief())
+    taken = worker.work_once(ctx, None, log=lambda line: None)
+    assert taken.job == "TARGET-Old"                              # the young one is left, the old one taken
+    idle = worker.work_once(ctx, None, log=lambda line: None, avoid={"TARGET-Old"})
+    assert idle.status == "idle" and "1 left to the workers that have them first" in idle.detail
+    named = worker.work_once(ctx, None, log=lambda line: None, job_id="TARGET-Young")
+    assert named.job == "TARGET-Young"                            # a job asked for by name is taken whatever its wait
+    # Another kind, a worker that is nobody's overflow, a job whose filing time the board did not give: taken.
+    other = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=FakeClaims(), worker_id="chris-3", operator="chris",
+                    agent="codex", model="m", overflow={"prreview": 30})
+    assert not worker.held_back(other, young) and not worker.held_back(dataclasses.replace(ctx, overflow={}), young)
+    young.filed = ""
+    assert worker.waited_minutes(young) is None and not worker.held_back(ctx, young)
+
+
+def test_the_overflow_option_parses_kinds_and_minutes():
+    from tauceti_roadmap_worker import cli
+    assert cli._overflow("") == {} and cli._overflow("prreview=30, review=45") == {"prreview": 30, "review": 45}
+    for bad in ("prreview", "prreview=0", "prreview=soon", "nosuchkind=5"):
+        with pytest.raises(SystemExit, match="--overflow"):
+            cli._overflow(bad)
+
+
+def test_reviews_of_late_authors_rank_after_everything_else():
+    from tauceti_roadmap_worker.board import new_job
+    cfg = example_config()
+    cfg.prreview.late_authors, cfg.prreview.late_except = ["Dave"], [14]
+    jobs = [new_job("PRREVIEW-A~1", inputs={"pr": 12, "owner": "dave"}), new_job("PRREVIEW-B~1", inputs={"pr": 13, "owner": "carol"}),
+            new_job("PRREVIEW-C~1", inputs={"pr": 14, "owner": "dave"}), new_job("PKG-Delta")]
+    for n, j in enumerate(jobs, 1):
+        j.number = n
+    assert [j.id for j in worker.rank(jobs, late=worker.late_review(cfg.prreview))][-1] == "PRREVIEW-A~1"
+    assert [j.id for j in worker.rank(jobs)] == [j.id for j in worker.rank(jobs, late=worker.late_review(example_config().prreview))]

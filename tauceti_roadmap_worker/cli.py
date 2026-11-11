@@ -94,6 +94,23 @@ def _local_conf(args, cfg: config.Config) -> str:
     return str(Path(cfg.path).resolve()) if cfg.path else ""
 
 
+def _overflow(text: str) -> dict[str, int]:
+    """`work --overflow`: `kind=minutes[,kind=minutes]` as {kind: minutes}; exits on a kind the board does
+    not have or a wait that is not a positive number of minutes."""
+    out: dict[str, int] = {}
+    for item in (x.strip() for x in (text or "").split(",")):
+        if not item:
+            continue
+        kind, _, minutes = item.partition("=")
+        kind = kind.strip()
+        if kind not in KINDS:
+            raise SystemExit(f"--overflow: unknown kind {kind!r} (kinds: {', '.join(KINDS)})")
+        if not minutes.strip().isdigit() or int(minutes) <= 0:
+            raise SystemExit(f"--overflow: {item!r} must be <kind>=<minutes>, the minutes a positive number")
+        out[kind] = int(minutes)
+    return out
+
+
 # --- doctor ---------------------------------------------------------------------------------------
 
 def _tool_version(cmd: str) -> str:
@@ -380,6 +397,7 @@ def work(args) -> int:
     unknown = [k for k in only or () if k not in KINDS]
     if unknown:
         raise SystemExit(f"--only: unknown kind(s) {', '.join(unknown)} (kinds: {', '.join(KINDS)})")
+    overflow = _overflow(getattr(args, "overflow", ""))
     agent = args.agent or cfg.agents.default
     model = args.model or cfg.model_for(agent)
     cl = claims.open_claims(cfg, gh, operator, paths.sanitize_worker_id(args.worker_id), dry_run=args.dry_run)
@@ -391,7 +409,7 @@ def work(args) -> int:
         print(f"warning: claims: {why}", file=sys.stderr)
     ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=cl, worker_id=paths.sanitize_worker_id(args.worker_id),
                   operator=operator, agent=agent, model=model, conf=_local_conf(args, cfg), dry_run=args.dry_run,
-                  agent_fixed=bool(args.agent), model_fixed=bool(args.model))
+                  agent_fixed=bool(args.agent), model_fixed=bool(args.model), overflow=overflow)
     try:
         held = hold_worker_dir(ctx.wdir)
     except WorkerBusy as exc:
@@ -1125,6 +1143,9 @@ def parser() -> argparse.ArgumentParser:
     w.add_argument("--agent", choices=config.AGENTS, default="")
     w.add_argument("--model", default="")
     w.add_argument("--job", default="", help="take only this job id")
+    w.add_argument("--overflow", default="", metavar="KIND=MINUTES[,...]",
+                   help="be the overflow for these kinds: take a job of the kind only once it has waited that many "
+                        "minutes for the workers that have it first (e.g. prreview=30)")
     w.add_argument("--loop", action="store_true")
     w.add_argument("--status-file", default="", metavar="PATH",
                    help="one round only: write its outcome, exit status and token usage to PATH as JSON")

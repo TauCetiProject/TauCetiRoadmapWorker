@@ -212,6 +212,7 @@ class Job:
     labels: list[str] = field(default_factory=list)
     title: str = ""
     closed: bool = False     # the issue is closed: whatever state its label names, the round is over
+    filed: str = ""          # when the issue was created (ISO 8601): the longest the job can have waited
 
     def under_way(self, states: tuple[str, ...]) -> bool:
         """The job is in one of `states` on an open issue. A closed issue left with the label of a
@@ -221,7 +222,7 @@ class Job:
 
     def spec(self) -> dict:
         data = asdict(self)
-        for transient in ("number", "state", "labels", "title", "closed"):
+        for transient in ("number", "state", "labels", "title", "closed", "filed"):
             data.pop(transient)
         return {k: v for k, v in data.items() if v not in ("", [], {}) or k in ("id", "kind", "name")}
 
@@ -954,6 +955,7 @@ class Board:
         job.number, job.labels, job.title = issue["number"], labels, issue.get("title") or ""
         job.state = state_from_labels(job.labels)
         job.closed = issue.get("state") == "closed"
+        job.filed = str(issue.get("created_at") or "")
         return job
 
     def list_jobs(self, states: tuple[str, ...] = ("available",), kinds: tuple[str, ...] | None = None,
