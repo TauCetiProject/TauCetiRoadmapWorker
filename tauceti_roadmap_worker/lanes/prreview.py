@@ -50,7 +50,7 @@ import tomllib
 from pathlib import Path
 from urllib.parse import quote
 
-from .. import board, depgraph, gates, gitops, prompts, prreviews, references, replies, sources
+from .. import board, depgraph, gates, gitops, prompts, prreviews, references, replies, sources, summary
 from ..board import Job
 from ..depgraph import read_order
 from ..gh import GHError
@@ -493,9 +493,79 @@ def description_brief(ws: Workspace) -> str:
             f"{DESCRIPTION_LIMIT} characters. Write the prose only: the worker keeps, after your text and as they "
             f"are, every generated block of the present description (`<!-- name -->` … `<!-- /name -->`: the "
             f"dependency task list, the merge order) and every marker comment, so copy none of them and write no "
-            f"HTML comment. A finding about the content of a generated block is not yours to repair: say in its "
-            f"section that the block is generated. Check every statement of the new text against the head, as you "
-            f"would a README line. With no finding about the title or description, do not write the file.")
+            f"HTML comment. A finding about the content of the dependency task list or of the merge order is not "
+            f"yours to repair: say in its section that the block is generated. Check every statement of the new "
+            f"text against the head, as you would a README line. With no finding about the title or description, "
+            f"do not write the file.")
+
+
+def summary_brief(ws: Workspace) -> str:
+    """The paragraph of the repair brief on the summary block that opens the description, for findings
+    about it: '' when the description has no block of a known kind (`summary.HEADS`). `summary` writes
+    the block once and nothing rewrites it as the head moves, so a review's finding that it describes an
+    earlier head came back round after round (2026-11-11: four pull requests, one past its ninetieth)."""
+    kind = ws.extra.get("pr_summary") or ""
+    if kind not in summary.HEADS:
+        return ""
+    heads = ", ".join(f"**{h}**" for h in summary.HEADS[kind])
+    subject = ("the roadmap the pull request adds, as it stands at the head you leave" if kind == "new" else
+               "what the pull request changes relative to the branch it merges into, as of the head you leave "
+               "(the whole revision, not what this repair changed)")
+    return (f"The summary block that opens the description as well (`{summary.MARK_OPEN}` … `{summary.MARK_CLOSE}` "
+            f"in `{ws.scratch / PULL_REQUEST_TEXT}`), for findings about it only: a summary of an earlier head, a "
+            f"sentence the files contradict, a change it leaves out. Write `{ws.scratch / summary.OUT_NAME}`: the "
+            f"block's text anew, without its two marker comments, as exactly three paragraphs separated by blank "
+            f"lines, each opening with its bold heading, in this order: {heads}. It summarises {subject}; what it "
+            f"says of roadmap folders other than yours stays unless a finding is about it. "
+            f"{summary.FORM_RULES} Check every sentence against the head, as you would a README line. The worker "
+            f"puts the text in place of the present block. With no finding about the summary, do not write the file.")
+
+
+def read_summary(path: Path, kind: str, ctx: Context) -> tuple[str, list[str]]:
+    """(the summary a repair wrote in `path`, why it cannot be delivered): '' with no problem when the
+    repair wrote none, or the description has no block of a known kind to replace. The form is
+    `summary.validate`'s; a path of the machine or an @-mention is refused as in the description."""
+    if kind not in summary.HEADS or not path.is_file():
+        return "", []
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return "", []
+    problems = summary.validate(text, kind)
+    if scrub_paths(text, ctx.state, Path.home()) != text:
+        problems.append("it names a path of this machine")
+    if MENTION.search(text):
+        problems.append("it carries an @-mention (write a login without the @)")
+    return ("", [f"{summary.OUT_NAME}: {x}" for x in problems]) if problems else (text, [])
+
+
+def family_index_changed(ctx: Context, ws: Workspace, folder: str) -> list[str]:
+    """The family index READMEs the pull request itself changes: `README.md` directly in a folder
+    above the nested roadmap `folder` (`family_folders`), added or modified between the base branch
+    and the head reviewed. A repair may answer findings about these (`family_brief`); an index the
+    pull request leaves alone stays out of its reach, since every roadmap of the family shares it."""
+    active = ctx.cfg.roadmap.active_dir.strip("/")
+    wanted = [f"{active}/{f}/README.md" for f in family_folders(folder)]
+    if not wanted:
+        return []
+    out = gitops.git(ws.workdir, "diff", "--name-only", "--diff-filter=AM",
+                     f"{fetch_pr_base(ctx, ws)}...{ws.extra['head']}", "--", *wanted, check=False)
+    return [path for path in wanted if path in out.splitlines()]
+
+
+def family_brief(files: list[str], folder: str) -> str:
+    """The paragraph of the repair brief on the family index the pull request changes, for findings about
+    what it says of the roadmap reviewed: '' with no such file. A review reads the index's entry for the
+    roadmap against the roadmap, and a repair held to the roadmap's folder could not answer what it
+    found there (2026-11-11: three members of one family came back for their entry round after round)."""
+    if not files:
+        return ""
+    names = " and ".join(f"`{f}`" for f in files)
+    return (f"{names} in the worktree as well (the one exception to \"no other folder\"): the index of the family "
+            f"this roadmap belongs to, which this pull request already changes. For findings about what the index "
+            f"says of `{folder}` only: its entry, the suppliers and consumers the index lists for it, a line about "
+            f"it in a table. Change only what is said of this roadmap, so that it agrees with the roadmap's README "
+            f"at the head you leave; leave every other roadmap's entry, the family's own text and the layout of "
+            f"the file as they are. Add the file to your commit with the folder's files (`git add` it by name).")
 
 
 MENTION = re.compile(r"(?<![\w`/])@[A-Za-z][\w-]*")
@@ -645,6 +715,7 @@ class PRReviewLane(Lane):
         (ws.scratch / PULL_REQUEST_TEXT).write_text(pull_request_document(number, data, owner), encoding="utf-8")
         ws.extra["pr_text"] = str(ws.scratch / PULL_REQUEST_TEXT)
         ws.extra["pr_prose"] = description_prose(data.get("body") or "")
+        ws.extra["pr_summary"] = summary.block_kind(data.get("body") or "")
         self.write_changes(job, ctx, ws)
         ws.extra["previous_report"] = self.previous_report(job, ctx, ws)
         ws.extra["mode"] = review_mode(job, cfg, ws.extra)
@@ -1081,7 +1152,9 @@ class PRReviewLane(Lane):
         is now (`merged_description`). A description whose prose is no longer the one the repair read
         (another roadmap folder's repair rewrote it, or its author did) is left alone, since the repair's
         text would undo that change; so is one GitHub refuses to write. Either is noted and not retried:
-        the files' repair stands, and the next review reads the description as it then is. Returns the
+        the files' repair stands, and the next review reads the description as it then is. The summary
+        block the repair wrote (`summary_brief`) replaces the present one in the same write, whether or
+        not the prose was written: it stands apart from what an author or another repair rewrites. Returns the
         summary's words, which the job's record keeps (`delivered_text`): an attempt resumed after this
         step reports them again, in its summary and in the reply's record."""
         if not owes(ctx, job, REPAIR_TEXT):
@@ -1089,20 +1162,30 @@ class PRReviewLane(Lane):
         record, line = ws.job_dir / REPAIR_DESCRIPTION, ""
         if record.is_file():
             want = json.loads(record.read_text(encoding="utf-8"))
-            read = want.pop("read", None)
+            read, block = want.pop("read", None), want.pop("summary", "")
             path = f"repos/{ctx.cfg.repositories.content}/pulls/{ws.extra['pr']}"
             try:
                 now = ctx.gh.api(path) or {}
-                found = description_prose(now.get("body") or "")
-                wrote = found == description_prose(want["body"])
-                want["body"] = merged_description(want["body"], now.get("body") or "")
-                fields = {k: v for k, v in want.items() if v.strip() != (now.get(k) or "").strip()}
-                if fields and read is not None and found != read and not wrote:
-                    line = "title and description not written: the description was changed while the repair ran"
-                elif fields:
+                old = now.get("body") or ""
+                found, fields, refused = description_prose(old), {}, ""
+                if "body" in want:
+                    wrote = found == description_prose(want["body"])
+                    want["body"] = merged_description(want["body"], old)
+                    fields = {k: v for k, v in want.items() if v.strip() != (now.get(k) or "").strip()}
+                    if fields and read is not None and found != read and not wrote:
+                        fields, refused = {}, ("title and description not written: the description was changed "
+                                               "while the repair ran")
+                names = {"title": "title", "body": "description"}
+                done = [names[k] for k in names if k in fields]
+                # The summary block stands apart from the prose: it is replaced whoever rewrote the rest.
+                summed = summary.apply(fields.get("body", old), block) if block else None
+                if summed is not None and summed.strip() != fields.get("body", old).strip():
+                    fields["body"] = summed
+                    done.append("summary")
+                if fields:
                     ctx.gh.write("PATCH", path, fields)
-                    names = {"title": "title", "body": "description"}
-                    line = " and ".join(names[k] for k in names if k in fields) + " rewritten"
+                listed = " and ".join(x for x in (", ".join(done[:-1]), *done[-1:]) if x)
+                line = "; ".join(x for x in (refused, listed and f"{listed} rewritten") if x)
             except GHError as exc:
                 line = "title and description not written: " + scrub_paths(
                     (str(exc).strip().splitlines() or ["refused"])[0], ctx.state, Path.home())[:200]
@@ -1129,10 +1212,14 @@ class PRReviewLane(Lane):
                                            encoding="utf-8")
         report.unlink(missing_ok=True)
         described, record = ws.scratch / DESCRIPTION, ws.job_dir / REPAIR_DESCRIPTION
-        described.unlink(missing_ok=True)
-        record.unlink(missing_ok=True)
-        edits_brief = board_edits_brief(job, ctx, ws) + (
-            "\n\n" + description_brief(ws) if ctx.cfg.prreview.repair_text else "")
+        summarised = ws.scratch / summary.OUT_NAME
+        for stale in (described, summarised, record):
+            stale.unlink(missing_ok=True)
+        with_text = ctx.cfg.prreview.repair_text
+        index = family_index_changed(ctx, ws, folder) if ctx.cfg.prreview.repair_index else []
+        edits_brief = "\n\n".join(x for x in (
+            family_brief(index, folder), board_edits_brief(job, ctx, ws),
+            description_brief(ws) if with_text else "", summary_brief(ws) if with_text else "") if x)
         values = {**self.common_values(job, ctx, ws), **answer_values(ctx, ws, job.name, folder, reviews, report),
                   "BOARD_EDITS": edits_brief}
         if merged:
@@ -1161,8 +1248,11 @@ class PRReviewLane(Lane):
                 self.note(ws, "board edits delivered with the review: " + ", ".join(sorted(edits)))
             if result.limited or result.exit_code != 0:
                 raise LaneError("the repair agent " + ("hit a usage limit" if result.limited else f"exited {result.exit_code}"))
-            text, text_problems = read_description(described, ctx) if ctx.cfg.prreview.repair_text else (None, [])
-            problems = ([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report) + text_problems
+            text, text_problems = read_description(described, ctx) if with_text else (None, [])
+            block, block_problems = (read_summary(summarised, ws.extra.get("pr_summary") or "", ctx)
+                                     if with_text else ("", []))
+            problems = (([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report)
+                        + text_problems + block_problems)
             if not problems:
                 problems, gate = gate_problems(ctx, ws, job.name, folder, self.gate_options(job, ctx, ws),
                                                base=merged or head)
@@ -1172,9 +1262,9 @@ class PRReviewLane(Lane):
             raise LaneError("its checks failed: " + "; ".join(problems[:3]))
         new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
         save_gate(ws.job_dir / REPAIR_GATE, new, gate)
-        if text:
-            record.write_text(json.dumps({**text, "read": ws.extra.get("pr_prose", "")}, indent=1,
-                                         sort_keys=True) + "\n", encoding="utf-8")
+        if text or block:
+            kept = {**(text or {}), "read": ws.extra.get("pr_prose", ""), **({"summary": block} if block else {})}
+            record.write_text(json.dumps(kept, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         owe(ctx, job, ws, (), content={"sha": new, "base": head, "branch": ws.extra["branch"]})
         settle(ctx, job, REPAIR, repair={"sha": new, **({"merged": merged} if merged else {})})
 
