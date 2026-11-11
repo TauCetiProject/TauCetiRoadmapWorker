@@ -22,6 +22,12 @@ These planning principles are the product's contract, not advice:
   consumers are later; cycles are design defects and are broken by moving ownership.
 - Statements are the author's own words with exact locators into legal sources. No source
   passages are copied. Mathematical background is welcome; computational algorithms are not.
+- The organisation is the roadmap's own, derived from the mathematics: the layers are what the
+  final targets need, worked backwards, and each is named by its mathematics. A source's
+  arrangement (its chapter order, its expository sequence) is never the plan: a roadmap does not
+  say it follows a source and no layer is named after a source's chapter. An order the
+  dependencies force is kept, whichever source shares it. Results that appear in a source are
+  cited with exact locators.
 - `Suggested.lean` is the roadmap's acceptance test, not an API catalogue: it states the
   headline theorems the finished roadmap will prove, each with `sorry`, against the pinned
   Mathlib and Tau Ceti, with only the simple definitions they need, a single `import Mathlib`,
@@ -100,7 +106,9 @@ requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned l
    theorems or `Suggested.lean` declarations removed; a supplier added or dropped. A description
    written for an earlier head is the usual case, since a repair changes the roadmap and not the
    text. Each is P3: quote the sentence, or name the change it leaves out, and give the text that
-   would be right. The generated blocks are outside this step.
+   would be right. The summary block that opens the description (`<!-- roadmap-summary -->`) is read
+   with the prose, as a summary of what its headings name; the other generated blocks are outside
+   this step.
 
 ## Deliverables
 

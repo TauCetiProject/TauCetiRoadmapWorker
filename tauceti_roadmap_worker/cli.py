@@ -17,7 +17,7 @@
     tauceti-roadmap sources check <sources.toml> | classify <url> | request <needs-references.toml> --job ID
     tauceti-roadmap sources fetch <DOI | arXiv id | URL | "Authors, Title, Year"> [--manifest sources.toml] [--id KEY]
     tauceti-roadmap sources cache <sources.toml> | ocr <file.pdf>
-    tauceti-roadmap board intake [--pr N] | references | sync [--prune-order] | stale [--release]   (board bot / maintainer; --yes to write)
+    tauceti-roadmap board intake [--pr N] | references | sync [--prune-order | --reviews-only] | stale [--release]   (board bot / maintainer; --yes to write)
     tauceti-roadmap board errata seed [--limit N] [--yes]
     tauceti-roadmap board import-explorer --from <explorer checkout> [--kinds package,design,target] [--names A,B] [--yes]
     tauceti-roadmap targets file-many --from <targets.toml | targets.jsonl> [--yes]
@@ -618,6 +618,25 @@ def merge_order(args) -> int:
     return 0
 
 
+def summary_cmd(args) -> int:
+    """Write the summary block of the pull requests named (or, with --all, of the open ones whose
+    block is of the wrong kind; with --missing also of those without a block)."""
+    from . import summary
+    cfg = _load(args)
+    ctx = _bot_context(args, cfg, args.dry_run)
+    if not args.pr and not args.all:
+        print("summary: name a pull request with --pr, or pass --all", file=sys.stderr)
+        return 2
+    known = {} if args.pr else summary.candidates(ctx, missing=args.missing)
+    numbers = sorted(set(args.pr)) if args.pr else list(known)
+    agent = args.agent or "claude"
+    model = args.model or (cfg.agents.codex_model if agent == "codex" else cfg.agents.claude_model)
+    lines = summary.refresh(ctx, numbers, agent=agent, model=model, force=args.force,
+                            missing=args.missing or bool(args.pr), listing=args.list, known=known,
+                            report=lambda line: print(line, flush=True))
+    return 1 if any("refused" in line or "failed" in line for line in lines) else 0
+
+
 def sources_cmd(args) -> int:
     cfg = _load(args)
     s = cfg.sources
@@ -896,6 +915,8 @@ def board_cmd(args) -> int:
         raise SystemExit(f"board {args.action}: unexpected argument {args.step!r}")
     if args.prune_order and args.action != "sync":
         raise SystemExit("--prune-order goes with `board sync`")
+    if args.reviews_only and (args.action != "sync" or args.prune_order):
+        raise SystemExit("--reviews-only goes with `board sync`, without --prune-order")
     cfg = _load(args)
     ctx = _bot_context(args, cfg, dry=args.dry_run or not args.yes)
     try:
@@ -910,20 +931,36 @@ def board_run(args, cfg, ctx) -> int:
     its whole length, one run at a time, hosted or local: a heartbeat renews it, and once it is lost
     (another run took it over, or no renewal succeeded before it expired) every further GitHub write
     raises and the run stops, exit 1. A run that finds the lock held says so and exits 0 having done
-    nothing; one that cannot take it (no push access, no network) does nothing either, exit 1."""
+    nothing; one that cannot take it (no push access, no network) does nothing either, exit 1.
+
+    One step does not wait for the board: a `board sync` that finds it held still reads the
+    pull-request reviews (`_reviews_only`). An intake with many submissions to merge holds the board
+    for most of an hour, run after run, and the reviews of pull requests repaired meanwhile would
+    otherwise be filed, and the review label set, once per intake. `board sync --reviews-only` is
+    that step and nothing else, whoever holds the board: a schedule that runs beside a hosted board
+    run asks for it, so that it never takes the board from the run it is running beside."""
     from . import intake
     write = args.yes and not args.dry_run
+    if args.reviews_only and not write:
+        for out in intake.sync_pr_reviews(ctx):
+            print(out)
+        return 0
     if not write or (args.action == "stale" and not args.release):
         return _board_steps(args, cfg, ctx, intake, write)
+    if args.reviews_only:
+        return _reviews_only(cfg, ctx, intake, intake.board_lock(cfg, ctx))
     lock, key = intake.board_lock(cfg, ctx), intake.lock_key(cfg.project.name)
     status, line = intake.take_lock(lock, cfg.project.name)
+    if status == claims.HELD and args.action == "sync" and cfg.prreview.enabled:
+        print(line.removesuffix("nothing done") + "pull-request reviews only")
+        return _reviews_only(cfg, ctx, intake, lock)
     if line:
         print(line)
     if status != claims.ACQUIRED:
         return 0 if status == claims.HELD else 1
     try:
         with claims.Heartbeat(lock, key, intake.LOCK_TTL, intake.LOCK_RENEW, gh=ctx.gh, log=print):
-            return _board_steps(args, cfg, ctx, intake, write)
+            return _board_steps(args, cfg, ctx, intake, write, lock=lock)
     except claims.LeaseLost as exc:
         print(f"stopped: {exc}; the next run carries on")
         return 1
@@ -931,7 +968,33 @@ def board_run(args, cfg, ctx) -> int:
         lock.release(key)
 
 
-def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
+def _reviews_only(cfg, ctx, intake, lock) -> int:
+    """`board sync` while another run holds the board, or with `--reviews-only`: the pull-request
+    reviews alone, under the reviews lock (`intake.take_reviews_lock`), which a full sync takes for
+    the same step. That step reads the board and the content repository, sets the review label, and
+    closes or files PRREVIEW jobs, which no other board step creates."""
+    key = intake.reviews_key(cfg.project.name)
+    status, line = intake.take_reviews_lock(lock, cfg.project.name)
+    if line:
+        print(line)
+    if status != claims.ACQUIRED:
+        return 0 if status == claims.HELD else 1
+    try:
+        with claims.Heartbeat(lock, key, intake.LOCK_TTL, intake.LOCK_RENEW, gh=ctx.gh, log=print):
+            for out in intake.sync_pr_reviews(ctx):
+                print(out)
+        return 0
+    except GHError as exc:
+        print(f"sync pull-request reviews: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]})")
+        return 1
+    except claims.LeaseLost as exc:
+        print(f"stopped: {exc}; the next run carries on")
+        return 1
+    finally:
+        lock.release(key)
+
+
+def _board_steps(args, cfg, ctx, intake, write: bool, lock=None) -> int:
     shared = None
     if cfg.repositories.claims:
         shared = claims.Claims(repo=cfg.repositories.claims,
@@ -974,6 +1037,13 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
             print("skipped (GitHub errors; the next run tries again): " + ", ".join(dict.fromkeys(skipped)))
             return 1
         return 0
+    if args.action == "resume":
+        names = tuple(n.strip() for n in args.names.split(",") if n.strip())
+        if not names:
+            raise SystemExit("board resume needs --names A,B (the roadmaps to resume)")
+        for line in intake.resume_unfollowed(ctx, names, yes=write):
+            print(line)
+        return 0
     if args.action == "import-explorer":
         if not args.source:
             raise SystemExit("board import-explorer needs --from <path to a checkout of the explorer>")
@@ -998,7 +1068,8 @@ def _board_steps(args, cfg, ctx, intake, write: bool) -> int:
                  ("leases", lambda: intake.sync_leases(ctx, shared)),
                  ("waiting gate rounds", lambda: intake.supersede_waiting_gates(ctx, yes=write)),
                  ("pull requests", lambda: intake.sync_pull_requests(ctx)),
-                 ("pull-request reviews", lambda: intake.sync_pr_reviews(ctx)),
+                 ("pull-request reviews", lambda: (intake.locked_pr_reviews(ctx, lock) if lock is not None
+                                                   else intake.sync_pr_reviews(ctx))),
                  ("max rounds", lambda: intake.repark_capped(ctx)), ("origins", lambda: intake.sync_origins(ctx)),
                  ("gap registry", lambda: intake.note_gap_registry_blocks(ctx)),
                  ("review queue", lambda: boardpr.review_queue(ctx, yes=write)),
@@ -1092,6 +1163,18 @@ def parser() -> argparse.ArgumentParser:
     m.add_argument("--list", action="store_true")
     m.add_argument("--pr", type=int, default=0)
 
+    sm = sub.add_parser("summary", help="write the summary block that opens a roadmap pull request's description: "
+                        "of the roadmap when the pull request adds it, of the change when it revises one")
+    sm.add_argument("--pr", type=int, action="append", default=[], help="a pull request (repeatable); a block "
+                    "of the wrong kind is rewritten and a missing one written")
+    sm.add_argument("--all", action="store_true", help="every open pull request with a summary block: rewrite "
+                    "the blocks of the wrong kind")
+    sm.add_argument("--missing", action="store_true", help="with --all: also write a block where there is none")
+    sm.add_argument("--force", action="store_true", help="rewrite a block of the right kind too")
+    sm.add_argument("--list", action="store_true", help="say what would be written; run no agent")
+    sm.add_argument("--agent", choices=["claude", "codex"], default="claude")
+    sm.add_argument("--model", default="", help="default: the configured model of the agent")
+
     s = sub.add_parser("sources", help="fetch a legal source, check a manifest, classify a URL, cache a manifest's "
                                        "texts, OCR a scan, render a needs-references request")
     s.add_argument("action", choices=["fetch", "check", "classify", "cache", "ocr", "request"])
@@ -1152,15 +1235,20 @@ def parser() -> argparse.ArgumentParser:
     u.add_argument("--json", action="store_true")
 
     b = sub.add_parser("board", help="board maintenance for the bot or a maintainer (dry run unless --yes)")
-    b.add_argument("action", choices=["intake", "references", "sync", "stale", "import-explorer", "errata"])
+    b.add_argument("action", choices=["intake", "references", "sync", "stale", "import-explorer", "errata",
+                                             "resume"])
     b.add_argument("step", nargs="?", default="", help="errata: seed (an errata job per roadmap not yet covered)")
     b.add_argument("--pr", type=int, default=0)
     b.add_argument("--from", dest="source", default="", help="import-explorer: a checkout of CBirkbeck/tauceti-explorer")
     b.add_argument("--kinds", default="", help="import-explorer: package,design,target (default: all)")
-    b.add_argument("--names", default="", help="import-explorer: only these roadmaps (comma list)")
+    b.add_argument("--names", default="", help="import-explorer: only these roadmaps (comma list); resume: the roadmaps whose last "
+                                                  "finished job released nothing")
     b.add_argument("--limit", type=int, default=0, help="errata seed: at most this many jobs per run (0: all)")
     b.add_argument("--yes", action="store_true")
     b.add_argument("--release", action="store_true")
+    b.add_argument("--reviews-only", action="store_true",
+                   help="sync: only the pull-request reviews (the review label, superseded and new rounds), "
+                        "without the board lock; safe beside a running intake")
     b.add_argument("--prune-order", action="store_true",
                    help="sync: first remove from the merge order every roadmap on the content repository's main "
                         "(dry run unless --yes)")
@@ -1170,7 +1258,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     handlers = {"doctor": doctor, "targets": targets, "work": work, "gate": gate, "merge-order": merge_order,
-                "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd,
+                "summary": summary_cmd, "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd,
                 "usage": usage_cmd, "roadmaps": roadmaps_cmd, "throttle": throttle_cmd}
     try:
         return handlers[args.command](args)

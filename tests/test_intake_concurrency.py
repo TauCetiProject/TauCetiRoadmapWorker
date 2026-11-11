@@ -133,6 +133,102 @@ def test_a_free_lock_is_taken_for_the_run_and_released_after_it(monkeypatch, cap
     assert ran == ["repair", "intake", "reconcile", "references", "scan", "order"]
 
 
+class TwoLocks(Lock):
+    """The board lock held by another run; the reviews lock as `reviews` says."""
+
+    def __init__(self, reviews, lease):
+        super().__init__(claims.HELD, lease)
+        self.reviews = reviews
+
+    def acquire(self, key, ttl=claims.JOB_TTL, extra=None):
+        self.acquired.append((key, ttl))
+        return self.reviews if key.endswith("/reviews") else claims.HELD
+
+
+def test_a_sync_that_finds_the_board_held_still_reads_the_pull_request_reviews(monkeypatch, capsys):
+    cfg = example_config()
+    cfg.prreview.enabled = True
+    board_key, reviews_key = intake.lock_key(cfg.project.name), intake.reviews_key(cfg.project.name)
+    assert board_key != reviews_key
+    since = int(dt.datetime(2026, 11, 11, 2, 49, 6, tzinfo=dt.UTC).timestamp())
+    lease = {"owner": "intake:run-42947082468", "acquired_at": since, "expires_at": since + 900}
+    monkeypatch.setattr(cli, "_board_steps", lambda *a, **k: pytest.fail("a full sync ran without the board lock"))
+    ran = []
+    monkeypatch.setattr(intake, "sync_pr_reviews", lambda ctx: ran.append("reviews") or ["#7: PRREVIEW-Foo~2 created"])
+    # the reviews lock is free: the step runs under it and releases it; the board lock is not released
+    lock = TwoLocks(claims.ACQUIRED, lease)
+    monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: lock)
+    assert cli.board_run(board_args("sync", "--yes"), cfg, run_context(cfg)) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "intake already running (intake:run-42947082468, since 2026-11-11 02:49:06Z); pull-request reviews only",
+        "#7: PRREVIEW-Foo~2 created"]
+    assert ran == ["reviews"] and lock.released == [reviews_key]
+    assert lock.acquired == [(board_key, intake.LOCK_TTL), (reviews_key, intake.LOCK_TTL)]
+    # another run is reading the reviews: nothing is done, exit 0
+    ran.clear()
+    lock = TwoLocks(claims.HELD, lease)
+    assert cli.board_run(board_args("sync", "--yes"), cfg, run_context(cfg)) == 0
+    assert capsys.readouterr().out.splitlines()[1] == \
+        "pull-request reviews already running (intake:run-42947082468, since 2026-11-11 02:49:06Z); left to that run"
+    assert ran == [] and lock.released == []
+    # a reviews lock that cannot be written: nothing is done, exit 1
+    lock = TwoLocks(claims.ERROR, lease)
+    assert cli.board_run(board_args("sync", "--yes"), cfg, run_context(cfg)) == 1
+    assert ran == [] and lock.released == []
+    # the intake itself never runs beside another board run, and neither does a sync with reviews off
+    lock = TwoLocks(claims.ACQUIRED, lease)
+    assert cli.board_run(board_args("intake", "--yes"), cfg, run_context(cfg)) == 0
+    cfg.prreview.enabled = False
+    assert cli.board_run(board_args("sync", "--yes"), cfg, run_context(cfg)) == 0
+    assert ran == [] and lock.released == [] and [k for k, _ in lock.acquired] == [board_key, board_key]
+
+
+def test_a_reviews_only_sync_never_takes_the_board_lock(monkeypatch, capsys):
+    cfg = example_config()
+    cfg.prreview.enabled = True
+    board_key, reviews_key = intake.lock_key(cfg.project.name), intake.reviews_key(cfg.project.name)
+    monkeypatch.setattr(cli, "_board_steps", lambda *a, **k: pytest.fail("a full sync ran"))
+    ran = []
+    monkeypatch.setattr(intake, "sync_pr_reviews", lambda ctx: ran.append("reviews") or ["#7: ai-approved added"])
+    # the board is free: the run still leaves it alone, and takes the reviews lock only
+    lock = Lock(claims.ACQUIRED)
+    monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: lock)
+    assert cli.board_run(board_args("sync", "--reviews-only", "--yes"), cfg, run_context(cfg)) == 0
+    assert capsys.readouterr().out.splitlines() == ["#7: ai-approved added"]
+    assert ran == ["reviews"] and lock.released == [reviews_key]
+    assert [k for k, _ in lock.acquired] == [reviews_key] and board_key != reviews_key
+    # a dry run reads the reviews with no lock at all
+    lock = Lock(claims.ACQUIRED)
+    assert cli.board_run(board_args("sync", "--reviews-only"), cfg, run_context(cfg)) == 0
+    assert ran == ["reviews", "reviews"] and lock.acquired == [] and lock.released == []
+    # the option belongs to `board sync` alone
+    for extra in (["intake", "--reviews-only"], ["sync", "--reviews-only", "--prune-order"]):
+        with pytest.raises(SystemExit):
+            cli.board_cmd(board_args(*extra))
+
+
+def test_a_full_sync_reads_the_pull_request_reviews_under_the_reviews_lock(monkeypatch):
+    cfg = example_config()
+    ctx = run_context(cfg)
+    key = intake.reviews_key(cfg.project.name)
+    ran = []
+    monkeypatch.setattr(intake, "sync_pr_reviews", lambda ctx: ran.append("reviews") or ["#7: ai-approved added"])
+    lock = Lock(claims.ACQUIRED)
+    assert intake.locked_pr_reviews(ctx, lock) == ["#7: ai-approved added"]
+    assert ran == ["reviews"] and lock.acquired == [(key, intake.LOCK_TTL)] and lock.released == [key]
+    # held by a sync that found the board held: this run leaves the step to it
+    lock = Lock(claims.HELD, {"owner": "intake:host-1", "acquired_at": 0})
+    assert intake.locked_pr_reviews(ctx, lock) == [
+        "pull-request reviews already running (intake:host-1, since 1970-01-01 00:00:00Z); left to that run"]
+    assert ran == ["reviews"] and lock.released == []
+    # the lock is released when the step raises
+    lock = Lock(claims.ACQUIRED)
+    monkeypatch.setattr(intake, "sync_pr_reviews", lambda ctx: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        intake.locked_pr_reviews(ctx, lock)
+    assert lock.released == [key]
+
+
 @pytest.mark.parametrize("argv", [["references", "--yes"], ["stale", "--release", "--yes"],
                                   ["errata", "seed", "--yes"], ["import-explorer", "--from", "x", "--yes"]])
 def test_every_board_run_that_writes_takes_the_lock(monkeypatch, capsys, argv):

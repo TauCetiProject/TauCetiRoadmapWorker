@@ -499,6 +499,25 @@ open pull requests cannot be read, no paragraph is written (`merge-order` says s
 names it in its summary). A roadmap missing from the merge order gets no paragraph, and only the
 port lane's pull requests get one from the tool.
 
+`summary` writes the block that opens a roadmap pull request's description,
+`<!-- roadmap-summary -->` … `<!-- /roadmap-summary -->`: three short paragraphs by an agent, which
+is given the material as files and whose text is checked (three headed paragraphs, a word limit, no
+pull-request number, date, file name or review history) before anything is written. What it
+summarises depends on the pull request's files. One that adds a roadmap's README gets a summary of
+the roadmap, read from the README at its head (**What this roadmap builds.**, **Why Tau Ceti wants
+it.**, **Approach and generality.**). One that changes the README or `Suggested.lean` of a roadmap
+already on its base branch gets a summary of the revision, read from the two texts, their
+differences against the merge base and the author's description (**What this revision changes.**,
+**Why the change is made.**, **What the roadmap keeps.**). A pull request that changes no roadmap
+text, or that adds several unrelated roadmaps without a marker naming one, gets none. A block of the
+right kind is left alone (`--force` rewrites it); a block of the other kind, such as a summary of the
+whole roadmap on a revision, is replaced; a description without a block gets one for a pull request
+named with `--pr`, and with `--all` only under `--missing`. The block is placed first, in place of
+any earlier one wherever it stood, and the rest of the description is kept as it is; the description
+is read again just before the write, and one that reads empty or as an API error is never rewritten.
+`--list` reports what would be done and runs no agent. The material and the result of each run stay
+under `summaries/pr-<n>/` in the state directory.
+
 Only the operator who opened a pull request can push to its branch, so the fix rounds on a board
 pull request and the gate rounds on a roadmap pull request name that operator (`requires_operator`).
 The red-team passes of one round name different agents and models (`requires_agent`,
@@ -703,7 +722,8 @@ it moves.
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
-| `repair_text` | `true` | such a repair also answers the findings about the pull request's title and description, and puts right what its own change makes wrong in them: the agent writes the corrected text and the worker puts it on the pull request, keeping the generated blocks and markers |
+| `repair_text` | `true` | such a repair also answers the findings about the pull request's title and description, and puts right what its own change makes wrong in them: the agent writes the corrected text and the worker puts it on the pull request, keeping the generated blocks and markers; a finding about the summary block is answered by a new text for the block |
+| `repair_index` | `true` | such a repair of a nested roadmap may also edit the family's `README.md`, when the pull request itself changes that file, for findings about what the index says of the roadmap reviewed |
 | `statement_hygiene` | `true` | the push gate's statement-hygiene scan of Suggested.lean (count `statement-hygiene`; every push gate and `tauceti-roadmap gate` run it): `Nonempty`/`∃` isomorphism headlines, choice in data, `letI`/`haveI` in signatures, `[Fintype k]` beside `[Field k]`, `ULift`, instance removals, `HEq`/`cast`/`eqToHom` conclusions (P3), duplicate statements (P2); each hit names its line, severity and repair, and a review reports it as a finding |
 | `repair_merges_base` | `true` | a repair of a pool author's pull request (`repair_pool`) first merges the base branch into the pull request's branch when the branch's Lake pins (manifest, toolchain, lakefile) are behind it and the branch changed none of them itself; a merge that conflicts is not made |
 
@@ -794,14 +814,35 @@ that is not in that form, is over 200 characters of title or 12000 of descriptio
 comment, a path of the machine or an @-mention, or would read as a review; the refusal goes to the
 repair's second pass like any failed check. After the push (or with no push, when the files needed
 no change) and before the reply, the worker writes the title and the description onto the pull
-request: the agent's prose, then, verbatim and in their order, every generated block of the present
+request: the summary block when the description has one (it stays first), the agent's prose, then,
+verbatim and in their order, every other generated block of the present
 description (`<!-- name -->` … `<!-- /name -->`: a dependency task list, the merge-order paragraph),
 every other HTML comment (the worker's marker) and the attribution line it ends with. Prose outside
 those blocks is replaced. A description whose prose is no longer the one the repair read (another
 folder's repair rewrote it meanwhile, or the author did) is left as it is, since the repair's text
 would undo that change. That, like a write GitHub refuses, is noted (`title and description not
 written: <why>`) and not retried; the files' repair and its reply stand. The round's summary says `title and
-description rewritten` (or which of the two). When the pull request's branch moved while the repair
+description rewritten` (or which of the two).
+
+The summary block that opens a description (`<!-- roadmap-summary -->`, written once by
+`tauceti-roadmap summary`) is the one generated block a repair may answer for, since nothing else
+rewrites it as the head moves: for a finding about it the agent writes `scratch/summary.md`, the
+block's three paragraphs under the headings of its kind, checked as `summary` checks its own (form,
+length, forbidden content) and for a path of the machine or an @-mention; a refusal goes to the
+second pass. The worker puts it in place of the present block in the same write as the description,
+and also when the prose was left alone because it changed under the repair: the block stands apart
+from what an author rewrites. The round's summary then names it (`summary rewritten`, `title,
+description and summary rewritten`), and the reply's record carries `"text": true` as for a
+rewritten description. A description with no summary block gets none from a repair.
+
+A nested roadmap's entry in its family's index is read by the review with the roadmap. With
+`repair_index` on, a repair may edit the family's `README.md` (never its other index files) when the
+pull request itself changes that file, for findings about what the index says of the roadmap
+reviewed, and commits it with the folder's files; the push gate already takes a family's index files
+as the pull request's own. An index the pull request does not change stays out of the repair's
+reach, since every roadmap of the family shares it.
+
+When the pull request's branch moved while the repair
 ran, the repair is carried onto the new head if the move is not its own folder's: the branch only
 gained commits, those change files under the roadmap directory only and none in the folder reviewed
 (another folder of the same pull request, repaired by its own review), the repair's commits apply
@@ -1009,6 +1050,7 @@ tauceti-roadmap --conf $CONF board intake --yes    # take in submissions (design
 tauceti-roadmap --conf $CONF board references --yes   # only the needs-references answers
 tauceti-roadmap --conf $CONF board stale --release --yes   # release lapsed claims and closed submissions
 tauceti-roadmap --conf $CONF merge-order           # refresh the chain paragraph on open roadmap PRs
+tauceti-roadmap --conf $CONF summary --all --list  # summary blocks of the wrong kind; drop --list to rewrite them
 tauceti-roadmap --conf $CONF targets import-intentions --yes   # intentions → TARGET jobs (10 per run)
 tauceti-roadmap --conf $CONF board import-explorer --from ~/tauceti-explorer --yes   # see below
 tauceti-roadmap --conf $CONF board errata seed [--limit N] --yes   # an ERRATA-<Name> job per roadmap on main or
@@ -1089,19 +1131,27 @@ board repository (the workers' lease mechanism; the hosted workflow's token and 
 both push it), renews it every three minutes while it runs, and releases it at the end, so the
 hosted run and a maintainer's shell never interleave, however long a run takes. A run that finds it
 held prints `intake already running (intake:run-<id or host>, since <time>); nothing done` and exits
-0: wait, or let the schedule pick things up. A run that cannot take it (no push access to the board
-repository, no network) prints `board lock not taken (the lock ref could not be written); nothing
-done` and exits 1. A run whose lock is lost (a renewal finds another owner, or every renewal fails
-until the 15 minutes run out) stops at its next write with `stopped: the lease ... was lost: <why>;
-the next run carries on` and exits 1. Every job creation
-re-reads the live board first and skips a job whose issue exists (logged `already on the board as
-#n`), and each intake closes an open job issue that duplicates another open one (`Duplicate of #n`,
-labelled `duplicate`); a `state:done` twin is never closed. The twin kept is the one that got
-furthest, not the older one: the twin an open submission pull request names (`Refs #n`, or
+0: wait, or let the schedule pick things up. One step does not wait: a `board sync` that finds the
+board held (with `[prreview] enabled`) prints `intake already running (...); pull-request reviews
+only` and still reads the pull-request reviews (the review label, superseded rounds, new rounds),
+since an intake with many submissions to merge holds the board for most of an hour, run after run.
+That step has a lock of its own (`roadmap/<project>/board/reviews`), which a full sync takes for the
+same step, so it runs once at a time: a run that finds it held prints `pull-request reviews already
+running (...); left to that run`. `board sync --reviews-only --yes` is that step and nothing else,
+and never takes the board lock: use it in a schedule that runs beside the hosted board run, where a
+plain sync landing between two hosted runs would take the board from the next one. A run that cannot
+take the board lock (no push access to the board repository, no network) prints `board lock not
+taken (the lock ref could not be written); nothing done` and exits 1. A run whose lock is lost (a
+renewal finds another owner, or every renewal fails until the 15 minutes run out) stops at its next
+write with `stopped: the lease ... was lost: <why>; the next run carries on` and exits 1. Every job
+creation re-reads the live board first and skips a job whose issue exists (logged `already on the
+board as #n`), and each intake closes an open job issue that duplicates another open one (`Duplicate
+of #n`, labelled `duplicate`); a `state:done` twin is never closed. The twin kept is the one that
+got furthest, not the older one: the twin an open submission pull request names (`Refs #n`, or
 `state:submitted`), else the one a worker claimed and still holds the lease of, else any claimed or
 parked one, else the oldest; the kept twin takes over the closed twin's pull request and state
-(`submitted` while its submission is open, `claimed` while its lease is live), and the job's lease is
-left alone (it is keyed by the job id, so it belongs to the worker on the kept twin).
+(`submitted` while its submission is open, `claimed` while its lease is live), and the job's lease
+is left alone (it is keyed by the job id, so it belongs to the worker on the kept twin).
 
 ### The board workflow
 
@@ -1148,6 +1198,18 @@ fresh review of the new head. A board pull request merged on GitHub by hand fini
 from the recorded (or last) accepting review, closes the jobs that wrote it and creates what follows
 (the package for a design; for a package, its port, since no pull request is left for the board red
 team, which then runs on the roadmap pull request); the review is never reopened.
+
+A roadmap that stands still with every job done (its last job was finished and nothing was created
+after it: a submission merged by hand before the intake read it, or a run that stopped between
+finishing a job and creating what follows) is resumed by name: `board resume --names A,B` prints
+what its last job would release, and `--yes` creates it, as the intake would have then, from the
+verdict at the head of the review's report on the board's main. When the job's board pull request
+is merged, what follows works on the board's main (a review or a repair names no pull request), an
+accepted package is ported with its red team on the roadmap pull request, and a package merged
+between two red-team rounds is ported with the next round there. A roadmap with an open job, a
+ported one, and one whose last review rejected it are left as they are. A red-team pass that was
+closed as `superseded` when its board pull request was merged is reopened, not created again, when
+its round resumes after the port.
 
 A GitHub blip never costs a run: every read is tried again after a 5xx answer or a timeout (2, 5
 and 15 seconds later); a pull request whose reads still fail is skipped with a line in the log and

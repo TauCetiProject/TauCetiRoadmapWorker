@@ -110,3 +110,98 @@ def test_a_package_merged_on_github_goes_on_to_its_port():
     boardpr.scan(ctx, yes=True)
     assert pkg_rev.state == "done" and board.find("PORT-Foo") is not None and board.find("RT-Foo~1a") is None
     assert "Foo" in depgraph.read_order(gh.files["merge-order/ORDER.txt"])     # placed when its port was created
+
+
+class ExpectBoard(Board):
+    """A board whose conditional state moves are honoured (`supersede`)."""
+
+    def set_state(self, job, state, comment="", expect=""):
+        if expect and job.state != expect:
+            return False
+        super().set_state(job, state, comment)
+        return True
+
+    def close(self, job, comment="", label=""):
+        self.comment(job.number, comment)
+
+
+def merged_package(*jobs):
+    """A package's board pull request, merged on GitHub with no accepting review, and the rounds it left."""
+    ctx, _board, gh, _design, _rev = setup()
+    gh.comments.clear()
+    gh.pr["body"] = "Refs #6\n\n" + encode_submission("PKG-Foo", "w1", "alice", "codex", "gpt-6.1-sol")
+    gh.pr["merged"], gh.pr["state"] = True, "closed"
+    board = ExpectBoard(list(jobs))
+    ctx.board = board
+    return ctx, board, gh
+
+
+def test_a_review_stranded_by_a_merge_on_github_reviews_the_boards_main():
+    rev = new_job("REV-PKG-Foo~2", inputs={"board_pr": 12, "operator": "alice", "after_comment": 7})
+    rev.number, rev.state = 5, "available"
+    ctx, board, _gh = merged_package(rev)
+    assert boardpr.scan(ctx) == ["#12: merged on GitHub; REV-PKG-Foo~2 would review the board's main (dry run)"]
+    assert rev.inputs.get("board_pr") == 12                                    # a dry run writes nothing
+    assert boardpr.scan(ctx, yes=True) == ["#12: merged on GitHub; REV-PKG-Foo~2 reviews the board's main"]
+    assert rev.state == "available" and "board_pr" not in rev.inputs and "after_comment" not in rev.inputs
+    assert rev.inputs["operator"] == "alice"
+    assert "was merged on GitHub before this review ran" in board.posted[-1][1]
+    assert boardpr.scan(ctx, yes=True) == []                                   # off the pull request: nothing to scan
+
+
+def test_rounds_stranded_on_two_merged_pull_requests_both_go_on():
+    one = new_job("REV-PKG-Foo~2", inputs={"board_pr": 12, "operator": "alice"})
+    two = new_job("REV-PKG-Bar~2", inputs={"board_pr": 13, "operator": "alice"})
+    (one.number, one.state), (two.number, two.state) = (5, "available"), (6, "available")
+    ctx, _board, gh = merged_package(one, two)
+    api = gh.api                                                               # the second pull request reads as the first
+    gh.api = lambda path, *a, **k: api(path.replace("/pulls/13", "/pulls/12").replace("/issues/13/", "/issues/12/"), *a, **k)
+    assert boardpr.scan(ctx, yes=True) == ["#12: merged on GitHub; REV-PKG-Foo~2 reviews the board's main",
+                                           "#13: merged on GitHub; REV-PKG-Bar~2 reviews the board's main"]
+    assert "board_pr" not in one.inputs and "board_pr" not in two.inputs
+
+
+def test_a_claimed_review_of_a_merged_pull_request_is_left_to_its_worker():
+    rev = new_job("REV-PKG-Foo~2", inputs={"board_pr": 12, "operator": "alice"})
+    rev.number, rev.state = 5, "claimed"
+    ctx, _board, _gh = merged_package(rev)
+    assert boardpr.scan(ctx, yes=True) == []
+    assert rev.inputs["board_pr"] == 12
+
+
+def test_a_repair_not_yet_run_goes_on_on_the_boards_main():
+    fix = new_job("FIX-PKG-Foo~2", inputs={"board_pr": 12, "operator": "alice"})
+    fix.number, fix.state = 7, "blocked"
+    ctx, board, _gh = merged_package(fix)
+    assert boardpr.scan(ctx, yes=True) == ["#12: merged on GitHub; FIX-PKG-Foo~2 repairs the board's main"]
+    assert fix.state == "blocked" and "board_pr" not in fix.inputs             # a human's block stays a human's
+    assert "It repairs the board's main" in board.posted[-1][1]
+
+
+def test_a_port_that_follows_a_red_team_cut_short_resumes_it_on_the_roadmap_pull_request():
+    from tauceti_roadmap_worker.board import Outcome, successors
+    port = new_job("PORT-Foo", after=["FIX-RT-Foo~1"],
+                   inputs={"redteam_round": 2, "previous": ["RT-Foo~1a", "RT-Foo~1b"], "repair": "FIX-RT-Foo~1"})
+    nxt = successors(port, Outcome(pr=40, operator="alice"))
+    assert sorted(j.id for j in nxt) == ["RT-Foo~2a", "RT-Foo~2b"]
+    assert all(j.inputs["pr"] == 40 and j.inputs["repair"] == "FIX-RT-Foo~1" and "board_pr" not in j.inputs for j in nxt)
+    assert all(j.inputs["previous"] == ["RT-Foo~1a", "RT-Foo~1b"] for j in nxt)
+    first = new_job("PORT-Foo", inputs={"redteam_round": 1})
+    assert sorted(j.id for j in successors(first, Outcome(pr=40, operator="alice"))) == ["RT-Foo~1a", "RT-Foo~1b"]
+    # a port after a finished board red team (no round recorded) has no red team on the roadmap pull request
+    assert successors(new_job("PORT-Foo", after=["FIX-RT-Foo~2"]), Outcome(pr=40, operator="alice")) == []
+    assert successors(new_job("PORT-Foo", inputs={"redteam_round": 3}), Outcome(pr=40, operator="alice")) == []
+
+
+def test_red_team_passes_stranded_by_a_merge_are_superseded_and_the_port_names_their_round():
+    a = new_job("RT-Foo~2a", after=["FIX-RT-Foo~1"], inputs={"board_pr": 12, "operator": "alice", "repair": "FIX-RT-Foo~1",
+                                                           "previous": ["RT-Foo~1a", "RT-Foo~1b"]})
+    b = new_job("RT-Foo~2b", after=["FIX-RT-Foo~1"], inputs=dict(a.inputs))
+    a.number, a.state, b.number, b.state = 8, "available", 9, "available"
+    ctx, board, _gh = merged_package(a, b)
+    out = boardpr.scan(ctx, yes=True)
+    port = board.find("PORT-Foo")
+    assert port is not None and port.inputs["redteam_round"] == 2 and port.inputs["repair"] == "FIX-RT-Foo~1"
+    assert a.state == "done" and b.state == "done"
+    assert any("RT-Foo~2a superseded" in line for line in out) and any("red team from round 2" in line for line in out)
+    assert not [line for line in boardpr.scan(ctx, yes=True) if "created" in line]     # the port is made once

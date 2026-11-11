@@ -1565,12 +1565,15 @@ def seed_board_plan_and_manifest(rh, tmp_path):
 
 
 def repair_agent(monkeypatch, briefs, report=REPAIR_LINE, edit=True, stray=False, forget_commit_once=False,
-                 board_edits=None, description=()):
-    """`description`: what the agent writes as the pull request's new text, run by run (the last one from then on)."""
+                 board_edits=None, description=(), summary=()):
+    """`description`: what the agent writes as the pull request's new text, run by run (the last one from then on);
+    `summary`: the same for the summary block."""
     def run_agent(self, ctx, ws, brief, label=""):
         briefs.append((label, brief, (ws.scratch / "reviews.md").read_text()))
         if description:
             (ws.scratch / lane_prreview.DESCRIPTION).write_text(description[min(len(briefs), len(description)) - 1])
+        if summary:
+            (ws.scratch / "summary.md").write_text(summary[min(len(briefs), len(summary)) - 1])
         for rel, text in (board_edits or {}).items():
             (ws.board / rel).write_text(text)
         if edit:
@@ -2000,6 +2003,179 @@ def test_a_description_alone_is_delivered_when_the_files_need_no_change(hub, mon
     # The head did not move, so the reply's record is what tells the intake that the text did.
     record = replies.answered_record(rh.comments[905][-1]["body"])
     assert record["head"] == head and record["text"] is True
+
+
+OLD_SUMMARY = ("<!-- roadmap-summary -->\n**What this roadmap builds.** Layers 1 and 2 for every prime p, with the "
+               "even prime included.\n\n**Why Tau Ceti wants it.** It feeds the later layers of the library with the "
+               "first statements.\n\n**Approach and generality.** The route is the direct one, over an arbitrary "
+               "commutative ring.\n<!-- /roadmap-summary -->")
+NEW_SUMMARY = ("**What this roadmap builds.** Layers 1 and 2 for every odd prime p, with the even prime left out.\n\n"
+               "**Why Tau Ceti wants it.** It feeds the later layers of the library with the first statements.\n\n"
+               "**Approach and generality.** The route is the direct one, over an arbitrary commutative ring.\n")
+
+
+def with_summary(rh):
+    rh.text = {**PR_TEXT, "body": OLD_SUMMARY + "\n\n" + PR_TEXT["body"]}
+
+
+@needs_git
+def test_a_repair_rewrites_the_summary_block_and_leaves_the_rest_of_the_description(hub, monkeypatch, tmp_path):  # noqa: F811
+    """2026-11-11: the summary block is written once, and a review's finding that it describes an earlier
+    head came back round after round, since the repair was told that a generated block is not its to repair."""
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    with_summary(rh)
+    briefs = []
+    repair_agent(monkeypatch, briefs, edit=False, summary=[NEW_SUMMARY])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted", result.detail
+    assert "answered the review, no change to the files needed, summary rewritten (awaiting-review)" in result.detail
+    [(_label, brief, _reviews)] = briefs
+    assert "The summary block that opens the description as well" in brief and str(ws.scratch / "summary.md") in brief
+    assert "**What this roadmap builds.**, **Why Tau Ceti wants it.**, **Approach and generality.**" in brief
+    assert "the dependency task list or of the merge order is not yours to repair" in brief
+    [(payload, _n)] = rh.patches
+    assert list(payload) == ["body"]
+    assert payload["body"] == ("<!-- roadmap-summary -->\n" + NEW_SUMMARY.strip() + "\n<!-- /roadmap-summary -->\n\n"
+                               + PR_TEXT["body"])
+    # The head did not move: the reply's record tells the intake that the text did.
+    assert replies.answered_record(rh.comments[905][-1]["body"])["text"] is True
+
+
+@needs_git
+def test_a_repair_writes_the_description_and_the_summary_in_one_write(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    with_summary(rh)
+    repair_agent(monkeypatch, [], description=[NEW_TEXT], summary=[NEW_SUMMARY])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert result.status == "submitted", result.detail
+    assert "title, description and summary rewritten and answered the review" in result.detail
+    [(payload, _n)] = rh.patches
+    assert payload == {"title": "Foo: the hypothesis on p", "body": "\n\n".join([
+        "<!-- roadmap-summary -->\n" + NEW_SUMMARY.strip() + "\n<!-- /roadmap-summary -->",
+        "States Layer 1 for every odd prime p.\n\nCloses #5.", DEPENDS_BLOCK, PR_MARKER_LINE, FOOTER]) + "\n"}
+
+
+@needs_git
+def test_a_summary_out_of_form_goes_to_the_second_pass_and_none_is_asked_without_a_block(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    with_summary(rh)
+    briefs = []
+    repair_agent(monkeypatch, briefs, edit=False, summary=["One paragraph about pull request #905.\n", NEW_SUMMARY])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert result.status == "submitted", result.detail
+    assert [label for label, _b, _r in briefs] == ["repair", "repair-2"]
+    assert "summary.md: a pull-request or issue number" in briefs[1][1]
+    assert "summary.md: it is not the three paragraphs" in briefs[1][1]
+    assert "summary rewritten" in result.detail and len(rh.patches) == 1
+
+
+@needs_git
+def test_a_description_without_a_summary_block_gets_no_summary_brief_and_none_written(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    briefs = []
+    repair_agent(monkeypatch, briefs, edit=False, summary=[NEW_SUMMARY])     # written unasked: ignored
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert result.status == "submitted", result.detail
+    assert "The summary block that opens the description as well" not in briefs[0][1]
+    assert "answered the review, no change needed" in result.detail and not rh.__dict__.get("patches")
+
+
+@needs_git
+def test_the_summary_is_written_when_the_prose_changed_under_the_repair(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    with_summary(rh)
+    repair_agent(monkeypatch, [], edit=False, description=[NEW_TEXT], summary=[NEW_SUMMARY])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    theirs = OLD_SUMMARY + "\n\nThe author rewrote this meanwhile.\n\n" + DEPENDS_BLOCK + "\n"
+    rh.text["body"] = theirs
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted", result.detail
+    assert ("title and description not written: the description was changed while the repair ran; summary rewritten"
+            in result.detail)
+    [(payload, _n)] = rh.patches
+    assert list(payload) == ["body"] and "The author rewrote this meanwhile." in payload["body"]
+    assert "odd prime p, with the even prime left out" in payload["body"] and "even prime included" not in payload["body"]
+
+
+FAMILY_README = "TauCetiRoadmap/Family/README.md"
+
+
+def family_checkout(tmp_path, change_index):
+    """A checkout whose branch adds the nested roadmap Family/Toy to a family already on `origin/main`,
+    and changes the family's README with `change_index`."""
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    sh(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    sh(tmp_path, "clone", "-q", str(origin), str(work))
+    family = work / "TauCetiRoadmap" / "Family"
+    (family / "Old").mkdir(parents=True)
+    (family / "README.md").write_text("# Family\n\n- Old: the first member.\n")
+    (family / "PROGRESS.md").write_text("progress\n")
+    (family / "Old" / "README.md").write_text("# Old\n")
+    sh(work, "add", "-A")
+    sh(work, "commit", "-q", "-m", "the family")
+    sh(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    (family / "Toy").mkdir()
+    (family / "Toy" / "README.md").write_text("# Toy\n")
+    (family / "PROGRESS.md").write_text("progress, changed\n")
+    if change_index:
+        (family / "README.md").write_text("# Family\n\n- Old: the first member.\n- Toy: owns everything.\n")
+    sh(work, "add", "-A")
+    sh(work, "commit", "-q", "-m", "Toy")
+    return work
+
+
+@needs_git
+@pytest.mark.parametrize("change_index, folder, expected", [
+    (True, "Family/Toy", [FAMILY_README]),     # the pull request changes the index: the repair may answer for it
+    (False, "Family/Toy", []),                 # an index the pull request leaves alone stays out of reach
+    (True, "Toy", []),                         # a top-level roadmap has no family
+])
+def test_a_repair_may_edit_the_family_index_only_when_the_pull_request_changes_it(tmp_path, change_index, folder, expected):
+    """2026-11-11: three members of one family came back round after round for what the family index said
+    of them, since the repair was held to the roadmap's own folder."""
+    work = family_checkout(tmp_path, change_index)
+    ctx = SimpleNamespace(cfg=SimpleNamespace(roadmap=SimpleNamespace(active_dir="TauCetiRoadmap"),
+                                              project=SimpleNamespace(branch="main")))
+    ws = SimpleNamespace(workdir=work, extra={"head": sh(work, "rev-parse", "HEAD").strip(), "base_ref": "main"})
+    files = lane_prreview.family_index_changed(ctx, ws, folder)
+    assert files == expected                    # the README only: never PROGRESS.md, which the branch also changed
+    brief = lane_prreview.family_brief(files, folder)
+    assert bool(brief) == bool(expected)
+    if expected:
+        assert f"`{FAMILY_README}` in the worktree as well" in brief and "of `Family/Toy` only" in brief
+        assert "leave every other roadmap's entry" in brief
+
+
+@needs_git
+@pytest.mark.parametrize("enabled", [True, False])
+def test_the_repair_brief_names_the_family_index_unless_the_option_is_off(hub, monkeypatch, tmp_path, enabled):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    asked = []
+    monkeypatch.setattr(lane_prreview, "family_index_changed",
+                        lambda ctx, ws, folder: asked.append(folder) or [FAMILY_README])
+    briefs = []
+    repair_agent(monkeypatch, briefs)
+    ctx = pool_ctx(rh)
+    ctx.cfg.prreview.repair_index = enabled
+    lane = lane_for(job)
+    result = lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
+    assert result.status == "submitted", result.detail
+    assert asked == (["Foo"] if enabled else [])
+    assert (f"`{FAMILY_README}` in the worktree as well" in briefs[0][1]) is enabled
+    # The paragraph on the worktree's files comes before the one on the board's.
+    if enabled:
+        assert briefs[0][1].index(FAMILY_README) < briefs[0][1].index("Two files of the board checkout as well")
 
 
 @needs_git

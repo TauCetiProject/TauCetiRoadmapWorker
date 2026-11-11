@@ -38,6 +38,7 @@ import os
 import re
 import socket
 import subprocess
+from dataclasses import replace
 from urllib.parse import quote
 
 from . import (
@@ -529,6 +530,13 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
     existing = {j.id for j in jobs}
     created = []
     for s in new:
+        cut = cut_short(s, jobs)
+        if cut:
+            # A red-team pass a merge of its board pull request cut short (closed as superseded, never
+            # run): its round resumes on the roadmap pull request, so the pass runs there.
+            ctx.board.reopen(cut, s, f"Intake: this pass runs after all, after `{job.id}`.")
+            created.append(f"{s.id} (reopened, #{cut.number})")
+            continue
         if s.id not in existing:
             if stuck and s.kind == "fix":
                 # Parked: the human who unblocks it lets one more repair round run.
@@ -558,6 +566,15 @@ def advance(ctx, job: Job, outcome: Outcome, jobs: list[Job]) -> str:
     if any(s.kind == "port" for s in new):
         notes.append(add_to_order_for_port(ctx, job.name))
     return "created " + (", ".join(created) if created else "nothing") + (f" ({'; '.join(notes)})" if notes else "")
+
+
+def cut_short(new: Job, jobs: list[Job]) -> Job | None:
+    """The job on the board with the id of the red-team pass `new` that was closed as superseded
+    before it ran (`boardpr.redteam_after_port`), or None: such a pass is reopened, where any other
+    job the board already has is left as it is."""
+    if new.kind != "redteam":
+        return None
+    return next((j for j in jobs if j.id == new.id and j.state == "done" and board.SUPERSEDED_LABEL in j.labels), None)
 
 
 def _created(ctx, job: Job, number: int, suffix: str = "") -> str:
@@ -685,6 +702,120 @@ def repark_capped(ctx) -> list[str]:
         made = park_after_rounds(ctx, review, None, ids, head)
         if made:
             out.append(f"{review.id}: parked at max_rounds; created {made} (blocked)")
+    return out
+
+
+RESUME_STAGE = {"TARGET": 0, "DESIGN": 1, "PKG": 2, "RT": 3}
+PR_INPUTS = ("board_pr", "after_comment", "base_head", "merge_pending")
+
+
+def resume_key(job: Job) -> tuple[int, int, int]:
+    """Where a job stands in its roadmap's pipeline: its stage, its round, and the author before the
+    reviewer (a red-team pass before the round's repair)."""
+    j = board.parse_job_id(job.id)
+    stage = j.subject or j.prefix
+    return RESUME_STAGE[stage], j.round, int(j.prefix == "REV" or (j.prefix, stage) == ("FIX", "RT"))
+
+
+def outcome_at_rest(ctx, job: Job, jobs: list[Job]) -> Outcome:
+    """What a job that was finished earlier said, as the board's main records it: a review's
+    verdict from the head of its report, a target's triage, whether a red-team round is complete."""
+    if job.kind == "review":
+        return Outcome(verdict=explorer.verdict_of(review_text(ctx, job)), pr=int(job.inputs.get("board_pr") or 0),
+                       operator=job.inputs.get("operator", ""))
+    if job.kind in ("target", "redteam"):
+        return outcome_for(ctx, job, {}, jobs)
+    return Outcome()
+
+
+def port_resuming_red_team(last: Job, jobs: list[Job]) -> Job:
+    """The port of a package whose board pull request was merged between two red-team rounds: the
+    red team goes on at the next round on the roadmap pull request (`redteam_round`), with the
+    passes of the round before and, when that round was repaired, the repair to verify."""
+    j = board.parse_job_id(last.id)
+    if last.kind == "redteam":
+        previous, repair = sorted(x.id for x in jobs if x.kind == "redteam" and x.name == last.name
+                                  and board.parse_job_id(x.id).round == j.round), ""
+    else:
+        previous, repair = list(last.inputs.get("reviews", [])), last.id
+    [port] = board.inherit_origin(last, [board.new_job(
+        board.make_id("port", last.name), after=[repair] if repair else list(previous),
+        inputs={"redteam_round": j.round + 1, "previous": previous, "repair": repair})])
+    return port
+
+
+def resume_roadmap(ctx, name: str, jobs: list[Job], yes: bool) -> str:
+    cfg = ctx.cfg
+    mine = [j for j in jobs if j.name == name and j.kind != "errata"]
+    if not mine:
+        return "no job on the board"
+    held = [j for j in mine if j.state != "done"]
+    if held:
+        return f"not resumed: {held[0].id} is {held[0].state}"
+    if any(j.kind in ("port", "gate", "prreview") for j in mine):
+        return "not resumed: it has been ported"
+    last = max(mine, key=resume_key)
+    jid = board.parse_job_id(last.id)
+    outcome = outcome_at_rest(ctx, last, jobs)
+    if last.kind == "review" and not outcome.verdict:
+        return f"not resumed: the report of {last.id} on the board's main names no verdict"
+    number = int(last.inputs.get("board_pr") or 0)
+    if number and (ctx.gh.api(f"repos/{cfg.repositories.packages_repo()}/pulls/{number}") or {}).get("merged"):
+        # Nothing runs on a merged pull request: what follows works on the board's main
+        # (`boardpr.merged_by_hand`), and a red team goes on on the roadmap pull request.
+        last = replace(last, inputs={k: v for k, v in last.inputs.items() if k not in PR_INPUTS})
+        outcome.pr = 0
+    else:
+        number = 0
+    red_team = last.kind == "redteam" or (last.kind == "fix" and jid.subject == "RT")
+    if number and red_team and jid.round < cfg.redteam.rounds:
+        new = [port_resuming_red_team(last, jobs)]
+    elif number and last.kind == "redteam":
+        return (f"not resumed: the last red-team round of {name} has no repair and its board pull request #{number} "
+                "is merged; a human decides how to continue")
+    else:
+        new = board.inherit_origin(last, board.successors(
+            last, outcome, max_rounds=cfg.board.max_rounds, redteam_rounds=cfg.redteam.rounds,
+            redteam_agents=tuple(p.agent for p in cfg.redteam.passes),
+            redteam_models=tuple(p.model for p in cfg.redteam.passes)))
+    ids = {j.id for j in jobs}
+    capped = last.kind == "review" and outcome.verdict == "needs_changes" and not new
+    if capped:
+        new = [board.fix_for_review(last)]            # parked for a human by `advance`, as a blocked fix
+    if not new:
+        said = f" ({outcome.verdict})" if outcome.verdict else ""
+        return f"nothing follows {last.id}{said}; a human decides how to continue"
+    missing = [s.id for s in new if s.id not in ids or cut_short(s, jobs)]
+    if not missing:
+        return f"{last.id} is followed already (by {', '.join(s.id for s in new)})"
+    where = " on the board's main" if number and any(s.kind in ("review", "fix") for s in new) else ""
+    if not yes:
+        return f"{last.id} would release {', '.join(missing)}{where} (dry run)"
+    if any(s.kind == "port" for s in new):
+        deferred = order_ports_after_suppliers(ctx, new, jobs)
+        made = [board.made_note(ctx.board, s, ctx.board.create(s)) for s in new]
+        return (f"{last.id}: created {', '.join(made)}" + ("; " + "; ".join(deferred) if deferred else "") + "; "
+                + add_to_order_for_port(ctx, name))
+    return f"{last.id}: " + advance(ctx, last, outcome, jobs) + where
+
+
+def resume_unfollowed(ctx, names, yes: bool = False) -> list[str]:
+    """`board resume --names A,B`: a named roadmap whose every job is done, and which was not
+    ported, goes on from its last job when that job released nothing: its submission was merged on
+    GitHub before the intake read it, or a run stopped between finishing the job and creating what
+    follows. What follows is what the intake would have created then (`advance`), from the verdict
+    at the head of the review's report on the board's main. When the job's board pull request is
+    merged, what follows works on the board's main, as `boardpr.merged_by_hand` has it: a review
+    or a repair names no pull request, an accepted package is ported with its red team on the
+    roadmap pull request, and a package merged between two red-team rounds is ported with the next
+    round there. Only the roadmaps named: one a human stopped stays stopped. One line per roadmap."""
+    jobs = ctx.board.all_jobs()
+    out = []
+    for name in names:
+        try:
+            out.append(f"{name}: {resume_roadmap(ctx, name, jobs, yes)}")
+        except GHError as exc:
+            out.append(f"{name}: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]})")
     return out
 
 
@@ -1205,13 +1336,47 @@ def take_lock(lock, project: str) -> tuple[int, str]:
     key = lock_key(project)
     status = lock.acquire(key, LOCK_TTL)
     if status == claims.HELD:
-        lease = lock.read(key) or {}
-        since = dt.datetime.fromtimestamp(int(lease.get("acquired_at", 0) or 0), dt.UTC)
-        return status, (f"intake already running ({lease.get('owner', '?')}, since {since:%Y-%m-%d %H:%M:%SZ}); "
-                        "nothing done")
+        return status, held_line(lock, key, "intake") + "; nothing done"
     if status == claims.ERROR:
         return status, "board lock not taken (the lock ref could not be written); nothing done"
     return status, ""
+
+
+def reviews_key(project: str) -> str:
+    return f"roadmap/{project}/board/reviews"
+
+
+def held_line(lock, key: str, what: str) -> str:
+    lease = lock.read(key) or {}
+    since = dt.datetime.fromtimestamp(int(lease.get("acquired_at", 0) or 0), dt.UTC)
+    return f"{what} already running ({lease.get('owner', '?')}, since {since:%Y-%m-%d %H:%M:%SZ})"
+
+
+def take_reviews_lock(lock, project: str) -> tuple[int, str]:
+    """The reviews lock, a second lease next to the board lock: whoever reads the pull-request
+    reviews (`sync_pr_reviews`: the review label, superseded rounds, new rounds) holds it, so that
+    step runs once at a time while a `board sync` that finds the board held by a long intake still
+    runs it. (The acquisition's `claims` status, line to log), as `take_lock`."""
+    key = reviews_key(project)
+    status = lock.acquire(key, LOCK_TTL)
+    if status == claims.HELD:
+        return status, held_line(lock, key, "pull-request reviews") + "; left to that run"
+    if status == claims.ERROR:
+        return status, "pull-request reviews: not read (the reviews lock could not be written)"
+    return status, ""
+
+
+def locked_pr_reviews(ctx, lock) -> list[str]:
+    """The pull-request reviews step of a full `board sync` that writes, under the reviews lock. The
+    step is short next to the lock's lifetime, so nothing renews it; `Board.create` re-reads the
+    board before every creation in any case."""
+    status, line = take_reviews_lock(lock, ctx.cfg.project.name)
+    if status != claims.ACQUIRED:
+        return [line]
+    try:
+        return sync_pr_reviews(ctx)
+    finally:
+        lock.release(reviews_key(ctx.cfg.project.name))
 
 
 # --- duplicate jobs ---------------------------------------------------------------------------------

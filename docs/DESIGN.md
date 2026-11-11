@@ -23,6 +23,12 @@ are the product's contract, not advice:
   consumers are later; cycles are design defects and are broken by moving ownership.
 - Statements are the author's own words with exact locators into legal sources. No source
   passages are copied. Mathematical background is welcome; computational algorithms are not.
+- The organisation is the roadmap's own, derived from the mathematics: the layers are what the
+  final targets need, worked backwards, and each is named by its mathematics. A source's
+  arrangement (its chapter order, its expository sequence) is never the plan: a roadmap does not
+  say it follows a source and no layer is named after a source's chapter. An order the
+  dependencies force is kept, whichever source shares it. Results that appear in a source are
+  cited with exact locators.
 - `Suggested.lean` is the roadmap's acceptance test, not an API catalogue: it states the
   headline theorems the finished roadmap will prove, each with `sorry`, against the pinned
   Mathlib and Tau Ceti, with only the simple definitions they need, a single `import Mathlib`,
@@ -169,7 +175,10 @@ checkout, submits a PR to the board, and the intake advances the state.
     default) the repair also answers findings about the title and description, and puts right what
     its own change makes wrong in them: its agent writes the
     corrected text, and the worker checks it and writes it onto the pull request between the push
-    and the reply, keeping the description's generated blocks and markers verbatim. A repair that fails is not
+    and the reply, keeping the description's generated blocks and markers verbatim, except the summary
+    block, which the repair rewrites when a finding is about it. With `repair_index` on (the default)
+    a repair of a nested roadmap may also edit the family index README, when the pull request
+    changes that file itself. A repair that fails is not
     pushed and the review is submitted all the same. While the review job is claimed, `board sync`
     files no gate round for the pull request; the next review of the repaired head is filed as a
     re-review with `not_worker`, the worker whose reply names that head, which may not take it.

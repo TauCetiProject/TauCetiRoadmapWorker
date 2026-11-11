@@ -386,9 +386,18 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
     if job.kind == "port":
         # A package accepted before the board pull requests (its port follows the review, not a
         # red-team fix): the red team runs on the roadmap pull request, as it did then.
-        if redteam_rounds < 1 or not outcome.pr or any(a.startswith("FIX-RT-") for a in job.after):
+        # `redteam_round`: the round a merge of the board pull request cut short (boardpr.redteam_after_port);
+        # the red team resumes there, with the earlier passes and their repair to verify.
+        resume = int(job.inputs.get("redteam_round") or 0)
+        if redteam_rounds < 1 or not outcome.pr or resume > redteam_rounds:
             return []
-        return redteam_round(1, [job.id], [job.id], {"pr": outcome.pr, "operator": outcome.operator})
+        if not resume and any(a.startswith("FIX-RT-") for a in job.after):
+            return []
+        inputs = {"pr": outcome.pr, "operator": outcome.operator}
+        repair = job.inputs.get("repair", "") if resume > 1 else ""
+        if repair:
+            inputs.update(previous=list(job.inputs.get("previous", [])), repair=repair)
+        return redteam_round(resume or 1, [job.id], [job.id] + ([repair] if repair else []), inputs)
     if job.kind == "redteam":
         if not outcome.round_complete:
             return []
@@ -1080,6 +1089,23 @@ class Board:
         except GHError:
             pass
         self.gh.write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"state": "closed"})
+
+    def reopen(self, job: Job, as_: Job, comment: str) -> None:
+        """A job the board closed as `superseded` runs after all: its issue is open again and
+        available, with the spec of `as_` (the same job id; what it works on now) and without the
+        label. A label that cannot be removed does not stop it."""
+        job.after, job.independent_of, job.inputs = list(as_.after), list(as_.independent_of), dict(as_.inputs)
+        job.requires_agent, job.requires_model, job.requires_operator = (as_.requires_agent, as_.requires_model,
+                                                                         as_.requires_operator)
+        self.gh.write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"state": "open"})
+        self.update_spec(job)
+        try:
+            self.gh.write("DELETE", f"repos/{self.repo}/issues/{job.number}/labels/{quote(SUPERSEDED_LABEL, safe=':')}")
+        except GHError:
+            pass
+        job.labels = [label for label in job.labels if label != SUPERSEDED_LABEL]
+        self.set_state(job, "available", comment)
+        job.closed = False
 
     def comments(self, number: int) -> list[dict]:
         return self.gh.api(f"repos/{self.repo}/issues/{number}/comments?per_page=100", paginate=True)

@@ -34,7 +34,7 @@ class HeadGH:
             head = self.heads.pop(0) if len(self.heads) > 1 else self.heads[0]
             if isinstance(head, Exception):
                 raise head
-            return {"number": int(path.rsplit("/", 1)[1]), "head": {"sha": head}}
+            return {"number": int(path.rsplit("/", 1)[1]), "head": {"sha": head}, "base": {"ref": "main"}}
         if path.endswith("/labels") or "/comments" in path:
             return []
         raise GHError(f"GET {path}: not faked")
@@ -65,9 +65,40 @@ def test_a_head_that_never_updates_fails_after_the_window(monkeypatch):
     lane, ctx, sleeps = lane_and_ctx(monkeypatch, gh)
     with pytest.raises(LaneError) as info:
         lane.await_pr_head(ctx, "o/TauCetiRoadmap", 1404, NEW, then="not replying")
-    assert str(info.value) == ("#1404: the pull request head did not update to the pushed d603998 within 90 s "
-                               "(it is still 4623561); not replying")
-    assert sum(sleeps) == lane_base.HEAD_WAIT and len(gh.reads) == len(sleeps) + 1
+    assert str(info.value) == ("#1404: the pull request head did not update to the pushed d603998 within 180 s, "
+                               "a request to read the branch again included (it is still 4623561); not replying")
+    # two windows, and between them the one request to read the branch again (a read for the base, a write of it)
+    assert sum(sleeps) == 2 * lane_base.HEAD_WAIT and len(gh.reads) == len(sleeps) + 2
+    assert gh.writes == [("PATCH", "repos/o/TauCetiRoadmap/pulls/1404", {"base": "main"})]
+
+
+class StuckGH(HeadGH):
+    """A record that keeps the previous head until its base is written again (regression: #1807 kept
+    8f64f53 with its branch at the pushed d227a81, and a review's repair went unanswered)."""
+
+    def write(self, method, path, payload=None):
+        if method == "PATCH" and path.endswith("/pulls/1404"):
+            self.heads = [NEW]
+        return super().write(method, path, payload)
+
+
+def test_a_record_that_keeps_the_old_head_is_asked_to_read_the_branch_again(monkeypatch):
+    gh = StuckGH(OLD)
+    lane, ctx, sleeps = lane_and_ctx(monkeypatch, gh)
+    lane.await_pr_head(ctx, "o/TauCetiRoadmap", 1404, NEW, then="not replying")
+    assert gh.writes == [("PATCH", "repos/o/TauCetiRoadmap/pulls/1404", {"base": "main"})]
+    assert sum(sleeps) == lane_base.HEAD_WAIT + lane_base.HEAD_POLL
+
+
+def test_a_refused_request_to_read_the_branch_again_leaves_the_wait_to_report(monkeypatch):
+    class Refusing(HeadGH):
+        def write(self, method, path, payload=None):
+            raise GHError("PATCH pulls/1404: HTTP 403")
+
+    lane, ctx, sleeps = lane_and_ctx(monkeypatch, Refusing(OLD))
+    with pytest.raises(LaneError, match=r"within 180 s, a request to read the branch again included"):
+        lane.await_pr_head(ctx, "o/TauCetiRoadmap", 1404, NEW)
+    assert sum(sleeps) == 2 * lane_base.HEAD_WAIT
 
 
 def test_the_window_and_the_interval_are_parameters_and_a_transient_error_is_a_read_without_it(monkeypatch):
@@ -120,6 +151,6 @@ def test_the_gate_does_not_reply_when_the_head_never_updates(tmp_path, monkeypat
     gh = HeadGH(OLD)
     lane, ctx, ws, pushed, _sleeps = gate_finish(tmp_path, monkeypatch, gh)
     job = new_job("GATE-GanGrossPrasadUnitaryGroups~1", inputs={"pr": 1404})
-    with pytest.raises(LaneError, match=r"did not update to the pushed d603998 within 90 s .*; not replying$"):
+    with pytest.raises(LaneError, match=r"did not update to the pushed d603998 within 180 s, .*; not replying$"):
         lane.finish(job, ctx, ws)
-    assert pushed and not gh.writes
+    assert pushed and not [w for w in gh.writes if w[1].endswith("/comments")]
