@@ -75,6 +75,9 @@ def check_fence(gh) -> None:
         fence()
 
 
+SINCE_LISTING = re.compile(r"/issues\?[^ ]*\bsince=")
+
+
 @dataclass
 class GH:
     dry_run: bool = False
@@ -202,7 +205,10 @@ class GH:
 
     def api(self, path: str, *, paginate: bool = False, jq: str | None = None):
         """GET a REST path and return parsed JSON (a list for paginated listings)."""
-        if self.cache_dir is not None and jq is None and not path.startswith("graphql"):
+        # An issue listing `since` a moment that moves (the board's incremental reads) never asks the
+        # same path twice: it would leave one cache entry a read and never hit one.
+        if (self.cache_dir is not None and jq is None and not path.startswith("graphql")
+                and not SINCE_LISTING.search(path)):
             if paginate:
                 return self._cached_pages(path)
             body = self._cached_get(path)
