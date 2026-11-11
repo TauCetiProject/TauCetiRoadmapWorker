@@ -128,16 +128,27 @@ requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned l
   re-plans an existing roadmap, its scope is wrong).
 - `__REPORT__`: first line `# Review of __ROADMAP__ (pull request #__PR__ at __HEAD7__)`__FOLDER_LINE__, then
   `**Verdict:** <accepted | needs changes | rejected>`, then findings numbered R01, R02, … as
-  `## R01 (P1) — <short title>` with: location (file and line, quoting at most 40 words), the claim,
-  the witness (a counterexample, a source line, a pinned declaration, a sibling file and line; at
-  most 40 words) and the exact repair, tested on the instance that refuted the original. Severity:
-  P1 false, vacuous or unowned; P2 overclaim or missing hypothesis; P3 locator, Check, style or
-  policy. Then `## Verified sound` (what you checked and found correct, with counts: the adversarial
-  table with its values, the library declarations you opened, file and line at the pin, the
-  cross-roadmap citations you resolved; a section called sound without them was not reviewed) and
-  `## Not verifiable` (each item and why). The report is posted as one public comment of at most
-  60,000 characters, read by the author: the adversarial table covers the sampled targets, the
-  headline theorems and every target a finding touches; address the mathematics, not the person.
+  `## R01 (P1) — <short title>` with four labelled lines: **Location** (file and line, quoting at
+  most 40 words), **Claim**, **Witness** (a counterexample, a source line, a pinned declaration, a
+  sibling file and line; at most 40 words) and **Repair** (the exact repair, tested on the instance
+  that refuted the original: the replacement text when there is one). Severity: P1 false, vacuous
+  or unowned; P2 overclaim or missing hypothesis; P3 locator, Check, style or policy. A finding
+  states its four lines and stops: no background, no account of how you found it, no second
+  example once one refutes the claim.
+  Then `## Verified sound`, which is evidence and not a narrative. It holds the adversarial table
+  (one row per sampled target, per headline theorem and per target a finding touches, with the
+  values you computed on each side; a cell is at most 25 words) and, after it, at most eight
+  one-line bullets of counts: the source locators checked against the text, the library
+  declarations opened (file and line at the pin), the cross-roadmap citations resolved, the gate
+  and the elaboration result. A section called sound without the table and the counts was not
+  reviewed. Then `## Not verifiable` (each item and why, one line each).
+  The report is posted as one public comment, read by the author, who acts on the findings and
+  checks the table: write nothing else. Do not describe the roadmap or restate what a passage
+  says, do not list what is unchanged or what you found correct passage by passage, do not explain
+  your method, and do not praise or summarise. A remark that asks for no change takes one line
+  under `## Verified sound` or is left out. Brevity never drops a finding or a computed value: it
+  drops the prose around them. The comment may not exceed 60,000 characters; address the
+  mathematics, not the person.
   Then `## Source issues`: every mistake you found in a source while checking locators, one bullet
   each, in this exact shape (it is collected into the project's errata register): `- **Misprint** |
   **Error** | **Gap** in <source id> at <locator: theorem or section, printed page>: the source says

@@ -611,6 +611,29 @@ def board_reports(ctx: Context, ws: Workspace, name: str, job_ids: list[str], fo
     return out
 
 
+SIBLINGS_INLINE = 12     # more open pull requests than this are listed in a scratch file, not in the brief
+SIBLINGS_FILE = "open-pull-requests.md"
+
+
+def siblings_text(ws: Workspace, sibs: list, prs: list) -> str:
+    """The brief's SIBLINGS: the open roadmap pull requests, with the checkout of each head when the
+    lane has them. A handful is written out; a long list goes to `scratch/open-pull-requests.md`, one
+    line per roadmap, and the brief names the file (several hundred open pull requests made the list
+    half of every brief, read again on every turn of the agent)."""
+    if sibs:
+        entries = [(name, f"{name} at `{path}`") for _pr, name, path in sibs]
+    else:
+        entries = [(p["name"], p["name"]) for p in prs]
+    if len(entries) <= SIBLINGS_INLINE:
+        return "; ".join(text for _name, text in entries) or "none"
+    listing = ws.scratch / SIBLINGS_FILE
+    listing.parent.mkdir(parents=True, exist_ok=True)
+    listing.write_text("# Open roadmap pull requests (data)\n\n"
+                       + "".join(f"- {text}\n" for _name, text in sorted(entries)), encoding="utf-8")
+    what = "the roadmap's name, then the directory its head is checked out in" if sibs else "the roadmap's name"
+    return f"the {len(entries)} listed in `{listing}` (one line each: {what}; search the file for a name)"
+
+
 def library_description(content: Path) -> str:
     m, t = content / ".lake" / "packages" / "mathlib" / "Mathlib", content / ".lake" / "packages" / "TauCeti" / "TauCeti"
     if m.is_dir() and t.is_dir():
@@ -763,8 +786,7 @@ class Lane:
             "GAPS": declared_gaps(ws.package(cfg, job.name)),
             "OCR": ocr_line(cfg),
             "LIBRARY": library_description(ws.content),
-            "SIBLINGS": "; ".join(f"{name} at `{path}`" for _pr, name, path in sibs) or
-                        ("; ".join(p["name"] for p in prs) or "none"),
+            "SIBLINGS": siblings_text(ws, sibs, prs),
             "MAX_LEAN_LINES": str(cfg.gates.max_lean_lines), "ELABORATE": elaborate_line(cfg, ws),
             "EXTRA_RULES": extra_rules,
             "SOURCE_TEXTS": ws.extra.get("source_texts", "none recorded yet"),
@@ -1138,18 +1160,21 @@ class Lane:
     def after_runs(self, job: Job, ctx: Context, ws: Workspace) -> None:
         """Combine the outputs of several runs (the red-team lane merges its section passes)."""
 
-    def run_agent(self, ctx: Context, ws: Workspace, brief: str, label: str = "") -> agents.AgentResult:
+    def run_agent(self, ctx: Context, ws: Workspace, brief: str, label: str = "", model: str = "") -> agents.AgentResult:
+        """Run the worker's agent on `brief`; `model` runs this one brief on another model of the
+        same agent (a review's repair, `[prreview] repair_models`), and the usage record names it."""
+        model = model or ctx.model
         attempt = len(list(ws.job_dir.glob("run-*.out"))) + 1
         stem = f"run-{attempt}" + (f"-{label}" if label else "")
         result = agents.run_agent(agents.AgentRun(
-            agent=ctx.agent, model=ctx.model, workdir=ws.workdir, brief=brief,
+            agent=ctx.agent, model=model, workdir=ws.workdir, brief=brief,
             log_out=ws.job_dir / f"{stem}.out", log_err=ws.job_dir / f"{stem}.err",
             timeout=ctx.cfg.agents.timeout_minutes * 60, sandbox_profile=ctx.cfg.sandbox.profile,
             proxy_url=ctx.cfg.sandbox.proxy_url, netjail=ctx.cfg.sandbox.netjail,
             claude_hook=ctx.cfg.sandbox.claude_hook, settings_dir=ctx.wdir / "settings"))
         usage.record(ctx.wdir, ws.job_dir, usage.entry(
             job=ws.job_id or ws.job_dir.name, kind=self.kind, lane=type(self).__name__, run=stem, label=label,
-            agent=ctx.agent, model=ctx.model, worker=ctx.worker_id, result=result, brief_chars=len(brief)))
+            agent=ctx.agent, model=model, worker=ctx.worker_id, result=result, brief_chars=len(brief)))
         return result
 
     def park(self, job: Job, ctx: Context, missing: list[references.MissingReference]) -> LaneResult:
