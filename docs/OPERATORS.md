@@ -1075,6 +1075,13 @@ the passes already on the board (their specs still list the fix rounds), and a w
 pass's agent and model may then take a package fix round. Use it when a pinned pass model has already
 written fix rounds and the passes wait without a taker; the default keeps the stricter rule.
 
+`[review] independent_of_earlier_fix_rounds = false` does the same for the review of a design or a
+package: the review of round r stays independent of the first author and of the fix that wrote round
+r, and the fix rounds before r no longer count, since an independent reviewer read each of those
+rounds already. The eligibility check, the review-comment claim and the intake apply it to the reviews
+already on the board. Use it under `separation = "agent"` when a review model wrote an early fix
+round and the only other reviewer is unavailable; the default keeps the stricter rule.
+
 ## Board maintenance
 
 Run with write access to the board (a scheduled workflow, or the maintainer). Every command is a dry

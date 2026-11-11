@@ -224,7 +224,8 @@ def trusted(ctx, login: str, parsed: prreviews.Parsed, job: Job, shared=None) ->
 
 
 def independent(ctx, login: str, parsed: prreviews.Parsed, job: Job, jobs: list[Job], shared) -> bool:
-    others = board.independence_scope(job.id, job.independent_of, ctx.cfg.redteam.independent_of_fix_rounds)
+    others = board.independence_scope(job.id, job.independent_of, ctx.cfg.redteam.independent_of_fix_rounds,
+                                      ctx.cfg.review.independent_of_earlier_fix_rounds)
     if not others:
         return True
     mode = ctx.cfg.review.separation

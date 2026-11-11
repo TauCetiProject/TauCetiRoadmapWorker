@@ -220,6 +220,10 @@ separation = "operator"
 # Logins whose review comments on a board pull request count, besides the board's bots and the
 # project's own workers (for example a maintainer reviewing from a browser model).
 comment_reviewers = []
+# Whether the review of round r of a design or a package must also be independent of the fix rounds
+# before r (each was read by an independent reviewer already). false keeps it independent of the
+# first author and of the fix that wrote round r only.
+# independent_of_earlier_fix_rounds = true
 
 [prreview]
 # The AI review of every roadmap folder an open pull request of the content repository adds or edits,

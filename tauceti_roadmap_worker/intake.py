@@ -316,7 +316,8 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None, shared=N
     if job.independent_of:
         problems += board.separation_problems(job, author, ctx.board.authors(job.independent_of, jobs),
                                               cfg.review.separation, sub.get("agent", ""), sub.get("model", ""),
-                                              cfg.redteam.independent_of_fix_rounds)
+                                              cfg.redteam.independent_of_fix_rounds,
+                                              cfg.review.independent_of_earlier_fix_rounds)
     failed, running = _checks(ctx, repo, pr["head"]["sha"])
     if running:
         return f"#{number}: checks still running"

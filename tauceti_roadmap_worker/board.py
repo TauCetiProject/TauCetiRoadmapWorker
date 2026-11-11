@@ -172,23 +172,38 @@ def blocked_redteam_pass(job_id: str, agent: str, model: str, passes: list[tuple
     return next((f"{a}, {m}" for a, m in passes if m and (a, m) == (agent, model)), "")
 
 
-def independence_scope(job_id: str, independent_of: list[str], fix_rounds: bool = True) -> list[str]:
+def independence_scope(job_id: str, independent_of: list[str], fix_rounds: bool = True,
+                       earlier_fix_rounds: bool = True) -> list[str]:
     """The jobs of `independent_of` that whoever does `job_id` must be independent of. Everything,
-    except that with `[redteam] independent_of_fix_rounds = false` a red-team pass is not held to the
-    package's fix rounds (`FIX-PKG-X~k`): an independent review accepted the package after each of
-    them, before the red team started, so the pass stays independent of the package's first author
-    and of the red-team fix before it only. Jobs filed earlier list the fix rounds in their spec, so
-    the checks apply this instead of reading the list as it stands."""
-    if fix_rounds or parse_job_id(job_id).prefix != "RT":
+    with two exceptions. With `[redteam] independent_of_fix_rounds = false` a red-team pass is not
+    held to the package's fix rounds (`FIX-PKG-X~k`): an independent review accepted the package after
+    each of them, before the red team started, so the pass stays independent of the package's first
+    author and of the red-team fix before it only. With `[review] independent_of_earlier_fix_rounds =
+    false` the review of round r of a design or a package (`REV-DESIGN-X~r`, `REV-PKG-X~r`) is not
+    held to the fix rounds before r: it stays independent of the first author and of the fix that
+    wrote the round it reads. Jobs filed earlier list every fix round in their spec, so the checks
+    apply this instead of reading the list as it stands."""
+    try:
+        j = parse_job_id(job_id)
+    except JobIdError:
         return list(independent_of)
 
-    def fix_round(other: str) -> bool:
+    def parsed(other: str):
         try:
-            o = parse_job_id(other)
+            return parse_job_id(other)
         except JobIdError:
+            return None
+
+    def dropped(other: str) -> bool:
+        o = parsed(other)
+        if o is None or o.prefix != "FIX":
             return False
-        return o.prefix == "FIX" and o.subject == "PKG"
-    return [other for other in independent_of if not fix_round(other)]
+        if j.prefix == "RT":
+            return not fix_rounds and o.subject == "PKG"
+        if j.prefix == "REV":
+            return not earlier_fix_rounds and o.subject == j.subject and o.name == j.name and o.round < j.round
+        return False
+    return [other for other in independent_of if not dropped(other)]
 
 
 # --- job specs ------------------------------------------------------------------------------------
@@ -784,14 +799,15 @@ def file_problems(path: str, text: str, allowed: set[str], data: bytes | None = 
 
 
 def separation_problems(job: Job, submitter: str, authors: dict, mode: str = "operator", agent: str = "",
-                        model: str = "", fix_rounds: bool = True) -> list[str]:
+                        model: str = "", fix_rounds: bool = True, earlier_fix_rounds: bool = True) -> list[str]:
     """Author/reviewer separation: a job with `independent_of` refuses a submitter (operator login,
     running `agent` and `model`) who is not independent of the author of any of those jobs (see
     claims.independent: another operator, or in `agent` mode another agent and model). `authors`
     maps job id -> the author records the board holds for it (logins, or dicts). `fix_rounds` is
-    `[redteam] independent_of_fix_rounds` (see `independence_scope`)."""
+    `[redteam] independent_of_fix_rounds` and `earlier_fix_rounds` is
+    `[review] independent_of_earlier_fix_rounds` (see `independence_scope`)."""
     from .claims import authorship, independent
-    others = independence_scope(job.id, job.independent_of, fix_rounds)
+    others = independence_scope(job.id, job.independent_of, fix_rounds, earlier_fix_rounds)
     if not others:
         return []
     same = (f" with the same agent and model as this reviewer ({agent}, {model}), or none recorded" if mode == "agent"
