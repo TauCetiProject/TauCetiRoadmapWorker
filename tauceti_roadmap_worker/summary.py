@@ -18,6 +18,7 @@ place of any block already there. Everything in the files is data for the agent,
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import re
 import shutil
@@ -190,6 +191,18 @@ def prose(body: str) -> str:
     while lines and (not lines[-1].strip() or lines[-1].lstrip().startswith("\U0001f916")):
         lines.pop()
     return "\n".join(lines).strip()
+
+
+def text_digest(title: str, body: str) -> str:
+    """A digest of what a pull-request review reads as the pull request's text (step 8 of its brief):
+    the title, the summary block and the description's prose, each with its whitespace folded. The
+    other generated blocks (the dependency task list, the merge order), the markers and the attribution
+    line are left out, so a tool that rewrites them, or a rewrap, changes nothing here. A verdict
+    records the digest of the text its review read (`text`), and the intake files a check round when an
+    accepted head's text is not the text its review read."""
+    block = BLOCK.search(body or "")
+    parts = [title or "", block.group(0) if block else "", prose(body)]
+    return hashlib.sha256("\n".join(" ".join(p.split()) for p in parts).encode("utf-8")).hexdigest()[:16]
 
 
 def validate(text: str, kind: str) -> list[str]:

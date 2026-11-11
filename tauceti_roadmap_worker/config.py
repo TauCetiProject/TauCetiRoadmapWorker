@@ -280,6 +280,10 @@ class PRReview:
     # descriptions and main on every run (`deplabels`). `board sync` does not touch it.
     dependency_label: str = ""
     per_run: int = 3                 # new jobs filed per `board sync` run, oldest pull request first
+    # Of those, at most this many check rounds of an accepted head's title and description, when the
+    # text is not the text its review read (`summary.text_digest`), filed after the other rounds, least
+    # deep in the dependency graph first (0: none).
+    text_per_run: int = 10
     authors: list[str] = field(default_factory=list)        # only these authors' pull requests (empty: all)
     skip_authors: list[str] = field(default_factory=list)   # never these authors' pull requests
     operator_prs: list[int] = field(default_factory=list)   # pull requests whose review rounds an operator files; `board sync` files none for them
@@ -543,6 +547,8 @@ def validate(cfg: Config) -> None:
         problems.append("gates.roadmap_files must list plain file names, README.md among them")
     if cfg.prreview.per_run < 0:
         problems.append("prreview.per_run must be >= 0")
+    if cfg.prreview.text_per_run < 0:
+        problems.append("prreview.text_per_run must be >= 0")
     if cfg.prreview.max_folders < 1:
         problems.append("prreview.max_folders must be at least 1")
     if cfg.prreview.small_change_lines < 0:

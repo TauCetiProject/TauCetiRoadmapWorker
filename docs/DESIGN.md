@@ -186,6 +186,10 @@ checkout, submits a PR to the board, and the intake advances the state.
     pushed and the review is submitted all the same. While the review job is claimed, `board sync`
     files no gate round for the pull request; the next review of the repaired head is filed as a
     re-review with `not_worker`, the worker whose reply names that head, which may not take it.
+    A verdict records the digest of the pull request's text its review read; an accepted head whose
+    text is not that text (edited since, or reviewed before the record) gets one incremental check
+    round of the text, at most `[prreview] text_per_run` a run, the pull requests that wait for
+    nothing first (OPERATORS.md, "AI review of every roadmap pull request").
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.

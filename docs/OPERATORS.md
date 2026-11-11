@@ -714,8 +714,8 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 (head moved)`. A head that moved without changing the roadmap folders is not such a move
 (`carry_unchanged`, below).
 
-A head already reviewed gets a further round in two cases only, both read from the answered record
-of the reply on the pull request. A review that did not accept and was answered without moving the
+A head already reviewed gets a further round in three cases only. The first two are read from the
+answered record of the reply on the pull request. A review that did not accept and was answered without moving the
 head (the record names the reviewed head: a dispute) gets one more round, a full review by another
 worker (`dispute_rereview`). When the answer to that second review rewrote the pull request's title
 or description (`repair_text`; its record then carries `"text": true`), the head gets one check
@@ -724,12 +724,39 @@ second review): an incremental re-review of an unchanged folder whose brief says
 description are what changed. After that the head is settled, whatever the check round finds, until
 it moves.
 
+The third is a check of an accepted head's text. A review records in its verdict the digest of the
+pull request's text it read (`text`, `summary.text_digest`: the title, the `roadmap-summary` block and
+the description's prose, whitespace folded; the other generated blocks, the markers and the
+attribution line are left out, so a tool that rewrites the dependency task list or the merge order
+changes nothing). A review reads the text against its own folder's change only, so each roadmap
+folder of an accepted pull request is checked on its own, against the head reviewed for it: the
+current head, or the earlier head the acceptance comes from (`carry_accept`, `carry_unchanged`,
+`carry_unchanged_folders`, or the head a P3-only repair settled). A folder whose latest verdict, of the
+current head or else of that head, records a digest other than the current text's, or none (the
+review predates the record), gets one check round at the current head (`text_check`, with the digest
+as `text_digest`, `rereview` and `previous_head` the head its latest review read): an incremental
+re-review whose brief says the files are unchanged and asks for step 8, the text against the change.
+What a round read is the digest its verdict records (the worker fetches the text when the round
+starts), not the one it was filed for, so a text changed before the worker took it is checked again;
+only a round that finished on a worker recording no digest (an older build) counts for the text it
+was filed for, so it is not filed on every run. A check that asks for a correction answered without a
+push gets the second case's check round of the rewrite, as a second review would; the rounds of the
+head before the latest check do not count against it. A check waiting at a head whose folders an
+earlier head settles is not superseded: what it checks is the text. These rounds come after the others of a run, at most `text_per_run` of `per_run`,
+least deep in the dependency graph first (`intake.dependency_depths`): a pull request that waits for
+nothing (without the `dependency_label`, or, when that is empty, whose description names no open pull
+request), then those that wait only for such, and so on; then `awaiting-review` before the rest,
+non-drafts before drafts, and the oldest first. The titles and descriptions are read for the run in
+batches (`prbatch.pull_texts`). The log reads `#N: PRREVIEW-<Leaf>~k created (a check of its title and
+description: changed since its review; dependency depth 0)`.
+
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | file and retire review jobs and keep the label (nothing is read while off) |
 | `label` | `"ai-approved"` | the label an accepted head carries on the content repository |
 | `dependency_label` | `""` | the label `roadmaps dependency-labels` keeps when given no `--label` (below); `board sync` does not touch it |
 | `per_run` | `3` | new review jobs (one per roadmap folder) per `board sync` run, oldest pull request first |
+| `text_per_run` | `10` | of those, check rounds of an accepted head's title and description that its review did not read (above), filed last, least deep in the dependency graph first; `0` files none |
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
 | `skip_authors` | `[]` | never these authors' pull requests |
 | `operator_prs` | `[]` | pull request numbers whose review rounds an operator files by hand (a serial chain over a many-folder pull request); `board sync` files none for them |

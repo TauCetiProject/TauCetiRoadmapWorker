@@ -11,7 +11,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from tauceti_roadmap_worker import board, cli, config, gates, intake, prbatch, prompts, prreviews, replies, worker
+from tauceti_roadmap_worker import (
+    board,
+    cli,
+    config,
+    gates,
+    intake,
+    prbatch,
+    prompts,
+    prreviews,
+    replies,
+    summary,
+    worker,
+)
 from tauceti_roadmap_worker.board import Outcome, new_job
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes import Context, LaneError, lane_for
@@ -271,6 +283,10 @@ class ContentGH:
         self.trees, self.tree_queries = trees, 0
 
     def graphql(self, query, **variables):
+        if "{ title body }" in query:              # `prbatch.pull_texts`: the titles and descriptions asked for
+            asked = [int(n) for n in re.findall(r"p(\d+): pullRequest", query)]
+            return {"repository": {f"p{n}": {"title": self.pulls[n].get("title", ""),
+                                             "body": self.pulls[n].get("body", "")} for n in asked if n in self.pulls}}
         asked = re.findall(r'(t\d+): object\(expression: "([0-9a-f]+):([^"]+)"\) \{ oid \}', query)
         if asked:
             self.tree_queries += 1
@@ -323,6 +339,7 @@ def verdict_file(job, status, head):
 def sync(gh, jobs=(), **over):
     cfg = example_config()
     cfg.prreview.enabled = True
+    cfg.prreview.text_per_run = 0             # the check rounds of accepted heads' text: their own tests
     for key, value in over.items():
         if key == "pool":
             cfg.roadmap.pool = list(value)
@@ -397,6 +414,232 @@ def test_a_head_reviewed_twice_gets_a_check_round_only_for_a_rewritten_descripti
     assert run(answer("PRREVIEW-Foo~2"), [first, second])[1].created == []
     assert run(answer("PRREVIEW-Foo~1", text=True), [first, second])[1].created == []
     assert run(answer("PRREVIEW-Foo~2", text=True), [first, second], status="accepted")[1].created == []
+
+
+def verdict_read(job, status, head, text):
+    """A verdict record that says which text of the pull request its review read (`text`)."""
+    files = verdict_file(job, status, head)
+    [(path, raw)] = files.items()
+    data = json.loads(raw)
+    data["review"]["text"] = text
+    return {path: json.dumps(data)}
+
+
+def text_pr(number, title="Roadmap: Foo", body="It builds Foo.\n"):
+    return {number: {"number": number, "state": "open", "head": {"sha": H1}, "title": title, "body": body}}
+
+
+def test_an_accepted_head_whose_text_its_review_did_not_read_gets_one_check_round():
+    done = review_job(40, 1, 12, H1, "done")
+    pulls = text_pr(12, body="It builds Foo.\n\n<!-- merge-order -->\n**Merge order.** #3 → this pull request.\n"
+                             "<!-- /merge-order -->")
+    digest = summary.text_digest("Roadmap: Foo", pulls[12]["body"])
+    listing = [node(12, H1, labels=["ai-approved", "awaiting-review"])]
+    # The verdict predates the record of the text: one incremental round of the head checks it.
+    out, fake = sync(ContentGH(listing, pulls=pulls, files=verdict_file(done, "accepted", H1)), [done], text_per_run=10)
+    [(job, _s, _p)] = fake.created
+    assert job.inputs == {"pr": 12, "head": H1, "owner": "carol", "name": "Foo", "folder": "Foo", "rereview": True,
+                          "previous_head": H1, "previous_job": "PRREVIEW-Foo~1", "text_check": True,
+                          "text_digest": digest}
+    assert out == [("#12: PRREVIEW-Foo~2 created (a check of its title and description: its review did not record "
+                    "it; dependency depth 0)")]
+    # The review read this text: nothing. A merge order rewritten by a tool is not the text it read.
+    retold = text_pr(12, body=pulls[12]["body"].replace("#3 → this", "#4 → this"))
+    out, fake = sync(ContentGH(listing, pulls=retold, files=verdict_read(done, "accepted", H1, digest)), [done],
+                     text_per_run=10)
+    assert fake.created == [] and out == []
+    # The description was edited since the review: a round, for the new text.
+    edited = text_pr(12, body="It builds Foo and Bar.\n")
+    out, fake = sync(ContentGH(listing, pulls=edited, files=verdict_read(done, "accepted", H1, digest)), [done],
+                     text_per_run=10)
+    [(job, _s, _p)] = fake.created
+    assert job.inputs["text_digest"] == summary.text_digest("Roadmap: Foo", "It builds Foo and Bar.\n")
+    assert out[0].endswith("(a check of its title and description: changed since its review; dependency depth 0)")
+    # A head and text that had their check round get no second one, and nothing is filed with the setting off.
+    check = review_job(41, 2, 12, H1, "done")
+    check.inputs.update(text_check=True, text_digest=digest)
+    gh = ContentGH(listing, pulls=pulls, files=verdict_file(done, "accepted", H1))
+    assert sync(gh, [done, check], text_per_run=10)[1].created == []
+    assert sync(ContentGH(listing, pulls=pulls, files=verdict_file(done, "accepted", H1)), [done])[1].created == []
+
+
+def test_text_checks_go_first_to_the_pull_requests_that_wait_for_nothing():
+    deps = "awaiting-dependencies"
+    shapes = {20: ([deps, "awaiting-review"], False, "<!-- depends-on -->\n- [ ] #21 R21\n<!-- /depends-on -->"),
+              21: ([deps, "awaiting-review"], False, "Plain."),
+              22: (["awaiting-review"], False, "Plain."),
+              23: (["awaiting-author"], False, "Plain."),
+              24: (["awaiting-review"], True, "Plain.")}
+    listing, jobs, files, pulls = [], [], {}, {}
+    for i, (n, (labels, draft, body)) in enumerate(sorted(shapes.items())):
+        listing.append(node(n, H1, paths=(f"TauCetiRoadmap/R{n}/README.md",), labels=["ai-approved", *labels],
+                            draft=draft))
+        job = review_job(60 + i, 1, n, H1, "done", name=f"R{n}", folder=f"R{n}")
+        jobs.append(job)
+        files.update(verdict_file(job, "accepted", H1))
+        pulls.update(text_pr(n, body=body))
+
+    def order(**over):
+        out, fake = sync(ContentGH(listing, pulls=pulls, files=files), jobs, **over)
+        return [j.inputs["pr"] for j, _s, _p in fake.created], out
+
+    # Waiting for nothing first (awaiting-review, then drafts, then the rest), then by the depth of what they
+    # wait for: #21 waits for something the description does not name, #20 for #21.
+    got, out = order(text_per_run=5, per_run=10, dependency_label=deps)
+    assert got == [22, 24, 23, 21, 20]
+    assert [line.rsplit("depth ", 1)[1] for line in out] == ["0)", "0)", "0)", "1)", "2)"]
+    got, out = order(text_per_run=2, per_run=10, dependency_label=deps)
+    assert got == [22, 24]
+    assert out[-1] == ("3 roadmap folder(s) of accepted pull requests wait for a check of their text "
+                       "([prreview] text_per_run = 2)")
+    # Without the label's name, a pull request waits when its description names an open one.
+    assert order(text_per_run=5, per_run=10)[0] == [21, 22, 24, 23, 20]
+    # And per_run caps them too.
+    assert order(text_per_run=5, per_run=3, dependency_label=deps)[0] == [22, 24, 23]
+    # The other rounds come first, within per_run.
+    fresh = node(30, H2, paths=("TauCetiRoadmap/R30/README.md",))
+    out, fake = sync(ContentGH([*listing, fresh], pulls=pulls, files=files), jobs, text_per_run=5, per_run=1)
+    assert [j.inputs["pr"] for j, _s, _p in fake.created] == [30]
+
+
+def test_a_correction_a_text_check_asks_for_answered_without_a_push_gets_the_check_round():
+    done, check = review_job(40, 1, 12, H1, "done"), review_job(41, 2, 12, H1, "done")
+    check.inputs.update(text_check=True, text_digest="0" * 16)
+    answer = {"id": 9, "user": {"login": "alice"},
+              "body": "Fixed in `1111111` (reply to the review):\n\n- **R01** (applied) — the description is "
+                      "rewritten.\n" + replies.answered_marker("PRREVIEW-Foo~2", {"comment-8": "abc"}, worker="alice-1",
+                                                               head=H1, text=True)}
+    gh = ContentGH([node(12, H1)], pulls=text_pr(12), comments={12: [answer]},
+                   files=verdict_file(check, "needs_changes", H1))
+    _out, fake = sync(gh, [done, check], text_per_run=10)
+    [(job, _s, _p)] = fake.created
+    assert job.inputs == {"pr": 12, "head": H1, "owner": "carol", "name": "Foo", "folder": "Foo", "rereview": True,
+                          "previous_head": H1, "previous_job": "PRREVIEW-Foo~2", "text_rereview": True,
+                          "not_worker": "alice-1"}
+
+
+def test_a_carried_acceptance_has_its_text_checked_against_the_verdict_it_carries():
+    foo = review_job(41, 1, 1164, H1, "done", folder="Foo")
+    bar = review_job(42, 1, 1164, H1, "done", name="Bar", folder="Bar")
+    pulls = {1164: {"number": 1164, "state": "open", "head": {"sha": H2}, "title": "Two roadmaps", "body": "Both.\n"}}
+    digest = summary.text_digest("Two roadmaps", "Both.\n")
+    carried = {1164: [{"id": 1, "body": "Applied the P3 repairs.\n\n" + replies.carried_marker(H1, H2, "maintainer"),
+                       "user": {"login": "carol"}}]}
+    small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 5, "deletions": 2}]
+
+    def run(files):
+        gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], pulls=pulls, files=files, comments=carried,
+                       compares={(H1, H2): small})
+        return sync(gh, [foo, bar], carry_accept=True, text_per_run=10)
+
+    out, fake = run({**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)})
+    # Each folder's review read the text against its own folder: each is checked, at the current head.
+    assert sorted(j.inputs["folder"] for j, _s, _p in fake.created) == ["Bar", "Foo"]
+    assert all(j.inputs["head"] == H2 and j.inputs["previous_head"] == H1 and j.inputs["text_check"]
+               for j, _s, _p in fake.created)
+    assert out[0].startswith("#1164: ai-approved kept") and "a check of its title and description" in out[1]
+    read = {**verdict_read(foo, "accepted", H1, digest), **verdict_read(bar, "accepted", H1, digest)}
+    assert run(read)[1].created == []
+
+
+def test_every_folder_of_a_pull_request_has_its_own_check_of_the_text():
+    # A review reads the text against its own folder's change: a false claim about Foo is Foo's to find, so
+    # Bar's acceptance of the text does not cover Foo.
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar",
+                                                                               folder="Bar")
+    pulls = text_pr(1164, title="Two roadmaps", body="Both.\n")
+    digest = summary.text_digest("Two roadmaps", "Both.\n")
+    accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
+    _out, fake = sync(ContentGH([two_folder_pr(H1, ["ai-approved"])], pulls=pulls, files=accepted), [foo, bar],
+                      text_per_run=10)
+    assert sorted(j.id for j, _s, _p in fake.created) == ["PRREVIEW-Bar~2", "PRREVIEW-Foo~2"]
+    # Bar's check read the text and accepted; Foo's verdict still records none: Foo alone is checked.
+    check = review_job(43, 2, 1164, H1, "done", name="Bar", folder="Bar")
+    check.inputs.update(text_check=True, text_digest=digest)
+    files = {**accepted, **verdict_read(check, "accepted", H1, digest)}
+    _out, fake = sync(ContentGH([two_folder_pr(H1, ["ai-approved"])], pulls=pulls, files=files), [foo, bar, check],
+                      text_per_run=10)
+    assert [j.id for j, _s, _p in fake.created] == ["PRREVIEW-Foo~2"]
+
+
+def test_a_later_text_check_gets_its_correction_round_whatever_earlier_rounds_of_the_head_had():
+    # An earlier dispute and its accepted text round settled the head; the description was edited since, its
+    # check asked for a correction, and the correction was made without a push: it gets its check round.
+    first, second = review_job(40, 1, 12, H1, "done"), review_job(41, 2, 12, H1, "done")
+    second.inputs["dispute_rereview"] = True
+    third = review_job(42, 3, 12, H1, "done")
+    third.inputs["text_rereview"] = True
+    check = review_job(43, 4, 12, H1, "done")
+    check.inputs.update(text_check=True, text_digest="0" * 16)
+    answer = {"id": 9, "user": {"login": "alice"},
+              "body": "Fixed in `1111111` (reply to the review):\n\n- **R01** (applied) — rewritten.\n"
+                      + replies.answered_marker("PRREVIEW-Foo~4", {"comment-8": "abc"}, worker="alice-1", head=H1,
+                                                text=True)}
+    files = {**verdict_file(third, "accepted", H1), **verdict_file(check, "needs_changes", H1)}
+    gh = ContentGH([node(12, H1)], pulls=text_pr(12), comments={12: [answer]}, files=files)
+    _out, fake = sync(gh, [first, second, third, check], text_per_run=10)
+    [(job, _s, _p)] = fake.created
+    assert job.inputs["text_rereview"] is True and job.inputs["previous_job"] == "PRREVIEW-Foo~4"
+    # That round is the sequence's last: after it nothing more is filed.
+    after = review_job(44, 5, 12, H1, "done")
+    after.inputs["text_rereview"] = True
+    gh = ContentGH([node(12, H1)], pulls=text_pr(12), comments={12: [answer]}, files=files)
+    assert sync(gh, [first, second, third, check, after], text_per_run=10)[1].created == []
+
+
+def test_a_check_covers_the_text_its_worker_read_not_the_text_it_was_filed_for():
+    done = review_job(40, 1, 12, H1, "done")
+    text_a, text_b = "It builds Foo.\n", "It builds Foo and Bar.\n"
+    digest_a, digest_b = summary.text_digest("Roadmap: Foo", text_a), summary.text_digest("Roadmap: Foo", text_b)
+    check = review_job(41, 2, 12, H1, "done")
+    check.inputs.update(text_check=True, text_digest=digest_a)
+    listing = [node(12, H1, labels=["ai-approved", "awaiting-review"])]
+    # Filed for A, the text was B when the worker fetched it, and it is A again now: A is checked.
+    files = {**verdict_file(done, "accepted", H1), **verdict_read(check, "accepted", H1, digest_b)}
+    _out, fake = sync(ContentGH(listing, pulls=text_pr(12, body=text_a), files=files), [done, check], text_per_run=10)
+    [(job, _s, _p)] = fake.created
+    assert job.inputs["text_digest"] == digest_a and job.id == "PRREVIEW-Foo~3"
+    # A worker of an older build records no digest: the round it finished counts for the text it was filed for.
+    files = {**verdict_file(done, "accepted", H1), **verdict_file(check, "accepted", H1)}
+    assert sync(ContentGH(listing, pulls=text_pr(12, body=text_a), files=files), [done, check],
+                text_per_run=10)[1].created == []
+
+
+def test_a_check_of_the_text_waiting_at_a_head_the_folders_settle_is_not_superseded():
+    # The files a check round would read are settled by an earlier head (the head only moved, or the folder
+    # holds the files its last review accepted), but the text it checks is not: it stays on the board, while an
+    # ordinary untaken review there is superseded as before.
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar",
+                                                                               folder="Bar")
+    accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
+
+    def waiting(**inputs):
+        job = review_job(44, 2, 1164, H2, "available", folder="Foo")
+        job.inputs.update(inputs)
+        return job
+
+    check = waiting(text_check=True, text_digest="0" * 16)
+    out, fake = sync(ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2)),
+                     [foo, bar, check])
+    assert fake.states == [] and not any("superseded" in line for line in out)
+    _out, fake = sync(ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2)),
+                      [foo, bar, waiting()])
+    assert fake.states == [("PRREVIEW-Foo~2", "done")]
+    first = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "needs_changes", H1)}
+    repaired = {(H1, "TauCetiRoadmap/Foo"): "foo", (H2, "TauCetiRoadmap/Foo"): "foo",
+                (H1, "TauCetiRoadmap/Bar"): "bar", (H2, "TauCetiRoadmap/Bar"): "bar-repaired"}
+    out, fake = sync(ContentGH([two_folder_pr(H2)], files=first, trees=repaired), [foo, bar, check])
+    assert fake.states == [] and not any("superseded" in line for line in out)
+    out, fake = sync(ContentGH([two_folder_pr(H2)], files=first, trees=repaired), [foo, bar, waiting()])
+    assert out[0] == "#1164: PRREVIEW-Foo~2 superseded"
+
+
+def test_the_dependency_depth_cuts_a_cycle_and_ignores_closed_pull_requests():
+    listing = [{"pr": n, "labels": ["deps"]} for n in (1, 2, 3)] + [{"pr": 4, "labels": []}]
+    bodies = {1: {"body": "Depends on #2."}, 2: {"body": "Depends on #1 and #3."}, 3: {"body": "Depends on #99."},
+              4: {"body": "Depends on #1."}}
+    depths = intake.dependency_depths(listing, bodies, "deps")
+    assert depths[4] == 0 and depths[3] == 1 and depths[2] == 2 and depths[1] == 3
 
 
 def test_a_new_round_is_numbered_past_the_highest_round_when_a_number_is_missing():
@@ -1341,6 +1584,11 @@ def test_a_nested_review_writes_its_folder_under_the_head_line_and_in_its_verdic
     path.write_text(json.dumps(data))
     assert path in lane.scrub_outputs(job, ctx, ws)
     assert json.loads(path.read_text())["review"]["folder"] == "RepresentationTheory/CompactGroups"
+    # It records the digest of the pull request's text the review read (`summary.text_digest`), set when the
+    # lane prepared the round (this workspace was made without it).
+    ws.extra["pr_text_digest"] = summary.text_digest("Roadmap: CompactGroups", "It builds compact groups.")
+    assert path in lane.scrub_outputs(job, ctx, ws)
+    assert json.loads(path.read_text())["review"]["text"] == ws.extra["pr_text_digest"]
 
 
 def test_an_acceptance_labels_the_pull_request_only_once_its_other_folders_accept(review_env):
@@ -1633,6 +1881,13 @@ def test_the_check_round_of_a_rewritten_description_is_incremental_and_says_what
     assert "**An incremental re-review.**" in text
     assert "**The files are unchanged; the title and description were rewritten.**" in text
     assert f"They are quoted in `{ws.scratch / 'pull-request.md'}`." in text
+    # A check round of an accepted head's text says so instead.
+    check = rereview_job(second, second, round_=3)
+    check.inputs["text_check"] = True
+    ws = lane.prepare(check, ctx)
+    text = prompts.render("prreview", {**lane.common_values(check, ctx, ws), **lane.values(check, ctx, ws)})
+    assert "this round reads the pull request's title and description.**" in text
+    assert "the title and description were rewritten" not in text
     # An ordinary incremental re-review does not carry the paragraph.
     plain = rereview_job(second, second, round_=3)
     ws = lane.prepare(plain, ctx)

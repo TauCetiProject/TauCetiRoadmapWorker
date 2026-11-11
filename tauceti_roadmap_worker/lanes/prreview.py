@@ -388,6 +388,15 @@ judged against the files, which are as that review read them. The rewritten titl
 the changed passages of step 2: check every claim they make against the head."""
 
 
+TEXT_CHECK = """
+
+**The files are unchanged since `{since}`, which a review accepted; this round reads the pull request's \
+title and description.** That review did not read them as they stand now: they changed since, or it \
+was made before reviews checked the text against the change. They are quoted in `{pr_text}` with the \
+folder's change against the base. Apply step 8 to them; the files are as that review read them, and \
+its findings about the files stand."""
+
+
 def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
     """The brief's MODE: what the review covers, an incremental re-review (`INCREMENTAL`) or a full
     review, saying why a re-review is not incremental and offering the change set as context."""
@@ -397,6 +406,8 @@ def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
         text = INCREMENTAL.format(previous=previous, since=since, lines=lines, small=small, changes=changes)
         if job.inputs.get("text_rereview"):
             text += TEXT_ROUND.format(since=since, pr_text=extra.get("pr_text") or "the pull request's text")
+        elif job.inputs.get("text_check"):
+            text += TEXT_CHECK.format(since=since, pr_text=extra.get("pr_text") or "the pull request's text")
         return text
     text = "**A full review.**"
     if job.inputs.get("rereview"):
@@ -902,6 +913,7 @@ class PRReviewLane(Lane):
         ws.extra["pr_text"] = str(ws.scratch / PULL_REQUEST_TEXT)
         ws.extra["pr_prose"] = description_prose(data.get("body") or "")
         ws.extra["pr_summary"] = summary.block_kind(data.get("body") or "")
+        ws.extra["pr_text_digest"] = summary.text_digest(data.get("title") or "", data.get("body") or "")
         self.write_changes(job, ctx, ws)
         ws.extra["previous_report"] = self.previous_report(job, ctx, ws)
         ws.extra["deferred"] = self.previous_deferred(job, ctx)
@@ -1057,8 +1069,10 @@ class PRReviewLane(Lane):
     def scrub_outputs(self, job: Job, ctx: Context, ws: Workspace) -> list[Path]:
         """The base scrub, machine paths out of the verdict record, the roadmap folder reviewed recorded
         in it (`folder`) when the agent left it out, and the worker's own records in it: `carried` is
-        never the agent's to write, and `deferred` is the list that stands after this review
-        (`standing_deferred`)."""
+        never the agent's to write, `deferred` is the list that stands after this review
+        (`standing_deferred`), and `text` is the digest of the pull request's text the review read
+        (`summary.text_digest`), from which the intake files a check round for an accepted head whose
+        text has changed since, or whose verdict records none."""
         changed = super().scrub_outputs(job, ctx, ws)
         path = self.verdict_file(job, ctx, ws)
         if path.is_file():
@@ -1076,6 +1090,9 @@ class PRReviewLane(Lane):
                 standing = self.standing_deferred(job, ctx, ws)
                 if standing:
                     review["deferred"] = standing
+                review.pop("text", None)
+                if ws.extra.get("pr_text_digest"):
+                    review["text"] = ws.extra["pr_text_digest"]
                 if json.dumps(review, sort_keys=True) != before:
                     clean = json.dumps(data, indent=1, ensure_ascii=False) + "\n"
             if clean != text:
