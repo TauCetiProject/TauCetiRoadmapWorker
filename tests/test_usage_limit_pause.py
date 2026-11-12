@@ -29,8 +29,9 @@ class Clock:
         return self.t
 
 
-def run_loop(monkeypatch, results, agent="codex", agent_fixed=False, clock=None):
-    """work_loop over scripted rounds; returns the sleeps, the log and the `paused` each round saw."""
+def run_loop(monkeypatch, results, agent="codex", agent_fixed=False, clock=None, tick=False):
+    """work_loop over scripted rounds; returns the sleeps, the log and the `paused` each round saw.
+    With `tick`, a sleep moves the clock on by its length."""
     monkeypatch.setattr(worker.shutil, "which", lambda a: f"/usr/bin/{a}")
     clock = clock or Clock()
     monkeypatch.setattr(worker, "now", clock)
@@ -46,8 +47,13 @@ def run_loop(monkeypatch, results, agent="codex", agent_fixed=False, clock=None)
     monkeypatch.setattr(worker, "work_once", work_once)
     ctx = SimpleNamespace(cfg=parsed(), board=FakeBoard(), agent=agent, agent_fixed=agent_fixed, model_fixed=False)
     sleeps, lines = [], []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if tick:
+            clock.t += dt.timedelta(seconds=seconds)
     with pytest.raises(Stop):
-        worker.work_loop(ctx, None, list, log=lines.append, sleep=sleeps.append)
+        worker.work_loop(ctx, None, list, log=lines.append, sleep=sleep)
     return sleeps, lines, seen
 
 
@@ -95,3 +101,33 @@ def test_jobs_of_a_paused_family_are_skipped_and_logged_once(monkeypatch):
         assert result.status == "idle"
     assert lines == ["skip claude jobs (first: RT-Foo~1b): claude paused by a usage limit until 2026-10-21T01:00Z"]
     assert worker.for_job(ctx, new_job("REV-PKG-Foo"), paused)[0].agent == "codex"   # Astra work goes on
+
+
+NO_RESET = LaneResult("RT-Foo~1b", "limited", "out of usage credits", agent="claude")
+
+
+def test_limits_with_no_reset_time_and_no_work_back_off(monkeypatch):
+    """Regression: a worker on an account out of credits claimed a review round every half hour,
+    held it for four minutes and released it, all day."""
+    sleeps, lines, _ = run_loop(monkeypatch, [NO_RESET] * 6, agent="claude", agent_fixed=True, tick=True)
+    assert sleeps == [1800, 3600, 7200, 14400, 14400, 14400]
+    assert sum("usage limits in a row with no reset time and no work done" in line for line in lines) == 5
+    assert any("claude: 2 usage limits in a row" in line and "tried at 2026-10-20T23:30Z" in line for line in lines)
+
+
+def test_a_submitted_round_ends_the_row(monkeypatch):
+    done = LaneResult("RT-Foo~1b", "submitted", "", agent="claude")
+    sleeps, _, _ = run_loop(monkeypatch, [NO_RESET, NO_RESET, done, NO_RESET], agent="claude", agent_fixed=True,
+                            tick=True)
+    assert sleeps == [1800, 3600, worker.AFTER_ROUND, 1800]
+    other = LaneResult("RT-Foo~1a", "submitted", "", agent="codex")     # another family's round does not
+    _, _, seen = run_loop(monkeypatch, [NO_RESET, other, NO_RESET, IDLE], tick=True)
+    assert seen[3]["claude"] == NOW + dt.timedelta(seconds=2 * worker.AFTER_ROUND + 3600)
+
+
+def test_a_limit_with_a_reset_time_or_after_work_is_not_part_of_the_row(monkeypatch):
+    worked = LaneResult("RT-Foo~1b", "limited", "usage limit", agent="claude", worked=900.0)
+    sleeps, _, _ = run_loop(monkeypatch, [NO_RESET, worked, NO_RESET, LIMITED, NO_RESET], agent="claude",
+                            agent_fixed=True, tick=True)
+    assert sleeps == [1800, 1800, 1800, (RESET - NOW).total_seconds() - 3 * 1800 + 300, 1800]
+    assert worker.blind_limit(NO_RESET) and not worker.blind_limit(worked) and not worker.blind_limit(LIMITED)
