@@ -177,8 +177,10 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   the status and detail, the agent, `retry_at` (for a limit), the seconds worked, the start and end
   times, the exit status, and the token usage of the round's agent runs, summed from `usage.jsonl`.
 * `--dry-run` takes no lease, writes the brief to the job folder and prints every GitHub write.
-* GitHub's answers about the account stop the worker: a 401 (bad credentials), or a 403 naming a
-  suspension, abuse detection or a secondary rate limit.
+* GitHub's answers about the account stop the worker: a 401 (bad credentials) that stands, or a 403
+  naming a suspension, abuse detection or a secondary rate limit.
+  - A request answered 401 is sent again after 20 and then 60 seconds; one 401 among good answers is
+    not a halt.
   - The worker sends nothing more, writes `<state>/halt.json` and exits with code 78.
   - Every worker of the host stops at its next round boundary, and none starts while the file exists.
   - Look at the account, then delete the file.

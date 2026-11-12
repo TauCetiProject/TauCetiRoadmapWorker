@@ -1,6 +1,7 @@
-"""GitHub's answers about the account stop every further write: a 401 or a suspension-, abuse- or
-secondary-rate-limit-shaped 403 halts the worker and every worker of its host (`halt.json`); a spent
-primary rate limit pauses until it resets. A 403 about the request (a locked issue) stays a GHError."""
+"""GitHub's answers about the account stop every further write: a 401 that stands or a suspension-,
+abuse- or secondary-rate-limit-shaped 403 halts the worker and every worker of its host (`halt.json`);
+a spent primary rate limit pauses until it resets. A 403 about the request (a locked issue) stays a
+GHError, and a single 401 followed by a good answer is not a halt."""
 
 import datetime as dt
 import subprocess
@@ -27,17 +28,37 @@ def answering(monkeypatch, stderr: str):
     return calls
 
 
-@pytest.mark.parametrize("stderr", [
-    "HTTP 401: Bad credentials (https://api.github.com/user)",
-    "HTTP 403: Sorry. Your account was suspended.",
+@pytest.mark.parametrize("stderr, sent, waits", [
+    ("HTTP 401: Bad credentials (https://api.github.com/user)", 3, list(ghmod.HALT_CONFIRM)),
+    ("HTTP 403: Sorry. Your account was suspended.", 1, []),
 ])
-def test_an_answer_about_the_account_halts_and_nothing_more_is_sent(monkeypatch, stderr):
-    calls, gh = answering(monkeypatch, stderr), GH()
+def test_an_answer_about_the_account_halts_and_nothing_more_is_sent(monkeypatch, stderr, sent, waits):
+    slept = []
+    calls, gh = answering(monkeypatch, stderr), GH(sleep=slept.append)
     with pytest.raises(GHHalt):
         gh.write("POST", "repos/o/r/issues/1/comments", {"body": "x"})
     with pytest.raises(GHHalt):
         gh.api("repos/o/r")
-    assert len(calls) == 1 and gh.halted
+    assert len(calls) == sent and slept == waits and gh.halted
+
+
+@pytest.mark.parametrize("write", [False, True])
+def test_one_401_followed_by_a_good_answer_is_not_a_halt(monkeypatch, write):
+    answers = iter([subprocess.CompletedProcess([], 1, "", "gh: Bad credentials (HTTP 401)"),
+                    subprocess.CompletedProcess([], 0, '{"id": 5}', "")])
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return next(answers)
+    monkeypatch.setattr(ghmod.subprocess, "run", run)
+    slept = []
+    gh = GH(sleep=slept.append)
+    if write:
+        assert gh.write("POST", "repos/o/r/issues/1/comments", {"body": "x"}) == {"id": 5}
+    else:
+        assert gh.api("repos/o/r") == {"id": 5}
+    assert len(calls) == 2 and calls[0] == calls[1] and slept == [ghmod.HALT_CONFIRM[0]] and not gh.halted
 
 
 def test_a_403_about_the_request_is_an_ordinary_error(monkeypatch):
