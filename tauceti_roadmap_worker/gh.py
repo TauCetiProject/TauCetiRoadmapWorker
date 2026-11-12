@@ -49,6 +49,12 @@ HALT = re.compile(r"HTTP 401|Bad credentials|account (?:was|has been|is) suspend
 RATE_LIMITED = re.compile(r"API rate limit exceeded|rate limit exceeded for|secondary rate limit|abuse detection",
                           re.IGNORECASE)
 RATE_PAUSE = 900      # seconds: the CLI's error does not carry the reset time
+# One 401 among good answers is GitHub's own (a token it briefly failed to check), and it halted a whole
+# host for half an hour on 2026-11-12. A 401 refuses the request before anything is done, so the same
+# request is sent again, a write included, and only a 401 that stands halts. A suspension halts at once.
+UNAUTHORIZED = re.compile(r"HTTP 401|Bad credentials", re.IGNORECASE)
+SUSPENDED = re.compile(r"account (?:was|has been|is) suspended", re.IGNORECASE)
+HALT_CONFIRM = (20, 60)   # seconds before the second and third try of a request GitHub answered 401
 
 
 TRANSIENT = re.compile(r"HTTP 5\d\d|\b50[0-4]\b|timed? ?out|couldn't respond to your request in time|"
@@ -87,6 +93,7 @@ class GH:
     timeout: int = 120
     read_delays: tuple = READ_DELAYS
     sleep: object = time.sleep
+    halt_confirm: tuple = HALT_CONFIRM
     fence: object = None         # called before every write; it raises to refuse the write
 
     def _read(self, args: list[str]) -> str:
@@ -115,21 +122,27 @@ class GH:
         if self.paused_until > self.clock():
             raise GHRateLimited(f"GitHub's rate limit is spent; nothing is sent before {self.paused_until:.0f}",
                                 self.paused_until)
-        self.calls += 1
-        try:
-            result = subprocess.run(["gh", *args], input=stdin, capture_output=True, text=True, timeout=self.timeout)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise GHError(f"gh {' '.join(args[:3])}: {exc}") from exc
-        if result.returncode != 0:
+        for delay in (*self.halt_confirm, None):
+            self.calls += 1
+            try:
+                result = subprocess.run(["gh", *args], input=stdin, capture_output=True, text=True,
+                                        timeout=self.timeout)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise GHError(f"gh {' '.join(args[:3])}: {exc}") from exc
+            if result.returncode == 0:
+                return result.stdout
             message = f"gh {' '.join(args[:3])}: {result.stderr.strip()[:400]}"
             if HALT.search(result.stderr):
+                if delay is not None and UNAUTHORIZED.search(result.stderr) and not SUSPENDED.search(result.stderr):
+                    self.sleep(delay)
+                    continue
                 self.halted = message
                 raise GHHalt(message)
             if RATE_LIMITED.search(result.stderr):
                 self.paused_until = self.clock() + RATE_PAUSE
                 raise GHRateLimited(message, self.paused_until)
             raise GHError(message)
-        return result.stdout
+        raise AssertionError("unreachable")
 
     # Conditional requests (2026-11-05). GitHub answers a GET that carries the ETag of the last answer
     # with 304 Not Modified when nothing changed, and a 304 does not count against the hourly quota.
