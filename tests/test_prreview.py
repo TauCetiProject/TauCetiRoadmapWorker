@@ -1989,6 +1989,54 @@ def test_a_repair_is_not_carried_over_a_change_to_its_folder_or_outside_the_road
     assert sh(rh.content, "rev-parse", f"{moved}^") == head and len(rh.comments[905]) == 1 and rh.labels == []
 
 
+def moved_already(tmp_path, rh, rel, text="changed meanwhile\n"):
+    """The pull request's branch gains a commit that writes `rel` after the review and before its repair."""
+    other = tmp_path / "other"
+    sh(tmp_path, "clone", "-q", "-b", ROADMAP_BRANCH, str(rh.content), str(other))
+    (other / rel).parent.mkdir(parents=True, exist_ok=True)
+    (other / rel).write_text(text)
+    sh(other, "add", "-A")
+    sh(other, "commit", "-q", "-m", "a change made meanwhile")
+    sh(other, "push", "-q", "origin", f"HEAD:refs/heads/{ROADMAP_BRANCH}")
+
+
+@needs_git
+@pytest.mark.parametrize("rel", ["TauCetiRoadmap/Foo/Suggested.lean", "lake-manifest.json"])
+def test_no_repair_is_made_for_a_head_that_already_moved_in_its_folder_or_outside_the_roadmaps(
+        hub, monkeypatch, tmp_path, rel):  # noqa: F811
+    # 2026-11-12: an author pushed to four pull requests while their reviews ran; each review was followed by a
+    # full repair of the old head, which could not be pushed.
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    monkeypatch.setattr(lane_prreview.PRReviewLane, "run_agent", lambda *a, **k: pytest.fail("the repair agent ran"))
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    moved_already(tmp_path, rh, rel)
+    result = lane.deliver(job, ctx, ws)
+    moved = rh.head(905)
+    assert result.status == "submitted", result.detail
+    assert (f"; repair not pushed: the pull request moved from {head[:7]} to {moved[:7]} before the repair started; "
+            "no repair was made") in result.detail
+    assert sh(rh.content, "rev-parse", f"{moved}^") == head and len(rh.comments[905]) == 1 and rh.labels == []
+    assert ctx.board.states == [(job.id, "submitted")] and lane_base.read_pending(ctx, job) is None
+
+
+@needs_git
+def test_a_head_that_already_moved_in_another_roadmap_folder_is_still_repaired_and_carried(hub, monkeypatch, tmp_path):  # noqa: F811
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    repair_agent(monkeypatch, [])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    moved_already(tmp_path, rh, "TauCetiRoadmap/Bar/README.md")
+    result = lane.deliver(job, ctx, ws)
+    new = rh.head(905)
+    onto = sh(rh.content, "rev-parse", f"{new}^")
+    assert result.status == "submitted", result.detail
+    assert onto != head and sh(rh.content, "rev-parse", f"{onto}^") == head
+    assert f"repaired at {new[:7]} on top of {onto[:7]} and answered the review (awaiting-review)" in result.detail
+
+
 @needs_git
 def test_a_carried_repair_that_fails_the_gate_on_the_moved_head_is_not_pushed(hub, monkeypatch, tmp_path):  # noqa: F811
     rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
