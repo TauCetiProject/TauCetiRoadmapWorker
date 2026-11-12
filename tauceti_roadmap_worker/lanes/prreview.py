@@ -1361,6 +1361,7 @@ class PRReviewLane(Lane):
     def repair_steps(self, job: Job, ctx: Context, ws: Workspace) -> str:
         head, report = ws.extra["head"], ws.job_dir / REPAIR_REPORT
         if owes(ctx, job, REPAIR):
+            self.refuse_moved(job, ctx, ws, head)
             self.run_repair(job, ctx, ws, report)
         new = repaired_head(ctx, job)
         gate = load_gate(ws.job_dir / REPAIR_GATE, new)
@@ -1400,6 +1401,30 @@ class PRReviewLane(Lane):
         return (f"repaired at {new[:7]}{wrote} and answered the review ({label})" if new != head
                 else f"answered the review, no change to the files needed{wrote} ({label})" if wrote
                 else f"answered the review, no change needed ({label})")
+
+    def refuse_moved(self, job: Job, ctx: Context, ws: Workspace, head: str) -> None:
+        """Before the repair agent runs: no repair is made for a pull request whose branch has already
+        moved from the head reviewed in a way `carry` refuses whatever the repair does, since the
+        repair could not be pushed (2026-11-12: an author pushed to four pull requests while their
+        reviews ran, and each review was followed by a full repair that was thrown away). That is a
+        branch that no longer contains the head reviewed, or one that gained a commit of its own (not
+        a merge, and not a commit of the base branch that a merge brought in) changing the folder
+        reviewed or a file outside the roadmaps. The next round reviews the head the branch is at.
+        Any other move, and one that cannot be read here, is left to `carry`, as before."""
+        wt, branch = ws.workdir, ws.extra["pr_branch"]
+        found = gitops.remote_head(wt, ws.extra["head_repo"], branch)
+        if found in ("", head):
+            return
+        gitops.git(wt, "fetch", "-q", "fork", f"refs/heads/{branch}", check=False)
+        if not gitops.git(wt, "rev-parse", "-q", "--verify", f"{found}^{{commit}}", check=False).strip():
+            return
+        active, folder = ctx.cfg.roadmap.active_dir.strip("/") + "/", board.prreview_folder(job)
+        own = gitops.git(wt, "log", "--format=", "--name-only", "--no-merges", f"{head}..{found}", "--not",
+                         pr_base(ctx, ws), check=False).splitlines()
+        if (gitops.git(wt, "merge-base", head, found, check=False).strip() != head
+                or any(path and (not path.startswith(active) or path.startswith(f"{active}{folder}/")) for path in own)):
+            raise LaneError(f"the pull request moved from {head[:7]} to {found[:7]} before the repair started; "
+                            "no repair was made (the next round reviews that head)")
 
     def carry(self, job: Job, ctx: Context, ws: Workspace, head: str, new: str,
               gate: gates.GateResult) -> tuple[str, gates.GateResult]:
