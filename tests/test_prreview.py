@@ -1289,6 +1289,38 @@ def test_the_gate_of_a_nested_review_checks_its_folder_and_takes_the_sibling_fol
         "TauCetiRoadmap/RepresentationTheory/Other/README.md", "TauCetiRoadmap/Bar/README.md", "lakefile.toml"]
 
 
+def test_the_index_of_a_family_another_folder_is_nested_in_is_the_pull_requests_own(dry_ctx, monkeypatch):  # noqa: F811
+    """2026-11-12: a pull request changed a top-level folder and a nested one. The nested folder's review
+    asked for a change of its family index, which the gate of the top-level folder would have failed as a
+    change outside the folder."""
+    job = new_job("PRREVIEW-Foo~1", inputs={**NESTED, "name": "Foo", "folder": "Foo"})
+    lane = lane_for(job)
+    ws = lane.prepare(job, dry_ctx)
+    assert lane_prreview.other_families(job) == ["RepresentationTheory"]
+    nested = new_job("PRREVIEW-CompactGroups~1", inputs={**NESTED, "roadmaps": [*NESTED["roadmaps"], "Other/Deep/Leaf"]})
+    assert lane_prreview.other_families(nested) == ["Other", "Other/Deep"]       # its own family is not listed twice
+    seen = {}
+
+    def run_gate(worktree, name, opts, base="", build_cmd=""):
+        seen.update(opts=opts)
+        return gates.GateResult(name, counts={"build": 0})
+    monkeypatch.setattr(lane_prreview.gates, "run_gate", run_gate)
+    assert lane.review_gate(job, dataclasses.replace(dry_ctx, dry_run=False), ws).ok
+    changed = ["TauCetiRoadmap/Foo/README.md", "TauCetiRoadmap/RepresentationTheory/README.md",
+               "TauCetiRoadmap/RepresentationTheory/CompactGroups/README.md",
+               "TauCetiRoadmap/RepresentationTheory/Other/README.md", "TauCetiRoadmap/Bar/README.md",
+               "TauCetiRoadmap/README.md"]
+    assert gates.outside_folder(changed, "TauCetiRoadmap/Foo", seen["opts"].outside_folder_allow) == [
+        "TauCetiRoadmap/RepresentationTheory/Other/README.md", "TauCetiRoadmap/Bar/README.md", "TauCetiRoadmap/README.md"]
+    values = {**lane.common_values(job, dry_ctx, ws), **lane.values(job, dry_ctx, ws)}
+    assert ("The files directly in `TauCetiRoadmap/RepresentationTheory/` (the index of a family that one of those "
+            "other folders is nested in) are the pull request's own too") in values["FILES"]
+    assert "(the family's index)" not in values["FILES"]                         # Foo itself is not nested
+    assert values["OUTSIDE_CHECK"].endswith(
+        "-- . ':!TauCetiRoadmap/Foo' ':!TauCetiRoadmap/RepresentationTheory/CompactGroups' "
+        "':!TauCetiRoadmap/RepresentationTheory/LieGroups' ':(exclude,glob)TauCetiRoadmap/RepresentationTheory/*'")
+
+
 def test_a_nested_review_writes_its_folder_under_the_head_line_and_in_its_verdict(review_env, monkeypatch):
     monkeypatch.setattr(lane_prreview.gitops, "git", lambda cwd, *args, **kw: H1 + "\n" if args[0] == "rev-parse" else "")
     ctx = lane_ctx(review_env, gh=LabelGH())

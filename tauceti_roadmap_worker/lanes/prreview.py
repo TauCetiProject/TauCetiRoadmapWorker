@@ -139,6 +139,13 @@ def family_folders(folder: str) -> list[str]:
     return ["/".join(parts[:k]) for k in range(1, len(parts))]
 
 
+def other_families(job: Job) -> list[str]:
+    """The family folders above the pull request's other roadmap folders that are not above the folder
+    reviewed: their index files are the pull request's own as well, covered by those folders' reviews."""
+    own = family_folders(board.prreview_folder(job))
+    return list(dict.fromkeys(g for f in other_folders(job) for g in family_folders(f) if g not in own))
+
+
 def folder_leans(folder: Path) -> list[Path]:
     """The roadmap's Lean files: Suggested.lean (listed whether or not it exists yet), then every other
     `*.lean` under the folder outside a subfolder with a README.md of its own."""
@@ -1032,7 +1039,11 @@ class PRReviewLane(Lane):
         opts.folder = board.prreview_folder(job)
         active = re.escape(cfg.roadmap.active_dir)
         opts.outside_folder_allow.extend(rf"^{active}/{re.escape(f)}/" for f in other_folders(job))
-        opts.outside_folder_allow.extend(rf"^{active}/{re.escape(f)}/[^/]+$" for f in family_folders(opts.folder))
+        # 2026-11-12: the index of a family that another folder of the pull request is nested in failed the
+        # gate of the folders outside that family, so the pull request could not carry the index change
+        # that the nested folder's review asked for.
+        opts.outside_folder_allow.extend(rf"^{active}/{re.escape(f)}/[^/]+$"
+                                         for f in (*family_folders(opts.folder), *other_families(job)))
         return opts
 
     def missing_references(self, job: Job, ctx: Context, ws: Workspace) -> list[references.MissingReference]:
@@ -1090,7 +1101,7 @@ class PRReviewLane(Lane):
         items = sample_items(readme.read_text(encoding="utf-8")) if readme.is_file() else []
         sample = seeded_sample(items, SAMPLE_SIZE, job.id)
         folder = f"{active}/{own}"
-        others, family = other_folders(job), family_folders(own)
+        others, family, kin = other_folders(job), family_folders(own), other_families(job)
         files = "\n".join(f"- `{p}`" for p in [readme, *leans])
         files += ("\n\nThe Lean form rules below apply to each `.lean` file listed; the build is of "
                   f"`{leans[0].name}`'s module.")
@@ -1101,10 +1112,14 @@ class PRReviewLane(Lane):
         if family:
             files += (f"\n\nThis roadmap is nested: the files directly in `{active}/{family[-1]}/` (the family's "
                       "index) are the pull request's own as well.")
+        if kin:
+            files += ("\n\nThe files directly in " + ", ".join(f"`{active}/{f}/`" for f in kin) + " (the index of a "
+                      "family that one of those other folders is nested in) are the pull request's own too: that "
+                      "folder's review covers them.")
         build = (cfg.gates.build.format(module=gates.build_targets(ws.workdir, active, own)) if cfg.gates.build
                  else "(no build configured)")
         excluded = " ".join([f"':!{folder}'", *(f"':!{active}/{f}'" for f in others),
-                             *(f"':(exclude,glob){active}/{f}/*'" for f in family)])
+                             *(f"':(exclude,glob){active}/{f}/*'" for f in (*family, *kin))])
         previous, changes = ws.extra.get("previous_report"), ws.extra.get("changes")
         mode = ws.extra.get("mode") or "full"
         return {"PR": str(ws.extra["pr"]), "HEAD": head, "HEAD7": head[:7], "OWNER": ws.extra.get("owner") or "?",

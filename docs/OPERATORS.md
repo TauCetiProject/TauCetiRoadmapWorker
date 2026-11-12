@@ -770,8 +770,9 @@ gate's result and the pull request's title and description as data, followed by 
 against the pull request's base (whether the roadmap is on the base, the diffstat, and the headings
 and Lean declarations the change removes and adds). The agent reviews the folder's
 README and every Lean file in it (Suggested.lean and any `*Targets.lean`) as a package review does;
-the pull request's other roadmap folders, and a nested roadmap's family index files, are named as
-its own, not as changes outside the folder. It also reads the title and the description's prose
+the pull request's other roadmap folders, a nested roadmap's family index files, and the index files
+of a family that another of its folders is nested in, are named as its own, not as changes outside
+the folder. It also reads the title and the description's prose
 against that change and the head: a sentence the head contradicts, or a change a reader must know
 of that the text leaves unstated (whether it adds a roadmap or revises one on main, sections removed or
 renumbered, headline theorems or `Suggested.lean` declarations removed, a supplier added or dropped),
@@ -931,7 +932,7 @@ A nested roadmap's entry in its family's index is read by the review with the ro
 `repair_index` on, a repair may edit the family's `README.md` (never its other index files) when the
 pull request itself changes that file, for findings about what the index says of the roadmap
 reviewed, and commits it with the folder's files; the push gate already takes a family's index files
-as the pull request's own. An index the pull request does not change stays out of the repair's
+as the pull request's own, in the review of every folder of the pull request. An index the pull request does not change stays out of the repair's
 reach, since every roadmap of the family shares it.
 
 When the pull request's branch moved while the repair
