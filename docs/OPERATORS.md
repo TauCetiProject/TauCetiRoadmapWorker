@@ -143,7 +143,10 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   pinned to gpt-6.1-sol`. A worker pinned with `--agent` alone lets the lane pick the model. `doctor`
   warns when neither family of the review models is installed on the host.
 * `--loop` keeps going: a usage limit pauses only the agent family that hit it, until the reset
-  time the agent printed plus five minutes (half an hour when it printed none), and the worker goes
+  time the agent printed plus five minutes (half an hour when it printed none; each further such
+  limit in a row that stopped the agent before any work doubles that, up to four hours, so a worker
+  on an account that is out of credits claims and releases a job a few times a day, not every half
+  hour), and the worker goes
   on with jobs for its other families; a worker whose every usable family is paused (one pinned with
   `--agent` or `--model`, or with one agent installed) sleeps until the first reset. When nothing is
   eligible it sleeps `[worker] idle_seconds` (default 600). The first poll after a
@@ -286,7 +289,8 @@ also "rate limit", "Too many requests"/429), wherever the text appears and whate
 the round is logged `limited: <message>` (`limited (after N min of work): <message>` when the agent
 had worked before the limit stopped it), the job is released, no attempt is consumed, the run's
 output stays in the job folder, and the family is paused until the reset time the message gives
-(half an hour when it gives none). A fault before any agent runs (a brief that does
+(half an hour when it gives none, doubled for each such limit in a row that came before any
+work, up to four hours). A fault before any agent runs (a brief that does
 not render, a checkout that fails) is on the operator's side: the job is released as
 `setup-failed`, not counted against it, and the worker process leaves it alone until it restarts.
 

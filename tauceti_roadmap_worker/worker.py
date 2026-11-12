@@ -29,7 +29,7 @@ from .board import Job
 from .config import AGENTS, STAGE_ORDER
 from .gh import GHError, GHHalt, GHRateLimited
 from .lanes import Context, LaneResult, lane_for
-from .lanes.base import LaneBlocked
+from .lanes.base import LIMIT_WORK_NOTED, LaneBlocked
 
 MAX_ATTEMPTS = 3
 EX_HALTED = 78     # TauCetiWorker's code for a worker that GitHub's answers about the account stopped
@@ -442,6 +442,7 @@ AFTER_ROUND = 20    # seconds between a round that did something and the next
 PARKED_WATCH = 3 * 3600   # idle seconds a parked job is watched for its answer; then the idle poll finds it
 LIMIT_MARGIN = 300        # seconds after a usage limit's reset before its family is tried again
 LIMIT_UNKNOWN = 1800      # seconds a usage limit with no reset time pauses its family
+LIMIT_UNKNOWN_MAX = 4 * 3600   # the longest such pause: each such limit in a row doubles it, up to this
 
 
 def release_leftovers(ctx: Context, log=print) -> list[str]:
@@ -513,12 +514,21 @@ def usable_families(ctx: Context) -> set[str]:
     return {a for a in AGENTS if shutil.which(a)} | ({agent} - {""})
 
 
-def pause_until(result: LaneResult) -> dt.datetime:
-    """When a usage limit ends, with a margin: its reset time plus five minutes, else half an hour."""
+def pause_until(result: LaneResult, repeats: int = 0) -> dt.datetime:
+    """When a usage limit ends, with a margin: its reset time plus five minutes, else half an hour.
+    `repeats`: the limits with no reset time and no work that came just before this one; each
+    doubles the half hour, up to LIMIT_UNKNOWN_MAX (an account out of credits has no reset to wait
+    for, and every try claims a job, holds it for minutes and releases it)."""
     if result.retry_at:
         wake = result.retry_at if result.retry_at.tzinfo else result.retry_at.replace(tzinfo=dt.UTC)
         return wake.astimezone(dt.UTC) + dt.timedelta(seconds=LIMIT_MARGIN)
-    return now() + dt.timedelta(seconds=LIMIT_UNKNOWN)
+    return now() + dt.timedelta(seconds=min(LIMIT_UNKNOWN * 2 ** repeats, LIMIT_UNKNOWN_MAX))
+
+
+def blind_limit(result: LaneResult) -> bool:
+    """A usage limit that names no reset time and stopped the agent before it did any work: the
+    sign of an account that is out of credits, as against a quota that comes back on a schedule."""
+    return result.status == "limited" and not result.retry_at and result.worked < LIMIT_WORK_NOTED
 
 
 def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=print, sleep=time.sleep,
@@ -526,7 +536,9 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
     """Rounds until interrupted: sleep through idle periods and usage limits. A usage limit pauses
     only the family that hit it (until its reset plus five minutes): the worker goes on with jobs
     of its other families and leaves that family's jobs alone until then; a worker whose every
-    usable family is paused sleeps until the first pause ends. An idle worker sleeps
+    usable family is paused sleeps until the first pause ends. A limit with no reset time pauses
+    its family for half an hour; each further one in a row that came before any work doubles the
+    pause, up to four hours, and a submitted round of the family ends the row. An idle worker sleeps
     `[worker] idle_seconds`, except that the next poll comes within QUICK_POLL seconds after a
     failure (the job was released and may be due again), and after the board answers a job this
     worker parked for references (looked up every QUICK_POLL seconds of idle time, for at most
@@ -541,6 +553,7 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
     avoid: set[str] = set()          # jobs this process failed to set up
     paused: dict[str, dt.datetime] = {}   # agent family -> end of its usage limit
     noted: dict[str, dt.datetime] = {}    # pauses already logged by work_once
+    blind: dict[str, int] = {}            # agent family -> its limits in a row with no reset time and no work
     while True:
         for family in [f for f, until in paused.items() if until <= now()]:
             del paused[family]
@@ -581,9 +594,16 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
             parked.pop(result.job, None)
         if result.status == "setup-failed":
             avoid.add(result.job)
+        if result.status == "submitted":
+            blind.pop(result.agent, None)
         if result.status == "limited":
             family = result.agent or getattr(ctx, "agent", "")
-            paused[family] = max(pause_until(result), paused.get(family, now()))
+            repeats = blind.get(family, 0) if blind_limit(result) else 0
+            blind[family] = repeats + 1 if blind_limit(result) else 0
+            paused[family] = max(pause_until(result, repeats), paused.get(family, now()))
+            if repeats:
+                log(f"{now():%Y-%m-%dT%H:%MZ} {family}: {repeats + 1} usage limits in a row with no reset time and "
+                    f"no work done; its next job is tried at {paused[family]:%Y-%m-%dT%H:%MZ}")
             usable = usable_families(ctx) or {family}
             if usable <= set(paused):
                 sleep(max(LIMIT_MARGIN, (min(paused[f] for f in usable) - now()).total_seconds()))
