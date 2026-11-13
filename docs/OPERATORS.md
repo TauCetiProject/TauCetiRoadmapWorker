@@ -729,10 +729,14 @@ pull request's text it read (`text`, `summary.text_digest`: the title, the `road
 the description's prose, whitespace folded; the other generated blocks, the markers and the
 attribution line are left out, so a tool that rewrites the dependency task list or the merge order
 changes nothing; of the description, only the first `prompts.QUOTE_LIMIT` characters the review's
-`pull-request.md` quotes, so a digest never stands for text no review was shown). A review reads the text against its own folder's change only, so each roadmap
+`pull-request.md` quotes, so a digest never stands for text no review was shown; a generated block that
+crosses that cut is still left out whole). A review reads the text against its own folder's change only, so each roadmap
 folder of an accepted pull request is checked on its own, against the head reviewed for it: the
 current head, or the earlier head the acceptance comes from (`carry_accept`, `carry_unchanged`,
-`carry_unchanged_folders`, or a P3-only repair), kept as the head its latest review read. A folder
+`carry_unchanged_folders`, or a P3-only repair), kept as the head of the review that established that
+acceptance (`intake.acceptance_sources` for a head that only moved: the accepted earlier head itself,
+the head a carried chain leads back to, or the folder's latest review for a P3-only settlement, never a
+later review of other files). A folder
 whose latest verdict, of the current head or else of that head, records a digest other than the
 current text's, or none (the review predates the record), gets one check round at the current head (`text_check`, with the digest
 as `text_digest`, `rereview` and `previous_head` the head its latest review read): an incremental
@@ -744,7 +748,8 @@ finished on a worker of an older build) does it count for that text, so it is no
 run; an older check never overrides a newer verdict's digest. A check that asks for a correction
 answered without a push gets the second case's check round of the rewrite, as a second review would;
 the rounds of the head before the latest check do not count against it, and each folder's answer is
-matched to that folder's review. A check that does not accept ends an acceptance carried to the head
+matched to that folder's review, whose answering worker is the one that may not take the round
+(`intake.answer_worker`). A check that does not accept ends an acceptance carried to the head
 (`carry_accept`, like `carry_unchanged`): the label comes off at the next sync even when the
 reviewing worker could not take it off. A check waiting at a head whose folders an
 earlier head settles is not superseded: what it checks is the text. These rounds come after the others of a run, at most `text_per_run` of `per_run`,

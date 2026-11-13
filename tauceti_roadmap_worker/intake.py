@@ -2277,6 +2277,34 @@ def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: 
     return "", known
 
 
+def acceptance_sources(ctx, repo: str, number: int, source: str, folders, jobs: list[Job], texts, p,
+                       threads: dict, batch: int, labelled: bool) -> dict[str, str]:
+    """Folder -> the head of the review that establishes its acceptance at `source`, an earlier head
+    whose acceptance `unchanged_acceptance` carried, decided in the order that function tries them:
+    `source` itself when every folder's review of it accepts; else the accepted head a chain of carried
+    records leads back to (`carry_accept`); else, settled by the folders' latest reviews and their
+    P3-only repairs (`carry_minor`), the head each folder's latest review read. Never a later review of
+    other files: a review that read files `source` does not hold is not what accepted it."""
+    if folders_accepted(ctx, folders, jobs, source, texts)[0]:
+        return dict.fromkeys(folders, source)
+    if p.carry_accept and labelled:
+        accepted, _lines = carried_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads, batch)
+        if accepted:
+            return dict.fromkeys(folders, accepted)
+    return {f: last_reviewed_head(jobs, f, source) for f in folders}
+
+
+def answer_worker(comments: list[dict], head: str, job_id: str) -> str:
+    """The worker whose latest reply records `head` as the head it answered at and answers the review
+    `job_id` (its answered record), '' when none does: the one that repaired that folder's text, which
+    may not take the round that reads its repair."""
+    for c in reversed(comments):
+        record = replies.answered_record(c.get("body") or "")
+        if record and record.get("head") == head and record.get("worker") and record.get("job") == job_id:
+            return str(record["worker"])
+    return ""
+
+
 def last_reviewed_head(jobs: list[Job], folder: str, default: str) -> str:
     """The head the latest finished review of `folder` among `jobs` read (`previous_review`), else `default`."""
     job = previous_review([j for j in jobs if board.prreview_folder(j) == folder])
@@ -2488,7 +2516,8 @@ def sync_pr_reviews(ctx) -> list[str]:
                 continue
             if source:
                 accepted, unchanged[number] = True, source
-                accepted_at[number] = {f: last_reviewed_head(mine, f, source) for f in folders}
+                accepted_at[number] = acceptance_sources(ctx, repo, number, source, folders, mine, texts, p, threads,
+                                                         batch, labelled)
                 carried_prs.add(number)
                 for job in mine:
                     if (job.state == "available" and job.inputs.get("head") == head
@@ -2540,9 +2569,12 @@ def sync_pr_reviews(ctx) -> list[str]:
     text_due: list[tuple[int, dict, list[str], str, list[Job]]] = []
 
     def file_round(number: int, entry: dict, folder: str, ours: list[Job], mine: list[Job], extra: dict,
-                   dispute: bool = False, note: str = "") -> bool:
+                   dispute: bool = False, note: str = "", answered: str = "") -> bool:
         """Create one PRREVIEW job of `folder` of pull request `number` at its current head; False when
-        it was not filed this run (its comments could not be read)."""
+        it was not filed this run (its comments could not be read). `answered`: the review of this
+        folder whose answer at the unmoved head the round reads (a dispute or a text round); the worker
+        that answered it is the one that may not take the round (`answer_worker`), else the worker
+        that produced the head (`head_worker`)."""
         nonlocal made
         head, author = entry.get("head", ""), entry.get("author", "")
         leaf = folder.rsplit("/", 1)[-1]
@@ -2563,7 +2595,8 @@ def sync_pr_reviews(ctx) -> list[str]:
                                f"{str(exc).splitlines()[0][:160]})")
             if threads[number] is None:
                 return False
-            if worker := head_worker(threads[number], head):
+            worker = answered and answer_worker(threads[number], head, answered)
+            if worker := worker or head_worker(threads[number], head):
                 inputs["not_worker"] = worker
         job = board.new_job(board.make_id("prreview", leaf, next_review_round(reviews, leaf)), inputs=inputs)
         issue = ctx.board.create(job)
@@ -2651,7 +2684,8 @@ def sync_pr_reviews(ctx) -> list[str]:
             if made >= p.per_run:
                 waiting += 1
                 continue
-            file_round(number, entry, folder, ours, mine, {"text_rereview": True} if text_round else {}, dispute)
+            file_round(number, entry, folder, ours, mine, {"text_rereview": True} if text_round else {}, dispute,
+                       answered=max(same, key=round_key).id if same and (dispute or text_round) else "")
     if waiting:
         out.append(f"{waiting} review job(s) wait ([prreview] per_run = {p.per_run})")
     if text_due and p.text_per_run:

@@ -714,6 +714,51 @@ def test_a_rebase_of_a_repaired_head_does_not_check_text_its_reviews_read():
         assert created(fake) == [] and not any("check of its title" in line for line in out), head
 
 
+def test_the_text_of_a_head_that_only_moved_is_held_against_the_review_that_accepted_its_files():
+    # H1's reviews accepted the files with text A; Foo's review of H2 read other files and text B and asked for
+    # changes; H3 holds H1's files again and keeps text B. H1's acceptance stands, and nobody read B against
+    # those files: Foo's text is checked.
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar",
+                                                                               folder="Bar")
+    later = review_job(43, 2, 1164, H2, "done", folder="Foo")
+    digest_a = summary.text_digest("Two roadmaps", "Both.\n")
+    digest_b = summary.text_digest("Two roadmaps", "Both, with Foo's new section.\n")
+    files = {**verdict_read(foo, "accepted", H1, digest_a), **verdict_read(bar, "accepted", H1, digest_a),
+             **verdict_read(later, "needs_changes", H2, digest_b)}
+    other = {**same_trees(H1, H3), (H2, "TauCetiRoadmap/Foo"): "repaired", (H2, "TauCetiRoadmap/Bar"): "tree-of-Bar"}
+    pulls = text_pr(1164, title="Two roadmaps", body="Both, with Foo's new section.\n")
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], pulls=pulls, files=files, trees=other)
+    out, fake = sync(gh, [foo, bar, later], text_per_run=10)
+    assert out[0].startswith("#1164: ai-approved kept")
+    checks = sorted((j.inputs["folder"], j.inputs["text_digest"]) for j, _s, _p in fake.created)
+    assert checks == [("Bar", digest_b), ("Foo", digest_b)]
+
+
+def test_the_worker_that_repaired_a_folders_text_does_not_take_its_check_round(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar",
+                                                                               folder="Bar")
+    foo_check, bar_check = (review_job(43, 2, 1164, H1, "done", folder="Foo"),
+                            review_job(44, 2, 1164, H1, "done", name="Bar", folder="Bar"))
+    for check in (foo_check, bar_check):
+        check.inputs.update(text_check=True, text_digest="0" * 16)
+
+    def answer(n, job_id, worker):
+        return {"id": n, "user": {"login": "carol"},
+                "body": "Fixed in `1111111` (reply to the review):\n\n- **R01** (applied) — rewritten.\n"
+                        + replies.answered_marker(job_id, {"comment-8": "abc"}, worker=worker, head=H1, text=True)}
+
+    files = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1),
+             **verdict_file(foo_check, "needs_changes", H1), **verdict_file(bar_check, "needs_changes", H1)}
+    gh = ContentGH([two_folder_pr(H1)], pulls=text_pr(1164), files=files,
+                   comments={1164: [answer(8, "PRREVIEW-Foo~2", "alice-1"), answer(9, "PRREVIEW-Bar~2", "bob-1")]})
+    _out, fake = sync(gh, [foo, bar, foo_check, bar_check], text_per_run=10)
+    made = {j.inputs["folder"]: j for j, _s, _p in fake.created}
+    assert made["Foo"].inputs["not_worker"] == "alice-1" and made["Bar"].inputs["not_worker"] == "bob-1"
+    lane = lane_for(made["Foo"])
+    assert lane.eligible(made["Foo"], lane_ctx(tmp_path)) == "the worker that repaired this head does not review it"
+
+
 def test_the_dependency_depth_cuts_a_cycle_and_ignores_closed_pull_requests():
     listing = [{"pr": n, "labels": ["deps"]} for n in (1, 2, 3)] + [{"pr": 4, "labels": []}]
     bodies = {1: {"body": "Depends on #2."}, 2: {"body": "Depends on #1 and #3."}, 3: {"body": "Depends on #99."},
