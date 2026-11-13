@@ -150,8 +150,7 @@ class PortLane(Lane):
         order = load_order(order_path(cfg, ws.board, ws.content))
         from ..mergeorder import facts_for
         found = None if ctx.dry_run else facts_for(ctx, job.name, readme, prs, order)   # the chain, once
-        deps = depgraph.dependency_paragraph(None if found is None else found.chain,
-                                             None if found is None else found.revisions)
+        deps = depgraph.dependency_paragraph()
         red_teamed = (rounds_on_board(ws.package(cfg, job.name) / "reports", job.name)
                       if any(a.startswith("FIX-RT-") for a in job.after) else None)
         body = compose_body(job.name, ws.extra["synopsis"], cfg.roadmap.active_dir, deps, ws.extra["gate"],

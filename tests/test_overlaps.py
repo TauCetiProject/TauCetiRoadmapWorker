@@ -281,15 +281,13 @@ def test_a_citation_of_a_revisions_numbering_makes_it_a_dependency(world):
     text, facts = overlaps.report(state, index, "Mine", readme)
     assert facts == 1 and "## Ids this README cites that only an open revision defines" in text
     assert "- Lattices §1.4 (line 3): #7 (@alice) defines it in Lattices at its head (main does not)" in text
-    # The merge-order paragraph and the port lane's Dependencies sentence carry it.
+    # The merge-order paragraph carries it; the port lane's Dependencies sentence points there.
     prs = [{"pr": 905, "name": "Mine"}]
     para = mergeorder.plan(prs, {"Mine": readme}, ["Mine"], set(), {}, {"905": {}}, set(),
                            revisions={905: [(7, "Lattices", "alice")]})[905]
     assert ("It cites roadmaps on main by the numbering of open pull requests that revise them, which must merge "
             "first: #7 (Lattices, alice).") in para
-    deps = depgraph.dependency_paragraph([], [(7, "Lattices", "alice")])
-    assert "which must merge first: #7 (Lattices, alice)." in deps
-    assert "Open revisions" not in depgraph.dependency_paragraph([])
+    assert "#7" not in depgraph.dependency_paragraph() and overlaps.declared_dependencies(para, own=905) == [7]
 
     class Ctx:
         def __init__(self):
