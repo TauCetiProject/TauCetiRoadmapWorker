@@ -296,3 +296,10 @@ def test_the_text_digest_follows_the_title_the_summary_and_the_prose_only():
     assert summary.text_digest("Roadmap: Foo", body.replace("any field", "a field")) != digest
     assert summary.text_digest("Roadmap: Foo", body.replace("**What this roadmap builds.** Foo.",
                                                             "**What this roadmap builds.** Foo and Bar.")) != digest
+
+
+def test_the_text_digest_stops_where_the_reviews_quote_of_the_description_stops():
+    from tauceti_roadmap_worker import prompts
+    long = "x" * prompts.QUOTE_LIMIT
+    assert summary.text_digest("T", long + " a later sentence.") == summary.text_digest("T", long + " another one.")
+    assert summary.text_digest("T", "y" + long[1:]) != summary.text_digest("T", long)

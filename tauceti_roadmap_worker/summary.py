@@ -25,7 +25,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import agents
+from . import agents, prompts
 from .gh import GHError
 
 MARK_OPEN, MARK_CLOSE = "<!-- roadmap-summary -->", "<!-- /roadmap-summary -->"
@@ -199,7 +199,11 @@ def text_digest(title: str, body: str) -> str:
     other generated blocks (the dependency task list, the merge order), the markers and the attribution
     line are left out, so a tool that rewrites them, or a rewrap, changes nothing here. A verdict
     records the digest of the text its review read (`text`), and the intake files a check round when an
-    accepted head's text is not the text its review read."""
+    accepted head's text is not the text its review read. Only what a review is shown counts: the title
+    and the description as `prompts.quote_untrusted` quotes them in the review's `pull-request.md`, the
+    first `prompts.QUOTE_LIMIT` characters, so a digest never stands for text past that limit, which no
+    review reads."""
+    title, body = (title or "")[:prompts.QUOTE_LIMIT], (body or "")[:prompts.QUOTE_LIMIT]
     block = BLOCK.search(body or "")
     parts = [title or "", block.group(0) if block else "", prose(body)]
     return hashlib.sha256("\n".join(" ".join(p.split()) for p in parts).encode("utf-8")).hexdigest()[:16]
