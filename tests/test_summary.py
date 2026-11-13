@@ -303,3 +303,14 @@ def test_the_text_digest_stops_where_the_reviews_quote_of_the_description_stops(
     long = "x" * prompts.QUOTE_LIMIT
     assert summary.text_digest("T", long + " a later sentence.") == summary.text_digest("T", long + " another one.")
     assert summary.text_digest("T", "y" + long[1:]) != summary.text_digest("T", long)
+
+
+def test_a_generated_block_that_crosses_the_cut_is_still_left_out():
+    from tauceti_roadmap_worker import prompts
+    prose = "It builds Foo.\n\n"
+    block = ("<!-- depends-on -->\n- [ ] #3 Bar\n" + "- [ ] #4 Baz\n" * (prompts.QUOTE_LIMIT // 10)
+             + "<!-- /depends-on -->\n")
+    assert len(prose) < prompts.QUOTE_LIMIT < len(prose + block)
+    ticked = block.replace("- [ ] #3 Bar", "- [x] #3 Bar")
+    assert summary.text_digest("T", prose + block) == summary.text_digest("T", prose + ticked)
+    assert summary.text_digest("T", "It builds Bar.\n\n" + block) != summary.text_digest("T", prose + block)

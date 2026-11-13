@@ -185,9 +185,24 @@ def apply(body: str, text: str) -> str | None:
     return f"{MARK_OPEN}\n{text.strip()}\n{MARK_CLOSE}\n\n{rest}\n"
 
 
-def prose(body: str) -> str:
-    """What the author wrote in a description: without generated blocks, markers and the attribution line."""
-    lines = [x.rstrip() for x in COMMENT.sub("", GENERATED.sub("", body or "")).splitlines()]
+def prose(body: str, cut: int | None = None) -> str:
+    """What the author wrote in a description: without generated blocks, markers and the attribution line.
+    With `cut`, only what lies before that character: the blocks and markers are found in the whole
+    description first, so one that crosses the cut is left out whole, not read as prose."""
+    body = body or ""
+    if cut is not None:
+        spans = sorted((m.start(), m.end()) for pattern in (GENERATED, COMMENT) for m in pattern.finditer(body))
+        kept, at = [], 0
+        for start, end in spans:
+            if start > at:
+                kept.append(body[at:min(start, cut)])
+            at = max(at, end)
+            if at >= cut:
+                break
+        if at < cut:
+            kept.append(body[at:cut])
+        body = "".join(kept)
+    lines = [x.rstrip() for x in COMMENT.sub("", GENERATED.sub("", body)).splitlines()]
     while lines and (not lines[-1].strip() or lines[-1].lstrip().startswith("\U0001f916")):
         lines.pop()
     return "\n".join(lines).strip()
@@ -203,9 +218,10 @@ def text_digest(title: str, body: str) -> str:
     and the description as `prompts.quote_untrusted` quotes them in the review's `pull-request.md`, the
     first `prompts.QUOTE_LIMIT` characters, so a digest never stands for text past that limit, which no
     review reads."""
-    title, body = (title or "")[:prompts.QUOTE_LIMIT], (body or "")[:prompts.QUOTE_LIMIT]
-    block = BLOCK.search(body or "")
-    parts = [title or "", block.group(0) if block else "", prose(body)]
+    cut, body = prompts.QUOTE_LIMIT, body or ""
+    block = BLOCK.search(body)
+    shown = block.group(0)[:max(0, cut - block.start())] if block else ""
+    parts = [(title or "")[:cut], shown, prose(body, cut)]
     return hashlib.sha256("\n".join(" ".join(p.split()) for p in parts).encode("utf-8")).hexdigest()[:16]
 
 
