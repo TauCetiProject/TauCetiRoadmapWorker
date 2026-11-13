@@ -348,17 +348,62 @@ def _report_blocks(report: str) -> tuple[list[tuple[str, str, str, list[str]]], 
     return findings, rest
 
 
+HUMAN_SECTION = "For the human reviewers"
+HUMAN_HEADING = re.compile(r"^##\s+" + HUMAN_SECTION + r"\s*$", re.IGNORECASE)
+NO_FLAG = re.compile(r"^\W*(none|nothing)\W*$", re.IGNORECASE)
+
+
+def human_flags(report: str) -> list[str] | None:
+    """The bullets of a report's `## For the human reviewers` section: the questions a human decides
+    (whether the subject is mainstream research mathematics, a licence), which are not findings.
+    `[]` when the section says `- none`; `None` when the report has no such section or it lists
+    nothing, which is a report that did not answer."""
+    bullets, inside, fenced = [], False, False
+    for line in (report or "").split("\n"):
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced = not fenced
+        if fenced:
+            continue
+        if line.startswith("## "):
+            if inside:
+                break
+            inside = bool(HUMAN_HEADING.match(line))
+        elif inside and re.match(r"^\s*[-*]\s+\S", line):
+            bullets.append(re.sub(r"^\s*[-*]\s+", "", line).strip())
+        elif inside and bullets and line.strip():
+            bullets[-1] += " " + line.strip()
+    if not bullets:
+        return None
+    return [b for b in bullets if not NO_FLAG.match(b)]
+
+
+def human_notice(report: str) -> str:
+    """The line a comment carries under its verdict when its report flags something for the humans
+    who approve: the flags are in the report's last section, where few would look for them."""
+    flags = human_flags(report) or []
+    if not flags:
+        return ""
+    return (f"**For the human reviewers:** this review raises {len(flags)} question{'s' if len(flags) != 1 else ''} "
+            "that a human decides (the scope of the roadmap, or a licence). "
+            f"{'They are' if len(flags) != 1 else 'It is'} in the section of that name at the end and "
+            f"{'do' if len(flags) != 1 else 'does'} not change the verdict.")
+
+
 def render(head: str, verdict: str, report: str, marker: dict, conditional: list[str] | None = None, *,
            preamble: list[str] = (), mark: str = MARK) -> str:
     """A worker's report in the comment shape: `head` (the first line), the verdict (and the gaps an
     acceptance is conditional on), the `preamble` lines, the findings numbered F01, F02, ... with
-    their severity, the report's other sections, and the worker's marker (`mark`)."""
+    their severity, the report's other sections, and the worker's marker (`mark`). A report that flags
+    something for the human reviewers says so before its findings (`human_notice`)."""
     findings, rest = report_findings(report)
     lines = [head, "", f"Verdict: {verdict}", ""]
     if conditional:
         lines[-1:] = ["Conditional on the announced gaps: " + ", ".join(f"`{g}`" for g in conditional), ""]
     if preamble:
         lines += [*preamble, ""]
+    notice = human_notice(report)
+    if notice:
+        lines += [notice, ""]
     for k, (severity, title, body) in enumerate(findings, 1):
         lines.append(f"{k}. **F{k:02d}** ({severity}) {title}")
         lines += [("   " + line) if line.strip() else "" for line in body]

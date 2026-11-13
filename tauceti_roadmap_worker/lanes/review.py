@@ -222,6 +222,9 @@ class ReviewLane(Lane):
         if ws.report.is_file() and self.accepts(job, ctx, ws):
             missing = self.overlap_line_problem(ws, ws.report.read_text(encoding="utf-8"))
             problems += [missing] if missing else []
+        if ws.report.is_file():
+            problems += self.provenance_problems(ws, ws.report.read_text(encoding="utf-8"),
+                                                 line=self.accepts(job, ctx, ws))
         manifest = board.manifest_path(ctx.cfg.board.packages_dir, job.name)
         changed = gitops.changed_files(ws.board)
         touched = [p for p in changed if str(ws.board / p) in self.files(job, ctx, ws) and p != manifest]
