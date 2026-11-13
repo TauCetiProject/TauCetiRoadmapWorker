@@ -76,6 +76,11 @@ the merge order __ORDER__ (suppliers before consumers, one roadmap per line).
    library lemma from the pinned libraries, restates a definition, mirrors a README Check, computes
    a small value or treats a boundary case is padding. Report it as P3 with the repair "delete it
    from `Suggested.lean`" (the README keeps the statement), never as "prove it in place".
+8. **Copyright, licences and scope** (the section of that name below), against the legal copies you
+   can open. The wording against the sources, the arrangement against the table of contents of the
+   source cited most, and reuse: each is a finding as that section says. Close with the line
+   `Source independence:`. What a human must decide (whether the subject is mainstream research
+   mathematics, a licence) is not a finding: it goes under `## For the human reviewers`.
 
 ## Your comment
 
@@ -102,8 +107,9 @@ then your findings, numbered, each starting with its id and severity:
        Repair: <the exact repair>.
     2. **F02** (P3) ...
 
-then `## Verified sound` (what you checked and found correct, with counts) and `## Not verifiable`
-(each item and why). Severity: P1 false, vacuous or unowned; P2 overclaim or missing hypothesis; P3
+then `## Verified sound` (what you checked and found correct, with counts), `## Not verifiable`
+(each item and why) and, last, `## For the human reviewers` (one bullet for each question a human
+decides, or `- none`). Severity: P1 false, vacuous or unowned; P2 overclaim or missing hypothesis; P3
 locator, Check, style or policy. Test each repair you propose on the instance that refuted the
 original. Accept only with evidence: the instances you computed (with values), the declarations and
 cross-roadmap sections you opened; review a section you only skimmed before you accept, and put
@@ -127,5 +133,7 @@ word) first.
 <!-- include: sections/readme-shape.md -->
 
 <!-- include: sections/lean-form.md -->
+
+<!-- include: sections/provenance.md -->
 
 <!-- include: sections/untrusted.md -->

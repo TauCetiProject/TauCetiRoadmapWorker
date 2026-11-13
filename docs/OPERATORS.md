@@ -257,6 +257,17 @@ brief, never a failed round):
   a roadmap main already has, and every dropped id that is cited somewhere, for the maintainers. The merge-order paragraph
   and the port lane's Dependencies sentence name the open revisions whose numbering a README cites
   (`mergeorder.revision_facts`), so the dependency the rule creates is written by the worker;
+* no file, a step of the reviewing briefs (`prompts/sections/provenance.md`, in the reviews of designs,
+  packages and pull requests and in the red-team passes): the roadmap's wording is compared with its
+  sources at their locators, its layers with the table of contents of the source it cites most, and
+  material taken over as it stands is looked for. A reproduced passage, a roadmap that follows one
+  source's table of contents, and reused tables or figures are P2 findings. The review closes the
+  step with one line, `Source independence:`, and every report ends with `## For the human
+  reviewers`: what a human decides and the AI does not (whether the subject is mainstream research
+  mathematics, a licence it could not settle), as facts, or `- none`. These are not findings and
+  change no verdict. A report without the section, and an acceptance or a red-team pass without the
+  line, is refused (`Lane.provenance_problems`) when its brief asked for them, and the posted
+  comment says under its verdict how many questions it raises (`prreviews.human_notice`);
 * `scratch/signatures.md` (lanes that elaborate, with the pin's Lake packages ready): the elaborated
   type of every declaration of Suggested.lean (`#check @name` appended to a copy, elaborated with
   `[gates] elaborate` and `--json`, split like a command line and run without a shell), and the

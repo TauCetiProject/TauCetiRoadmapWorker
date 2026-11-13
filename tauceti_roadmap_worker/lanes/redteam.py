@@ -301,6 +301,7 @@ class RedTeamLane(Lane):
                                         f"{j.pass_} ({ctx.agent})")
             if not prreviews.report_findings(report)[0] and not prreviews.adversarial_rows(report):
                 problems.append("report: " + prreviews.EVIDENCE.replace("an acceptance", "a pass with no finding"))
+            problems += self.provenance_problems(ws, report, line=True)
         mine = {str(ws.report.relative_to(ws.board))} if ws.report.is_relative_to(ws.board) else set()
         if any(p not in mine for p in gitops.changed_files(ws.workdir)):
             problems.append("the red-team pass changed the read-only checkout")

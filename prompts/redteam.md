@@ -84,6 +84,12 @@ context, and of every bold README target, with the values you computed on each s
    tactic or one library lemma, restates a definition, mirrors a README Check, computes a small
    value or treats a boundary case is padding. Report it as P3 with the repair "delete it from
    `Suggested.lean`" (the README keeps the statement), never as "prove it in place".
+9. **Copyright, licences and scope** (the section of that name below). The wording against the
+   sources, the arrangement against the table of contents of the source cited most, and reuse: each
+   is a finding as that section says. Close with the line `Source independence:`; a pass
+   without it is refused. What a human must decide (whether the subject is mainstream research
+   mathematics, a licence) is not a finding: it goes under `## For the human reviewers`, and a
+   report without that section is refused.
 
 ## Output
 
@@ -106,6 +112,8 @@ affects <nothing | a stated result | the proof>.` A misprint is a slip whose int
 clear, an error a false statement or proof step, a gap a step the source does not justify. Add
 `; corrected in print at <locator>` when you know of a published correction. Write `- none` when
 you found none. Never copy a passage: describe it.
+Then, last, `## For the human reviewers` (the section on copyright, licences and scope below):
+one bullet for each question a human decides, or `- none`.
 
 <!-- include: sections/defect-classes.md -->
 
@@ -118,6 +126,8 @@ you found none. Never copy a passage: describe it.
 <!-- include: sections/lean-form.md -->
 
 <!-- include: sections/sources-rules.md -->
+
+<!-- include: sections/provenance.md -->
 
 <!-- include: sections/untrusted.md -->
 

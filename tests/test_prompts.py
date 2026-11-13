@@ -138,3 +138,20 @@ def test_the_evidence_document_carries_no_pull_request_numbers_dates_or_prices()
     text = (HERE / "docs" / "REVIEW-EVIDENCE.md").read_text(encoding="utf-8")
     for pattern in (r"#\d{2,5}\b", r"\b20\d\d-\d\d(-\d\d)?\b", r"\$\d", r"Fable|Opus|Sonnet|Haiku|gpt-6|Astra"):
         assert not re.search(pattern, text), pattern
+
+
+@pytest.mark.parametrize("lane", ["review", "review-web", "redteam", "prreview"])
+def test_reviewing_briefs_check_copyright_arrangement_and_scope(lane):
+    text = " ".join(prompts.render(lane, all_values()).split())
+    for phrase in ("## Copyright, licences and scope", "follows that source's table of contents",
+                   "`Source independence:`", "`## For the human reviewers`",
+                   "The project plans mainstream research mathematics", "They are not findings",
+                   "never quote the source's passage"):
+        assert phrase in text, f"{lane}: {phrase}"
+    assert text.count("**Copyright, licences and scope**") == 1                # one step asks for it
+
+
+def test_the_fix_brief_leaves_the_human_reviewers_section_to_the_humans():
+    text = " ".join(prompts.render("fix", all_values()).split())
+    assert "`## For the human reviewers` section is written for the humans who approve" in text
+    assert "## Copyright, licences and scope" not in text                      # a check of the reviews, not of the fix

@@ -9,7 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tauceti_roadmap_worker import cli, config, depgraph, deplabels, gitops, mergeorder, openroadmaps, overlaps
+from tauceti_roadmap_worker import (
+    cli, config, depgraph, deplabels, gitops, mergeorder, openroadmaps, overlaps, prreviews,
+)
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.paths import HERE
 
@@ -807,3 +809,42 @@ def test_an_acceptance_owes_the_overlap_line_only_when_its_brief_asked_for_it(wo
                  "- Overlap check: Lattices owns the theta function (Lattices §1.3), cited here"):
         assert lane.overlap_line_problem(ws, report + "\n" + line + "\n") is None
     assert lane.overlap_line_problem(ws, report + "\nThe overlap check: was not done.\n")
+
+
+def test_a_briefed_report_owes_the_source_line_and_the_section_for_the_human_reviewers(world, tmp_path):
+    cfg, _index = world
+    lane, _job, ws, _ctx = lane_workspace(cfg, tmp_path, "REV-PKG-ThetaSeries~2", "# Roadmap: theta series\n")
+    report = "# Review of ThetaSeries\n\n**Verdict:** accepted\n\n## Verified sound\n\n- 3 locators\n"
+    (ws.job_dir / "brief.md").write_text("an older brief")
+    assert lane.provenance_problems(ws, report, line=True) == []            # briefed before the check existed
+    (ws.job_dir / "brief.md").write_text("Close with the line `Source independence:`; an acceptance ...")
+    owed = lane.provenance_problems(ws, report, line=True)
+    assert len(owed) == 2 and "no `Source independence:` line" in owed[0] and "For the human reviewers" in owed[1]
+    assert len(lane.provenance_problems(ws, report, line=False)) == 1       # a review that asks for changes: the section
+    done = (report + "\n**Source independence:** 9 passages compared with 4 sources, none shared; largest share "
+            "`Serre`, 12 of 40 locators; contents compared with `Serre`: independent\n\n## For the human reviewers\n\n")
+    assert lane.provenance_problems(ws, done, line=True) == ["report: no `## For the human reviewers` section with its "
+                                                             "bullets: one for each question a human decides (the "
+                                                             "scope, a licence), or `- none`"]
+    assert lane.provenance_problems(ws, done + "- none\n", line=True) == []
+    assert lane.provenance_problems(ws, done + "- **Scope.** Every locator cites `Notes`, unpublished.\n", line=True) == []
+
+
+def test_the_flags_for_the_human_reviewers_are_read_and_announced_under_the_verdict():
+    assert prreviews.human_flags("# Review\n\n## Verified sound\n\n- none\n") is None
+    assert prreviews.human_flags("## For the human reviewers\n\nNothing to add.\n") is None
+    assert prreviews.human_flags("## For the human reviewers\n\n- none\n") == []
+    assert prreviews.human_flags("## For the human reviewers\n- None.\n\n## Section passes\n\n- §1: 0 finding(s)\n") == []
+    report = ("# Review of X\n\n**Verdict:** accepted\n\n## Verified sound\n\n- 3 locators\n\n## For the human reviewers\n\n"
+              "- **Scope.** Every locator cites `Notes`, unpublished notes;\n  no refereed source found.\n"
+              "- **Licence.** `Suggested.lean` line 40 agrees with a public formalisation.\n\n## Section passes\n\n- §1\n")
+    flags = prreviews.human_flags(report)
+    assert len(flags) == 2 and flags[0].endswith("no refereed source found.")
+    body = prreviews.render("Review (claude) of abc1234", "accepted", report, {"job": "REV-PKG-X~1"})
+    assert "**For the human reviewers:** this review raises 2 questions that a human decides" in body
+    assert body.index("**For the human reviewers:**") < body.index("## Verified sound") < body.index("## For the human reviewers")
+    assert prreviews.parse(body).verdict == "accepted"
+    one = prreviews.render("Review (claude) of abc1234", "accepted", report.replace("- **Licence.**", "  and"), {})
+    assert "raises 1 question that a human decides" in one and "It is in the section" in one
+    quiet = prreviews.render("Review (claude) of abc1234", "accepted", "## For the human reviewers\n\n- none\n", {})
+    assert "**For the human reviewers:**" not in quiet

@@ -116,6 +116,12 @@ requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned l
    would be right. The summary block that opens the description (`<!-- roadmap-summary -->`) is read
    with the prose, as a summary of what its headings name; the other generated blocks are outside
    this step.
+9. **Copyright, licences and scope** (the section of that name below). The wording against the
+   sources, the arrangement against the table of contents of the source cited most, and reuse: each
+   is a finding as that section says. Close with the line `Source independence:`; an acceptance
+   without it is refused. What a human must decide (whether the subject is mainstream research
+   mathematics, a licence) is not a finding: it goes under `## For the human reviewers`, and a
+   report without that section is refused.
 
 ## Deliverables
 
@@ -164,6 +170,8 @@ requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned l
   statement or proof step, a gap a step the source does not justify. Add `; corrected in print at
   <locator>` when you know of a published correction. Write `- none` when you found none. Never copy
   a passage: describe it.
+  Then, last, `## For the human reviewers` (the section on copyright, licences and scope below):
+  one bullet for each question a human decides, or `- none`.
 
 <!-- include: sections/gaps-and-order.md -->
 
@@ -178,6 +186,8 @@ requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned l
 <!-- include: sections/lean-form.md -->
 
 <!-- include: sections/sources-rules.md -->
+
+<!-- include: sections/provenance.md -->
 
 <!-- include: sections/untrusted.md -->
 

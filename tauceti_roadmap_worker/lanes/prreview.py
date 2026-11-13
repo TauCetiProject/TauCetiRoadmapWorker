@@ -362,6 +362,10 @@ full review: check that the updates are correct.
    `## Verified sound` as a remark, without an R-number and without asking for a change.
    The report of an incremental re-review is short: its findings, the `## Previous findings`
    bullets, the rows for what changed, the gate result.
+   The check of copyright, licences and scope compares the passages the diff adds or changes, and
+   its `Source independence:` line says so (`changed passages only`); the arrangement is compared
+   again only when the diff adds, removes or reorders a layer. The bullets of the previous report's
+   `## For the human reviewers` are written again, unless the change removed what they report.
 3. **The pull request's text** is not untouched text: a change makes the title and description
    wrong whenever it changes what they describe, though they did not change themselves. Check them
    against this head as step 8 of the full review does, in every re-review: a sentence the head
@@ -1174,6 +1178,8 @@ class PRReviewLane(Lane):
                                 f"see {ws.scratch / GATE_REPORT}): report each failure as a finding")
         elif status in ("needs_changes", "rejected") and not findings:
             problems.append("report: a verdict that asks for changes writes each finding as `## R01 (P1) — <short title>`")
+        if report:
+            problems += self.provenance_problems(ws, report, line=status == "accepted")
         previous = ws.extra.get("previous_report")
         if report and ws.extra.get("mode") == "incremental" and previous is not None:
             problems += [f"incremental re-review: finding {fid} of the previous report is not accounted for (write "
