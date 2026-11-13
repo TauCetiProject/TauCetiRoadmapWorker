@@ -354,6 +354,11 @@ def dropped_names(cfg: Config) -> list[str]:
 
 UNSUBMITTED = "unsubmitted"
 REPAIR_PASSES = 3       # repair runs after the checks, while the number of problems strictly falls
+# Seconds before each further run of a brief whose run a momentary service error cut off: one further
+# run per entry, then the round is given up as limited.
+MOMENTARY_WAITS = (60, 120, 240)
+CUT_OFF_NOTE = ("An earlier run of this brief was cut off by a service error. The files in the working directory are "
+                "what it left: read them and continue from them instead of starting over.\n\n")
 MAX_REQUESTS = 3        # needs-references requests one job may post before it is blocked for a human
 UNREADABLE_NOTE = ("the text was fetched, but it is a scan this worker could not read: a worker with OCR "
                    "([sources] ocr = true and the `ocr` extra) reads it; or name another source, a local text, or "
@@ -1201,8 +1206,31 @@ class Lane:
 
     def run_agent(self, ctx: Context, ws: Workspace, brief: str, label: str = "", model: str = "") -> agents.AgentResult:
         """Run the worker's agent on `brief`; `model` runs this one brief on another model of the
-        same agent (a review's repair, `[prreview] repair_models`), and the usage record names it."""
+        same agent (a review's repair, `[prreview] repair_models`), and the usage record names it.
+
+        A run that a momentary service error cut off (`AgentResult.momentary`: the service failed
+        for a moment, as against a usage limit of the account) is not the round's end: after each of
+        MOMENTARY_WAITS the brief runs again in the same workspace, with CUT_OFF_NOTE before it, and
+        only the last of those runs, cut off too, is returned as limited. A run that reached its
+        timeout is never run again. Every run keeps its own `run-N` logs and usage record; the result
+        is the last run's, with the seconds of them all (what the round counts as worked)."""
         model = model or ctx.model
+        result = self.run_once(ctx, ws, brief, label, model)
+        seconds = result.seconds
+        for further, wait in enumerate(MOMENTARY_WAITS, 1):
+            if not result.momentary or result.timed_out:
+                break
+            self.note(ws, f"a service error cut the agent off ({result.message or 'no message'}): its brief runs "
+                          f"again in {wait} s (further run {further} of {len(MOMENTARY_WAITS)})")
+            self.sleep(wait)
+            result = self.run_once(ctx, ws, CUT_OFF_NOTE + brief, label, model)
+            seconds += result.seconds
+        result.seconds = seconds
+        return result
+
+    def run_once(self, ctx: Context, ws: Workspace, brief: str, label: str, model: str) -> agents.AgentResult:
+        """One run of the agent on `brief`, logged as the job's next `run-N` and recorded in the
+        usage logs."""
         attempt = len(list(ws.job_dir.glob("run-*.out"))) + 1
         stem = f"run-{attempt}" + (f"-{label}" if label else "")
         result = agents.run_agent(agents.AgentRun(
