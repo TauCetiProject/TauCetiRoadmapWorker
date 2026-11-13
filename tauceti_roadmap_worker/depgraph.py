@@ -467,20 +467,16 @@ def apply_paragraph(body: str, para: str, footer: str = "\U0001f916 Generated wi
     return text.rstrip() + "\n\n" + para + "\n"
 
 
-def dependency_paragraph(chain: list[tuple[int, str]] | None, revisions: list[tuple] | None = None) -> str:
-    """The 'Dependencies' paragraph of a port pull request, from the same suppliers as its 'Merge
-    order' chain: the open pull requests of ours that must merge first, in merge order ("none" only
-    when the chain is empty; not determined when the open pull requests could not be read), and the
-    open revisions of roadmaps on main whose numbering the README cites, (pr, roadmap, author)."""
-    if chain is None:
-        listed = "not determined (the open pull requests could not be read; `merge-order` fills it in)"
-    else:
-        listed = ", ".join(f"#{p} ({n})" for p, n in chain) or "none"
-    revised = (f" Open revisions of roadmaps on main whose numbering it cites, which must merge first: "
-               f"{_cited(revisions)}." if revisions else "")
+def dependency_paragraph() -> str:
+    """The 'Dependencies' paragraph of a port pull request. It names no pull request: which suppliers are
+    still open changes with every merge, and the 'Merge order' paragraph below it, which `merge-order`
+    rewrites, states them (the chain of ours, other authors' pull requests, the open revisions whose
+    numbering the README cites). A list written here once was never rewritten: it went on naming merged
+    pull requests as open, and a description's prose is what a review of the text reads."""
     return ("Dependencies (the roadmaps the README cites by name and section, and what they in turn need; the "
-            f"Lean imports none of them). In open pull requests of ours: {listed}.{revised} Roadmaps on main are "
-            "cited by name; everything else named in the README is a consumer, not a prerequisite.")
+            "Lean imports none of them). The open pull requests that must merge first are in the merge order "
+            "below. Roadmaps on main are cited by name; everything else named in the README is a consumer, not a "
+            "prerequisite.")
 
 
 class OrderCycle(ValueError):

@@ -158,7 +158,7 @@ def test_the_port_lane_writes_its_paragraph_with_the_shared_renderer(tmp_path):
     prs = [{"pr": 901, "name": "Alpha"}]
     found = mergeorder.facts_for(ctx, "Mine", readme, prs, ["Alpha", "Mine"])    # before the number exists
     assert found.chain == [(901, "Alpha")]
-    assert "In open pull requests of ours: #901 (Alpha)." in depgraph.dependency_paragraph(found.chain)
+    assert "#901" not in depgraph.dependency_paragraph()         # the Merge order paragraph names it
     note = PortLane().write_merge_order(ctx, 905, "Mine", body, found, ["Alpha", "Mine"])
     assert note == ""
     [(method, path, payload)] = gh.writes

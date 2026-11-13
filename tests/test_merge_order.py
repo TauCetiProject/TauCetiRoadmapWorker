@@ -2,6 +2,7 @@ import re
 
 from tauceti_roadmap_worker.depgraph import (MARK_CLOSE, MARK_OPEN, apply_paragraph, dependency_paragraph, merge_chain,
                                              merge_order_paragraph, supplier_edges)
+from tauceti_roadmap_worker.overlaps import declared_dependencies
 
 ORDER = ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"]
 # Echo needs Delta and Bravo; Delta needs Charlie; Charlie needs Alpha; Foxtrot needs Echo.
@@ -75,10 +76,13 @@ def test_apply_paragraph_is_idempotent_and_safe():
     assert apply_paragraph("", para1) is None
 
 
-def test_dependency_paragraph_is_the_chain():
+def test_dependency_paragraph_names_no_pull_request():
     """Regression (TauCetiRoadmap #1351): the Dependencies sentence said "none" above a Merge order
-    chain of eleven pull requests of ours; both now come from the same chain."""
-    text = dependency_paragraph([(901, "Alpha"), (903, "Charlie")])
-    assert "In open pull requests of ours: #901 (Alpha), #903 (Charlie)." in text      # what sync_prose.py rewrites
-    assert "In open pull requests of ours: none." in dependency_paragraph([])
-    assert "not determined" in dependency_paragraph(None)
+    chain of eleven pull requests of ours. Regression (2026-11-13): once both came from the same chain
+    the sentence was still written once and never again, so 216 of 317 open descriptions named merged
+    pull requests as open. The sentence names none now; the Merge order paragraph, which is rewritten,
+    states them."""
+    text = dependency_paragraph()
+    assert "#" not in text and "In open pull requests of ours" not in text
+    assert "The open pull requests that must merge first are in the merge order below." in text
+    assert declared_dependencies(text) == []                     # the pointer declares no dependency itself
