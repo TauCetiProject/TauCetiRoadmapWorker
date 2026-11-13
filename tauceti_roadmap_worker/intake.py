@@ -1905,16 +1905,18 @@ def dispute_pending(jobs: list[Job], comments: list[dict], head: str, verdict: d
 def text_pending(jobs: list[Job], comments: list[dict], head: str, verdict: dict | None) -> bool:
     """Whether the reviews of `head` among `jobs` (one folder's, all finished) were last answered by a
     rewrite of the pull request's title or description that no round has read: the latest verdict of
-    `head` does not accept, and the latest reply recording `head` as the head it answered at answers
-    the latest of those reviews and records that it rewrote the text (`text`, `replies.answered_marker`).
-    The head did not move, so nothing else tells the intake that what the review read has changed."""
+    `head` does not accept, and the latest reply recording `head` as the head it answered at that
+    answers the latest of those reviews records that it rewrote the text (`text`,
+    `replies.answered_marker`). Replies to another folder's reviews of the same head are passed over:
+    each folder's review is answered on its own. The head did not move, so nothing else tells the
+    intake that what the review read has changed."""
     if not dispute_pending(jobs, comments, head, verdict):
         return False
     last = max(jobs, key=lambda j: (board.parse_job_id(j.id).round, j.number or 0))
     for c in reversed(comments):
         record = replies.answered_record(c.get("body") or "")
-        if record and record.get("head") == head and record.get("worker"):
-            return bool(record.get("text")) and record.get("job") == last.id
+        if record and record.get("head") == head and record.get("worker") and record.get("job") == last.id:
+            return bool(record.get("text"))
     return False
 
 
@@ -1972,7 +1974,12 @@ def carried_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: li
                        threads: dict, batch: int) -> tuple[str, int]:
     """(the accepted head whose acceptance carries to `head`, the lines changed between them), or
     ('', 0): a chain of carried records leads from `head` back to a head an AI review of every folder
-    accepted, and the folders changed by at most `[prreview] small_change_lines` lines in all."""
+    accepted, and the folders changed by at most `[prreview] small_change_lines` lines in all. Nothing
+    is carried past a review of `head` itself that does not accept (`refused_at`): a later review,
+    such as a check of the text that asked for changes, stands even when its worker could not take the
+    label off."""
+    if refused_at(ctx, folders, jobs, head, texts):
+        return "", 0
     if number not in threads:
         try:
             threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
@@ -2025,12 +2032,32 @@ def latest_verdict(ctx, jobs: list[Job], head: str, texts: dict[str, str | None]
     """The verdict of the latest finished review of `head` among `jobs` (one roadmap folder's reviews
     of a pull request), read from the board's main newest round first (`texts`: those already read),
     one read each until one is there; None when none is."""
+    return latest_reviewed(ctx, jobs, head, texts)[1]
+
+
+def latest_reviewed(ctx, jobs: list[Job], head: str,
+                    texts: dict[str, str | None] | None = None) -> tuple[Job | None, dict | None]:
+    """(the latest finished review of `head` among `jobs` whose verdict is on the board, that verdict),
+    as `latest_verdict` finds it; (None, None) when there is none."""
     done = finished_reviews(jobs, head)
     for job in sorted(done, key=lambda j: board.parse_job_id(j.id).round, reverse=True):
         found = prreview_verdicts(ctx, job.name, [job], head, texts)
         if job.id in found:
-            return found[job.id]
-    return None
+            return job, found[job.id]
+    return None, None
+
+
+def refused_at(ctx, folders, jobs: list[Job], head: str, texts) -> bool:
+    """Whether a folder's latest finished review of `head` itself does not accept: then no acceptance of
+    an earlier head is carried to `head` (`carried_acceptance`, `unchanged_acceptance`). A check of the
+    text that asked for changes is such a review."""
+    for folder in folders:
+        here = [j for j in finished_reviews(jobs, head) if board.prreview_folder(j) == folder]
+        if here:
+            verdict = latest_verdict(ctx, here, head, texts)
+            if not verdict or verdict.get("status") != "accepted":
+                return True
+    return False
 
 
 def folders_accepted(ctx, folders, jobs: list[Job], head: str,
@@ -2192,12 +2219,8 @@ def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: 
     holds and did not accept them: an acceptance is not carried past a later review of the same files.
     ('', False) when GitHub did not give the trees: nothing is known, and the caller leaves the pull
     request as it is."""
-    for folder in folders:
-        here = [j for j in finished_reviews(jobs, head) if board.prreview_folder(j) == folder]
-        if here:
-            verdict = latest_verdict(ctx, here, head, texts)
-            if not verdict or verdict.get("status") != "accepted":
-                return "", True
+    if refused_at(ctx, folders, jobs, head, texts):
+        return "", True
     tried = reviewed_heads(folders, jobs, head)[:REVIEWED_HEADS]
     if p.carry_minor:
         at, _steps = settle_points(ctx, folders, jobs, p.small_change_lines, texts)
@@ -2465,7 +2488,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                 continue
             if source:
                 accepted, unchanged[number] = True, source
-                accepted_at[number] = dict.fromkeys(folders, source)
+                accepted_at[number] = {f: last_reviewed_head(mine, f, source) for f in folders}
                 carried_prs.add(number)
                 for job in mine:
                     if (job.state == "available" and job.inputs.get("head") == head
@@ -2486,7 +2509,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             close_untaken(number, mine, head, still)
             if set(folders) <= set(still):
                 accepted = True
-                accepted_at[number] = {f: still[f] for f in folders}
+                accepted_at[number] = {f: last_reviewed_head(mine, f, still[f]) for f in folders}
                 by_folder.add(number)
                 carried_prs.add(number)
                 if labelled:
@@ -2673,23 +2696,20 @@ def text_read(ctx, ours: list[Job], at: str, head: str, digest: str, texts: dict
     """(whether a review of one roadmap folder read the pull request's text whose digest is `digest`, the
     digest the latest review read). `ours` are the folder's PRREVIEW jobs, `head` the pull request's
     current head and `at` the head reviewed for the folder (`head`, or the earlier head an acceptance
-    comes from). The latest verdict of `head`, else of `at`, says what its review read (`text`, the
-    digest the worker records from the text it fetched when the round started), whatever the round
-    was filed for. A check round of `head` filed for this text that finished on a worker recording no
-    digest (an older build) counts as having read it, so that it is not filed again on every run."""
-    verdict = None
+    comes from). The latest review of `head`, else of `at`, decides: its verdict's `text` (the digest
+    the worker records from the text it fetched when the round started), whatever the round was filed
+    for. When that verdict records none and the review is a check of the text filed for `digest`, it
+    finished on a worker of an older build, which records none: it counts as having read that text, so
+    that it is not filed again on every run. An older check never overrides a newer verdict's digest."""
+    job, verdict = None, None
     for h in dict.fromkeys((head, at)):
-        verdict = latest_verdict(ctx, [j for j in ours if j.inputs.get("head") == h], h, texts)
+        job, verdict = latest_reviewed(ctx, [j for j in ours if j.inputs.get("head") == h], h, texts)
         if verdict is not None:
             break
     reviewed = str((verdict or {}).get("text") or "")
-    if reviewed == digest:
-        return True, reviewed
-    for job in finished_reviews(ours, head):
-        if (job.inputs.get("text_check") and job.inputs.get("text_digest") == digest
-                and not (prreview_verdicts(ctx, job.name, [job], head, texts).get(job.id) or {}).get("text")):
-            return True, reviewed
-    return False, reviewed
+    if reviewed:
+        return reviewed == digest, reviewed
+    return bool(job and job.inputs.get("text_check") and job.inputs.get("text_digest") == digest), ""
 
 
 def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round, made, out: list[str]) -> None:

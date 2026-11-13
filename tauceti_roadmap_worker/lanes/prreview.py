@@ -390,11 +390,13 @@ the changed passages of step 2: check every claim they make against the head."""
 
 TEXT_CHECK = """
 
-**The files are unchanged since `{since}`, which a review accepted; this round reads the pull request's \
-title and description.** That review did not read them as they stand now: they changed since, or it \
-was made before reviews checked the text against the change. They are quoted in `{pr_text}` with the \
-folder's change against the base. Apply step 8 to them; the files are as that review read them, and \
-its findings about the files stand."""
+**This round checks the pull request's title and description.** The folder's files at this head count \
+as settled: the review of `{since}` accepted them, or found P3 points only that were repaired since, \
+and what changed in the folder since `{since}` is re-reviewed as above. No review has read the title \
+and description as they stand now: they changed since, or the review predates the check of the text \
+against the change. They are quoted in `{pr_text}` with the folder's change against the base (a \
+description longer than the quote is cut; what follows the cut is outside this check). Apply step 8 \
+to them."""
 
 
 def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:

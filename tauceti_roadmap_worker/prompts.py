@@ -72,7 +72,10 @@ def render(lane: str, values: dict[str, str], root: Path | None = None) -> str:
     return re.sub(r"\n{3,}", "\n\n", rendered).rstrip() + "\n"
 
 
-def quote_untrusted(text: str, limit: int = 20000) -> str:
+QUOTE_LIMIT = 20000     # characters of an untrusted text a brief or a scratch document quotes
+
+
+def quote_untrusted(text: str, limit: int = QUOTE_LIMIT) -> str:
     """Untrusted text for a fenced ```text block: it cannot close the fence, and it is bounded."""
     text = (text or "").replace("```", "ˋˋˋ").replace("~~~", "∼∼∼")
     return text if len(text) <= limit else text[:limit] + "\n[... truncated]"

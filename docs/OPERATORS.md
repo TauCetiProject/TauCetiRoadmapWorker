@@ -728,20 +728,25 @@ The third is a check of an accepted head's text. A review records in its verdict
 pull request's text it read (`text`, `summary.text_digest`: the title, the `roadmap-summary` block and
 the description's prose, whitespace folded; the other generated blocks, the markers and the
 attribution line are left out, so a tool that rewrites the dependency task list or the merge order
-changes nothing). A review reads the text against its own folder's change only, so each roadmap
+changes nothing; of the description, only the first `prompts.QUOTE_LIMIT` characters the review's
+`pull-request.md` quotes, so a digest never stands for text no review was shown). A review reads the text against its own folder's change only, so each roadmap
 folder of an accepted pull request is checked on its own, against the head reviewed for it: the
 current head, or the earlier head the acceptance comes from (`carry_accept`, `carry_unchanged`,
-`carry_unchanged_folders`, or the head a P3-only repair settled). A folder whose latest verdict, of the
-current head or else of that head, records a digest other than the current text's, or none (the
-review predates the record), gets one check round at the current head (`text_check`, with the digest
+`carry_unchanged_folders`, or a P3-only repair), kept as the head its latest review read. A folder
+whose latest verdict, of the current head or else of that head, records a digest other than the
+current text's, or none (the review predates the record), gets one check round at the current head (`text_check`, with the digest
 as `text_digest`, `rereview` and `previous_head` the head its latest review read): an incremental
 re-review whose brief says the files are unchanged and asks for step 8, the text against the change.
 What a round read is the digest its verdict records (the worker fetches the text when the round
 starts), not the one it was filed for, so a text changed before the worker took it is checked again;
-only a round that finished on a worker recording no digest (an older build) counts for the text it
-was filed for, so it is not filed on every run. A check that asks for a correction answered without a
-push gets the second case's check round of the rewrite, as a second review would; the rounds of the
-head before the latest check do not count against it. A check waiting at a head whose folders an
+only when that latest verdict records none and is itself a check filed for the current text (it
+finished on a worker of an older build) does it count for that text, so it is not filed on every
+run; an older check never overrides a newer verdict's digest. A check that asks for a correction
+answered without a push gets the second case's check round of the rewrite, as a second review would;
+the rounds of the head before the latest check do not count against it, and each folder's answer is
+matched to that folder's review. A check that does not accept ends an acceptance carried to the head
+(`carry_accept`, like `carry_unchanged`): the label comes off at the next sync even when the
+reviewing worker could not take it off. A check waiting at a head whose folders an
 earlier head settles is not superseded: what it checks is the text. These rounds come after the others of a run, at most `text_per_run` of `per_run`,
 least deep in the dependency graph first (`intake.dependency_depths`): a pull request that waits for
 nothing (without the `dependency_label`, or, when that is empty, whose description names no open pull

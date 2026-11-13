@@ -455,10 +455,12 @@ def test_an_accepted_head_whose_text_its_review_did_not_read_gets_one_check_roun
     [(job, _s, _p)] = fake.created
     assert job.inputs["text_digest"] == summary.text_digest("Roadmap: Foo", "It builds Foo and Bar.\n")
     assert out[0].endswith("(a check of its title and description: changed since its review; dependency depth 0)")
-    # A head and text that had their check round get no second one, and nothing is filed with the setting off.
+    # A head and text whose check round finished on a worker that records no digest (an older build) get
+    # no second one, and nothing is filed with the setting off.
     check = review_job(41, 2, 12, H1, "done")
     check.inputs.update(text_check=True, text_digest=digest)
-    gh = ContentGH(listing, pulls=pulls, files=verdict_file(done, "accepted", H1))
+    gh = ContentGH(listing, pulls=pulls,
+                   files={**verdict_file(done, "accepted", H1), **verdict_file(check, "accepted", H1)})
     assert sync(gh, [done, check], text_per_run=10)[1].created == []
     assert sync(ContentGH(listing, pulls=pulls, files=verdict_file(done, "accepted", H1)), [done])[1].created == []
 
@@ -632,6 +634,84 @@ def test_a_check_of_the_text_waiting_at_a_head_the_folders_settle_is_not_superse
     assert fake.states == [] and not any("superseded" in line for line in out)
     out, fake = sync(ContentGH([two_folder_pr(H2)], files=first, trees=repaired), [foo, bar, waiting()])
     assert out[0] == "#1164: PRREVIEW-Foo~2 superseded"
+
+
+def test_an_older_builds_check_never_overrides_a_later_verdicts_digest():
+    # A check filed for A finished on an older build (no digest) and asked for changes; the correction round,
+    # on a newer build, accepted B; the author put A back. A is checked again.
+    text_a, text_b = "It builds Foo.\n", "It builds Foo and Bar.\n"
+    digest_a, digest_b = summary.text_digest("Roadmap: Foo", text_a), summary.text_digest("Roadmap: Foo", text_b)
+    done, legacy = review_job(40, 1, 12, H1, "done"), review_job(41, 2, 12, H1, "done")
+    rewrite = review_job(42, 3, 12, H1, "done")
+    legacy.inputs.update(text_check=True, text_digest=digest_a)
+    rewrite.inputs["text_rereview"] = True
+    files = {**verdict_file(done, "accepted", H1), **verdict_file(legacy, "needs_changes", H1),
+             **verdict_read(rewrite, "accepted", H1, digest_b)}
+    listing = [node(12, H1, labels=["ai-approved", "awaiting-review"])]
+    _out, fake = sync(ContentGH(listing, pulls=text_pr(12, body=text_a), files=files), [done, legacy, rewrite],
+                      text_per_run=10)
+    [(job, _s, _p)] = fake.created
+    assert job.inputs["text_check"] is True and job.inputs["text_digest"] == digest_a and job.id == "PRREVIEW-Foo~4"
+
+
+def test_each_folders_text_correction_gets_its_round_whatever_the_other_folder_answered():
+    # Both folders' checks asked for a text-only correction at the same head; Foo's answer came first, Bar's
+    # last. Each folder's answer is its own: both get their check round.
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar",
+                                                                               folder="Bar")
+    foo_check, bar_check = (review_job(43, 2, 1164, H1, "done", folder="Foo"),
+                            review_job(44, 2, 1164, H1, "done", name="Bar", folder="Bar"))
+    for check in (foo_check, bar_check):
+        check.inputs.update(text_check=True, text_digest="0" * 16)
+
+    def answer(n, job_id):
+        return {"id": n, "user": {"login": "alice"},
+                "body": "Fixed in `1111111` (reply to the review):\n\n- **R01** (applied) — rewritten.\n"
+                        + replies.answered_marker(job_id, {"comment-8": "abc"}, worker="alice-1", head=H1, text=True)}
+
+    files = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1),
+             **verdict_file(foo_check, "needs_changes", H1), **verdict_file(bar_check, "needs_changes", H1)}
+    gh = ContentGH([two_folder_pr(H1)], pulls=text_pr(1164), files=files,
+                   comments={1164: [answer(8, "PRREVIEW-Foo~2"), answer(9, "PRREVIEW-Bar~2")]})
+    _out, fake = sync(gh, [foo, bar, foo_check, bar_check], text_per_run=10)
+    assert sorted((j.id, j.inputs.get("text_rereview")) for j, _s, _p in fake.created) == [
+        ("PRREVIEW-Bar~3", True), ("PRREVIEW-Foo~3", True)]
+
+
+def test_a_check_of_the_text_that_asks_for_changes_ends_a_carried_acceptance():
+    # The acceptance of H1 carried to H2; the check of H2's text asked for changes, and its worker could not
+    # take the label off. The sync does.
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar",
+                                                                               folder="Bar")
+    check = review_job(43, 2, 1164, H2, "done", folder="Foo")
+    check.inputs.update(text_check=True, text_digest="0" * 16)
+    carried = {1164: [{"id": 1, "body": replies.carried_marker(H1, H2, "maintainer"), "user": {"login": "carol"}}]}
+    small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 1, "deletions": 1}]
+    files = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1),
+             **verdict_file(check, "needs_changes", H2)}
+    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], pulls=text_pr(1164), files=files, comments=carried,
+                   compares={(H1, H2): small})
+    out, _fake = sync(gh, [foo, bar, check], carry_accept=True, text_per_run=10)
+    assert ("DELETE", f"repos/{REPO}/issues/1164/labels/ai-approved", {}) in gh.writes
+    assert not any("kept" in line for line in out)
+
+
+def test_a_rebase_of_a_repaired_head_does_not_check_text_its_reviews_read():
+    # Both folders were reviewed at H1 with this text; Bar's P3-only repair left H2; H3 is H2 rebased, with the
+    # same folders and the same text: nothing to check.
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar",
+                                                                               folder="Bar")
+    pulls = text_pr(1164, title="Two roadmaps", body="Both.\n")
+    digest = summary.text_digest("Two roadmaps", "Both.\n")
+    minor = json.loads(verdict_file(bar, "needs_changes", H1)[board.prreview_verdict_path("packages", bar)])
+    minor["review"].update(text=digest, carried={"from": H1, "head": H2, "lines": 4, "folders": ["Bar"],
+                                                 "findings": ["D01"]})
+    files = {**verdict_read(foo, "accepted", H1, digest),
+             board.prreview_verdict_path("packages", bar): json.dumps(minor)}
+    for head, trees in ((H2, None), (H3, same_trees(H2, H3))):
+        gh = ContentGH([two_folder_pr(head, ["ai-approved"])], pulls=pulls, files=files, trees=trees)
+        out, fake = sync(gh, [foo, bar], carry_minor=True, text_per_run=10)
+        assert created(fake) == [] and not any("check of its title" in line for line in out), head
 
 
 def test_the_dependency_depth_cuts_a_cycle_and_ignores_closed_pull_requests():
@@ -1886,7 +1966,7 @@ def test_the_check_round_of_a_rewritten_description_is_incremental_and_says_what
     check.inputs["text_check"] = True
     ws = lane.prepare(check, ctx)
     text = prompts.render("prreview", {**lane.common_values(check, ctx, ws), **lane.values(check, ctx, ws)})
-    assert "this round reads the pull request's title and description.**" in text
+    assert "**This round checks the pull request's title and description.**" in text
     assert "the title and description were rewritten" not in text
     # An ordinary incremental re-review does not carry the paragraph.
     plain = rereview_job(second, second, round_=3)
