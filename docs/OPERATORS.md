@@ -322,6 +322,25 @@ so a worker does not start one when the state directory's disk has less than 20 
 `skip <JOB>: only N GB free …` and takes other work), and `doctor` warns below 40 GB. A full disk never
 crashes the worker loop: the round is logged and the worker waits for its next poll.
 
+Job folders: a worker removes its own job folders (`workers/<id>/jobs/<JOB>/`: briefs, agent logs,
+scratch) that nothing has written to for `[worker] keep_job_days` days (default 3; 0 keeps them all;
+a host's setting, so it can go in the overlay). It does so at its start and when a round starts, and
+logs `pruned N job folder(s) not written to for 3 days: <names>`. A folder's age is that of the
+newest modification of the folder itself and of the entries directly inside it. Kept whatever their
+age:
+
+- the folder of the job the round is about to run (at a worker's start, when no job is chosen yet:
+  of the job named with `--job`), so a retry still finds the earlier attempt's `problems.txt` and
+  `unsubmitted/`;
+- the folder of every job with a record in `pending-push.json` (a submission that stopped part-way:
+  the next attempt finishes it from that folder).
+
+The logs of a job that failed or was parked go with its folder, so read them within those days.
+Nothing outside the worker's own `jobs/` is touched, and a symbolic link there is neither followed
+nor removed. A folder that cannot be read or removed stays and is one line in the round log (`N job
+folder(s) could not be pruned and stay (<name>: <error>)`); it never fails a round. While
+`pending-push.json` cannot be read, nothing is removed.
+
 A run that fails the worker's checks gets repair runs in the same workspace, each fed only the
 problems that remain, up to three while their number strictly falls (74 → 20 → 3 → 0 submits; a
 repair that does not reduce them ends the attempt). A design or package run that still fails leaves
@@ -1455,7 +1474,7 @@ machine are here:
 | `workers/<id>/board`, `content` | the worker's checkouts of the packages and content repositories |
 | `workers/<id>/port/<Name>`, `pr/<Name>` | worktrees for the port lane and for work on a pull request branch; their `.lake/packages` is a link to `lake/<pin>/packages`; removed after the lane submits, and at worker start when the roadmap has no open job (only git worktrees of the content checkout under `pr/` and `port/`; `build/` holds the worker's snapshot of the briefs and is never swept) |
 | `lake/<pin>/packages` | the machine's one copy of the Lake packages (Mathlib and Tau Ceti oleans, about 16 GB) per pin of the content repository's manifest, toolchain and lakefile, shared by every worktree of every worker; `lake exe cache get` fills it once (`.ready` marks it, with the pin) |
-| `workers/<id>/jobs/<JOB>/` | brief, agent logs (`run-N.out` with START/USAGE/EXIT lines, `run-N.err`, the raw events `run-N.jsonl`), scratch (with the worker's `citations.md` and `signatures.md`), problems, gate result, `usage.jsonl` |
+| `workers/<id>/jobs/<JOB>/` | brief, agent logs (`run-N.out` with START/USAGE/EXIT lines, `run-N.err`, the raw events `run-N.jsonl`), scratch (with the worker's `citations.md` and `signatures.md`), problems, gate result, `usage.jsonl`; removed by its worker once nothing has written to it for `[worker] keep_job_days` days (default 3), unless a submission of the job is still to be finished (`pending-push.json`) |
 | `workers/<id>/usage.jsonl` | the tokens of every agent run of this worker (`tauceti-roadmap usage`) |
 | `open-roadmaps/mirror.git`, `open-roadmaps/index.json` | the bare mirror of the roadmap repository with the head of every open roadmap pull request (`refs/open/<n>`), and their index; shared by the host's workers, rebuilt at most every half hour |
 | `open-roadmaps/tokens-<pin>.txt` | the identifiers of the pinned Mathlib and Tau Ceti sources, for `roadmaps resolve` |

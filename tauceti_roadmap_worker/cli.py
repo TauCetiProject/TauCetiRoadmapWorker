@@ -367,6 +367,7 @@ def work(args) -> int:
         halt_path,
         halt_record,
         hold_worker_dir,
+        prune_job_dirs,
         record_halt,
         release_leftovers,
         sweep_worktrees,
@@ -420,6 +421,7 @@ def work(args) -> int:
         build.snapshot(ctx.wdir, started)
         log(f"worker {ctx.worker_id} as @{operator}, {agent} ({model}), claims in {cl.repo}, state {ctx.wdir}, "
             f"build {started}")
+        prune_job_dirs(ctx, log, keep=(getattr(args, "job", "") or "",))
         if args.loop and args.status_file:
             raise SystemExit("--status-file describes one round; it does not go with --loop")
         began = dt.datetime.now(dt.UTC)
