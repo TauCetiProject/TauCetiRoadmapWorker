@@ -51,9 +51,11 @@ from . import (
     gates,
     gitops,
     openroadmaps,
+    overlaps,
     prbatch,
     prreviews,
     replies,
+    summary,
 )
 from .board import Job, Outcome
 from .gh import GHError, transient
@@ -1903,16 +1905,18 @@ def dispute_pending(jobs: list[Job], comments: list[dict], head: str, verdict: d
 def text_pending(jobs: list[Job], comments: list[dict], head: str, verdict: dict | None) -> bool:
     """Whether the reviews of `head` among `jobs` (one folder's, all finished) were last answered by a
     rewrite of the pull request's title or description that no round has read: the latest verdict of
-    `head` does not accept, and the latest reply recording `head` as the head it answered at answers
-    the latest of those reviews and records that it rewrote the text (`text`, `replies.answered_marker`).
-    The head did not move, so nothing else tells the intake that what the review read has changed."""
+    `head` does not accept, and the latest reply recording `head` as the head it answered at that
+    answers the latest of those reviews records that it rewrote the text (`text`,
+    `replies.answered_marker`). Replies to another folder's reviews of the same head are passed over:
+    each folder's review is answered on its own. The head did not move, so nothing else tells the
+    intake that what the review read has changed."""
     if not dispute_pending(jobs, comments, head, verdict):
         return False
     last = max(jobs, key=lambda j: (board.parse_job_id(j.id).round, j.number or 0))
     for c in reversed(comments):
         record = replies.answered_record(c.get("body") or "")
-        if record and record.get("head") == head and record.get("worker"):
-            return bool(record.get("text")) and record.get("job") == last.id
+        if record and record.get("head") == head and record.get("worker") and record.get("job") == last.id:
+            return bool(record.get("text"))
     return False
 
 
@@ -1970,7 +1974,12 @@ def carried_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: li
                        threads: dict, batch: int) -> tuple[str, int]:
     """(the accepted head whose acceptance carries to `head`, the lines changed between them), or
     ('', 0): a chain of carried records leads from `head` back to a head an AI review of every folder
-    accepted, and the folders changed by at most `[prreview] small_change_lines` lines in all."""
+    accepted, and the folders changed by at most `[prreview] small_change_lines` lines in all. Nothing
+    is carried past a review of `head` itself that does not accept (`refused_at`): a later review,
+    such as a check of the text that asked for changes, stands even when its worker could not take the
+    label off."""
+    if refused_at(ctx, folders, jobs, head, texts):
+        return "", 0
     if number not in threads:
         try:
             threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
@@ -2023,12 +2032,32 @@ def latest_verdict(ctx, jobs: list[Job], head: str, texts: dict[str, str | None]
     """The verdict of the latest finished review of `head` among `jobs` (one roadmap folder's reviews
     of a pull request), read from the board's main newest round first (`texts`: those already read),
     one read each until one is there; None when none is."""
+    return latest_reviewed(ctx, jobs, head, texts)[1]
+
+
+def latest_reviewed(ctx, jobs: list[Job], head: str,
+                    texts: dict[str, str | None] | None = None) -> tuple[Job | None, dict | None]:
+    """(the latest finished review of `head` among `jobs` whose verdict is on the board, that verdict),
+    as `latest_verdict` finds it; (None, None) when there is none."""
     done = finished_reviews(jobs, head)
     for job in sorted(done, key=lambda j: board.parse_job_id(j.id).round, reverse=True):
         found = prreview_verdicts(ctx, job.name, [job], head, texts)
         if job.id in found:
-            return found[job.id]
-    return None
+            return job, found[job.id]
+    return None, None
+
+
+def refused_at(ctx, folders, jobs: list[Job], head: str, texts) -> bool:
+    """Whether a folder's latest finished review of `head` itself does not accept: then no acceptance of
+    an earlier head is carried to `head` (`carried_acceptance`, `unchanged_acceptance`). A check of the
+    text that asked for changes is such a review."""
+    for folder in folders:
+        here = [j for j in finished_reviews(jobs, head) if board.prreview_folder(j) == folder]
+        if here:
+            verdict = latest_verdict(ctx, here, head, texts)
+            if not verdict or verdict.get("status") != "accepted":
+                return True
+    return False
 
 
 def folders_accepted(ctx, folders, jobs: list[Job], head: str,
@@ -2190,12 +2219,8 @@ def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: 
     holds and did not accept them: an acceptance is not carried past a later review of the same files.
     ('', False) when GitHub did not give the trees: nothing is known, and the caller leaves the pull
     request as it is."""
-    for folder in folders:
-        here = [j for j in finished_reviews(jobs, head) if board.prreview_folder(j) == folder]
-        if here:
-            verdict = latest_verdict(ctx, here, head, texts)
-            if not verdict or verdict.get("status") != "accepted":
-                return "", True
+    if refused_at(ctx, folders, jobs, head, texts):
+        return "", True
     tried = reviewed_heads(folders, jobs, head)[:REVIEWED_HEADS]
     if p.carry_minor:
         at, _steps = settle_points(ctx, folders, jobs, p.small_change_lines, texts)
@@ -2250,6 +2275,40 @@ def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: 
         if p.carry_minor and set(folders) <= settled_folders(ctx, folders, jobs, source, p.small_change_lines, texts):
             return source, True
     return "", known
+
+
+def acceptance_sources(ctx, repo: str, number: int, source: str, folders, jobs: list[Job], texts, p,
+                       threads: dict, batch: int, labelled: bool) -> dict[str, str]:
+    """Folder -> the head of the review that establishes its acceptance at `source`, an earlier head
+    whose acceptance `unchanged_acceptance` carried, decided in the order that function tries them:
+    `source` itself when every folder's review of it accepts; else the accepted head a chain of carried
+    records leads back to (`carry_accept`); else, settled by the folders' latest reviews and their
+    P3-only repairs (`carry_minor`), the head each folder's latest review read. Never a later review of
+    other files: a review that read files `source` does not hold is not what accepted it."""
+    if folders_accepted(ctx, folders, jobs, source, texts)[0]:
+        return dict.fromkeys(folders, source)
+    if p.carry_accept and labelled:
+        accepted, _lines = carried_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads, batch)
+        if accepted:
+            return dict.fromkeys(folders, accepted)
+    return {f: last_reviewed_head(jobs, f, source) for f in folders}
+
+
+def answer_worker(comments: list[dict], head: str, job_id: str) -> str:
+    """The worker whose latest reply records `head` as the head it answered at and answers the review
+    `job_id` (its answered record), '' when none does: the one that repaired that folder's text, which
+    may not take the round that reads its repair."""
+    for c in reversed(comments):
+        record = replies.answered_record(c.get("body") or "")
+        if record and record.get("head") == head and record.get("worker") and record.get("job") == job_id:
+            return str(record["worker"])
+    return ""
+
+
+def last_reviewed_head(jobs: list[Job], folder: str, default: str) -> str:
+    """The head the latest finished review of `folder` among `jobs` read (`previous_review`), else `default`."""
+    job = previous_review([j for j in jobs if board.prreview_folder(j) == folder])
+    return str((job.inputs.get("head") if job else "") or default)
 
 
 def next_review_round(reviews, leaf: str) -> int:
@@ -2397,7 +2456,8 @@ def sync_pr_reviews(ctx) -> list[str]:
         earlier head its last review settled it at (`still`, from `kept_folders`)."""
         for job in mine:
             folder = board.prreview_folder(job)
-            untaken = job.state == "available" and job.inputs.get("head") == head
+            # (a check of the text is about the description, which the folder's files do not settle)
+            untaken = job.state == "available" and job.inputs.get("head") == head and not job.inputs.get("text_check")
             if untaken and still.get(folder, head) != head and supersede(
                     ctx, job, f"Superseded: {folder} of #{number} at {head[:7]} holds the files of "
                               f"{still[folder][:7]}, where its last review settled it"):
@@ -2407,6 +2467,7 @@ def sync_pr_reviews(ctx) -> list[str]:
     carried_prs: set[int] = set()
     by_folder: set[int] = set()             # accepted folder by folder, some at an earlier head with the same files
     unchanged: dict[int, str] = {}          # a head that only moved: the earlier head whose acceptance stands
+    accepted_at: dict[int, dict[str, str]] = {}     # an accepted pull request: folder -> the head reviewed for it
     threads: dict[int, list[dict] | None] = {}
     for entry in listed:
         number, head = int(entry["pr"]), entry.get("head", "")
@@ -2431,16 +2492,20 @@ def sync_pr_reviews(ctx) -> list[str]:
         accepted, reason = (folders_accepted(ctx, folders, mine, head, texts) if folders
                             else chore_accepted(ctx, repo, number, head, why, p, threads, batch) if chore
                             else (False, f"not reviewed: {why}" if why else "no roadmap folder to review"))
+        if accepted and folders:
+            accepted_at[number] = dict.fromkeys(folders, head)
         if not accepted and labelled and folders and p.carry_accept:
             source, lines = carried_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads, batch)
             if source:
                 accepted, reason = True, f"carried from {source[:7]}"
+                accepted_at[number] = dict.fromkeys(folders, source)
                 carried_prs.add(number)
                 out.append(f"#{number}: {p.label} kept (the acceptance of {source[:7]} carries to {head[:7]}: "
                            f"{lines} lines of repairs inside the roadmap folders, no review filed)")
         carried = False
         if not accepted and folders and set(folders) <= minor_settled(number, folders, mine, head):
             accepted, carried = True, True
+            accepted_at[number] = {f: last_reviewed_head(mine, f, head) for f in folders}
         if not accepted and folders and p.carry_unchanged:
             source, known = unchanged_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads, batch,
                                                  labelled)
@@ -2451,11 +2516,14 @@ def sync_pr_reviews(ctx) -> list[str]:
                 continue
             if source:
                 accepted, unchanged[number] = True, source
+                accepted_at[number] = acceptance_sources(ctx, repo, number, source, folders, mine, texts, p, threads,
+                                                         batch, labelled)
                 carried_prs.add(number)
                 for job in mine:
-                    if job.state == "available" and job.inputs.get("head") == head and supersede(
+                    if (job.state == "available" and job.inputs.get("head") == head
+                            and not job.inputs.get("text_check") and supersede(
                             ctx, job, f"Superseded: the roadmap folders of #{number} at {head[:7]} are those of "
-                                      f"{source[:7]}, whose acceptance stands"):
+                                      f"{source[:7]}, whose acceptance stands")):
                         out.append(f"#{number}: {job.id} superseded")
                 if labelled:
                     out.append(f"#{number}: {p.label} kept (the roadmap folders at {head[:7]} are those of "
@@ -2470,6 +2538,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             close_untaken(number, mine, head, still)
             if set(folders) <= set(still):
                 accepted = True
+                accepted_at[number] = {f: last_reviewed_head(mine, f, still[f]) for f in folders}
                 by_folder.add(number)
                 carried_prs.add(number)
                 if labelled:
@@ -2497,6 +2566,50 @@ def sync_pr_reviews(ctx) -> list[str]:
                        f"({str(exc).splitlines()[0][:160]})")
 
     made, waiting = 0, 0
+    text_due: list[tuple[int, dict, list[str], str, list[Job]]] = []
+
+    def file_round(number: int, entry: dict, folder: str, ours: list[Job], mine: list[Job], extra: dict,
+                   dispute: bool = False, note: str = "", answered: str = "") -> bool:
+        """Create one PRREVIEW job of `folder` of pull request `number` at its current head; False when
+        it was not filed this run (its comments could not be read). `answered`: the review of this
+        folder whose answer at the unmoved head the round reads (a dispute or a text round); the worker
+        that answered it is the one that may not take the round (`answer_worker`), else the worker
+        that produced the head (`head_worker`)."""
+        nonlocal made
+        head, author = entry.get("head", ""), entry.get("author", "")
+        leaf = folder.rsplit("/", 1)[-1]
+        inputs = {"pr": number, "head": head, "owner": author, "name": leaf, "folder": folder}
+        if len(plans[number][0]) > 1:
+            inputs["roadmaps"] = list(plans[number][0])
+        inputs.update(rereview_inputs(ours))
+        if dispute:
+            inputs.update({"rereview": False, "dispute_rereview": True})
+        inputs.update(extra)
+        if inputs["rereview"] or dispute:
+            if number not in threads:
+                try:
+                    threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
+                except GHError as exc:
+                    threads[number] = None
+                    out.append(f"#{number}: not filed this run (its comments could not be read: "
+                               f"{str(exc).splitlines()[0][:160]})")
+            if threads[number] is None:
+                return False
+            worker = answered and answer_worker(threads[number], head, answered)
+            if worker := worker or head_worker(threads[number], head):
+                inputs["not_worker"] = worker
+        job = board.new_job(board.make_id("prreview", leaf, next_review_round(reviews, leaf)), inputs=inputs)
+        issue = ctx.board.create(job)
+        job.number, job.state = issue, "available"
+        reviews.append(job)
+        mine.append(job)
+        made += 1
+        if job.id in getattr(ctx.board, "reused", {}):
+            out.append(f"#{number}: {job.id} already on the board as #{issue}")
+        else:
+            out.append(f"#{number}: {job.id} created{note}")
+        return True
+
     for entry in listed:
         number, head, author = int(entry["pr"]), entry.get("head", ""), entry.get("author", "")
         settled = number in accepted_prs or p.label in entry.get("labels", [])     # an accepted head: no dispute
@@ -2509,11 +2622,14 @@ def sync_pr_reviews(ctx) -> list[str]:
         if number in p.operator_prs:
             out.append(f"#{number}: rounds filed by the operator (prreview.operator_prs)")
             continue
-        if number in carried_prs:
-            continue             # small repairs on an accepted head: the acceptance carries, no round
         if any(pr_of(g) == number and g.state in OPEN_ROUND for g in gate_rounds):
             continue
         mine = [j for j in reviews if pr_of(j) == number]
+        if number in accepted_at and p.text_per_run and not any(j.under_way(OPEN_ROUND) for j in mine):
+            # An accepted pull request: its text may not be what the reviews of its folders read.
+            text_due.append((number, entry, accepted_at[number], mine))
+        if number in carried_prs:
+            continue             # small repairs on an accepted head: the acceptance carries, no round
         # (an accepted head needs no comparison: its folders are reviewed there, or settled by P3-only repairs)
         still, known = ({}, True) if number in accepted_prs else kept_folders(number, folders, mine, head)
         if not known:
@@ -2540,9 +2656,17 @@ def sync_pr_reviews(ctx) -> list[str]:
                 # record says `text`): that text gets one check round, an incremental one, and then the head
                 # is settled (a revision whose second review asked only for a corrected description had it
                 # corrected and stayed unapproved, with no round left to read the correction)
+                # 2026-11-11: a check round of an accepted head's text (`text_check`) counts as that second
+                # review: a correction it asks for that is answered without a push gets the same check round.
+                # A text check starts a sequence of its own (the text it read is later than what the earlier
+                # rounds of the head settled), so only the rounds from the latest one on count here.
+                checks = [j for j in same if j.inputs.get("text_check")]
+                if checks:
+                    since = round_key(max(checks, key=round_key))
+                    same = [j for j in same if round_key(j) >= since]
                 if any(j.inputs.get("text_rereview") for j in same):
                     continue
-                twice = any(j.inputs.get("dispute_rereview") for j in same)
+                twice = any(j.inputs.get("dispute_rereview") or j.inputs.get("text_check") for j in same)
                 if number not in threads:
                     try:
                         threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
@@ -2560,40 +2684,124 @@ def sync_pr_reviews(ctx) -> list[str]:
             if made >= p.per_run:
                 waiting += 1
                 continue
-            leaf = folder.rsplit("/", 1)[-1]
-            inputs = {"pr": number, "head": head, "owner": author, "name": leaf, "folder": folder}
-            if len(folders) > 1:
-                inputs["roadmaps"] = list(folders)
-            inputs.update(rereview_inputs(ours))
-            if dispute:
-                inputs.update({"rereview": False, "dispute_rereview": True})
-            if text_round:
-                inputs["text_rereview"] = True
-            if inputs["rereview"] or dispute:
-                if number not in threads:
-                    try:
-                        threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
-                    except GHError as exc:
-                        threads[number] = None
-                        out.append(f"#{number}: not filed this run (its comments could not be read: "
-                                   f"{str(exc).splitlines()[0][:160]})")
-                if threads[number] is None:
-                    continue
-                if worker := head_worker(threads[number], head):
-                    inputs["not_worker"] = worker
-            job = board.new_job(board.make_id("prreview", leaf, next_review_round(reviews, leaf)), inputs=inputs)
-            issue = ctx.board.create(job)
-            job.number, job.state = issue, "available"
-            reviews.append(job)
-            mine.append(job)
-            made += 1
-            if job.id in getattr(ctx.board, "reused", {}):
-                out.append(f"#{number}: {job.id} already on the board as #{issue}")
-            else:
-                out.append(f"#{number}: {job.id} created")
+            file_round(number, entry, folder, ours, mine, {"text_rereview": True} if text_round else {}, dispute,
+                       answered=max(same, key=round_key).id if same and (dispute or text_round) else "")
     if waiting:
         out.append(f"{waiting} review job(s) wait ([prreview] per_run = {p.per_run})")
+    if text_due and p.text_per_run:
+        file_text_checks(ctx, listed, text_due, texts, file_round, lambda: made, out)
     return out
+
+
+def dependency_depths(listed: list[dict], bodies: dict[int, dict | None], label: str) -> dict[int, int]:
+    """How deep each open pull request of `listed` sits in the dependency graph of the open pull
+    requests: 0 for one that waits for nothing (without `label`, when one is given: `roadmaps
+    dependency-labels` keeps that label on exactly the pull requests that wait; else when its
+    description names no open pull request), otherwise one more than the deepest open pull request its
+    description names (`overlaps.declared_items` of `bodies`: its `<!-- depends-on -->` block and its
+    prose), 1 when it names none. A cycle is cut where it closes."""
+    live = {int(e["pr"]) for e in listed}
+    labelled = {int(e["pr"]) for e in listed if label and label in e.get("labels", [])}
+    edges: dict[int, set[int]] = {}
+    for e in listed:
+        n = int(e["pr"])
+        body = (bodies.get(n) or {}).get("body") or ""
+        edges[n] = {m for m, _roadmap in overlaps.declared_items(body, own=n) if m and m in live and m != n}
+    depth: dict[int, int] = {}
+
+    def walk(n: int, path: set[int]) -> int:
+        if n in depth:
+            return depth[n]
+        if not (n in labelled if label else edges.get(n)):
+            depth[n] = 0
+            return 0
+        path.add(n)
+        d = 1 + max((walk(m, path) for m in sorted(edges.get(n, ())) if m not in path), default=0)
+        path.discard(n)
+        depth[n] = d
+        return d
+
+    for n in sorted(live):
+        walk(n, set())
+    return depth
+
+
+def text_read(ctx, ours: list[Job], at: str, head: str, digest: str, texts: dict) -> tuple[bool, str]:
+    """(whether a review of one roadmap folder read the pull request's text whose digest is `digest`, the
+    digest the latest review read). `ours` are the folder's PRREVIEW jobs, `head` the pull request's
+    current head and `at` the head reviewed for the folder (`head`, or the earlier head an acceptance
+    comes from). The latest review of `head`, else of `at`, decides: its verdict's `text` (the digest
+    the worker records from the text it fetched when the round started), whatever the round was filed
+    for. When that verdict records none and the review is a check of the text filed for `digest`, it
+    finished on a worker of an older build, which records none: it counts as having read that text, so
+    that it is not filed again on every run. An older check never overrides a newer verdict's digest."""
+    job, verdict = None, None
+    for h in dict.fromkeys((head, at)):
+        job, verdict = latest_reviewed(ctx, [j for j in ours if j.inputs.get("head") == h], h, texts)
+        if verdict is not None:
+            break
+    reviewed = str((verdict or {}).get("text") or "")
+    if reviewed:
+        return reviewed == digest, reviewed
+    return bool(job and job.inputs.get("text_check") and job.inputs.get("text_digest") == digest), ""
+
+
+def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round, made, out: list[str]) -> None:
+    """The check rounds of accepted pull requests' title and description (`[prreview] text_per_run`),
+    filed by `sync_pr_reviews` after its other rounds, within `[prreview] per_run`.
+
+    `due` holds the pull requests an AI review accepts, by any of `sync_pr_reviews`'s routes, with no
+    round under way: (number, listing entry, {roadmap folder: the head reviewed for it}, PRREVIEW
+    jobs). Their titles and descriptions are read in batches (`prbatch.pull_texts`). A review reads
+    the text against its own folder's change only, so each folder is checked on its own: a folder is
+    due when no review of it read the current text (`text_read`, `summary.text_digest`), because the
+    text changed since or the review predates the record. A due folder gets one incremental round
+    (`text_check`, with the digest as `text_digest`). The folders due are taken least deep in the
+    dependency graph first (`dependency_depths`: a pull request that waits for nothing, then one
+    waiting only for those, and so on), then `awaiting-review` before the rest, non-drafts before
+    drafts, oldest first, the folders of one pull request together, so that the pull requests
+    closest to merging have their text checked first. The worker whose reply answered the folder's
+    latest review at this head may not take its check (`file_round`'s `answered`)."""
+    cfg, p = ctx.cfg, ctx.cfg.prreview
+    room = min(p.text_per_run, p.per_run - made())
+    if room <= 0:
+        return
+    bodies = prbatch.pull_texts(ctx.gh, cfg.repositories.content, [int(e["pr"]) for e in listed],
+                                cfg.board.graphql_batch)
+    ready = []
+    for number, entry, heads, mine in due:
+        got, head = bodies.get(number), entry.get("head", "")
+        if got is None:
+            out.append(f"#{number}: text not checked (its title and description could not be read)")
+            continue
+        digest = summary.text_digest(got["title"], got["body"])
+        for folder, at in heads.items():
+            read, reviewed = text_read(ctx, [j for j in mine if board.prreview_folder(j) == folder], at, head,
+                                       digest, texts)
+            if not read:
+                ready.append((number, entry, folder, digest, mine,
+                              "changed since its review" if reviewed else "its review did not record it"))
+    if not ready:
+        return
+    depths = dependency_depths(listed, bodies, p.dependency_label)
+    review_label = cfg.replies.awaiting_review
+    ready.sort(key=lambda x: (depths.get(x[0], 0), review_label not in x[1].get("labels", []),
+                              bool(x[1].get("draft")), x[0]))
+    filed = 0
+    for number, entry, folder, digest, mine, why in ready:
+        if filed >= room:
+            break
+        ours = [j for j in mine if board.prreview_folder(j) == folder]
+        # The worker that answered the folder's latest review at this head (a P3-only repair of its text,
+        # say) wrote what the check reads: it may not take the check, whoever answered the other folders.
+        last = previous_review(ours)
+        if file_round(number, entry, folder, ours, mine, {"text_check": True, "text_digest": digest},
+                      note=f" (a check of its title and description: {why}; dependency depth {depths.get(number, 0)})",
+                      answered=last.id if last else ""):
+            filed += 1
+    if len(ready) > filed:
+        out.append(f"{len(ready) - filed} roadmap folder(s) of accepted pull requests wait for a check of their "
+                   f"text ([prreview] text_per_run = {p.text_per_run})")
 
 
 def stale(ctx, shared: claims.Claims | None, release: bool) -> list[str]:

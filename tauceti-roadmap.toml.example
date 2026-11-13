@@ -250,6 +250,14 @@ label = "ai-approved"
 # run, and off merged pull requests. `board sync` does not touch it. Empty: no default label.
 dependency_label = ""
 per_run = 3
+# Each roadmap folder of an accepted pull request whose title and description are not what its review
+# read (they changed since, or the review predates the check of the text against the change: its
+# verdict records no digest of the text) gets one incremental check round of that text against its
+# folder's change: at most `text_per_run` of the `per_run` jobs a
+# run, after the other rounds, pull requests that wait for nothing first (no `dependency_label`, else
+# no open pull request their description names), then by how deep the open pull requests they wait for
+# go, `awaiting-review` before the rest, non-drafts before drafts, oldest first. 0: none.
+text_per_run = 10
 # Only these authors' pull requests (empty: everyone's), and never these.
 authors = []
 skip_authors = []

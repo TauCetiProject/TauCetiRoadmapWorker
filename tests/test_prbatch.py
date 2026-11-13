@@ -249,3 +249,30 @@ def test_the_batch_size_is_configurable_and_never_negative():
     assert config.parse('[project]\nname = "P"\n[board]\ngraphql_batch = 0\n', "x.toml").board.graphql_batch == 0
     with pytest.raises(config.ConfigError, match="board.graphql_batch must be 0 or more"):
         config.parse('[project]\nname = "P"\n[board]\ngraphql_batch = -1\n', "x.toml")
+
+
+def test_titles_and_descriptions_are_read_in_batches_and_what_a_query_leaves_out_by_rest():
+    class TextGH:
+        def __init__(self):
+            self.queries, self.rest = [], []
+
+        def graphql(self, query, **variables):
+            self.queries.append(query)
+            if "p3:" in query:
+                raise GHError("graphql: 502")
+            numbers = [int(n) for n in re.findall(r"p(\d+): pullRequest\(number: \1\) \{ title body \}", query)]
+            return {"repository": {f"p{n}": {"title": f"T{n}", "body": f"B{n}"} for n in numbers if n != 2}}
+
+        def api(self, path, paginate=False):
+            self.rest.append(path)
+            n = int(path.rsplit("/", 1)[1])
+            if n == 4:
+                raise GHError(f"GET {path}: 502")
+            return {"title": f"rest {n}", "body": None}
+
+    gh = TextGH()
+    got = prbatch.pull_texts(gh, REPO, [1, 2, 3, 4, 1], 2)
+    assert len(gh.queries) == 2                                   # [1, 2] and [3, 4]; the second fails
+    assert got == {1: {"title": "T1", "body": "B1"}, 2: {"title": "rest 2", "body": ""},
+                   3: {"title": "rest 3", "body": ""}, 4: None}
+    assert gh.rest == [f"repos/{REPO}/pulls/{n}" for n in (2, 3, 4)]
