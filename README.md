@@ -98,6 +98,9 @@ override it; it must not lie inside a git checkout):
 | `sources/<sha256>.pdf`, `sources/<sha256>.txt` | the sources cache: each text under its hash, with a line-numbered extraction beside it |
 | `logs/` | where the service example above writes the worker's output |
 
+A worker removes a job's folder once nothing has written to it for `[worker] keep_job_days` days
+(default 3; 0 keeps them all), unless a submission of the job is still to be finished.
+
 The full list is in [docs/OPERATORS.md](docs/OPERATORS.md#the-state-directory).
 
 ## Sources

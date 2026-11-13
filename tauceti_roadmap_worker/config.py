@@ -376,6 +376,10 @@ class Worker:
     # secondary rate limit blocks the account after bursts of about 80 a minute or 500 an hour. 0 = no cap.
     writes_per_minute: int = 20
     writes_per_hour: int = 400
+    # Days a job's folder (`workers/<id>/jobs/<JOB>/`: briefs, agent logs, scratch) stays after the
+    # last write to it; a worker removes its own older ones at its start and when a round starts.
+    # 0 = they are never removed.
+    keep_job_days: int = 3
 
 
 @dataclass
@@ -567,6 +571,8 @@ def validate(cfg: Config) -> None:
         problems.append("worker.idle_seconds must be at least 30")
     if cfg.worker.writes_per_minute < 0 or cfg.worker.writes_per_hour < 0:
         problems.append("worker.writes_per_minute and writes_per_hour must be 0 or more")
+    if cfg.worker.keep_job_days < 0:
+        problems.append("worker.keep_job_days must be 0 or more")
     if not 30 <= cfg.claims.renew_seconds < cfg.claims.job_ttl_seconds:
         problems.append("claims.renew_seconds must be at least 30 and below claims.job_ttl_seconds")
     if cfg.roadmap.merge_order_repo not in ("packages", "content", "local"):

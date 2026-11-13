@@ -196,6 +196,11 @@ claude_model = "fable"
 # says, the first poll after a failure comes within a minute, and while a job the worker parked for
 # references waits, it looks every minute whether the board answered it and polls at once when it did.
 idle_seconds = 600
+# Days a job's folder (`workers/<id>/jobs/<JOB>/` in the state directory: briefs, agent logs, scratch)
+# stays after the last write to it. A worker removes its own older ones at its start and when a
+# round starts, except the folder of the job it is about to run and those of jobs whose submission
+# is still to be finished. 0 = they are never removed.
+keep_job_days = 3
 
 [claims]
 # Seconds a job lease lasts after its last renewal. A worker that dies holds its job this long, and

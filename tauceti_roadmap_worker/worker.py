@@ -29,7 +29,7 @@ from .board import Job
 from .config import AGENTS, STAGE_ORDER
 from .gh import GHError, GHHalt, GHRateLimited
 from .lanes import Context, LaneResult, lane_for
-from .lanes.base import LIMIT_WORK_NOTED, LaneBlocked
+from .lanes.base import LIMIT_WORK_NOTED, LaneBlocked, pending_path
 
 MAX_ATTEMPTS = 3
 EX_HALTED = 78     # TauCetiWorker's code for a worker that GitHub's answers about the account stopped
@@ -102,6 +102,67 @@ def sweep_worktrees(ctx: Context, log=print) -> list[str]:
 
 
 OPEN_STATES = ("available", "claimed", "submitted", "needs-references", "blocked")
+
+
+def prune_job_dirs(ctx: Context, log=print, keep: tuple[str, ...] = (), clock=time.time) -> list[str]:
+    """At worker start and when a round starts: remove this worker's job folders
+    (`workers/<id>/jobs/<JOB>/`: briefs, agent logs, scratch) that nothing has written to for
+    `[worker] keep_job_days` days (0: none is removed). A folder's age is that of its newest
+    modification, its own or that of an entry directly inside it. Kept whatever their age: the
+    folders of the jobs in `keep` (the job the round is about to run), and of every job whose
+    submission stopped part-way (`pending-push.json`: the next attempt finishes it from the run
+    and the records kept in its folder). Only directories directly under this worker's `jobs/`
+    are removed; a symbolic link there is neither followed nor removed. Best effort: a folder
+    that cannot be read or removed stays, the log gets one line for the pass, and nothing is
+    raised. Returns the names of the folders removed."""
+    wdir = getattr(ctx, "wdir", None)
+    days = ctx.cfg.worker.keep_job_days
+    if not wdir or days <= 0 or ctx.dry_run:
+        return []
+    why = "it is not a table of jobs"
+    try:
+        pending = json.loads(pending_path(ctx).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        pending = {}
+    except (OSError, ValueError) as exc:
+        pending, why = None, str(exc)
+    if not isinstance(pending, dict):
+        # Which runs are kept for a later attempt is unknown: nothing goes until the record reads again.
+        log(f"job folders not pruned: {pending_path(ctx)} cannot be read ({why})")
+        return []
+    kept = {claims.ref_safe(str(job_id)) for job_id in (*keep, *pending) if job_id}
+    cutoff = clock() - days * 86400
+    removed, left = [], []
+    try:
+        with os.scandir(Path(wdir) / "jobs") as found:
+            entries = sorted(found, key=lambda e: e.name)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        log(f"job folders not pruned: {exc}")
+        return []
+    for entry in entries:
+        if entry.name in kept:
+            continue
+        try:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            with os.scandir(entry.path) as inside:
+                newest = max([entry.stat(follow_symlinks=False).st_mtime,
+                              *(e.stat(follow_symlinks=False).st_mtime for e in inside)])
+            if newest >= cutoff:
+                continue
+            shutil.rmtree(entry.path)
+        except OSError as exc:
+            left.append(f"{entry.name}: {exc}")
+            continue
+        removed.append(entry.name)
+    if removed:
+        log(f"pruned {len(removed)} job folder(s) not written to for {days} days: {', '.join(removed[:5])}"
+            + (f" and {len(removed) - 5} more" if len(removed) > 5 else ""))
+    if left:
+        log(f"{len(left)} job folder(s) could not be pruned and stay ({left[0]})")
+    return removed
 
 
 def rank(jobs: list[Job], order: list[str] | None = None, priority: list[str] | tuple[str, ...] = STAGE_ORDER,
@@ -330,7 +391,8 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print, held: bool = True
     way a lane can stop before it submits (a failure it reports, an exception from git, GitHub or
     anything else, a usage limit, an interrupt, the lease lost) goes through `release`. While the
     lane runs, a heartbeat renews the lease (`held`: it was acquired; otherwise it tries to take it)
-    and fences `ctx.gh`: after the lease is lost, every GitHub write the lane attempts raises."""
+    and fences `ctx.gh`: after the lease is lost, every GitHub write the lane attempts raises. Before
+    the lane runs, the worker's old job folders are removed (`prune_job_dirs`), never this job's."""
     interrupt = None
     try:
         if not ctx.dry_run:
@@ -340,6 +402,7 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print, held: bool = True
             except GHError:
                 pass  # no write access to the board: the lease is the claim; `board sync` mirrors it
         log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
+        prune_job_dirs(ctx, log, keep=(job.id,))
         ttl, every = ctx.cfg.claims.job_ttl_seconds, ctx.cfg.claims.renew_seconds
         with claims.Heartbeat(None if ctx.dry_run else ctx.claims, key, ttl, every, held=held, gh=ctx.gh, log=log):
             result = lane.run(job, ctx)
