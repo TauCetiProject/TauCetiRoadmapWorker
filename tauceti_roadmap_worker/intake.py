@@ -2760,7 +2760,8 @@ def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round
     dependency graph first (`dependency_depths`: a pull request that waits for nothing, then one
     waiting only for those, and so on), then `awaiting-review` before the rest, non-drafts before
     drafts, oldest first, the folders of one pull request together, so that the pull requests
-    closest to merging have their text checked first."""
+    closest to merging have their text checked first. The worker whose reply answered the folder's
+    latest review at this head may not take its check (`file_round`'s `answered`)."""
     cfg, p = ctx.cfg, ctx.cfg.prreview
     room = min(p.text_per_run, p.per_run - made())
     if room <= 0:
@@ -2791,8 +2792,12 @@ def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round
         if filed >= room:
             break
         ours = [j for j in mine if board.prreview_folder(j) == folder]
+        # The worker that answered the folder's latest review at this head (a P3-only repair of its text,
+        # say) wrote what the check reads: it may not take the check, whoever answered the other folders.
+        last = previous_review(ours)
         if file_round(number, entry, folder, ours, mine, {"text_check": True, "text_digest": digest},
-                      note=f" (a check of its title and description: {why}; dependency depth {depths.get(number, 0)})"):
+                      note=f" (a check of its title and description: {why}; dependency depth {depths.get(number, 0)})",
+                      answered=last.id if last else ""):
             filed += 1
     if len(ready) > filed:
         out.append(f"{len(ready) - filed} roadmap folder(s) of accepted pull requests wait for a check of their "

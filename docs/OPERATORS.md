@@ -749,7 +749,9 @@ run; an older check never overrides a newer verdict's digest. A check that asks 
 answered without a push gets the second case's check round of the rewrite, as a second review would;
 the rounds of the head before the latest check do not count against it, and each folder's answer is
 matched to that folder's review, whose answering worker is the one that may not take the round
-(`intake.answer_worker`). A check that does not accept ends an acceptance carried to the head
+(`intake.answer_worker`); a check of the text likewise excludes the worker that answered the folder's
+latest review at that head (a P3-only repair of its text, under `carry_minor`), whoever answered the
+other folders. A check that does not accept ends an acceptance carried to the head
 (`carry_accept`, like `carry_unchanged`): the label comes off at the next sync even when the
 reviewing worker could not take it off. A check waiting at a head whose folders an
 earlier head settles is not superseded: what it checks is the text. These rounds come after the others of a run, at most `text_per_run` of `per_run`,

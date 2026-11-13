@@ -757,6 +757,24 @@ def test_the_worker_that_repaired_a_folders_text_does_not_take_its_check_round(t
     assert made["Foo"].inputs["not_worker"] == "alice-1" and made["Bar"].inputs["not_worker"] == "bob-1"
     lane = lane_for(made["Foo"])
     assert lane.eligible(made["Foo"], lane_ctx(tmp_path)) == "the worker that repaired this head does not review it"
+    # `carry_minor`: each folder's review asked for a P3 correction of the text, read before its repair, and
+    # the repairs were text-only (same-head carried records); the folders are settled and their text checked.
+    # Each check excludes the worker that repaired its own folder's text.
+    foo_review, bar_review = (review_job(45, 3, 1164, H1, "done", folder="Foo"),
+                              review_job(46, 3, 1164, H1, "done", name="Bar", folder="Bar"))
+    carried = {"from": H1, "head": H1, "lines": 0, "folders": [], "findings": ["P01"]}
+    files = {}
+    for job, read in ((foo_review, "a" * 16), (bar_review, "b" * 16)):
+        verdict = json.loads(verdict_read(job, "needs_changes", H1, read)[board.prreview_verdict_path("packages", job)])
+        verdict["review"]["carried"] = carried
+        files[board.prreview_verdict_path("packages", job)] = json.dumps(verdict)
+    gh = ContentGH([two_folder_pr(H1)], pulls=text_pr(1164), files=files,
+                   comments={1164: [answer(8, "PRREVIEW-Foo~3", "alice-1"), answer(9, "PRREVIEW-Bar~3", "bob-1")]})
+    _out, fake = sync(gh, [foo_review, bar_review], carry_minor=True, text_per_run=10)
+    made = {j.inputs["folder"]: j for j, _s, _p in fake.created}
+    assert made["Foo"].inputs["text_check"] and made["Bar"].inputs["text_check"]
+    assert made["Foo"].inputs["not_worker"] == "alice-1" and made["Bar"].inputs["not_worker"] == "bob-1"
+    assert lane.eligible(made["Foo"], lane_ctx(tmp_path)) == "the worker that repaired this head does not review it"
 
 
 def test_the_dependency_depth_cuts_a_cycle_and_ignores_closed_pull_requests():
