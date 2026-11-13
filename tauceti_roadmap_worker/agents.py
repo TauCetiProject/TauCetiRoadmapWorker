@@ -89,7 +89,8 @@ LIMIT = LIMIT_ON_FAILURE     # every pattern, for callers that already know the 
 TRANSIENT = re.compile(r"Request timed out|ECONNRESET|socket hang up|fetch failed|Connection error", re.I)
 MESSAGE_WIDTH = 240          # characters of the limit message's line kept for the log
 # Service-side, momentary limits: the model is busy right now, not this account's quota. With no reset
-# time in the message these pause the family MOMENTARY_PAUSE seconds, not the usage-limit default.
+# time in the message these pause the family MOMENTARY_PAUSE seconds, not the usage-limit default, and
+# the result says so (`AgentResult.momentary`: a lane runs the brief again before it gives the round up).
 MOMENTARY = re.compile(r"model (?:is )?at capacity|overloaded_error|too many requests|"
                        r"(?:http|status|error|code)\W{0,3}429\b|\b429\W{0,3}(?:too many|rate)|"
                        r"API Error: (?:429|5\d\d)|rate.?limit", re.I)
@@ -138,6 +139,7 @@ class AgentResult:
     exit_code: int
     seconds: float
     limited: bool = False
+    momentary: bool = False  # limited by a service-side message (MOMENTARY) that names no reset time
     transient: bool = False
     timed_out: bool = False
     reset_at: dt.datetime | None = None
@@ -461,14 +463,17 @@ def classify(code: int, out: str, err: str, seconds: float = 0.0, timed_out: boo
     """The result of a run from its exit code and its whole stdout and stderr. A usage limit is
     recognised first, wherever its message appears and whatever the exit code (the Claude CLI
     prints it on stdout and exits 1 after any amount of work; Codex on stderr), so a limited run is
-    never a plain failure; its reset time, when the message gives one, is the pause's end."""
+    never a plain failure; its reset time, when the message gives one, is the pause's end. A
+    service-side message that gives none is `momentary`: the service failed for a moment, the
+    account's quota is not spent."""
     found = limit_message(out, err, code)
     if found:
         line, context = found
         reset_at = reset_time(context)
-        if reset_at is None and MOMENTARY.search(line):
+        momentary = reset_at is None and bool(MOMENTARY.search(line))
+        if momentary:
             reset_at = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=MOMENTARY_PAUSE)
-        return AgentResult(exit_code=code, seconds=seconds, limited=True, timed_out=timed_out,
+        return AgentResult(exit_code=code, seconds=seconds, limited=True, momentary=momentary, timed_out=timed_out,
                            reset_at=reset_at, message=line)
     tail = out[-6000:] + err[-6000:]
     return AgentResult(exit_code=code, seconds=seconds, timed_out=timed_out,

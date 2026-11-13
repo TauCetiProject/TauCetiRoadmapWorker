@@ -303,7 +303,23 @@ the round is logged `limited: <message>` (`limited (after N min of work): <messa
 had worked before the limit stopped it), the job is released, no attempt is consumed, the run's
 output stays in the job folder, and the family is paused until the reset time the message gives
 (half an hour when it gives none, doubled for each such limit in a row that came before any
-work, up to four hours). A fault before any agent runs (a brief that does
+work, up to four hours).
+
+A momentary service error is tried again in place before the round is given up. When the message
+is one of the service's own ("model is at capacity", an overload, "Too many requests"/429, "rate
+limit", `API Error: 429` or `API Error: 5xx` such as `API Error: 503 status code (no body)`) and
+names no reset time, the worker waits 60 seconds and runs the same brief again in the same
+workspace, then 120 and 240 seconds before a third and a fourth run. The agent is told that an
+earlier run was cut off and that it continues from the files that run left. Each run has its own
+`run-N` logs and its own usage record, and each wait is printed and kept in the job folder's
+`requests.log` (`a service error cut the agent off (<message>): its brief runs again in 60 s
+(further run 1 of 3)`). Only when the last of those runs is cut off too does the round end
+`limited`, and the family is then paused for five minutes plus the usual five-minute margin. A
+limit that names a reset time, a limit of the account (credits, a weekly or per-model limit) and a
+run that reached its timeout are never run again. The summaries `tauceti-roadmap summary` writes
+run their agent outside the lanes and are not tried again.
+
+A fault before any agent runs (a brief that does
 not render, a checkout that fails) is on the operator's side: the job is released as
 `setup-failed`, not counted against it, and the worker process leaves it alone until it restarts.
 

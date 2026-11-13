@@ -267,8 +267,10 @@ Agents fetch what they need themselves, within rules:
   the targeted build of its module (the shared packages hold Tau Ceti's sources without object
   files; the build makes them once for every worker), a Mathlib-only file with `lake env lean`.
 - Budget: there is no pacing. An agent family pauses when its CLI prints a usage limit, until the
-  reset it names. The design lane, the most expensive, is capped per operator per day
-  (`[design] daily_cap`). `tauceti-roadmap usage` sums the tokens every run used.
+  reset it names. A momentary error of the model's service (an HTTP 429 or 5xx with no reset time)
+  is first tried again in place: the lane runs the brief again in the same workspace, up to three
+  more times, before the round ends limited. The design lane, the most expensive, is capped per
+  operator per day (`[design] daily_cap`). `tauceti-roadmap usage` sums the tokens every run used.
 
 ## 7. Human touch points
 
