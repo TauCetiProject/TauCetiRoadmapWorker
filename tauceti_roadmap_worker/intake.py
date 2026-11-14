@@ -2349,7 +2349,7 @@ def acceptance_sources(ctx, repo: str, number: int, source: str, folders, jobs: 
     if p.carry_accept and labelled:
         accepted, _lines = carried_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads, batch)
         if accepted:
-            return dict.fromkeys(folders, accepted)
+            return reviewed_heads_at(ctx, folders, jobs, accepted, texts)
     return {f: last_reviewed_head(jobs, f, source) for f in folders}
 
 
@@ -2362,6 +2362,19 @@ def answer_worker(comments: list[dict], head: str, job_id: str) -> str:
         if record and record.get("head") == head and record.get("worker") and record.get("job") == job_id:
             return str(record["worker"])
     return ""
+
+
+def reviewed_heads_at(ctx, folders, jobs: list[Job], at: str, texts) -> dict[str, str]:
+    """Folder -> the head of the review that establishes its acceptance at `at`, the head a carried
+    chain leads back to (`carried_acceptance`): `at` itself for a folder whose latest review of `at`
+    accepts; else, `at` being a head P3-only repairs settled (`carry_minor`), the head the folder's
+    latest review read (`last_reviewed_head`), which no review of `at` stands in for."""
+    out = {}
+    for folder in folders:
+        here = [j for j in finished_reviews(jobs, at) if board.prreview_folder(j) == folder]
+        verdict = latest_verdict(ctx, here, at, texts) if here else None
+        out[folder] = at if (verdict or {}).get("status") == "accepted" else last_reviewed_head(jobs, folder, at)
+    return out
 
 
 def last_reviewed_head(jobs: list[Job], folder: str, default: str) -> str:
@@ -2557,7 +2570,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             source, lines = carried_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads, batch)
             if source:
                 accepted, reason = True, f"carried from {source[:7]}"
-                accepted_at[number] = dict.fromkeys(folders, source)
+                accepted_at[number] = reviewed_heads_at(ctx, folders, mine, source, texts)
                 carried_prs.add(number)
                 out.append(f"#{number}: {p.label} kept (the acceptance of {source[:7]} carries to {head[:7]}: "
                            f"{lines} lines of repairs inside the roadmap folders, no review filed)")

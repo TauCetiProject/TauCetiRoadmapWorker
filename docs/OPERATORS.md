@@ -788,7 +788,8 @@ current head, or the earlier head the acceptance comes from (`carry_accept`, `ca
 `carry_unchanged_folders`, or a P3-only repair), kept as the head of the review that established that
 acceptance (`intake.acceptance_sources` for a head that only moved: the accepted earlier head itself,
 the head a carried chain leads back to, or the folder's latest review for a P3-only settlement, never a
-later review of other files). A folder
+later review of other files; a carried chain that ends at a head P3-only repairs settled resolves, folder
+by folder, to the review that settled it, `intake.reviewed_heads_at`). A folder
 whose latest verdict, of the current head or else of that head, records a digest other than the
 current text's, or none (the review predates the record), gets one check round at the current head (`text_check`, with the digest
 as `text_digest`, `rereview` and `previous_head` the head its latest review read): an incremental

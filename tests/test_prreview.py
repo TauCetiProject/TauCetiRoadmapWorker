@@ -1355,6 +1355,20 @@ def test_small_repairs_made_after_a_p3_only_repair_keep_the_label():
     gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=files, comments=record, compares={(H2, H3): large})
     out, fake = sync(gh, [foo, bar], carry_accept=True, carry_minor=True)
     assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    # With text checks on: both reviews read this text at H1, and no review ran at H2, the head the P3-only
+    # repair left. The text counts as read through H1's verdicts; a changed text gets its checks.
+    digest = summary.text_digest("Two roadmaps", "Both.\n")
+    minor["review"]["text"] = digest
+    read = {**verdict_read(foo, "accepted", H1, digest),
+            board.prreview_verdict_path("packages", bar): json.dumps(minor)}
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=read, comments=record, compares={(H2, H3): small},
+                   pulls=text_pr(1164, title="Two roadmaps", body="Both.\n"))
+    out, fake = sync(gh, [foo, bar], carry_accept=True, carry_minor=True, text_per_run=10)
+    assert created(fake) == [] and out[0].startswith("#1164: ai-approved kept")
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=read, comments=record, compares={(H2, H3): small},
+                   pulls=text_pr(1164, title="Two roadmaps", body="Both, edited.\n"))
+    _out, fake = sync(gh, [foo, bar], carry_accept=True, carry_minor=True, text_per_run=10)
+    assert sorted(f for _id, f in created(fake)) == ["Bar", "Foo"]
 
 
 def test_a_chore_loses_a_label_put_on_by_hand():
