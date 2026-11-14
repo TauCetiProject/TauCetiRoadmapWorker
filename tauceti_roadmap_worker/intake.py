@@ -1966,11 +1966,19 @@ def folder_change_lines(ctx, repo: str, old: str, new: str, folders, active_dir:
     return total
 
 
+CARRIED_MOVES = 4             # heads that only moved a chain of carried records may pass through (`carried_acceptance`)
+
+
 def carried_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: list[Job], texts, p,
-                       threads: dict, batch: int) -> tuple[str, int]:
-    """(the accepted head whose acceptance carries to `head`, the lines changed between them), or
+                       threads: dict, batch: int, moves: int = 0) -> tuple[str, int]:
+    """(the accepted head whose acceptance carries to `head`, the lines of repairs between them), or
     ('', 0): a chain of carried records leads from `head` back to a head an AI review of every folder
-    accepted, and the folders changed by at most `[prreview] small_change_lines` lines in all."""
+    accepted, and the folders changed by at most `[prreview] small_change_lines` lines in all.
+    The chain may pass through a head that only moved (`[prreview] carry_unchanged`): a record whose
+    `from` is a merge of the base branch into an accepted head, or a rebase of it, holds as one from
+    the accepted head would, and its lines are those from the moved head on (the base branch's files
+    are none of the repair's); what earlier records carried into the head it moved from counts too.
+    `moves`: the moved heads passed through so far, at most `CARRIED_MOVES`."""
     if number not in threads:
         try:
             threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
@@ -1982,10 +1990,34 @@ def carried_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: li
         if not source or source == at or source in seen:
             return "", 0
         seen.add(source)
-        if folders_accepted(ctx, folders, jobs, source, texts)[0]:
+        accepted, before = source, 0
+        if not folders_accepted(ctx, folders, jobs, source, texts)[0]:
+            accepted, before = moved_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads, batch,
+                                                moves)
+        if accepted:
             lines = folder_change_lines(ctx, repo, source, head, folders, ctx.cfg.roadmap.active_dir)
-            return (source, lines) if lines is not None and lines <= p.small_change_lines else ("", 0)
+            if lines is None or lines + before > p.small_change_lines:
+                return "", 0
+            return accepted, lines + before
         at = source
+
+
+def moved_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: list[Job], texts, p,
+                     threads: dict, batch: int, moves: int) -> tuple[str, int]:
+    """(the accepted head `head` only moved from, the lines of carried repairs that head rests on), or
+    ('', 0): the roadmap folders at `head` are those of an earlier head whose acceptance stands
+    (`unchanged_acceptance`). The earlier head may itself rest on carried records; their lines are
+    returned, so that a chain is held to `[prreview] small_change_lines` in all."""
+    if not p.carry_unchanged or moves >= CARRIED_MOVES:
+        return "", 0
+    earlier, _known = unchanged_acceptance(ctx, repo, number, head, folders, jobs, texts, p, threads, batch, True,
+                                           moves + 1)
+    if not earlier:
+        return "", 0
+    if folders_accepted(ctx, folders, jobs, earlier, texts)[0]:
+        return earlier, 0
+    source, lines = carried_acceptance(ctx, repo, number, earlier, folders, jobs, texts, p, threads, batch, moves + 1)
+    return (source, lines) if source else (earlier, 0)
 
 
 def chore_accepted(ctx, repo: str, number: int, head: str, why: str, p, threads: dict,
@@ -2177,7 +2209,7 @@ def unchanged_folders(ctx, repo: str, head: str, folders, jobs: list[Job], small
 
 
 def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: list[Job], texts, p,
-                         threads: dict, batch: int, labelled: bool) -> tuple[str, bool]:
+                         threads: dict, batch: int, labelled: bool, moves: int = 0) -> tuple[str, bool]:
     """With `[prreview] carry_unchanged`: (the earlier head whose acceptance stands at `head`, whether
     the comparison could be made). The acceptance of an earlier head stands at `head` when the git tree
     of every roadmap folder of the pull request is the same at both (the head only moved: a rebase, a
@@ -2189,7 +2221,7 @@ def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: 
     nothing is carried. So does the latest finished review of a folder, when it read the files `head`
     holds and did not accept them: an acceptance is not carried past a later review of the same files.
     ('', False) when GitHub did not give the trees: nothing is known, and the caller leaves the pull
-    request as it is."""
+    request as it is. `moves`: see `carried_acceptance`, which asks this of the head a record carries from."""
     for folder in folders:
         here = [j for j in finished_reviews(jobs, head) if board.prreview_folder(j) == folder]
         if here:
@@ -2245,7 +2277,8 @@ def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: 
             continue
         if folders_accepted(ctx, folders, jobs, source, texts)[0]:
             return source, True
-        if marked and carried_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads, batch)[0]:
+        if marked and carried_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads, batch,
+                                         moves)[0]:
             return source, True
         if p.carry_minor and set(folders) <= settled_folders(ctx, folders, jobs, source, p.small_change_lines, texts):
             return source, True

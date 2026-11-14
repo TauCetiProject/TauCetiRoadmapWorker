@@ -899,6 +899,54 @@ def test_a_moved_head_keeps_what_small_repairs_carried_to_the_head_it_came_from(
     assert created(fake) == [] and "the head only moved" in out[0]
 
 
+def test_small_repairs_made_after_the_head_moved_keep_the_label():
+    """A carried record may start at a head that only moved: the base branch merged into an accepted
+    head, then a small repair. The lines counted are the repair's; what earlier records carried into
+    the head it moved from counts too, and the whole chain is held to small_change_lines."""
+    H4 = "4" * 40
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar", folder="Bar")
+    accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
+    small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 5, "deletions": 2}]
+    # H1 is accepted, H2 is H1 with the base branch merged, H3 repairs H2 and says so.
+    after = {1164: [{"id": 1, "body": replies.carried_marker(H2, H3, "maintainer"), "user": {"login": "carol"}}]}
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=after, compares={(H2, H3): small},
+                   trees=same_trees(H1, H2))
+    out, fake = sync(gh, [foo, bar], carry_accept=True)
+    assert gh.writes == [] and created(fake) == []
+    assert out == [f"#1164: ai-approved kept (the acceptance of {H1[:7]} carries to {H3[:7]}: 7 lines of repairs "
+                   "inside the roadmap folders, no review filed)"]
+    # H2 changed a folder (it did not only move), or moved heads carry nothing: the record holds nothing.
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=after, compares={(H2, H3): small})
+    out, fake = sync(gh, [foo, bar], carry_accept=True)
+    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=after, compares={(H2, H3): small},
+                   trees=same_trees(H1, H2))
+    out, fake = sync(gh, [foo, bar], carry_accept=True, carry_unchanged=False)
+    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    # A repair (H1 -> H2), a merge of the base branch (H3), a second repair (H3 -> H4): both repairs count.
+    chain = {1164: [{"id": 1, "body": replies.carried_marker(H1, H2, "maintainer"), "user": {"login": "carol"}},
+                    {"id": 2, "body": replies.carried_marker(H3, H4, "maintainer"), "user": {"login": "carol"}}]}
+    second = [{"filename": "TauCetiRoadmap/Bar/README.md", "additions": 60, "deletions": 40}]
+    gh = ContentGH([two_folder_pr(H4, ["ai-approved"])], files=accepted, comments=chain,
+                   compares={(H1, H2): small, (H3, H4): second}, trees=same_trees(H2, H3))
+    out, fake = sync(gh, [foo, bar], carry_accept=True)
+    assert gh.writes == [] and created(fake) == []
+    assert out == [f"#1164: ai-approved kept (the acceptance of {H1[:7]} carries to {H4[:7]}: 107 lines of repairs "
+                   "inside the roadmap folders, no review filed)"]
+    large = [{"filename": "TauCetiRoadmap/Bar/README.md", "additions": 100, "deletions": 45}]
+    gh = ContentGH([two_folder_pr(H4, ["ai-approved"])], files=accepted, comments=chain,
+                   compares={(H1, H2): small, (H3, H4): large}, trees=same_trees(H2, H3))
+    out, fake = sync(gh, [foo, bar], carry_accept=True)
+    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    # Records that lead round in a ring of heads holding the same files settle nothing, and end.
+    ring = {1164: [{"id": 1, "body": replies.carried_marker(H2, H3, "maintainer"), "user": {"login": "carol"}},
+                   {"id": 2, "body": replies.carried_marker(H3, H2, "maintainer"), "user": {"login": "carol"}}]}
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=ring, compares={(H2, H3): [], (H3, H2): []},
+                   trees=same_trees(H2, H3))
+    out, fake = sync(gh, [foo, bar], carry_accept=True)
+    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+
+
 def test_a_chore_loses_a_label_put_on_by_hand():
     chore = node(1187, H1, labels=["ai-approved"], title="chore: bump TauCeti", paths=("TauCetiRoadmap/Foo/Suggested.lean",))
     gh = ContentGH([chore], tree=TREE)
