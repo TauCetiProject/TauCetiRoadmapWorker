@@ -18,13 +18,14 @@ place of any block already there. Everything in the files is data for the agent,
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import agents
+from . import agents, prompts
 from .gh import GHError
 
 MARK_OPEN, MARK_CLOSE = "<!-- roadmap-summary -->", "<!-- /roadmap-summary -->"
@@ -184,12 +185,44 @@ def apply(body: str, text: str) -> str | None:
     return f"{MARK_OPEN}\n{text.strip()}\n{MARK_CLOSE}\n\n{rest}\n"
 
 
-def prose(body: str) -> str:
-    """What the author wrote in a description: without generated blocks, markers and the attribution line."""
-    lines = [x.rstrip() for x in COMMENT.sub("", GENERATED.sub("", body or "")).splitlines()]
+def prose(body: str, cut: int | None = None) -> str:
+    """What the author wrote in a description: without generated blocks, markers and the attribution line.
+    With `cut`, only what lies before that character: the blocks and markers are found in the whole
+    description first, so one that crosses the cut is left out whole, not read as prose."""
+    body = body or ""
+    if cut is not None:
+        spans = sorted((m.start(), m.end()) for pattern in (GENERATED, COMMENT) for m in pattern.finditer(body))
+        kept, at = [], 0
+        for start, end in spans:
+            if start > at:
+                kept.append(body[at:min(start, cut)])
+            at = max(at, end)
+            if at >= cut:
+                break
+        if at < cut:
+            kept.append(body[at:cut])
+        body = "".join(kept)
+    lines = [x.rstrip() for x in COMMENT.sub("", GENERATED.sub("", body)).splitlines()]
     while lines and (not lines[-1].strip() or lines[-1].lstrip().startswith("\U0001f916")):
         lines.pop()
     return "\n".join(lines).strip()
+
+
+def text_digest(title: str, body: str) -> str:
+    """A digest of what a pull-request review reads as the pull request's text (step 8 of its brief):
+    the title, the summary block and the description's prose, each with its whitespace folded. The
+    other generated blocks (the dependency task list, the merge order), the markers and the attribution
+    line are left out, so a tool that rewrites them, or a rewrap, changes nothing here. A verdict
+    records the digest of the text its review read (`text`), and the intake files a check round when an
+    accepted head's text is not the text its review read. Only what a review is shown counts: the title
+    and the description as `prompts.quote_untrusted` quotes them in the review's `pull-request.md`, the
+    first `prompts.QUOTE_LIMIT` characters, so a digest never stands for text past that limit, which no
+    review reads."""
+    cut, body = prompts.QUOTE_LIMIT, body or ""
+    block = BLOCK.search(body)
+    shown = block.group(0)[:max(0, cut - block.start())] if block else ""
+    parts = [(title or "")[:cut], shown, prose(body, cut)]
+    return hashlib.sha256("\n".join(" ".join(p.split()) for p in parts).encode("utf-8")).hexdigest()[:16]
 
 
 def validate(text: str, kind: str) -> list[str]:

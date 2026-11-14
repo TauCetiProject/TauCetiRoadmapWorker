@@ -278,3 +278,39 @@ def test_a_pass_over_the_open_pull_requests_reads_each_once_and_reports_as_it_go
     lines = summary.refresh(ctx, list(known), agent="claude", model="m", listing=True, known=known, report=seen.append)
     assert seen == lines == ["#7 Alpha: would write a revision summary in place of its new block"]
     assert hub.reads == ["repos/org/content/pulls/7/files?per_page=100"]       # the listing's record is not read again
+
+
+def test_the_text_digest_follows_the_title_the_summary_and_the_prose_only():
+    body = ("<!-- roadmap-summary -->\n**What this roadmap builds.** Foo.\n<!-- /roadmap-summary -->\n\n"
+            "It builds Foo over\nany field.\n\n<!-- depends-on -->\n- [ ] #3 Bar\n<!-- /depends-on -->\n"
+            "<!-- merge-order -->\n**Merge order.** #3 → this pull request.\n<!-- /merge-order -->\n"
+            "<!-- tauceti-roadmap-pr {\"roadmap\": \"Foo\"} -->\n\n🤖 Generated with a tool")
+    digest = summary.text_digest("Roadmap: Foo", body)
+    assert len(digest) == 16
+    # The other generated blocks, the markers, the attribution and a rewrap change nothing.
+    same = (body.replace("- [ ] #3 Bar", "- [x] #3 Bar").replace("#3 → this", "#4 → #3 → this")
+            .replace("Foo over\nany field", "Foo over any\nfield").replace("\n\n🤖 Generated with a tool", ""))
+    assert summary.text_digest("Roadmap: Foo", same) == digest
+    # The title, the prose and the summary block do.
+    assert summary.text_digest("Roadmap: Foo, part II", body) != digest
+    assert summary.text_digest("Roadmap: Foo", body.replace("any field", "a field")) != digest
+    assert summary.text_digest("Roadmap: Foo", body.replace("**What this roadmap builds.** Foo.",
+                                                            "**What this roadmap builds.** Foo and Bar.")) != digest
+
+
+def test_the_text_digest_stops_where_the_reviews_quote_of_the_description_stops():
+    from tauceti_roadmap_worker import prompts
+    long = "x" * prompts.QUOTE_LIMIT
+    assert summary.text_digest("T", long + " a later sentence.") == summary.text_digest("T", long + " another one.")
+    assert summary.text_digest("T", "y" + long[1:]) != summary.text_digest("T", long)
+
+
+def test_a_generated_block_that_crosses_the_cut_is_still_left_out():
+    from tauceti_roadmap_worker import prompts
+    prose = "It builds Foo.\n\n"
+    block = ("<!-- depends-on -->\n- [ ] #3 Bar\n" + "- [ ] #4 Baz\n" * (prompts.QUOTE_LIMIT // 10)
+             + "<!-- /depends-on -->\n")
+    assert len(prose) < prompts.QUOTE_LIMIT < len(prose + block)
+    ticked = block.replace("- [ ] #3 Bar", "- [x] #3 Bar")
+    assert summary.text_digest("T", prose + block) == summary.text_digest("T", prose + ticked)
+    assert summary.text_digest("T", "It builds Bar.\n\n" + block) != summary.text_digest("T", prose + block)

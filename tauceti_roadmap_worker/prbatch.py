@@ -179,6 +179,35 @@ class PullReader:
                 f"quer{'y' if self.queries == 1 else 'ies'}, {self.rest_reads} by REST")
 
 
+def pull_texts(gh, repo: str, numbers, batch: int) -> dict[int, dict | None]:
+    """{title, body} of each pull request `numbers` of `repo`: `batch` at a time by GraphQL (aliased
+    `pullRequest(number:)` fields asking for those two only), a number a query leaves out or fails for
+    by one REST read (`pulls/N`), and None for one REST cannot read either."""
+    wanted, out = sorted({int(n) for n in numbers}), {}
+    if batch > 0 and wanted and hasattr(gh, "graphql"):
+        owner, name = repo.split("/", 1)
+        for chunk in chunks(wanted, batch):
+            fields = " ".join(f"p{n}: pullRequest(number: {n}) {{ title body }}" for n in chunk)
+            try:
+                data = gh.graphql("query($owner: String!, $name: String!) { repository(owner: $owner, "
+                                  f"name: $name) {{ {fields} }} }}", owner=owner, name=name)
+            except GHError:
+                continue
+            nodes = (data or {}).get("repository") or {}
+            for n in chunk:
+                node = nodes.get(f"p{n}")
+                if isinstance(node, dict) and "body" in node:
+                    out[n] = {"title": node.get("title") or "", "body": node.get("body") or ""}
+    for n in wanted:
+        if n not in out:
+            try:
+                data = gh.api(f"repos/{repo}/pulls/{n}") or {}
+                out[n] = {"title": data.get("title") or "", "body": data.get("body") or ""}
+            except GHError:
+                out[n] = None
+    return out
+
+
 def verdict_texts(gh, repo: str, paths: list[str], batch: int, ref: str = "main") -> dict[str, str | None]:
     """The texts of files on `ref` of `repo`, `batch` paths per GraphQL query (blobs named by
     `object(expression:)`): path -> its text, or None for a file that is not there. A path of a batch
