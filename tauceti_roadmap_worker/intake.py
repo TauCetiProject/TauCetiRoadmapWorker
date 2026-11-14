@@ -2353,13 +2353,14 @@ def acceptance_sources(ctx, repo: str, number: int, source: str, folders, jobs: 
     return {f: last_reviewed_head(jobs, f, source) for f in folders}
 
 
-def answer_worker(comments: list[dict], head: str, job_id: str) -> str:
-    """The worker whose latest reply records `head` as the head it answered at and answers the review
-    `job_id` (its answered record), '' when none does: the one that repaired that folder's text, which
-    may not take the round that reads its repair."""
+def answer_worker(comments: list[dict], job_id: str) -> str:
+    """The worker whose latest reply answers the review `job_id` (its answered record), '' when none
+    does: the one that repaired that folder, its text included, which may not take the round that reads
+    its repair. Whatever head the reply names: a repair carried to a head that only moved since (a
+    rebase, a merge of the base branch) is still that worker's."""
     for c in reversed(comments):
         record = replies.answered_record(c.get("body") or "")
-        if record and record.get("head") == head and record.get("worker") and record.get("job") == job_id:
+        if record and record.get("worker") and record.get("job") == job_id:
             return str(record["worker"])
     return ""
 
@@ -2667,7 +2668,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                                f"{str(exc).splitlines()[0][:160]})")
             if threads[number] is None:
                 return False
-            worker = answered and answer_worker(threads[number], head, answered)
+            worker = answered and answer_worker(threads[number], answered)
             if worker := worker or head_worker(threads[number], head):
                 inputs["not_worker"] = worker
         job = board.new_job(board.make_id("prreview", leaf, next_review_round(reviews, leaf)), inputs=inputs)
@@ -2802,16 +2803,18 @@ def text_read(ctx, ours: list[Job], at: str, head: str, digest: str, texts: dict
     """(whether a review of one roadmap folder read the pull request's text whose digest is `digest`, the
     digest the latest review read). `ours` are the folder's PRREVIEW jobs, `head` the pull request's
     current head and `at` the head reviewed for the folder (`head`, or the earlier head an acceptance
-    comes from). The latest review of `head`, else of `at`, decides: its verdict's `text` (the digest
-    the worker records from the text it fetched when the round started), whatever the round was filed
-    for. When that verdict records none and the review is a check of the text filed for `digest`, it
-    finished on a worker of an older build, which records none: it counts as having read that text, so
-    that it is not filed again on every run. An older check never overrides a newer verdict's digest."""
-    job, verdict = None, None
-    for h in dict.fromkeys((head, at)):
-        job, verdict = latest_reviewed(ctx, [j for j in ours if j.inputs.get("head") == h], h, texts)
-        if verdict is not None:
-            break
+    comes from). The later of the latest review of `head` and the latest review of `at` decides (a
+    check of the text filed at `head` after the acceptance is later; an older review of `head`, such as
+    one a reset of the branch brings back, is not, and never stands in for the review the acceptance
+    comes from): its verdict's `text` (the digest the worker records from the text it fetched when the
+    round started), whatever the round was filed for. When that verdict records none and the review
+    is a check of the text filed for `digest`, it finished on a worker of an older build, which records
+    none: it counts as having read that text, so that it is not filed again on every run. An older
+    check never overrides a newer verdict's digest."""
+    found = [latest_reviewed(ctx, [j for j in ours if j.inputs.get("head") == h], h, texts)
+             for h in dict.fromkeys((head, at))]
+    found = [(j, v) for j, v in found if v is not None]
+    job, verdict = max(found, key=lambda x: round_key(x[0]), default=(None, None))
     reviewed = str((verdict or {}).get("text") or "")
     if reviewed:
         return reviewed == digest, reviewed

@@ -790,7 +790,9 @@ acceptance (`intake.acceptance_sources` for a head that only moved: the accepted
 the head a carried chain leads back to, or the folder's latest review for a P3-only settlement, never a
 later review of other files; a carried chain that ends at a head P3-only repairs settled resolves, folder
 by folder, to the review that settled it, `intake.reviewed_heads_at`). A folder
-whose latest verdict, of the current head or else of that head, records a digest other than the
+whose latest verdict (the later of the current head's latest review and that head's: an older review of
+the current head, such as one a reset of the branch brings back, never stands in for the review the
+acceptance comes from) records a digest other than the
 current text's, or none (the review predates the record), gets one check round at the current head (`text_check`, with the digest
 as `text_digest`, `rereview` and `previous_head` the head its latest review read): an incremental
 re-review whose brief says the files are unchanged and asks for step 8, the text against the change.
@@ -802,9 +804,10 @@ run; an older check never overrides a newer verdict's digest. A check that asks 
 answered without a push gets the second case's check round of the rewrite, as a second review would;
 the rounds of the head before the latest check do not count against it, and each folder's answer is
 matched to that folder's review, whose answering worker is the one that may not take the round
-(`intake.answer_worker`); a check of the text likewise excludes the worker that answered the folder's
-latest review at that head (a P3-only repair of its text, under `carry_minor`), whoever answered the
-other folders. A check that does not accept ends an acceptance carried to the head
+(`intake.answer_worker`, by the review answered, whatever head the reply names); a check of the text
+likewise excludes the worker that answered the folder's latest review (a P3-only repair of its text,
+under `carry_minor`), whoever answered the other folders and whether or not the head has only moved
+since. A check that does not accept ends an acceptance carried to the head
 (`carry_accept`, like `carry_unchanged`): the label comes off at the next sync even when the
 reviewing worker could not take it off. A check waiting at a head whose folders an
 earlier head settles is not superseded: what it checks is the text. These rounds come after the others of a run, at most `text_per_run` of `per_run`,

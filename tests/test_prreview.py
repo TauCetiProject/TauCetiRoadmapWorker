@@ -775,6 +775,39 @@ def test_the_worker_that_repaired_a_folders_text_does_not_take_its_check_round(t
     assert made["Foo"].inputs["text_check"] and made["Bar"].inputs["text_check"]
     assert made["Foo"].inputs["not_worker"] == "alice-1" and made["Bar"].inputs["not_worker"] == "bob-1"
     assert lane.eligible(made["Foo"], lane_ctx(tmp_path)) == "the worker that repaired this head does not review it"
+    # The branch was then rebased to H2, with the same folder files and the repaired text; the replies name H1.
+    # The settlements carry to H2 (`carry_unchanged_folders`), and each check there still excludes its repairer.
+    gh = ContentGH([two_folder_pr(H2)], pulls=text_pr(1164), files=files, trees=same_trees(H1, H2),
+                   comments={1164: [answer(8, "PRREVIEW-Foo~3", "alice-1"), answer(9, "PRREVIEW-Bar~3", "bob-1")]})
+    _out, fake = sync(gh, [foo_review, bar_review], carry_minor=True, text_per_run=10)
+    made = {j.inputs["folder"]: j for j, _s, _p in fake.created}
+    assert made["Foo"].inputs["head"] == H2 and made["Foo"].inputs["text_check"] and made["Bar"].inputs["text_check"]
+    assert made["Foo"].inputs["not_worker"] == "alice-1" and made["Bar"].inputs["not_worker"] == "bob-1"
+    assert lane.eligible(made["Foo"], lane_ctx(tmp_path)) == "the worker that repaired this head does not review it"
+
+
+def test_an_old_rejection_brought_back_by_a_reset_does_not_cover_its_text():
+    # Foo's review of H1 read text A and asked for changes; its review of H2 (the same folder files) read B and
+    # accepted. The branch was reset to H1 and A restored: H2's acceptance carries to the files, and A, which
+    # the accepting review did not read, is checked.
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar",
+                                                                               folder="Bar")
+    again = review_job(43, 2, 1164, H2, "done", folder="Foo")
+    text_a, text_b = "Both; Foo proves it all.\n", "Both.\n"
+    digest_a, digest_b = summary.text_digest("Two roadmaps", text_a), summary.text_digest("Two roadmaps", text_b)
+    files = {**verdict_read(foo, "needs_changes", H1, digest_a), **verdict_read(bar, "accepted", H1, digest_a),
+             **verdict_read(again, "accepted", H2, digest_b)}
+    gh = ContentGH([two_folder_pr(H1, ["ai-approved"])], pulls=text_pr(1164, title="Two roadmaps", body=text_a),
+                   files=files, trees=same_trees(H1, H2))
+    out, fake = sync(gh, [foo, bar, again], text_per_run=10)
+    assert out[0].startswith("#1164: ai-approved kept")
+    assert [(j.inputs["folder"], j.inputs["text_digest"]) for j, _s, _p in fake.created] == [("Foo", digest_a)]
+    # A check of A at H1 that accepted after H2's review is the later review, and covers A.
+    check = review_job(44, 3, 1164, H1, "done", folder="Foo")
+    check.inputs.update(text_check=True, text_digest=digest_a)
+    gh = ContentGH([two_folder_pr(H1, ["ai-approved"])], pulls=text_pr(1164, title="Two roadmaps", body=text_a),
+                   files={**files, **verdict_read(check, "accepted", H1, digest_a)}, trees=same_trees(H1, H2))
+    assert sync(gh, [foo, bar, again, check], text_per_run=10)[1].created == []
 
 
 def test_the_dependency_depth_cuts_a_cycle_and_ignores_closed_pull_requests():
