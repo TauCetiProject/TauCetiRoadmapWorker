@@ -1974,6 +1974,8 @@ def carried_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: li
     """(the accepted head whose acceptance carries to `head`, the lines of repairs between them), or
     ('', 0): a chain of carried records leads from `head` back to a head an AI review of every folder
     accepted, and the folders changed by at most `[prreview] small_change_lines` lines in all.
+    A head that P3-only repairs settled (`[prreview] carry_minor`) is an accepted head here as it is for
+    a head that only moved, and the lines of those repairs count (`settled_lines`).
     The chain may pass through a head that only moved (`[prreview] carry_unchanged`): a record whose
     `from` is a merge of the base branch into an accepted head, or a rebase of it, holds as one from
     the accepted head would, and its lines are those from the moved head on (the base branch's files
@@ -1992,8 +1994,12 @@ def carried_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: li
         seen.add(source)
         accepted, before = source, 0
         if not folders_accepted(ctx, folders, jobs, source, texts)[0]:
-            accepted, before = moved_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads, batch,
-                                                moves)
+            settled = settled_lines(ctx, folders, jobs, source, p, texts)
+            if settled is not None:
+                before = settled
+            else:
+                accepted, before = moved_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads,
+                                                    batch, moves)
         if accepted:
             lines = folder_change_lines(ctx, repo, source, head, folders, ctx.cfg.roadmap.active_dir)
             if lines is None or lines + before > p.small_change_lines:
@@ -2017,7 +2023,28 @@ def moved_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: list
     if folders_accepted(ctx, folders, jobs, earlier, texts)[0]:
         return earlier, 0
     source, lines = carried_acceptance(ctx, repo, number, earlier, folders, jobs, texts, p, threads, batch, moves + 1)
-    return (source, lines) if source else (earlier, 0)
+    return (source, lines) if source else (earlier, settled_lines(ctx, folders, jobs, earlier, p, texts) or 0)
+
+
+def settled_lines(ctx, folders, jobs: list[Job], head: str, p, texts) -> int | None:
+    """With `[prreview] carry_minor`: the lines of the P3-only repairs that the folders' latest reviews
+    ended with, when those reviews settle every roadmap folder at `head` (`settled_folders`); None when
+    they do not, or without the setting. A review that accepted its folder at `head` adds none."""
+    if not p.carry_minor or not folders:
+        return None
+    if not set(folders) <= settled_folders(ctx, folders, jobs, head, p.small_change_lines, texts):
+        return None
+    total = 0
+    for folder in folders:
+        done = [j for j in jobs if board.prreview_folder(j) == folder and j.state == "done"
+                and board.SUPERSEDED_LABEL not in j.labels and j.inputs.get("head")]
+        if not done:
+            return None
+        job = max(done, key=round_key)
+        record = carried_record(prreview_verdicts(ctx, job.name, [job], "", texts).get(job.id), p.small_change_lines)
+        if record:
+            total += int(record["lines"])
+    return total
 
 
 def chore_accepted(ctx, repo: str, number: int, head: str, why: str, p, threads: dict,

@@ -947,6 +947,30 @@ def test_small_repairs_made_after_the_head_moved_keep_the_label():
     assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
 
 
+def test_small_repairs_made_after_a_p3_only_repair_keep_the_label():
+    """A carried record may start at the head a P3-only repair left (`carry_minor`): that head is settled
+    without a further review, and the lines of the review's own repair count towards the limit."""
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar", folder="Bar")
+    minor = json.loads(verdict_file(bar, "needs_changes", H1)[board.prreview_verdict_path("packages", bar)])
+    minor["review"]["carried"] = {"from": H1, "head": H2, "lines": 4, "folders": ["Bar"], "findings": ["D01"]}
+    files = {**verdict_file(foo, "accepted", H1), board.prreview_verdict_path("packages", bar): json.dumps(minor)}
+    record = {1164: [{"id": 1, "body": replies.carried_marker(H2, H3, "maintainer"), "user": {"login": "carol"}}]}
+    small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 5, "deletions": 2}]
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=files, comments=record, compares={(H2, H3): small})
+    out, fake = sync(gh, [foo, bar], carry_accept=True, carry_minor=True)
+    assert gh.writes == [] and created(fake) == []
+    assert out == [f"#1164: ai-approved kept (the acceptance of {H2[:7]} carries to {H3[:7]}: 11 lines of repairs "
+                   "inside the roadmap folders, no review filed)"]
+    # Without carry_minor the head the repair left was never settled; too many lines in all carry nothing.
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=files, comments=record, compares={(H2, H3): small})
+    out, fake = sync(gh, [foo, bar], carry_accept=True)
+    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    large = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 100, "deletions": 47}]
+    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=files, comments=record, compares={(H2, H3): large})
+    out, fake = sync(gh, [foo, bar], carry_accept=True, carry_minor=True)
+    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+
+
 def test_a_chore_loses_a_label_put_on_by_hand():
     chore = node(1187, H1, labels=["ai-approved"], title="chore: bump TauCeti", paths=("TauCetiRoadmap/Foo/Suggested.lean",))
     gh = ContentGH([chore], tree=TREE)
