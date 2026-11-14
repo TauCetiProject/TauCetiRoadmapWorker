@@ -234,6 +234,28 @@ def test_an_earlier_ai_review_is_superseded_by_the_latest_one():
     assert pending(events(comments=[first, second, reply_b, accept, third])) == ["comment-15"]
 
 
+def test_a_package_review_carried_to_the_pull_request_is_not_settled_by_a_review_of_the_head():
+    """2026-11-13: findings of the last package review round, carried to the pull request after the
+    port, were dropped when a review of the head followed: the reply answered that review only, and
+    the carried one counted as superseded. A carried review waits until a reply names it, or a later
+    carried review replaces it."""
+    carried = comment(10, "2026-11-13T17:19:00Z", "🤖 AI review (claude; the last package review round on the job board, "
+                      "carried to the pull request) of `227dc5d`\n\nVerdict: needs_changes\n\n1. **F01** (P1) x")
+    of_head = comment(11, "2026-11-13T17:40:00Z", "🤖 AI review (codex, gpt-6-astra) of " + "f" * 40 + "\n\nVerdict: CHANGES NEEDED\n\n1. **F01** (P2) y")
+    reply = comment(12, "2026-11-13T17:48:00Z", "Fixed in `aaaaaaa` (reply to the review):\n\n- **F01** (applied) — y\n\n"
+                    + replies.answered_marker("GATE-Foo~1", {"comment-11": replies.text_version(of_head["body"])}, head="a" * 40), user=OWNER)
+    accept = comment(13, "2026-11-13T18:23:00Z", "🤖 AI review (codex, gpt-6-astra) of " + "a" * 40 + "\n\nVerdict: APPROVE\n")
+    assert pending(events(comments=[carried, of_head])) == ["comment-10", "comment-11"]
+    assert pending(events(comments=[carried, of_head, reply, accept])) == ["comment-10"]
+    # A reply that names it answers it; a later carried review replaces it.
+    both = comment(12, "2026-11-13T17:48:00Z", "Fixed in `aaaaaaa` (reply to the review):\n\n- **F01** (applied) — y\n\n"
+                   + replies.answered_marker("GATE-Foo~1", {"comment-10": replies.text_version(carried["body"]),
+                                                             "comment-11": replies.text_version(of_head["body"])}, head="a" * 40), user=OWNER)
+    assert pending(events(comments=[carried, of_head, both, accept])) == []
+    again = comment(14, "2026-11-14T09:00:00Z", carried["body"].replace("227dc5d", "aaaaaaa"))
+    assert pending(events(comments=[carried, of_head, reply, accept, again])) == ["comment-14"]
+
+
 def test_a_pool_members_carried_note_is_neither_a_review_nor_a_reply():
     """A note by an answerer that carries an acceptance (small repairs pushed onto an accepted head) is
     housekeeping: it does not put the pull request on awaiting-author (2026-11-04, kim-em's PRs after

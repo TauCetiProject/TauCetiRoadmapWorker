@@ -51,6 +51,9 @@ SETTLED = re.compile(
     r"comments addressed|are addressed|is addressed|fully addressed|— addressed|- addressed")
 APPROVE_VERDICT = re.compile(r"Verdict[^\n]{0,30}APPROVE")
 AI_REVIEW = re.compile(r"AI review \(")       # the board's pull-request review comments, after `undecorated`
+# A package review whose findings were carried to the pull request (the round finished after the port):
+# it read the package, not a head, so no review of a head settles it.
+CARRIED_REVIEW = re.compile(r"AI review \([^)\n]*carried to the pull request\)")
 # The forms a reply takes when it is written for the author by someone else (a pool member, the
 # worker, the operator's scripts): a comment by another answerer in any other words is their own
 # review of the pull request, not an answer on the author's behalf.
@@ -307,8 +310,13 @@ def unanswered(events: list[Event], ours: set[str], markers: list[str], housekee
     # still wait for an answer; an earlier one, of an older head or of a disputed head reviewed again,
     # is settled by the review that followed it (2026-11-04: five accepted pull requests sat
     # awaiting-author over a review of a head long gone).
+    # A package review carried to the pull request is another matter: a review of a head does not
+    # examine its findings, so only a later carried review supersedes it (2026-11-13: a P1 carried to
+    # an open pull request was dropped when a review of the head arrived twenty minutes later).
     ai = sorted((e for e in events if AI_REVIEW.match(undecorated(e.body or ""))), key=lambda e: e.t)
-    superseded = {e.ref for e in ai[:-1]}
+    carried = [e for e in ai if CARRIED_REVIEW.match(undecorated(e.body or ""))]
+    of_heads = [e for e in ai if not CARRIED_REVIEW.match(undecorated(e.body or ""))]
+    superseded = {e.ref for e in of_heads[:-1]} | {e.ref for e in carried[:-1]}
     return [e for e in sorted(events, key=lambda e: e.t)
             if (review(e) or (e.ref.startswith("inline-") and e.review_id in reviewing))
             and (e.ref, e.version) not in seen and e.t > before and e.ref not in superseded]
