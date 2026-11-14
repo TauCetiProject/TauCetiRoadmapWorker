@@ -120,6 +120,25 @@ def test_a_reopen_that_stops_part_way_is_done_again_by_the_next_scan():
     assert rt_a.state == "available" and board.find("FIX-RT-Foo~1") is None
 
 
+def test_a_listing_that_lags_does_not_hide_the_pass_this_scan_concluded():
+    """2026-11-14: one scan concluded both passes of a round seven seconds apart. The listing read
+    between the two still showed the first pass open (GitHub's listing lags its own writes), so the
+    second conclusion found the round incomplete and the round's fix was never created."""
+    from dataclasses import replace
+    ctx, board, gh, rt_a, rt_b = round_one()
+    pass_(gh, "a", "chatgpt", H1)
+    pass_(gh, "b", "claude", H1)
+    fresh = board.all_jobs
+
+    def lagging():
+        return [replace(j, state="available", inputs={k: v for k, v in j.inputs.items() if k != "reviewed_head"})
+                if j.id == "RT-Foo~1a" and j.state == "done" else j for j in fresh()]
+    board.all_jobs = lagging
+    out = boardpr.scan(ctx, yes=True)
+    assert rt_a.state == "done" and rt_b.state == "done"
+    assert board.find("FIX-RT-Foo~1") is not None, out
+
+
 def test_a_pass_concluded_before_heads_were_recorded_keeps_the_head_its_report_names():
     ctx, board, gh, rt_a, _rt_b = round_one()
     rt_a.state = "done"

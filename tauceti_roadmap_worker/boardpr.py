@@ -997,6 +997,14 @@ def scan(ctx, shared=None, yes: bool = False) -> list[str]:
     designs whose merge failed are merged when they can be; reviews of pull requests merged on
     GitHub are finished from their accepting review."""
     out, jobs = [], ctx.board.all_jobs()
+    concluded: dict[str, Job] = {}     # the jobs this scan finished, as it left them
+
+    def listing() -> list[Job]:
+        """The board's jobs read again, with this scan's own conclusions in place of what the listing
+        says of them: GitHub's listing lags its own writes, and a pass shown open again a few seconds
+        after it was concluded made the next pass find its round incomplete, so the round's fix was
+        never created (2026-11-14, one scan, both passes of a round seven seconds apart)."""
+        return [concluded.get(j.id, j) for j in ctx.board.all_jobs()]
     pulls = ctx.gh.api(f"repos/{repo(ctx)}/pulls?state=open&per_page=100", paginate=True) or []
     out += merged_by_hand(ctx, {int(p["number"]) for p in pulls}, jobs, shared, yes)
     out += unfinished_last_fixes(ctx, {int(p["number"]) for p in pulls}, jobs, yes)
@@ -1015,7 +1023,7 @@ def scan(ctx, shared=None, yes: bool = False) -> list[str]:
             comments = ctx.gh.api(f"repos/{repo(ctx)}/issues/{number}/comments?per_page=100", paginate=True) or []
             if retrying:
                 out += retry_merges(ctx, number, pr, jobs, comments, shared, yes)
-                jobs = ctx.board.all_jobs()
+                jobs = listing()
             if pushed:
                 out += [fix_pushed(ctx, f, number, pr, jobs, yes, comments) for f in pushed]
                 continue
@@ -1025,7 +1033,9 @@ def scan(ctx, shared=None, yes: bool = False) -> list[str]:
                     continue
                 conclude = conclude_review if job.kind == "review" else conclude_pass
                 out.append(conclude(ctx, job, found, number, pr, jobs, yes))
-                jobs = ctx.board.all_jobs()
+                if job.state == "done":
+                    concluded[job.id] = job
+                jobs = listing()
         except GHError as exc:     # one pull request's trouble never stops the scan of the others
             out.append(f"#{number}: skipped: GitHub did not answer ({str(exc).splitlines()[0][:200]}); the next run "
                        "tries again")
