@@ -385,6 +385,112 @@ def test_a_new_round_is_a_re_review_of_the_head_the_latest_done_review_read():
                                                                  "rereview": True}
 
 
+def pass_job(number, round_, pr, head, state="done"):
+    job = review_job(number, round_, pr, head, state)
+    job.inputs["pre"] = True
+    job.requires_agent, job.requires_model = "claude", "claude-opus-5-5"
+    return job
+
+
+PASSES = {"pre_passes": 2, "pre_model": "claude-opus-5-5", "pool": ["carol"]}
+
+
+def test_the_first_rounds_of_a_pool_pull_request_are_passes_before_the_final_review():
+    """`[prreview] pre_passes`: the first rounds of a folder of a pull request the pool repairs run on
+    the pass model and never label; when a pass leaves the head where it was, or after `pre_passes` of
+    them, the final review is filed, a full review on the review models, and it alone decides."""
+    labels, H4 = f"repos/{REPO}/issues/12/labels", "4" * 40
+    # A new head of a pool author's pull request: pass 1, pinned to the pass model.
+    out, fake = sync(ContentGH([node(12, H1)]), **PASSES)
+    [(job, _state, _p)] = fake.created
+    assert (job.inputs.get("pre"), job.requires_agent, job.requires_model) == (True, "claude", "claude-opus-5-5")
+    assert out == ["#12: PRREVIEW-Foo~1 created (pass 1 of at most 2 before the final review, on claude-opus-5-5)"]
+    # Another author's pull request gets no pass: nobody repairs it between the two reviewers.
+    _out, fake = sync(ContentGH([node(12, H1, author="outsider")]), **PASSES)
+    assert "pre" not in fake.created[0][0].inputs and fake.created[0][0].requires_model == ""
+    # Without the setting nothing changes.
+    _out, fake = sync(ContentGH([node(12, H1)]), pool=["carol"])
+    assert "pre" not in fake.created[0][0].inputs and fake.created[0][0].requires_agent == ""
+
+    # Pass 1 asked for changes and its repair moved the head: pass 2, a re-review of the repaired head.
+    one = pass_job(40, 1, 12, H1)
+    out, fake = sync(ContentGH([node(12, H2)], files=verdict_file(one, "needs_changes", H1)), [one], **PASSES)
+    [(job, _state, _p)] = fake.created
+    assert job.inputs.get("pre") is True and job.inputs["rereview"] is True and job.requires_model == "claude-opus-5-5"
+    assert out == ["#12: PRREVIEW-Foo~2 created (pass 2 of at most 2 before the final review, on claude-opus-5-5)"]
+    # Pass 2 asked for changes too: the passes are spent, the next round is the final review, in full.
+    two = pass_job(41, 2, 12, H2)
+    files = {**verdict_file(one, "needs_changes", H1), **verdict_file(two, "needs_changes", H2)}
+    out, fake = sync(ContentGH([node(12, H3)], files=files), [one, two], **PASSES)
+    [(job, _state, _p)] = fake.created
+    assert "pre" not in job.inputs and job.requires_model == "" and job.inputs["rereview"] is False
+    assert out == ["#12: PRREVIEW-Foo~3 created (the final review, after 2 passes)"]
+
+    # A pass that asks for nothing does not label: it brings the final review of that head.
+    gh = ContentGH([node(12, H1)], files=verdict_file(one, "accepted", H1))
+    out, fake = sync(gh, [one], **PASSES)
+    assert gh.writes == [] and [j.id for j, _s, _p in fake.created] == ["PRREVIEW-Foo~2"]
+    assert "pre" not in fake.created[0][0].inputs and fake.created[0][0].inputs["head"] == H1
+    assert out == ["#12: PRREVIEW-Foo~2 created (the final review, after 1 pass)"]
+    # A label left on the pull request does not survive a pass either.
+    gh = ContentGH([node(12, H1, labels=["ai-approved"])], files=verdict_file(one, "accepted", H1))
+    out, _fake = sync(gh, [one], **PASSES)
+    assert ("DELETE", f"{labels}/ai-approved", {}) in gh.writes
+    # A pass whose points were all P3 and whose repair is in settles nothing: the next round is filed.
+    minor = {board.prreview_verdict_path("packages", one): json.dumps({"review": {
+        "status": "needs_changes", "head": H1, "pr": 12, "folder": "Foo",
+        "carried": {"from": H1, "head": H2, "lines": 3, "folders": ["Foo"], "outside": False}}})}
+    gh = ContentGH([node(12, H2)], files=minor)
+    out, fake = sync(gh, [one], carry_minor=True, **PASSES)
+    assert gh.writes == [] and [j.id for j, _s, _p in fake.created] == ["PRREVIEW-Foo~2"]
+    assert fake.created[0][0].inputs.get("pre") is True
+
+    # The final review decides, and the rounds after it are final too.
+    final = review_job(42, 3, 12, H3, "done")
+    gh = ContentGH([node(12, H3)], files={**files, **verdict_file(final, "accepted", H3)})
+    out, fake = sync(gh, [one, two, final], **PASSES)
+    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and fake.created == []
+    gh = ContentGH([node(12, H4)], files={**files, **verdict_file(final, "needs_changes", H3)})
+    _out, fake = sync(gh, [one, two, final], **PASSES)
+    [(job, _state, _p)] = fake.created
+    assert "pre" not in job.inputs and job.requires_model == "" and job.inputs["rereview"] is True
+    assert job.inputs["previous_job"] == "PRREVIEW-Foo~3"
+
+
+def test_a_pass_verdict_never_accepts_or_settles():
+    review = {"status": "accepted", "head": H1, "carried": {"head": H2}, "findings": 0}
+    assert intake.pass_verdict(review) == {"status": "passed", "head": H1, "findings": 0, "pre": True}
+    assert review["status"] == "accepted" and "carried" in review          # the record read is left as it is
+    assert intake.pass_verdict({"status": "needs_changes"})["status"] == "needs_changes"
+    p = example_config().prreview
+    assert intake.review_stage(p, [], True) == "final"                       # off by default
+    p.pre_passes, p.pre_model = 3, "claude-opus-5-5"
+    one, two = pass_job(40, 1, 12, H1), pass_job(41, 2, 12, H2)
+    skipped = pass_job(42, 3, 12, H2)
+    skipped.labels.append(board.SUPERSEDED_LABEL)                            # a superseded pass read nothing
+    assert intake.review_stage(p, [one, two, skipped], True) == "pre"
+    assert intake.review_stage(p, [one, two, pass_job(43, 4, 12, H3)], True) == "final"
+    assert intake.review_stage(p, [one, review_job(44, 2, 12, H2, "done")], True) == "final"
+    assert intake.review_stage(p, [], False) == "final"
+    for bad, why in (("pre_passes = -1", "prreview.pre_passes"), ("pre_passes = 2", "prreview.pre_model"),
+                     ('pre_passes = 1\npre_model = "m"\npre_agent = "nobody"', "prreview.pre_agent")):
+        with pytest.raises(config.ConfigError, match=re.escape(why)):
+            config.parse(f'[project]\nname = "P"\n[prreview]\n{bad}\n', "x.toml")
+
+
+def test_a_review_an_operator_filed_at_an_accepted_head_is_not_superseded():
+    # As for a check of the text: the files are settled by an earlier head, and an ordinary untaken review
+    # there is closed, but a review an operator asked for (a second model's reading) stays on the board.
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar",
+                                                                               folder="Bar")
+    accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
+    asked = review_job(44, 2, 1164, H2, "available", folder="Foo")
+    asked.inputs["operator_check"] = True
+    out, fake = sync(ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2)),
+                     [foo, bar, asked])
+    assert fake.states == [] and not any("superseded" in line for line in out)
+
+
 def test_a_head_reviewed_twice_gets_a_check_round_only_for_a_rewritten_description():
     # 2026-11-10: the second review of an unmoved head asked for a corrected description; the answer corrected
     # it without a push, and the revision stayed unapproved because a head reviewed twice got no further round.
@@ -1866,6 +1972,28 @@ def test_an_acceptance_labels_the_pull_request_only_once_its_other_folders_accep
     assert lane.update_label(job, ctx, 905, H1, "accepted") == "labelled ai-approved" and gh.labels == ["ai-approved"]
     # One folder asking for changes takes the label off, whatever the others say.
     assert lane.update_label(job, ctx, 905, H1, "needs_changes") == "ai-approved removed" and gh.labels == []
+
+
+def test_a_pass_before_the_final_review_says_so_and_leaves_the_label_alone(review_env, monkeypatch):
+    monkeypatch.setattr(lane_prreview.gitops, "git", lambda cwd, *args, **kw: H1 + "\n" if args[0] == "rev-parse" else "")
+    gh = LabelGH()
+    ctx = lane_ctx(review_env, gh=gh)
+    job = new_job("PRREVIEW-CompactGroups~1", inputs={**NESTED, "pre": True})
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    body = lane.comment_body(job, ctx, ws)
+    assert (f"Reviewed head: {H1}\n\nThis is a pass before the final review. It does not decide `ai-approved`: "
+            "the final review, on another model, follows it.") in body
+    assert lane.update_label(job, ctx, 905, H1, "accepted") == (
+        "a pass before the final review: ai-approved is decided by that review") and gh.labels == []
+    # A pass that asks for changes takes a label off like any review, and its P3-only repair settles nothing.
+    gh.labels.append("ai-approved")
+    assert lane.update_label(job, ctx, 905, H1, "needs_changes") == "ai-approved removed"
+    ctx.cfg.prreview.carry_minor = True
+    assert lane.carry_record(job, ctx, ws) is None
+    # The same review as a final one carries no such note.
+    final = new_job("PRREVIEW-CompactGroups~1", inputs=NESTED)
+    lane, ws = finished_ws(review_env, ctx, final, "accepted")
+    assert "a pass before the final review" not in lane.comment_body(final, ctx, ws)
 
 
 # --- a run that stops after its comment is finished without a second one -----------------------------------

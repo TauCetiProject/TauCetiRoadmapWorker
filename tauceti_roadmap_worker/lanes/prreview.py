@@ -403,6 +403,10 @@ description longer than the quote is cut; what follows the cut is outside this c
 to them."""
 
 
+PASS_NOTE = ("This is a pass before the final review. It does not decide `{label}`: the final review, on "
+             "another model, follows it.")
+
+
 def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
     """The brief's MODE: what the review covers, an incremental re-review (`INCREMENTAL`) or a full
     review, saying why a re-review is not incremental and offering the change set as context."""
@@ -1255,11 +1259,16 @@ class PRReviewLane(Lane):
         report = ws.report.read_text(encoding="utf-8") if ws.report.is_file() else ""
         line = folder_line(active, own)
         report = "\n".join(x for x in report.split("\n") if x.strip() != line)    # the comment names the folder itself
-        return prreviews.render_pr_review(
+        body = prreviews.render_pr_review(
             prreviews.pr_review_head(ctx.agent, ctx.model, head, since), status, report, marker, head,
             replies.validation_sentence(head[:7], gate) if gate is not None else "",
             conditional if isinstance(conditional, list) else None,
             folder=f"{active}/{own}", others=len(other_folders(job)))
+        if job.inputs.get("pre"):
+            # Said under the head reviewed, so that a reader does not take the verdict line for the label's.
+            line = f"Reviewed head: {head}"
+            body = body.replace(line, line + "\n\n" + PASS_NOTE.format(label=ctx.cfg.prreview.label), 1)
+        return body
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         repo, pr, head = ctx.cfg.repositories.content, ws.extra["pr"], ws.extra["head"]
@@ -1293,8 +1302,8 @@ class PRReviewLane(Lane):
         cfg = ctx.cfg
         report = ws.report.read_text(encoding="utf-8", errors="replace") if ws.report.is_file() else ""
         findings = minor_findings(report)
-        if not cfg.prreview.carry_minor or not findings:
-            return None
+        if not cfg.prreview.carry_minor or not findings or job.inputs.get("pre"):
+            return None          # (a pass before the final review settles nothing: that review follows)
         head = ws.extra["head"]
         new, onto = repaired_head(ctx, job) or head, carried_onto(ctx, job)
         active, own = cfg.roadmap.active_dir.strip("/"), board.prreview_folder(job)
@@ -1720,6 +1729,8 @@ class PRReviewLane(Lane):
         repo, label = ctx.cfg.repositories.content, ctx.cfg.prreview.label
         try:
             have = {x.get("name") for x in ctx.gh.api(f"repos/{repo}/issues/{pr}/labels") or [] if isinstance(x, dict)}
+            if status == "accepted" and job.inputs.get("pre"):
+                return f"a pass before the final review: {label} is decided by that review"
             if status == "accepted":
                 live = pr_head(ctx, repo, pr)
                 if live != head:

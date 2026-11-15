@@ -285,6 +285,15 @@ class PRReview:
     # text is not the text its review read (`summary.text_digest`), filed after the other rounds, least
     # deep in the dependency graph first (0: none).
     text_per_run: int = 10
+    # Passes before the final review (0: none; with any, `pre_model` names their model, of the family
+    # `pre_agent`). The first rounds of a roadmap folder of a pull request the pool repairs run on that
+    # model, each ending with its repair, and never accept or settle the folder. When one leaves the
+    # head where it was (it asked for nothing, or was answered without a push), or after `pre_passes` of
+    # them, the next round is the final review: a full review on the lane's review models, which alone
+    # decides `label`. A folder a review model has reviewed gets no further pass.
+    pre_passes: int = 0
+    pre_agent: str = "claude"
+    pre_model: str = ""
     authors: list[str] = field(default_factory=list)        # only these authors' pull requests (empty: all)
     skip_authors: list[str] = field(default_factory=list)   # never these authors' pull requests
     operator_prs: list[int] = field(default_factory=list)   # pull requests whose review rounds an operator files; `board sync` files none for them
@@ -562,6 +571,12 @@ def validate(cfg: Config) -> None:
         problems.append("prreview.per_run must be >= 0")
     if cfg.prreview.text_per_run < 0:
         problems.append("prreview.text_per_run must be >= 0")
+    if cfg.prreview.pre_passes < 0:
+        problems.append("prreview.pre_passes must be >= 0")
+    if cfg.prreview.pre_passes and not cfg.prreview.pre_model:
+        problems.append("prreview.pre_passes needs prreview.pre_model, the model of the passes before the final review")
+    if cfg.prreview.pre_agent not in AGENTS:
+        problems.append(f"prreview.pre_agent must be one of {', '.join(AGENTS)}")
     if cfg.prreview.max_folders < 1:
         problems.append("prreview.max_folders must be at least 1")
     if cfg.prreview.small_change_lines < 0:
