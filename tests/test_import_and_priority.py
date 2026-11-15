@@ -92,6 +92,55 @@ def test_origins_are_recorded_and_carried():
     assert legacy.inputs["origin"] == "target:12" and board.specs[-1][0] == "REV-PKG-QWittVectors"
 
 
+def test_the_whole_board_is_read_for_origins_once_a_while_for_the_host(tmp_path):
+    """A round that lists a job whose roadmap has no origin read every page of the board, on every
+    worker, every round. One reading is kept in the state directory and shared by the host's
+    workers until it is ORIGINS_TTL old; a reading that fails leaves the older one in use."""
+    from types import SimpleNamespace
+
+    from tauceti_roadmap_worker import worker
+
+    target = new_job("TARGET-Witt", inputs={"origin": "target:12"})
+    target.number, target.state = 12, "done"
+    design = new_job("DESIGN-QWittVectors", inputs={"target": "TARGET-Witt"})
+    design.number, design.state = 20, "done"
+    review = new_job("PRREVIEW-QWittVectors~1")
+    review.number, review.state = 30, "available"
+    stray = new_job("PRREVIEW-NobodysRoadmap~1")              # no origin anywhere: asked for every round
+    stray.number, stray.state = 31, "available"
+
+    class Counting(FakeBoard):
+        reads, fail = 0, False
+
+        def all_jobs(self):
+            if self.fail:
+                raise GHError("gh: rate limited")
+            self.reads += 1
+            return super().all_jobs()
+
+    board = Counting(jobs=[target, design, review, stray])
+    one = SimpleNamespace(board=board, state=tmp_path)
+    two = SimpleNamespace(board=board, state=tmp_path)        # another worker of the host
+    clock = [1000.0]
+    listed = [review, stray]
+    assert worker.board_origins(one, listed, now=lambda: clock[0]) == {"Witt": "target:12", "QWittVectors": "target:12"}
+    assert worker.board_origins(two, listed, now=lambda: clock[0])["QWittVectors"] == "target:12"
+    clock[0] += worker.ORIGINS_TTL - 1
+    worker.board_origins(one, listed, now=lambda: clock[0])
+    assert board.reads == 1                                    # three rounds, two workers, one reading
+    clock[0] += 2
+    board.fail = True                                          # the reading is due and fails: the older one stands
+    assert worker.board_origins(one, listed, now=lambda: clock[0])["QWittVectors"] == "target:12"
+    board.fail = False
+    worker.board_origins(two, listed, now=lambda: clock[0])
+    assert board.reads == 2
+    # Jobs that all say their origin need no reading at all, and a context with no state directory still ranks.
+    review.inputs["origin"] = "target:12"
+    assert worker.board_origins(one, [review], now=lambda: clock[0] + 10 * worker.ORIGINS_TTL) == {"QWittVectors": "target:12"}
+    assert board.reads == 2
+    assert worker.board_origins(SimpleNamespace(board=board), listed)["QWittVectors"] == "target:12" and board.reads == 3
+
+
 @pytest.mark.parametrize("stage", ["GATE", "PORT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG",
                                    "FIX-DESIGN", "REV-DESIGN", "DESIGN", "TARGET", "ERRATA"])
 def test_every_stage_is_known(stage):
