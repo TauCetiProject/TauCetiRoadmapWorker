@@ -583,7 +583,9 @@ whole roadmap on a revision, is replaced; a description without a block gets one
 named with `--pr`, and with `--all` only under `--missing`. The block is placed first, in place of
 any earlier one wherever it stood, and the rest of the description is kept as it is; the description
 is read again just before the write, and one that reads empty or as an API error is never rewritten.
-`--list` reports what would be done and runs no agent. The material and the result of each run stay
+`--list` reports what would be done and runs no agent. The port lane writes the block of the pull
+request it opens, on the agent that did the port (`PortLane.write_summary`); when the generator
+refuses its text or fails, the port stands and its result line names `summary --pr N`. The material and the result of each run stay
 under `summaries/pr-<n>/` in the state directory.
 
 Only the operator who opened a pull request can push to its branch, so the fix rounds on a board

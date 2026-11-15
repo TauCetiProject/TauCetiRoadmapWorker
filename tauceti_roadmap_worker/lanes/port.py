@@ -177,8 +177,25 @@ class PortLane(Lane):
         head7 = gitops.git(ws.workdir, "rev-parse", "--short=7", "HEAD").strip()
         with open(ws.report, "a", encoding="utf-8") as f:
             f.write(f"\n\nPull request: #{number} ({ws.extra['branch']} at {head7})\n")
-        return f"ported {job.name}: draft pull request #{number}" + self.write_merge_order(
-            ctx, number, job.name, body, found, order)
+        return (f"ported {job.name}: draft pull request #{number}"
+                + self.write_merge_order(ctx, number, job.name, body, found, order)
+                + self.write_summary(ctx, number))
+
+    def write_summary(self, ctx: Context, number: int) -> str:
+        """The new pull request's summary block, written by the generator `tauceti-roadmap summary` runs
+        (`summary.refresh`) on the agent that did the port: a port opened the description without one, and
+        the block was there only when an operator ran the command by hand afterwards. '' when the block is
+        written or already there, else why not; the port stands either way."""
+        from .. import summary
+        retry = f"; run summary --pr {number})"
+        try:
+            lines = summary.refresh(ctx, [number], agent=ctx.agent, model=ctx.model, missing=True)
+        except Exception as exc:  # noqa: BLE001 - the agent, GitHub or the disk: the port is done, the block is an extra
+            return f" (summary block not written: {type(exc).__name__}: {exc}" + retry
+        line = lines[0] if lines else f"#{number}: nothing was reported"
+        if ": wrote " in line or line.endswith("; unchanged"):
+            return ""
+        return f" (summary block not written: {line}" + retry
 
     def write_merge_order(self, ctx: Context, number: int, name: str, body: str, found, order: list[str]) -> str:
         """The new pull request's "Merge order" paragraph, rendered from the facts its Dependencies
