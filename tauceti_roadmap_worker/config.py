@@ -390,6 +390,14 @@ class Worker:
     # secondary rate limit blocks the account after bursts of about 80 a minute or 500 an hour. 0 = no cap.
     writes_per_minute: int = 20
     writes_per_hour: int = 400
+    # A command that prints a GitHub token of a second identity (an installation token of a GitHub App
+    # with Issues write on the board repository): the board's own bookkeeping on its job issues (state
+    # labels, notes, creating, closing and reopening them) is then written under it, with a write budget
+    # of its own (the two rates above, counted apart), and only what must carry the operator's name
+    # (pull requests, merges, reviews, replies) spends the operator's. List that identity's login in
+    # `[board] bot_logins`, or its notes do not count as the board's. Host-specific: set it in the
+    # operator's overlay. Empty: everything is written as the operator.
+    board_token_command: str = ""
     # Days a job's folder (`workers/<id>/jobs/<JOB>/`: briefs, agent logs, scratch) stays after the
     # last write to it; a worker removes its own older ones at its start and when a round starts.
     # 0 = they are never removed.

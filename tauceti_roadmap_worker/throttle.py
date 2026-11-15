@@ -74,3 +74,13 @@ def for_config(cfg) -> WriteThrottle | None:
     if not w.writes_per_minute and not w.writes_per_hour:
         return None
     return WriteThrottle(cfg.state_dir() / "gh-writes.json", w.writes_per_minute, w.writes_per_hour)
+
+
+def for_board(cfg) -> WriteThrottle | None:
+    """The throttle of the board's second identity (`[worker] board_token_command`): the same two rates,
+    counted apart from the operator's, since GitHub counts each identity's writes apart. None when
+    both rates are 0."""
+    w = cfg.worker
+    if not w.writes_per_minute and not w.writes_per_hour:
+        return None
+    return WriteThrottle(cfg.state_dir() / "gh-writes-board.json", w.writes_per_minute, w.writes_per_hour)

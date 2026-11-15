@@ -176,6 +176,19 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   (`<state>/gh-writes.json`): a write past the cap waits for a slot. Scripts that write with `gh`
   themselves take a slot with `tauceti-roadmap throttle`. 0 for both turns the cap off.
 
+  A busy host reaches that cap on bookkeeping alone: on a host running thirty workers, two thirds of
+  the writes were the board's own (state labels, notes on job issues, new job issues), and each
+  `board intake` then waited half an hour for slots. `[worker] board_token_command` moves that
+  bookkeeping to a second identity: a command that prints a GitHub token, in practice an installation
+  token of a GitHub App with **Issues: read and write** on the board repository. The board's writes to
+  its job issues then carry that token and are counted in a bucket of their own
+  (`<state>/gh-writes-board.json`, the same two rates), while pull requests, merges, reviews and
+  replies stay under your login and your bucket. Set it in the overlay, since the command and its key
+  are your host's, and list the App's login (`<slug>[bot]`) in `[board] bot_logins`, or the notes it
+  writes do not count as the board's. A write the App is refused (a permission it lacks, a token that
+  could not be made, its own rate limit) is made under your login instead, so nothing stops; the token
+  is kept half an hour and is never printed.
+
   | status | outcome |
   |---|---|
   | 0 | submitted, parked (`needs-references`) or blocked |

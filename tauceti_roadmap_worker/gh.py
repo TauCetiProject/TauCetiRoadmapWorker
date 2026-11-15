@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -71,6 +72,7 @@ def looks_like_api_error(text: str) -> bool:
     return head.startswith("{") and ("documentation_url" in head or '"message"' in head) and '"number"' not in head
 
 
+TOKEN_SECONDS = 1800     # how long a token from `GH.token_command` is used before the command is asked again
 READ_DELAYS = (2, 5, 15)     # seconds before the second, third and fourth try of a read GitHub answered 5xx or not at all
 
 
@@ -95,6 +97,29 @@ class GH:
     sleep: object = time.sleep
     halt_confirm: tuple = HALT_CONFIRM
     fence: object = None         # called before every write; it raises to refuse the write
+    # A second identity: a command that prints a token (an installation token of a GitHub App, say), which
+    # every call of this object then carries in place of the caller's own. The token is kept
+    # `TOKEN_SECONDS` and never printed. Empty: the caller's own identity (the default).
+    token_command: str = ""
+    _token: str = ""
+    _token_at: float = 0.0
+
+    def _env(self) -> dict | None:
+        """The environment `gh` runs in: the caller's, with `GH_TOKEN` from `token_command` when there is one."""
+        if not self.token_command:
+            return None
+        now = self.clock()
+        if not self._token or now - self._token_at > TOKEN_SECONDS:
+            try:
+                made = subprocess.run(shlex.split(self.token_command), capture_output=True, text=True, timeout=60,
+                                      check=False)
+            except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                raise GHError(f"token command: {type(exc).__name__}") from exc
+            token = made.stdout.strip()
+            if made.returncode != 0 or not token or "\n" in token:
+                raise GHError(f"token command: exit {made.returncode}, no token")
+            self._token, self._token_at = token, now
+        return {**os.environ, "GH_TOKEN": self._token}
 
     def _read(self, args: list[str]) -> str:
         """A read (GET), tried again after a transient failure (a 5xx answer, a timeout, a dropped
@@ -122,11 +147,12 @@ class GH:
         if self.paused_until > self.clock():
             raise GHRateLimited(f"GitHub's rate limit is spent; nothing is sent before {self.paused_until:.0f}",
                                 self.paused_until)
+        env = self._env()
         for delay in (*self.halt_confirm, None):
             self.calls += 1
             try:
                 result = subprocess.run(["gh", *args], input=stdin, capture_output=True, text=True,
-                                        timeout=self.timeout)
+                                        timeout=self.timeout, env=env)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 raise GHError(f"gh {' '.join(args[:3])}: {exc}") from exc
             if result.returncode == 0:
@@ -135,6 +161,8 @@ class GH:
             if HALT.search(result.stderr):
                 if delay is not None and UNAUTHORIZED.search(result.stderr) and not SUSPENDED.search(result.stderr):
                     self.sleep(delay)
+                    self._token = ""            # a token of `token_command` that GitHub refuses is asked for again
+                    env = self._env()
                     continue
                 self.halted = message
                 raise GHHalt(message)

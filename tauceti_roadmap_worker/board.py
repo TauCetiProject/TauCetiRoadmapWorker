@@ -29,7 +29,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
-from .gh import GH, GHError
+from .gh import GH, GHError, GHHalt, GHRateLimited, check_fence
 
 KINDS = ("target", "design", "package", "review", "fix", "port", "redteam", "gate", "errata", "prreview")
 PREFIX = {"target": "TARGET", "design": "DESIGN", "package": "PKG", "review": "REV", "fix": "FIX",
@@ -945,18 +945,51 @@ def since_before(stamp: str, margin: int = SINCE_MARGIN) -> str:
     return (at - timedelta(seconds=margin)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-class Board:
-    """Jobs on GitHub. Reads are cheap REST listings; writes go through GH.write (dry-run aware)."""
+# Answers that say the board's second identity may not make a write (a permission its App lacks, a
+# token that could not be made): the write is made as the operator instead. Any other failure is the
+# request's own and is raised as it would be for the operator.
+WRITER_REFUSED = re.compile(r"Resource not accessible by integration|HTTP 403|token command:", re.IGNORECASE)
 
-    def __init__(self, cfg, gh: GH | None = None):
+
+class Board:
+    """Jobs on GitHub. Reads are cheap REST listings; writes go through GH.write (dry-run aware).
+
+    `writer`: a second `GH` under which the board keeps its own books (state labels, notes, job issues,
+    closing and reopening them), for a host whose operator account is short of GitHub's content-write
+    limits (`[worker] board_token_command`: every write the operator's account makes counts against
+    about 500 an hour, and the bookkeeping was two thirds of a busy host's). The pull requests of the
+    board, their merges and every write to the roadmap repository stay under the operator's own
+    login. A write that identity is refused falls back to the operator's own (`refused` counts
+    them), so a missing permission slows the board and stops nothing."""
+
+    def __init__(self, cfg, gh: GH | None = None, writer: GH | None = None):
         self.cfg = cfg
         self.gh = gh or GH()
+        self.writer = writer or self.gh
+        self.refused = 0                    # writes the second identity was refused, made as the operator instead
         self.repo = cfg.repositories.board_repo()
         self.ns = cfg.board.namespace_label
         self.made: dict[str, int] = {}      # title key -> issue this process created (a listing may lag it)
         self.reused: dict[str, int] = {}    # job id -> the issue the live board already had at creation
         self.incremental = False            # a batch run (`board intake`, `board sync`) sets it: see `_issues`
         self._seen: dict[int, dict] | None = None    # issue number -> issue, once an incremental run has read them all
+
+    def _write(self, method: str, path: str, payload: dict | None = None) -> dict | None:
+        """One of the board's own writes to a job issue: under `writer` when the host has one, else (and
+        in a dry run, and when that identity is refused, halted, out of quota or without a token)
+        under the operator's own login. The operator's fence guards both."""
+        if self.writer is self.gh or self.gh.dry_run:
+            return self.gh.write(method, path, payload)
+        check_fence(self.gh)
+        try:
+            return self.writer.write(method, path, payload)
+        except (GHHalt, GHRateLimited):
+            pass
+        except GHError as exc:
+            if not WRITER_REFUSED.search(str(exc)):
+                raise
+        self.refused += 1
+        return self.gh.write(method, path, payload)
 
     def _job_from_issue(self, issue: dict) -> Job | None:
         """The job an issue carries. Only issues with a `state:` label are jobs: the board sets that
@@ -1060,7 +1093,7 @@ class Board:
         payload = {"title": title_for(job), "body": issue_body(job, self.cfg.repositories.packages_repo(),
                                                                self.cfg.board.packages_dir, preamble),
                    "labels": labels_for(job, state, self.ns)}
-        created = self.gh.write("POST", f"repos/{self.repo}/issues", payload)
+        created = self._write("POST", f"repos/{self.repo}/issues", payload)
         number = int(created["number"]) if created else 0
         if number:
             self.made[title_key(payload["title"])] = job.number = number
@@ -1107,7 +1140,7 @@ class Board:
             if state_labels(labels) != [expect]:
                 return False
         new = f"state:{state}"
-        current = label_names(self.gh.write("POST", f"repos/{self.repo}/issues/{job.number}/labels",
+        current = label_names(self._write("POST", f"repos/{self.repo}/issues/{job.number}/labels",
                                             {"labels": [new]}))
         if current is None:
             try:
@@ -1117,7 +1150,7 @@ class Board:
         for label in current or job.labels:
             if label.startswith("state:") and label != new:
                 try:
-                    self.gh.write("DELETE", f"repos/{self.repo}/issues/{job.number}/labels/{quote(label, safe=':')}")
+                    self._write("DELETE", f"repos/{self.repo}/issues/{job.number}/labels/{quote(label, safe=':')}")
                 except GHError:
                     pass
         job.labels = [label for label in (current or job.labels) if not label.startswith("state:")] + [new]
@@ -1169,13 +1202,13 @@ class Board:
             body = body[:last.start()] + encode_spec(job) + body[last.end():]
         else:
             body = body.rstrip() + "\n\n" + encode_spec(job)
-        self.gh.write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"body": body})
+        self._write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"body": body})
 
     def comment(self, number: int, body: str) -> None:
-        self.gh.write("POST", f"repos/{self.repo}/issues/{number}/comments", {"body": body})
+        self._write("POST", f"repos/{self.repo}/issues/{number}/comments", {"body": body})
 
     def add_label(self, job: Job, label: str) -> None:
-        self.gh.write("POST", f"repos/{self.repo}/issues/{job.number}/labels", {"labels": [label]})
+        self._write("POST", f"repos/{self.repo}/issues/{job.number}/labels", {"labels": [label]})
         if label not in job.labels:
             job.labels.append(label)
 
@@ -1188,7 +1221,7 @@ class Board:
             self.add_label(job, label)
         except GHError:
             pass
-        self.gh.write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"state": "closed"})
+        self._write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"state": "closed"})
 
     def reopen(self, job: Job, as_: Job, comment: str) -> None:
         """A job the board closed as `superseded` runs after all: its issue is open again and
@@ -1197,10 +1230,10 @@ class Board:
         job.after, job.independent_of, job.inputs = list(as_.after), list(as_.independent_of), dict(as_.inputs)
         job.requires_agent, job.requires_model, job.requires_operator = (as_.requires_agent, as_.requires_model,
                                                                          as_.requires_operator)
-        self.gh.write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"state": "open"})
+        self._write("PATCH", f"repos/{self.repo}/issues/{job.number}", {"state": "open"})
         self.update_spec(job)
         try:
-            self.gh.write("DELETE", f"repos/{self.repo}/issues/{job.number}/labels/{quote(SUPERSEDED_LABEL, safe=':')}")
+            self._write("DELETE", f"repos/{self.repo}/issues/{job.number}/labels/{quote(SUPERSEDED_LABEL, safe=':')}")
         except GHError:
             pass
         job.labels = [label for label in job.labels if label != SUPERSEDED_LABEL]

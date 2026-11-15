@@ -78,6 +78,18 @@ def _load(args) -> config.Config:
     return cfg
 
 
+def _board(cfg, gh) -> Board:
+    """The board as `gh` reads it, keeping its own books under the host's second identity when
+    `[worker] board_token_command` names one (never in a dry run, which writes nothing)."""
+    command = cfg.worker.board_token_command
+    if not command or gh.dry_run:
+        return Board(cfg, gh)
+    writer = GH(token_command=command)
+    writer.throttle = throttle.for_board(cfg)       # its own budget: GitHub counts each identity apart
+    writer.cache_dir = None                         # it writes only: nothing to cache
+    return Board(cfg, gh, writer)
+
+
 def throttle_cmd(args) -> int:
     """Take one of the host's GitHub content-write slots (waiting for it), for scripts that write with
     `gh` themselves; prints the seconds waited."""
@@ -320,7 +332,7 @@ def targets(args) -> int:
             print(line)
         return 0
     gh = GH(dry_run=args.dry_run)
-    b = Board(cfg, gh)
+    b = _board(cfg, gh)
     if args.action == "list":
         for job in b.list_jobs(("available", "claimed", "submitted", "needs-references", "blocked"), ("target", "design")):
             print(f"#{job.number:<6} {job.id:<40} {job.state}")
@@ -408,7 +420,7 @@ def work(args) -> int:
         if not args.dry_run:
             raise SystemExit(f"claims: {why}")
         print(f"warning: claims: {why}", file=sys.stderr)
-    ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=cl, worker_id=paths.sanitize_worker_id(args.worker_id),
+    ctx = Context(cfg=cfg, gh=gh, board=_board(cfg, gh), claims=cl, worker_id=paths.sanitize_worker_id(args.worker_id),
                   operator=operator, agent=agent, model=model, conf=_local_conf(args, cfg), dry_run=args.dry_run,
                   agent_fixed=bool(args.agent), model_fixed=bool(args.model), overflow=overflow)
     try:
@@ -625,7 +637,7 @@ def _bot_context(args, cfg, dry: bool):
         login = gh.login()
     except GHError:
         login = "unknown"
-    return Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=None, worker_id="board", operator=login,
+    return Context(cfg=cfg, gh=gh, board=_board(cfg, gh), claims=None, worker_id="board", operator=login,
                    agent="", model="", conf=_local_conf(args, cfg), dry_run=dry)
 
 
