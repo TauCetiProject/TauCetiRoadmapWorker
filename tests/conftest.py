@@ -12,6 +12,13 @@ def no_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_host_overlay(monkeypatch):
+    """No test reads the overlay of the host it runs on (`config.DEFAULT_OVERLAY`): the tests of the
+    overlay name their own."""
+    monkeypatch.setenv("TAUCETI_ROADMAP_OVERLAY", "")
+
+
+@pytest.fixture(autouse=True)
 def roomy_disk(monkeypatch):
     """The host's free space never decides a test (the tests' state directories live in a tmpfs);
     the tests of the disk guard set it themselves."""

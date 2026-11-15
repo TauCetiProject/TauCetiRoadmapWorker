@@ -188,10 +188,14 @@ def rank(jobs: list[Job], order: list[str] | None = None, priority: list[str] | 
     return sorted(jobs, key=key)
 
 
-def late_review(p):
+def late_review(p, own=None):
     """Whether a job is a review of a pull request by one of `[prreview] late_authors` that
-    `late_except` does not name (`p`: the `[prreview]` table)."""
+    `late_except` does not name (`p`: the `[prreview]` table), or by one of this host's own
+    `[worker] late_authors` that its `late_except` does not name (`own`: the `[worker]` table)."""
     authors, kept = {a.lower() for a in p.late_authors}, {int(n) for n in p.late_except}
+    if own is not None:
+        authors |= {a.lower() for a in own.late_authors}
+        kept |= {int(n) for n in own.late_except}
 
     def late(job: Job) -> bool:
         if job.kind != "prreview" or str(job.inputs.get("owner") or "").lower() not in authors:
@@ -244,6 +248,11 @@ def for_job(ctx: Context, job: Job, paused: dict[str, dt.datetime] | None = None
         return None, f"needs agent {job.requires_agent}"
     if paused and agent in paused:
         return None, f"{agent} {PAUSED} until {paused[agent]:%Y-%m-%dT%H:%MZ}"
+    pinned = "" if job.requires_model else author_model(cfg, job)
+    if pinned:        # the operator's own choice for this author's pull requests: only its workers on that model
+        if ctx.model != pinned:
+            return None, f"this host takes the reviews of this author's pull requests on {pinned}"
+        return ctx, ""
     want = job.requires_model or cfg.lane_model(job.kind, agent)
     if ctx.model_fixed:
         if want and ctx.model != want:
@@ -257,6 +266,22 @@ def for_job(ctx: Context, job: Job, paused: dict[str, dt.datetime] | None = None
     if agent != ctx.agent and not shutil.which(agent):
         return None, "its agent is not installed here"
     return dataclasses.replace(ctx, agent=agent, model=model), ""
+
+
+def author_model(cfg, job: Job) -> str:
+    """The model this host's workers take a pull-request review on, when `[worker] author_models` names
+    the pull request's author and `[worker] late_except` does not name the pull request; else ''."""
+    own = getattr(cfg, "worker", None)
+    models = {str(k).lower(): str(v) for k, v in (getattr(own, "author_models", None) or {}).items()}
+    if job.kind != "prreview" or not models:
+        return ""
+    try:
+        number = int(job.inputs.get("pr") or 0)
+    except (TypeError, ValueError):
+        number = 0
+    if number in {int(n) for n in getattr(own, "late_except", None) or []}:
+        return ""
+    return models.get(str(job.inputs.get("owner") or "").lower(), "")
 
 
 def other_family(ctx: Context, job: Job, lane, paused: dict | None = None) -> Context | None:
@@ -375,7 +400,7 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
     failed_before = failures(base)
     known = board_origins(base, jobs)
     cfg = base.cfg.board
-    for job in rank(jobs, order or [], cfg.priority, cfg.human_first, known, late_review(base.cfg.prreview)):
+    for job in rank(jobs, order or [], cfg.priority, cfg.human_first, known, late_review(base.cfg.prreview, base.cfg.worker)):
         if avoid and job.id in avoid:
             continue
         if failed_before.get(job.id, 0) >= MAX_ATTEMPTS:

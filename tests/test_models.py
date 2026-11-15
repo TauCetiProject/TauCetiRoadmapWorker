@@ -72,3 +72,26 @@ def test_doctor_says_whether_this_host_can_run_the_review_models():
     assert [(r[0], r[1]) for r in rows] == [(cli.OK, "review models"), (cli.OK, "redteam models")]
     [warn, _] = cli.review_model_rows(cfg, [])
     assert warn[0] == cli.WARN and "gpt-6-astra (codex) or fable (claude)" in warn[2]
+
+
+def test_the_hosts_own_table_names_the_model_an_authors_reviews_are_taken_on():
+    """`[worker] author_models`: a review of a pull request by a named author is taken only by a worker
+    of this host that runs the named model, whatever the lane's models are; the pull requests
+    `[worker] late_except` names, other authors' and other kinds of job are as before."""
+    fable = base(agent="claude", model="fable", agent_fixed=True, model_fixed=True)
+    opus = base(agent="claude", model="claude-opus-5-5", agent_fixed=True, model_fixed=True)
+    astra = base(model="gpt-6-astra", agent_fixed=True, model_fixed=True)
+    theirs = new_job("PRREVIEW-Foo~1", inputs={"pr": 12, "owner": "Dave"})
+    kept = new_job("PRREVIEW-Bar~1", inputs={"pr": 14, "owner": "dave"})
+    others = new_job("PRREVIEW-Baz~1", inputs={"pr": 15, "owner": "carol"})
+    for ctx in (fable, opus, astra):
+        ctx.cfg.worker.author_models, ctx.cfg.worker.late_except = {"dave": "claude-opus-5-5"}, [14]
+    why = "this host takes the reviews of this author's pull requests on claude-opus-5-5"
+    assert worker.for_job(fable, theirs) == (None, why) and worker.for_job(astra, theirs) == (None, why)
+    assert worker.for_job(opus, theirs) == (opus, "")
+    assert worker.for_job(fable, kept)[0] is fable and worker.for_job(fable, others)[0] is fable
+    assert worker.for_job(opus, others)[0] is None and worker.for_job(opus, kept)[0] is None      # the lane's models
+    assert worker.for_job(opus, new_job("PKG-Foo", inputs={"owner": "dave"}))[0] is opus          # not a review of a pull request
+    pinned = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "owner": "dave"}, requires_agent="claude", requires_model="fable")
+    assert worker.for_job(fable, pinned)[0] is fable                    # a job that names its model keeps it
+    assert worker.author_model(example_config(), theirs) == ""          # nothing named: nothing changes

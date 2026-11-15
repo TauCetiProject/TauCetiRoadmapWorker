@@ -64,6 +64,31 @@ def test_an_overlay_sets_host_and_operator_settings_only(tmp_path, monkeypatch):
     assert config.load(str(conf)).sandbox.profile == "netjail" and config.load(str(conf)).overlay_path
 
 
+def test_the_overlay_carries_the_order_and_models_of_the_hosts_own_workers(tmp_path, monkeypatch):
+    """`[worker] late_authors`, `late_except` and `author_models` are an operator's own: the overlay sets
+    them, and the file at `DEFAULT_OVERLAY` is read when no overlay is named."""
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    conf = tmp_path / "tauceti-roadmap.toml"
+    conf.write_text(TEXT)
+    overlay = tmp_path / "roadmap-overlay.toml"
+    overlay.write_text('[worker]\nlate_authors = ["dave"]\nlate_except = [7]\n'
+                       '[worker.author_models]\ndave = "claude-opus-5-5"\n')
+    cfg = config.load(str(conf), overlay=str(overlay))
+    assert (cfg.worker.late_authors, cfg.worker.late_except, cfg.worker.author_models) == (
+        ["dave"], [7], {"dave": "claude-opus-5-5"})
+    assert cfg.worker.idle_seconds == config.parse(TEXT).worker.idle_seconds          # the rest of the table stays
+    assert config.load(str(conf)).worker.late_authors == []                           # (the suite names no overlay)
+    monkeypatch.delenv("TAUCETI_ROADMAP_OVERLAY")
+    monkeypatch.setattr(config, "DEFAULT_OVERLAY", str(overlay))
+    assert config.load(str(conf)).worker.late_authors == ["dave"]                     # the host's default file
+    monkeypatch.setenv("TAUCETI_ROADMAP_OVERLAY", "")
+    assert config.load(str(conf)).worker.late_authors == []                           # set and empty: none
+    for bad, why in (('late_authors = ["not a login"]', "worker.late_authors"), ("late_except = [0]", "worker.late_except"),
+                     ('author_models = { dave = "" }', "worker.author_models")):
+        with pytest.raises(config.ConfigError, match=why):
+            config.parse(f'[project]\nname = "P"\n[worker]\n{bad}\n', "x.toml")
+
+
 def test_an_overlay_never_changes_the_boards_rules(tmp_path):
     conf = tmp_path / "tauceti-roadmap.toml"
     conf.write_text(TEXT)
