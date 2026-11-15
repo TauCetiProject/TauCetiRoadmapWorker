@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .. import gates, gitops, prompts, replies
 from ..board import Job
+from ..gh import GHError
 from .base import (
     CONTENT_COMMENT,
     CONTENT_PUSH,
@@ -116,6 +117,22 @@ def gate_problems(ctx: Context, ws: Workspace, name: str, folder: str,
     return scan_problems(result) + worktree_elaboration_problems(ctx, ws, folder), result
 
 
+def approvers(ctx: Context, repo: str, pr) -> list[str]:
+    """The logins whose approving review of the pull request stands: a reviewer's latest review that is
+    an approval, a request for changes or a dismissal decides for that reviewer (a comment changes
+    nothing). Raises LaneError when the reviews cannot be read: nothing is pushed on a guess."""
+    try:
+        reviews = ctx.gh.api(f"repos/{repo}/pulls/{pr}/reviews?per_page=100", paginate=True)
+    except GHError as exc:
+        raise LaneError(f"the reviews of #{pr} could not be read ({str(exc).splitlines()[0][:120]}); nothing pushed") from exc
+    latest: dict[str, str] = {}
+    for r in reviews if isinstance(reviews, list) else []:
+        who, state = ((r.get("user") or {}).get("login") or ""), r.get("state")
+        if who and state in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            latest[who] = state
+    return sorted(who for who, state in latest.items() if state == "APPROVED")
+
+
 def push_and_reply(lane: Lane, ctx: Context, job: Job, ws: Workspace, report: str, answered: dict[str, str],
                    gate: gates.GateResult, *, branch: str, base: str, moved: bool, push: str = CONTENT_PUSH,
                    reply: str = CONTENT_COMMENT, after_push: Callable[[], object] | None = None,
@@ -133,6 +150,11 @@ def push_and_reply(lane: Lane, ctx: Context, job: Job, ws: Workspace, report: st
     cfg, pr, repo = ctx.cfg, ws.extra["pr"], ctx.cfg.repositories.content
     new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
     if moved and owes(ctx, job, push):
+        # A push dismisses a human approval (the content repository dismisses stale reviews), and the
+        # pull request then waits for that reviewer again: an approved head is left alone.
+        if standing := approvers(ctx, repo, pr):
+            raise LaneError(f"nothing pushed to #{pr}: {', '.join(standing)} approved it, and a push would "
+                            "dismiss the approval")
         # The branch lives in the pull request's head repository: the operator's fork for a port,
         # the content repository itself for an adopted author's branch (2026-10-27).
         fork = ws.extra.get("head_repo") or gitops.ensure_fork(ctx.gh, repo, ctx.operator)

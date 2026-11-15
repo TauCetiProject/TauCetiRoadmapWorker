@@ -51,7 +51,7 @@ QUERY = """query($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 50, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
-      nodes { number title isDraft headRefOid author { login } labels(first: 50) { nodes { name } }
+      nodes { number title isDraft headRefOid reviewDecision author { login } labels(first: 50) { nodes { name } }
               files(first: 100) { totalCount nodes { path changeType } } }
     }
   }
@@ -159,6 +159,8 @@ def inventory(gh, repo: str, dirs: tuple[str, ...], any_file: bool = False) -> l
             if folders or under:
                 out.append({"pr": pr["number"], "title": pr.get("title", ""), "head": pr.get("headRefOid", ""),
                             "author": (pr.get("author") or {}).get("login", ""), "draft": bool(pr.get("isDraft")),
+                            # a human has approved it: the board files nothing that could push to it
+                            "approved": pr.get("reviewDecision") == "APPROVED",
                             "labels": [x.get("name", "") for x in ((pr.get("labels") or {}).get("nodes") or [])
                                        if isinstance(x, dict)],
                             "roadmaps": list(folders), "folders": folders, "files": files})

@@ -3651,3 +3651,15 @@ def test_the_round_settings_default_off_and_parse():
     for bad, why in (('late_authors = ["not a login"]', "prreview.late_authors"), ("late_except = [0]", "prreview.late_except")):
         with pytest.raises(config.ConfigError, match=re.escape(why)):
             config.parse(f'[project]\nname = "P"\n[prreview]\n{bad}\n', "x.toml")
+
+
+def test_no_round_is_filed_for_a_head_a_human_has_approved():
+    """A round that ends in a repair pushes to the branch, and the content repository dismisses an
+    approval on any push: an approved pull request gets no review, re-review or check of its text."""
+    approved = {**node(12, H1), "reviewDecision": "APPROVED"}
+    out, fake = sync(ContentGH([approved, node(13, H1)]))
+    assert [j.inputs["pr"] for j, _s, _p in fake.created] == [13]
+    assert f"#12: no round filed: a human approval stands at {H1[:7]}" in out
+    # the same head without the approval is reviewed as any other
+    out, fake = sync(ContentGH([{**node(12, H1), "reviewDecision": "REVIEW_REQUIRED"}]))
+    assert [j.id for j, _s, _p in fake.created] == ["PRREVIEW-Foo~1"]

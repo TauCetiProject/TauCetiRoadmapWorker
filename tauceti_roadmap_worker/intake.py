@@ -1735,7 +1735,11 @@ def sync_pull_requests(ctx) -> list[str]:
                                                   key=round_key, default=None)
             open_round = open_round or waiting is not None
             repairing = None if open_round else repairing_review(cfg, jobs, number, p["owner"])
-            if waiting is not None:
+            if not open_round and any(e.approved for e in events):
+                # the answer would push to an approved head and dismiss the approval: a human answers,
+                # without a push, or after the merge
+                out.append(f"#{number}: gate round not filed: a human approval stands (a push would dismiss it)")
+            elif waiting is not None:
                 out.append(f"#{number}: gate round not filed: {waiting.id} is waiting for references")
             elif repairing is not None:
                 out.append(f"#{number}: gate round deferred: review {repairing.id} is repairing")
@@ -2738,6 +2742,12 @@ def sync_pr_reviews(ctx) -> list[str]:
             out.append(f"#{number}: not reviewed ({why})")
             continue
         if not folders or not author_reviewed(p, author) or not head:
+            continue
+        if entry.get("approved"):
+            # A human has approved this head. A round that ends in a repair pushes to the branch, and
+            # the content repository dismisses an approval on any push (2026-11-15: seventeen pull
+            # requests were approved in forty minutes while checks of their text were queued).
+            out.append(f"#{number}: no round filed: a human approval stands at {head[:7]}")
             continue
         if number in p.operator_prs:
             out.append(f"#{number}: rounds filed by the operator (prreview.operator_prs)")

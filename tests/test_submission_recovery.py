@@ -103,6 +103,8 @@ class Hub:
             return self.pr(12, "alice/TauCetiRoadmapJobs", PR_BRANCH)
         if path == f"repos/{CONTENT}/pulls/905":
             return self.pr(905, "alice/TauCetiRoadmap", ROADMAP_BRANCH)
+        if path.endswith("/reviews?per_page=100"):
+            return [dict(r) for r in getattr(self, "reviews", [])]     # the pull request's reviews: none unless a test sets them
         if "/comments" in path:
             return [dict(c) for c in self.comments[int(path.split("/issues/")[1].split("/")[0])]]
         if path.startswith(f"repos/{BOARD}/pulls?head="):
