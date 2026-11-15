@@ -131,7 +131,10 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   within PRREVIEW, the re-reviews of a repaired head before first reviews), then the oldest issue.
   `[board] human_first`
   and `[board] priority` change that order; `board sync` records the origin on jobs that lack it,
-  and `status` prints it.
+  and `status` prints it. A worker that lists a job whose roadmap none of the listed jobs gives an origin for reads the
+  whole board for it, and keeps that reading in `<state>/board-origins.json` for thirty minutes, shared
+  by the workers of the host (`worker.board_origins`): on a busy board the reading is over a hundred
+  pages, and one a round on every worker spent the host's hourly GitHub quota.
 * `--agent` pins the agent family. Without it, each job runs on its lane's configured agent
   (`[agents.lanes.<kind>]`, default `[agents] default`), and a red-team pass on the agent it requires,
   if that agent is installed.

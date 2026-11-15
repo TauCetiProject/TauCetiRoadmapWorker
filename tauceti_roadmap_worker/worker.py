@@ -315,6 +315,47 @@ def named_job(base: Context, job_id: str, only: tuple[str, ...] | None, jobs: li
     return []
 
 
+ORIGINS_TTL = 30 * 60      # seconds one reading of the whole board's origins is reused by the workers of a host
+
+
+def origins_path(ctx: Context) -> Path:
+    return ctx.state / "board-origins.json"
+
+
+def board_origins(ctx: Context, jobs: list[Job], now=time.time) -> dict[str, str]:
+    """Roadmap name -> origin, for ranking the jobs of a round (`rank`). The jobs listed say most of
+    it. For a roadmap none of them says, the whole board is read: over a hundred pages on a busy
+    board, and every worker of a host read it at the start of every round (a job whose roadmap has
+    no origin anywhere on the board asks for it every time), which spent the host's hourly GitHub
+    quota on listings. One reading is kept in `<state>/board-origins.json` and reused by every
+    worker of the host for ORIGINS_TTL: an origin does not change once it is set, and a roadmap
+    newer than the reading ranks as imported until the next one. A reading that fails leaves the
+    older one in use; a state directory that cannot be written costs a reading a round, as before."""
+    known = board.origins(jobs)
+    if all(board.origin_of(j, known) for j in jobs):
+        return known
+    path, kept, age = None, {}, None
+    try:
+        path = origins_path(ctx)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        kept, age = dict(data["origins"]), now() - float(data["at"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    if age is None or not 0 <= age < ORIGINS_TTL:
+        try:
+            kept = board.origins(ctx.board.all_jobs())
+        except (GHError, AttributeError):
+            return {**kept, **known}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps({"at": now(), "origins": kept}) + "\n", encoding="utf-8")
+            os.replace(tmp, path)
+        except (OSError, AttributeError):
+            pass
+    return {**kept, **known}
+
+
 def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", order: list[str] | None = None,
               log=print, avoid: set[str] | None = None, paused: dict[str, dt.datetime] | None = None,
               noted: dict[str, dt.datetime] | None = None) -> LaneResult:
@@ -332,12 +373,7 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
         kept = [j for j in jobs if not held_back(base, j)]
         waiting, jobs = len(jobs) - len(kept), kept
     failed_before = failures(base)
-    known = board.origins(jobs)
-    if any(not board.origin_of(j, known) for j in jobs):
-        try:     # a job that does not say where its roadmap came from: look up the roadmap's target
-            known = board.origins(base.board.all_jobs())
-        except (GHError, AttributeError):
-            pass
+    known = board_origins(base, jobs)
     cfg = base.cfg.board
     for job in rank(jobs, order or [], cfg.priority, cfg.human_first, known, late_review(base.cfg.prreview)):
         if avoid and job.id in avoid:
