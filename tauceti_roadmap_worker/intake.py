@@ -1867,8 +1867,38 @@ def prreview_verdicts(ctx, name: str, jobs: list[Job] | None = None, head: str =
             continue
         review = data.get("review") if isinstance(data, dict) else None
         if isinstance(review, dict):
-            out[job.id] = review
+            out[job.id] = pass_verdict(review) if job.inputs.get("pre") else review
     return out
+
+
+PASSED = "passed"         # the status of a pass before the final review that asked for nothing
+
+
+def pass_verdict(review: dict) -> dict:
+    """The verdict of a pass before the final review (`[prreview] pre_passes`; its job says `pre`), as
+    the label rule reads it: it never accepts (`accepted` reads `passed`) and never settles its folder
+    (the record of a P3-only repair, `carried`, is left out), so every rule that carries, settles or
+    labels on a verdict leaves the head to the final review. `pre` marks it."""
+    out = {k: v for k, v in review.items() if k != "carried"}
+    out["pre"] = True
+    if out.get("status") == "accepted":
+        out["status"] = PASSED
+    return out
+
+
+def review_stage(p, ours: list[Job], pooled: bool) -> str:
+    """`pre` or `final`: what the next round of one roadmap folder of a pull request is (`ours`: the
+    folder's PRREVIEW jobs of that pull request). A pass before the final review while `[prreview]
+    pre_passes` allows one: the pool repairs the pull request (`pooled`: a pass ends with its repair,
+    and another author would answer two reviewers in turn), no review model has reviewed the folder
+    (every round so far was a pass), and fewer than `pre_passes` passes were filed. Else the final
+    review, and every round after it."""
+    if p.pre_passes <= 0 or not p.pre_model or not pooled:
+        return "final"
+    counted = [j for j in ours if board.SUPERSEDED_LABEL not in j.labels]
+    if any(not j.inputs.get("pre") for j in counted):
+        return "final"
+    return "pre" if len(counted) < p.pre_passes else "final"
 
 
 def previous_review(jobs: list[Job]) -> Job | None:
@@ -2530,7 +2560,8 @@ def sync_pr_reviews(ctx) -> list[str]:
         for job in mine:
             folder = board.prreview_folder(job)
             # (a check of the text is about the description, which the folder's files do not settle)
-            untaken = job.state == "available" and job.inputs.get("head") == head and not job.inputs.get("text_check")
+            untaken = (job.state == "available" and job.inputs.get("head") == head
+                       and not job.inputs.get("text_check") and not job.inputs.get("operator_check"))
             if untaken and still.get(folder, head) != head and supersede(
                     ctx, job, f"Superseded: {folder} of #{number} at {head[:7]} holds the files of "
                               f"{still[folder][:7]}, where its last review settled it"):
@@ -2594,7 +2625,8 @@ def sync_pr_reviews(ctx) -> list[str]:
                 carried_prs.add(number)
                 for job in mine:
                     if (job.state == "available" and job.inputs.get("head") == head
-                            and not job.inputs.get("text_check") and supersede(
+                            and not job.inputs.get("text_check") and not job.inputs.get("operator_check")
+                            and supersede(
                             ctx, job, f"Superseded: the roadmap folders of #{number} at {head[:7]} are those of "
                                       f"{source[:7]}, whose acceptance stands")):
                         out.append(f"#{number}: {job.id} superseded")
@@ -2642,7 +2674,7 @@ def sync_pr_reviews(ctx) -> list[str]:
     text_due: list[tuple[int, dict, list[str], str, list[Job]]] = []
 
     def file_round(number: int, entry: dict, folder: str, ours: list[Job], mine: list[Job], extra: dict,
-                   dispute: bool = False, note: str = "", answered: str = "") -> bool:
+                   dispute: bool = False, note: str = "", answered: str = "", final: bool = False) -> bool:
         """Create one PRREVIEW job of `folder` of pull request `number` at its current head; False when
         it was not filed this run (its comments could not be read). `answered`: the review of this
         folder whose answer at the unmoved head the round reads (a dispute or a text round); the worker
@@ -2658,6 +2690,18 @@ def sync_pr_reviews(ctx) -> list[str]:
         if dispute:
             inputs.update({"rereview": False, "dispute_rereview": True})
         inputs.update(extra)
+        # A pass before the final review, or the final review after the passes: a full review on the
+        # review models, whatever the passes changed (`review_stage`; `final`: a pass left this head).
+        passes = [j for j in ours if j.inputs.get("pre") and board.SUPERSEDED_LABEL not in j.labels]
+        pooled = str(author).lower() in {str(x).lower() for x in cfg.roadmap.pool}
+        stage = "final" if final or dispute or extra else review_stage(p, ours, pooled)
+        pinned = {}
+        if stage == "pre":
+            inputs["pre"] = True
+            pinned = {"requires_agent": p.pre_agent, "requires_model": p.pre_model}
+        elif passes and len(passes) == len([j for j in ours if board.SUPERSEDED_LABEL not in j.labels]):
+            inputs["rereview"] = False
+            note = note or f" (the final review, after {len(passes)} pass{'es' if len(passes) != 1 else ''})"
         if inputs["rereview"] or dispute:
             if number not in threads:
                 try:
@@ -2671,12 +2715,15 @@ def sync_pr_reviews(ctx) -> list[str]:
             worker = answered and answer_worker(threads[number], answered)
             if worker := worker or head_worker(threads[number], head):
                 inputs["not_worker"] = worker
-        job = board.new_job(board.make_id("prreview", leaf, next_review_round(reviews, leaf)), inputs=inputs)
+        job = board.new_job(board.make_id("prreview", leaf, next_review_round(reviews, leaf)), inputs=inputs,
+                            **pinned)
         issue = ctx.board.create(job)
         job.number, job.state = issue, "available"
         reviews.append(job)
         mine.append(job)
         made += 1
+        if stage == "pre" and not note:
+            note = f" (pass {len(passes) + 1} of at most {p.pre_passes} before the final review, on {p.pre_model})"
         if job.id in getattr(ctx.board, "reused", {}):
             out.append(f"#{number}: {job.id} already on the board as #{issue}")
         else:
@@ -2721,7 +2768,11 @@ def sync_pr_reviews(ctx) -> list[str]:
             dispute = text_round = False
             if same and settled:
                 continue
-            if same:
+            read_here = finished_reviews(same, head)
+            # A pass before the final review that left the head where it was (it asked for nothing, or its
+            # points were answered without a push): the final review reads this head.
+            after_pass = bool(read_here) and bool(max(read_here, key=round_key).inputs.get("pre"))
+            if same and not after_pass:
                 # 2026-11-02: a review answered without moving the head (the reply's answered record names the
                 # reviewed head: a dispute) gets one more round, a full review by another worker; a head whose
                 # reply moved it is re-reviewed by the ordinary path, and a head reviewed twice is settled.
@@ -2758,7 +2809,8 @@ def sync_pr_reviews(ctx) -> list[str]:
                 waiting += 1
                 continue
             file_round(number, entry, folder, ours, mine, {"text_rereview": True} if text_round else {}, dispute,
-                       answered=max(same, key=round_key).id if same and (dispute or text_round) else "")
+                       answered=max(same, key=round_key).id if same and (dispute or text_round) else "",
+                       final=after_pass)
     if waiting:
         out.append(f"{waiting} review job(s) wait ([prreview] per_run = {p.per_run})")
     if text_due and p.text_per_run:

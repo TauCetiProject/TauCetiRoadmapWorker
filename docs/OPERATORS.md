@@ -820,6 +820,20 @@ non-drafts before drafts, and the oldest first. The titles and descriptions are 
 batches (`prbatch.pull_texts`). The log reads `#N: PRREVIEW-<Leaf>~k created (a check of its title and
 description: changed since its review; dependency depth 0)`.
 
+**Passes before the final review.** With `[prreview] pre_passes` the first rounds of a roadmap folder of a
+pull request the pool repairs are passes on `pre_model` (a model that may also write the roadmaps and the
+repairs): each is an ordinary review that ends with its repair, pinned to that model
+(`requires_agent`, `requires_model`; its inputs say `pre`), and it never decides the label. Its verdict is
+read as `passed` where it accepts and without the record of a P3-only repair (`intake.pass_verdict`), so
+nothing is labelled, settled or carried on it, and the lane leaves the label alone and says in its comment
+that the final review follows. When a pass leaves the head where it was (it asked for nothing, or its points
+were answered without a push), or after `pre_passes` of them, the next round is the final review: a full
+review on the lane's review models, which alone decides `label`. Once a review model has reviewed a folder
+every later round of it is final (`intake.review_stage`), so pull requests reviewed before the setting was
+turned on are unchanged; another author's pull request gets no pass, since nobody repairs it between the two
+reviewers. A worker takes passes when it runs the pass model on the `prreview` lane (`--model`); a review
+an operator files by hand at an accepted head (inputs `operator_check`) is not closed as superseded.
+
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | file and retire review jobs and keep the label (nothing is read while off) |
@@ -827,6 +841,8 @@ description: changed since its review; dependency depth 0)`.
 | `dependency_label` | `""` | the label `roadmaps dependency-labels` keeps when given no `--label` (below); `board sync` does not touch it |
 | `per_run` | `3` | new review jobs (one per roadmap folder) per `board sync` run, oldest pull request first |
 | `text_per_run` | `10` | of those, check rounds of an accepted head's title and description that its review did not read (above), filed last, least deep in the dependency graph first; `0` files none |
+| `pre_passes` | `0` | passes before the final review of a pull request the pool repairs (below); `0`: none |
+| `pre_agent`, `pre_model` | `"claude"`, `""` | the family and the model the passes run on; `pre_model` is required with `pre_passes` |
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
 | `skip_authors` | `[]` | never these authors' pull requests |
 | `operator_prs` | `[]` | pull request numbers whose review rounds an operator files by hand (a serial chain over a many-folder pull request); `board sync` files none for them |
