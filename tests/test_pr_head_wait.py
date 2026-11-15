@@ -29,6 +29,8 @@ class HeadGH:
     def api(self, path, paginate=False):
         if path.split("?")[0].endswith("/comments"):
             return []
+        if path.split("?")[0].endswith("/reviews"):
+            return []                      # nobody has approved the pull request
         if "/pulls/" in path:
             self.reads.append(path)
             head = self.heads.pop(0) if len(self.heads) > 1 else self.heads[0]
