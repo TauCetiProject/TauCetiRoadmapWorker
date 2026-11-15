@@ -86,10 +86,20 @@ of their pin, and the round log says why the exported one was not used.
 - `[sources] local_dirs`;
 - `[agents] timeout_minutes`.
 
-Set them in your own TOML file, passed as `--overlay FILE` or `$TAUCETI_ROADMAP_OVERLAY`. It is merged
+Set them in your own TOML file, passed as `--overlay FILE` or `$TAUCETI_ROADMAP_OVERLAY`; with neither,
+`~/.config/tauceti/roadmap-overlay.toml` is read when it is there, so that every worker and script of
+a host reads one file (`TAUCETI_ROADMAP_OVERLAY=` set and empty reads none). It is merged
 over the project file table by table, so the rest of each table stays the project's. Any other key is
-refused by name, so an overlay can never change the board's rules (separation, gates, models,
-repositories). `doctor` prints what the overlay set. The commands a brief gives agents carry the same
+refused by name, so an overlay can never change the board's rules (separation, gates, the lanes' models,
+repositories).
+
+The `[worker]` table also holds the order and the models of a host's own workers, which are the
+operator's to choose: `late_authors` and `late_except` (as `[prreview] late_authors` and `late_except`,
+for this host's workers alone: the reviews of those authors' pull requests are taken after every other
+job, the pull requests named excepted; both tables' lists count), and `author_models`, login to model: a
+review of a pull request by that author, one `late_except` does not name, is taken only by a worker of
+the host that runs that model (started with `--model`), and the host's other workers leave it. The
+board, its jobs and the project file say nothing of either. `doctor` prints what the overlay set. The commands a brief gives agents carry the same
 `--overlay`. The saved copy of a URL configuration stays the project's file alone.
 
 ```toml
@@ -131,7 +141,10 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   within PRREVIEW, the re-reviews of a repaired head before first reviews), then the oldest issue.
   `[board] human_first`
   and `[board] priority` change that order; `board sync` records the origin on jobs that lack it,
-  and `status` prints it.
+  and `status` prints it. A worker that lists a job whose roadmap none of the listed jobs gives an origin for reads the
+  whole board for it, and keeps that reading in `<state>/board-origins.json` for thirty minutes, shared
+  by the workers of the host (`worker.board_origins`): on a busy board the reading is over a hundred
+  pages, and one a round on every worker spent the host's hourly GitHub quota.
 * `--agent` pins the agent family. Without it, each job runs on its lane's configured agent
   (`[agents.lanes.<kind>]`, default `[agents] default`), and a red-team pass on the agent it requires,
   if that agent is installed.

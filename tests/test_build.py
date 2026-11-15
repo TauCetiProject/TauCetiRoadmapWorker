@@ -190,3 +190,9 @@ def test_reviews_of_late_authors_rank_after_everything_else():
         j.number = n
     assert [j.id for j in worker.rank(jobs, late=worker.late_review(cfg.prreview))][-1] == "PRREVIEW-A~1"
     assert [j.id for j in worker.rank(jobs)] == [j.id for j in worker.rank(jobs, late=worker.late_review(example_config().prreview))]
+    # The host's own lists (`[worker] late_authors`, `late_except`) count beside the project's.
+    own = example_config()
+    own.worker.late_authors, own.worker.late_except = ["carol"], [14]
+    late = worker.late_review(cfg.prreview, own.worker)
+    assert [late(j) for j in jobs] == [True, True, False, False]
+    assert [worker.late_review(example_config().prreview, own.worker)(j) for j in jobs] == [False, True, False, False]

@@ -38,6 +38,7 @@ SANDBOX_PROFILES = ("off", "proxy", "netjail")
 # settings of the host or the operator, never the board's rules. None: every key of the table.
 OVERLAY_KEYS = {"sandbox": None, "worker": None, "board": ("dispatch",), "sources": ("local_dirs",),
                 "agents": ("timeout_minutes",)}
+DEFAULT_OVERLAY = "~/.config/tauceti/roadmap-overlay.toml"      # read when no overlay is named and it is there
 LICENCE_CLASSES = ("open-repository", "publisher-open", "author-page", "institutional", "operator-local")
 # GitHub's author_association values: who may answer a `needs-references` request.
 ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE")
@@ -393,6 +394,14 @@ class Worker:
     # last write to it; a worker removes its own older ones at its start and when a round starts.
     # 0 = they are never removed.
     keep_job_days: int = 3
+    # The order and the models of this host's own workers, an operator's matter like the rest of the
+    # table (the overlay sets it). `late_authors`, `late_except`: as `[prreview] late_authors` and
+    # `late_except`, for this host's workers alone (both lists count). `author_models`: login -> model;
+    # a review of a pull request by that author (one `late_except` does not name) is taken only by a
+    # worker of this host that runs that model, whatever the lane's models are.
+    late_authors: list[str] = field(default_factory=list)
+    late_except: list[int] = field(default_factory=list)
+    author_models: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -585,6 +594,14 @@ def validate(cfg: Config) -> None:
     for key in ("operator_prs", "late_except"):
         if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in getattr(cfg.prreview, key)):
             problems.append(f"prreview.{key} must list pull request numbers")
+    login = r"[A-Za-z0-9][A-Za-z0-9-]*"
+    if any(not isinstance(a, str) or not re.fullmatch(login, a) for a in cfg.worker.late_authors):
+        problems.append("worker.late_authors must list GitHub logins")
+    if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in cfg.worker.late_except):
+        problems.append("worker.late_except must list pull request numbers")
+    if any(not (isinstance(k, str) and re.fullmatch(login, k) and isinstance(v, str) and v)
+           for k, v in cfg.worker.author_models.items()):
+        problems.append("worker.author_models maps a GitHub login to a model name")
     if any(not isinstance(a, str) or not re.fullmatch(r"[A-Z][A-Za-z0-9]*(/[A-Z][A-Za-z0-9]*)*", a)
            for a in cfg.prreview.parent_roadmaps):
         problems.append("prreview.parent_roadmaps must list roadmap folder names")
@@ -670,9 +687,13 @@ def fetch(url: str, opener=None, sleep=time.sleep, delays: tuple[int, ...] = RET
 
 
 def read_overlay(overlay: str | None = None) -> tuple[dict, str]:
-    """(the operator's overlay as tables, its path): `--overlay`, else `$TAUCETI_ROADMAP_OVERLAY`, else none.
+    """(the operator's overlay as tables, its path): `--overlay`, else `$TAUCETI_ROADMAP_OVERLAY`, else
+    `DEFAULT_OVERLAY` when that file is there (every worker and script of the host then reads it), else none.
     Only keys in `OVERLAY_KEYS` are accepted."""
-    where = overlay or os.environ.get("TAUCETI_ROADMAP_OVERLAY", "")
+    named = os.environ.get("TAUCETI_ROADMAP_OVERLAY")       # set and empty: no overlay, not even the default
+    where = overlay or named or ""
+    if not where and named is None and Path(DEFAULT_OVERLAY).expanduser().is_file():
+        where = DEFAULT_OVERLAY
     if not where:
         return {}, ""
     path = Path(where).expanduser()
