@@ -184,6 +184,35 @@ class LocalClaims(Claims):
 
 
 @needs_git
+def test_the_port_lane_writes_the_summary_block(tmp_path, monkeypatch):
+    """A port's pull request gets its summary block from the generator, on the port's own agent; a
+    refusal or an error is reported with the command that writes it, and does not undo the port."""
+    from tauceti_roadmap_worker import summary
+    ctx = SimpleNamespace(agent="claude", model="claude-opus-5-5")
+    seen = []
+
+    def wrote(c, numbers, **kw):
+        seen.append((numbers, kw))
+        return [f"#{numbers[0]} Mine: wrote a new summary (212 words)"]
+
+    monkeypatch.setattr(summary, "refresh", wrote)
+    assert PortLane().write_summary(ctx, 905) == ""
+    assert seen == [([905], {"agent": "claude", "model": "claude-opus-5-5", "missing": True})]
+    monkeypatch.setattr(summary, "refresh", lambda c, n, **kw: [f"#{n[0]} Mine: a new summary is present; unchanged"])
+    assert PortLane().write_summary(ctx, 905) == ""
+    monkeypatch.setattr(summary, "refresh",
+                        lambda c, n, **kw: [f"#{n[0]} Mine: summary refused (too long); description unchanged"])
+    note = PortLane().write_summary(ctx, 905)
+    assert "summary refused (too long)" in note and note.endswith("; run summary --pr 905)")
+
+    def broke(c, n, **kw):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(summary, "refresh", broke)
+    note = PortLane().write_summary(ctx, 905)
+    assert note.startswith(" (summary block not written: OSError: no space") and note.endswith("; run summary --pr 905)")
+
+
 def test_the_claims_namespace_names_the_operators(tmp_path):
     remote = tmp_path / "claims.git"
     subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
