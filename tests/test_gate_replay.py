@@ -60,3 +60,19 @@ def test_a_gate_round_whose_board_submission_failed_is_finished_without_a_second
     [opened] = hub.opened
     assert result.url == opened["html_url"] and ctx.board.states == [(job.id, "submitted")]
     assert lane_base.read_pending(ctx, job) is None
+
+
+def test_a_review_to_answer_is_quoted_whole():
+    """The reply records the whole comment as answered, so the document the agent reads holds every
+    finding of it: a review longer than the briefs' general quote limit is not cut."""
+    from tauceti_roadmap_worker import prompts
+    findings = [f"{k}. **F{k:02d}** (P2) finding {k}\n\n   " + "text " * 400 for k in range(1, 23)]
+    body = "AI review of `abc1234`\n\nVerdict: needs_changes\n\n" + "\n\n".join(findings)
+    assert prompts.QUOTE_LIMIT < len(body) < 65_536 < lane_gate.REVIEW_QUOTE_LIMIT
+    document = lane_gate.reviews_document([replies.Event("2026-11-15T14:41:37Z", "reviewer", body)])
+    assert "truncated" not in document
+    assert all(f"**F{k:02d}** (P2) finding {k}" in document for k in range(1, 23))
+    assert document.count("text ") == 22 * 400
+    # the fence still cannot be closed from inside the quoted text
+    fenced = lane_gate.reviews_document([replies.Event("2026-11-15T14:41:37Z", "reviewer", "a\n```\nb")])
+    assert fenced.count("```") == 2
