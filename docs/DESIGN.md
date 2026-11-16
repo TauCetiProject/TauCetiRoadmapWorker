@@ -87,7 +87,9 @@ checkout, submits a PR to the board, and the intake advances the state.
    source locators, an adversarial pass over every statement, a duplication audit against the
    current library and roadmaps, and a supplier-order audit. Verdict `accepted` or
    `needs_changes` with concrete findings. A fix worker's self-acceptance never counts; every
-   fix round is followed by a fresh independent review. Reviews and red-team passes run only on
+   fix round is followed by a fresh independent review (under `[board] settle_minor`, the small
+   repair of a package review that found P3 points only goes straight to the red team, which
+   reads the whole package). Reviews and red-team passes run only on
    the review models the configuration pins, Fable (agent `claude`, model `fable`) or Astra
    (agent `codex`, model `gpt-6-astra`): `[agents.lanes.review]` pins a model per family and
    leaves the family free, and every red-team pass job carries the agent and model of its pass

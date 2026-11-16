@@ -459,7 +459,18 @@ human.
 Job ids follow `KIND-NAME~roundN`. Round 1 of a design, package, review or design/package fix has
 no suffix; red-team passes (`RT-Name~1a`), red-team fixes (`FIX-RT-Name~1`) and gate rounds
 (`GATE-Name~1`) always name their round. A review that does not accept sends its artefact to a fix
-round, and every fix round is followed by a fresh independent review. After `[board] max_rounds`
+round, and every fix round is followed by a fresh independent review, with one exception under
+`[board] settle_minor` (off by default): a package review whose every finding is P3 ends with its
+repair. When that repair round, from the head the review read to the head it pushed, changed at
+most `[prreview] small_change_lines` lines of the package (its own report aside) and no file
+outside the package, the intake files no further review round: it records the acceptance on the
+review's job (the verdict file the merge writes names the review, the repair, both heads, the number
+of findings and of lines), says so on the board pull request, and creates what an accepted package
+releases, the red team on that pull request or, without one, the port. A repair of a review with a
+P1 or P2 finding, a larger repair, one that touched another file, and every design repair are
+reviewed again as before. A package review round that was filed before the switch was turned on,
+and that nobody has taken, is closed as `superseded` on the same test when a red team follows; a
+round somebody took runs to its end. After `[board] max_rounds`
 rounds (5 in the example) the next fix round is created as `state:blocked`, listing the last
 review's findings, and the review's issue says so: a human moves the fix to `state:available` to
 run the next round (the round counter keeps counting, and every later round parks the same way), or
