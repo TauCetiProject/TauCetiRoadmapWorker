@@ -114,8 +114,9 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
    "delete it from `Suggested.lean`" (the README keeps the statement), never as "prove it in place".
 8. **Copyright, licences and scope** (the section of that name below). The wording against the
    sources, the arrangement against the table of contents of the source cited most, and reuse: each
-   is a finding as that section says. Close with the line `Source independence:`; an acceptance
-   without it is refused. What a human must decide (whether the subject is mainstream research
+   is a finding as that section says. Close with the line `Source independence:` and the line
+   `Research link:` (how the roadmap connects to research mathematics); an acceptance without either is
+   refused. What a human must decide (whether the subject is mainstream research
    mathematics, a licence) is not a finding: it goes under `## For the human reviewers`, and a
    report without that section is refused.
 

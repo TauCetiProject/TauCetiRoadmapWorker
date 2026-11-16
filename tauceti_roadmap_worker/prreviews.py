@@ -389,18 +389,50 @@ def human_notice(report: str) -> str:
             f"{'do' if len(flags) != 1 else 'does'} not change the verdict.")
 
 
+PROVENANCE_LABELS = ("Source independence", "Research link")
+PROVENANCE_LINE = re.compile(r"^[\s>*_-]*(" + "|".join(PROVENANCE_LABELS) + r")\**\s*:\**\s*(.*)$")
+
+
+def provenance_lines(report: str) -> list[str]:
+    """A report's `Source independence:` and `Research link:` statements, each as one line
+    `**Label:** text` (the first of each, with the lines that continue it up to a blank line, a list
+    item, a heading or the other statement), in that order: what a comment shows under its verdict,
+    because the report states them among its checks, where the humans who approve seldom read."""
+    found: dict[str, list[str]] = {}
+    current, fenced = None, False
+    for line in (report or "").split("\n"):
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced, current = not fenced, None
+        if fenced:
+            continue
+        m = PROVENANCE_LINE.match(line)
+        if m:
+            current = found.setdefault(m.group(1), []) if m.group(1) not in found else None
+            if current is not None:
+                current.append(m.group(2).strip())
+        elif current is not None and line.strip() and not re.match(r"^\s*([-*+]\s|\d+\.\s|#|\|)", line):
+            current.append(line.strip())
+        else:
+            current = None
+    return [f"**{label}:** " + " ".join(x for x in found[label] if x) for label in PROVENANCE_LABELS
+            if " ".join(found.get(label, [])).strip()]
+
+
 def render(head: str, verdict: str, report: str, marker: dict, conditional: list[str] | None = None, *,
            preamble: list[str] = (), mark: str = MARK) -> str:
     """A worker's report in the comment shape: `head` (the first line), the verdict (and the gaps an
     acceptance is conditional on), the `preamble` lines, the findings numbered F01, F02, ... with
     their severity, the report's other sections, and the worker's marker (`mark`). A report that flags
-    something for the human reviewers says so before its findings (`human_notice`)."""
+    something for the human reviewers says so before its findings (`human_notice`), after the
+    report's statements on its sources and on research (`provenance_lines`)."""
     findings, rest = report_findings(report)
     lines = [head, "", f"Verdict: {verdict}", ""]
     if conditional:
         lines[-1:] = ["Conditional on the announced gaps: " + ", ".join(f"`{g}`" for g in conditional), ""]
     if preamble:
         lines += [*preamble, ""]
+    for stated in provenance_lines(report):
+        lines += [stated, ""]
     notice = human_notice(report)
     if notice:
         lines += [notice, ""]

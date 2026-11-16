@@ -826,6 +826,13 @@ def test_a_briefed_report_owes_the_source_line_and_the_section_for_the_human_rev
                                                              "scope, a licence), or `- none`"]
     assert lane.provenance_problems(ws, done + "- none\n", line=True) == []
     assert lane.provenance_problems(ws, done + "- **Scope.** Every locator cites `Notes`, unpublished.\n", line=True) == []
+    # A brief that asks for the research line as well: an acceptance owes it, a review that asks for changes does not.
+    (ws.job_dir / "brief.md").write_text("Close with the line `Source independence:` and the line\n`Research link:` ...")
+    [owed] = lane.provenance_problems(ws, done + "- none\n", line=True)
+    assert owed.startswith("report: no `Research link:` line")
+    assert lane.provenance_problems(ws, done + "- none\n", line=False) == []
+    linked = done.replace("## For the human", "Research link: none found\n\n## For the human") + "- none\n"
+    assert lane.provenance_problems(ws, linked, line=True) == []
 
 
 def test_the_flags_for_the_human_reviewers_are_read_and_announced_under_the_verdict():

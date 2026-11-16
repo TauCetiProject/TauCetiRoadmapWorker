@@ -41,6 +41,16 @@ with 5 sources, none shared; largest share <source id>, 41 of 96 locators; conte
 <source id>: independent`. When a text or its table of contents could not be read, say which, here
 and to the human reviewers. An acceptance carries the line.
 
+Then write one more line, `Research link:`, which says in at most 60 words how the roadmap connects
+to research mathematics: the published results or lines of current research that its headline
+targets are stated in, are prerequisites of, or are used by, each named with its authors and year
+as the README's own sources or a text you read give them. For example `Research link: Layers 4 and
+5 are the comparison theorems that <authors, year> use for <result>; README motivation and <source
+id> §2`. State only what the README or a source you read supports, and say which of the two the
+line rests on. When you find no such connection, write `Research link: none found` and flag the
+scope to the human reviewers. An acceptance carries this line as well: the humans who approve read
+the two lines first.
+
 ### What a human decides
 
 Some questions are not yours to settle. They are not findings: they change neither the verdict nor

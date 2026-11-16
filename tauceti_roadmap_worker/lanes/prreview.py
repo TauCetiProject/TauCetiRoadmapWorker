@@ -364,7 +364,9 @@ full review: check that the updates are correct.
    bullets, the rows for what changed, the gate result.
    The check of copyright, licences and scope compares the passages the diff adds or changes, and
    its `Source independence:` line says so (`changed passages only`); the arrangement is compared
-   again only when the diff adds, removes or reorders a layer. The bullets of the previous report's
+   again only when the diff adds, removes or reorders a layer. The `Research link:` line is written
+   again as the previous report has it, unless the change bears on it; when that report has none,
+   write it from the README's statement of purpose and its sources. The bullets of the previous report's
    `## For the human reviewers` are written again, unless the change removed what they report.
 3. **The pull request's text** is not untouched text: a change makes the title and description
    wrong whenever it changes what they describe, though they did not change themselves. Check them
