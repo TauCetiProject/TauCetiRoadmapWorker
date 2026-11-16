@@ -86,8 +86,9 @@ context, and of every bold README target, with the values you computed on each s
    `Suggested.lean`" (the README keeps the statement), never as "prove it in place".
 9. **Copyright, licences and scope** (the section of that name below). The wording against the
    sources, the arrangement against the table of contents of the source cited most, and reuse: each
-   is a finding as that section says. Close with the line `Source independence:`; a pass
-   without it is refused. What a human must decide (whether the subject is mainstream research
+   is a finding as that section says. Close with the line `Source independence:` and the line
+   `Research link:` (how the roadmap connects to research mathematics); a pass without either is
+   refused. What a human must decide (whether the subject is mainstream research
    mathematics, a licence) is not a finding: it goes under `## For the human reviewers`, and a
    report without that section is refused.
 

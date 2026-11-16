@@ -79,7 +79,8 @@ the merge order __ORDER__ (suppliers before consumers, one roadmap per line).
 8. **Copyright, licences and scope** (the section of that name below), against the legal copies you
    can open. The wording against the sources, the arrangement against the table of contents of the
    source cited most, and reuse: each is a finding as that section says. Close with the line
-   `Source independence:`. What a human must decide (whether the subject is mainstream research
+   `Source independence:` and the line `Research link:` (how the roadmap connects to research
+   mathematics). What a human must decide (whether the subject is mainstream research
    mathematics, a licence) is not a finding: it goes under `## For the human reviewers`.
 
 ## Your comment

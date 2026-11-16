@@ -144,7 +144,7 @@ def test_the_evidence_document_carries_no_pull_request_numbers_dates_or_prices()
 def test_reviewing_briefs_check_copyright_arrangement_and_scope(lane):
     text = " ".join(prompts.render(lane, all_values()).split())
     for phrase in ("## Copyright, licences and scope", "follows that source's table of contents",
-                   "`Source independence:`", "`## For the human reviewers`",
+                   "`Source independence:`", "`Research link:`", "`## For the human reviewers`",
                    "The project plans mainstream research mathematics", "They are not findings",
                    "never quote the source's passage"):
         assert phrase in text, f"{lane}: {phrase}"

@@ -369,6 +369,7 @@ SCRUBBED = ("target.md", "review.json", "sources.toml")
 TEMP_ROOTS = re.compile(board.TEMP_ROOT)
 OVERLAP_LINE = re.compile(r"(?m)^[\s>*_-]*Overlap check\**\s*:")      # the line a review closes its overlap audit with
 SOURCE_LINE = re.compile(r"(?m)^[\s>*_-]*Source independence\**\s*:")  # ... and its check of wording and arrangement
+RESEARCH_LINE = re.compile(r"(?m)^[\s>*_-]*Research link\**\s*:")      # ... and how the roadmap connects to research
 
 
 def scrub_paths(text: str, state: Path, home: Path) -> str:
@@ -903,8 +904,8 @@ class Lane:
     def provenance_problems(self, ws: Workspace, report: str, *, line: bool) -> list[str]:
         """What a report lacks when its brief asked for the check of copyright, licences and scope: the
         `## For the human reviewers` section (with `- none` when nothing is flagged) and, when `line`
-        (an acceptance, a red-team pass), the `Source independence:` line. A round briefed before the
-        check existed owes neither."""
+        (an acceptance, a red-team pass), the `Source independence:` line and, in a round whose brief
+        asks for it, the `Research link:` line. A round briefed before the check existed owes none."""
         briefs = [p.read_text(encoding="utf-8", errors="replace") for p in ws.job_dir.glob("brief*.md")]
         if not any("`Source independence:`" in b for b in briefs):
             return []
@@ -913,6 +914,10 @@ class Lane:
             problems.append("report: no `Source independence:` line: it gives the passages compared with the sources, "
                             "the source with the largest share of the locators, and the result of the comparison "
                             "with that source's table of contents (the section on copyright, licences and scope)")
+        if line and any("`Research link:`" in b for b in briefs) and not RESEARCH_LINE.search(report):
+            problems.append("report: no `Research link:` line: it says in at most 60 words which published results or "
+                            "lines of current research the roadmap's headline targets serve, or `none found` (the "
+                            "section on copyright, licences and scope)")
         if prreviews.human_flags(report) is None:
             problems.append(f"report: no `## {prreviews.HUMAN_SECTION}` section with its bullets: one for each question "
                             "a human decides (the scope, a licence), or `- none`")

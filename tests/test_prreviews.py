@@ -50,3 +50,25 @@ def test_a_worker_report_is_rendered_into_the_shape():
     p = prreviews.parse(text)
     assert p.findings == [("F01", "P1"), ("F02", "P2")] and p.worker == marker and p.blocking == 2
     assert prreviews.redteam_head(1, "a", "codex", "0123456789") == "Red team round 1 pass a (codex) of 0123456"
+
+
+def test_a_comment_states_the_sources_and_the_research_link_under_its_verdict():
+    # The report states them among its checks, far down; the humans who approve read the top of the comment.
+    report = ("# Review of Foo\n**Verdict:** accepted\n\n## Verified sound\n\n- the sample\n"
+              "- Gate: every check passed.\n\n"
+              "Source independence: 9 passages compared with 4 sources, none shared; largest share\n"
+              "`Serre`, 12 of 40 locators; contents compared with `Serre`: independent\n\n"
+              "**Research link:** Layer 3 is the input of the modularity lifting of (Authors, 2001); README motivation.\n"
+              "- a bullet that does not continue it\n\n"
+              "```\nResearch link: inside a fence, not a statement\n```\n\n## For the human reviewers\n\n- none\n")
+    sources = ("**Source independence:** 9 passages compared with 4 sources, none shared; largest share `Serre`, "
+               "12 of 40 locators; contents compared with `Serre`: independent")
+    assert prreviews.provenance_lines(report) == [
+        sources, "**Research link:** Layer 3 is the input of the modularity lifting of (Authors, 2001); README motivation."]
+    marker = {"job": "REV-PKG-Foo", "worker": "w1", "agent": "claude", "model": "m"}
+    text = prreviews.render(prreviews.review_head("claude", "abcdef0123456"), "accepted", report, marker)
+    assert text.startswith("Review (claude) of abcdef0\n\nVerdict: accepted\n\n**Source independence:** 9 passages")
+    assert text.index("**Research link:** Layer 3") < text.index("## Verified sound")
+    assert text.count("Source independence") == 2             # under the verdict, and where the report has it
+    assert prreviews.provenance_lines("# Review\n\nResearch link:\n\n## Verified sound\n") == []      # nothing stated
+    assert prreviews.provenance_lines("# Review of Foo\n\n- Research link: none found\n") == ["**Research link:** none found"]
