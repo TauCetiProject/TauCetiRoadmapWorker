@@ -124,7 +124,7 @@ def speaks_for_author(e: Event, ours: set[str], owner: str = "") -> bool:
 def is_review(e: Event, ours: set[str], markers: list[str], ignore: set[str] = frozenset(),
               maintainers: set[str] = frozenset(), maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX,
               owner: str = "", housekeeping: list[str] | tuple[str, ...] = ()) -> bool:
-    if e.user in ignore:
+    if e.user.lower() in {login.lower() for login in ignore}:
         return False
     if e.user.lower() in ours and any((e.body or "").startswith(p) for p in housekeeping):
         return False     # an answerer's housekeeping note (on another pool member's pull request too): no review

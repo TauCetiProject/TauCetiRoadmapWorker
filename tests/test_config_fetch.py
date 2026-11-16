@@ -83,8 +83,14 @@ def test_the_overlay_carries_the_order_and_models_of_the_hosts_own_workers(tmp_p
     assert config.load(str(conf)).worker.late_authors == ["dave"]                     # the host's default file
     monkeypatch.setenv("TAUCETI_ROADMAP_OVERLAY", "")
     assert config.load(str(conf)).worker.late_authors == []                           # set and empty: none
+    held = tmp_path / "held.toml"
+    held.write_text('[worker]\nheld_logins = ["Erin"]\n')
+    cfg = config.load(str(conf), overlay=str(held))
+    assert cfg.worker.held_logins == ["Erin"] and config.ignored_logins(cfg) == {"github-actions[bot]", "Erin"}
+    assert config.ignored_logins(config.load(str(conf))) == {"github-actions[bot]"}
     for bad, why in (('late_authors = ["not a login"]', "worker.late_authors"), ("late_except = [0]", "worker.late_except"),
-                     ('author_models = { dave = "" }', "worker.author_models")):
+                     ('author_models = { dave = "" }', "worker.author_models"),
+                     ('held_logins = ["not a login"]', "worker.held_logins")):
         with pytest.raises(config.ConfigError, match=why):
             config.parse(f'[project]\nname = "P"\n[worker]\n{bad}\n', "x.toml")
 

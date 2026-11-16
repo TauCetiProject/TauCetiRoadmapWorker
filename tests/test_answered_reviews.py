@@ -342,6 +342,24 @@ def test_a_reply_records_the_worker_that_wrote_it_and_the_head_it_answers_at(wor
     assert replies.answered_marker("GATE-Foo~1", {}) == '<!-- tauceti-roadmap-answered {"answered": {}, "job": "GATE-Foo~1"} -->'
 
 
+def test_a_held_logins_review_files_no_gate_round_and_moves_no_label(tmp_path, worker):
+    """`[worker] held_logins`: the host answers those logins by hand. Its sync leaves the label and
+    files no round, a gate round does not count their reviews, and the login's case does not matter."""
+    gh = PullGH(reviews=[REVIEW_A])
+    board = FakeBoard()
+    cfg = example_config()
+    cfg.worker.held_logins = [REVIEWER.upper()]
+    out = intake.sync_pull_requests(SimpleNamespace(cfg=cfg, gh=gh, board=board, state=tmp_path))
+    assert "#905 Foo: awaiting-review" in out and not any("GATE-" in line for line in out)
+    assert gh.labels == ["awaiting-review"] and not board.jobs
+    ctx = dataclasses.replace(worker(gh), cfg=cfg)
+    with pytest.raises(lane_base.LaneError, match="no unanswered review"):
+        prepare(ctx, gate_job())
+    # Without the setting the same review flips the label and files the round.
+    out, board = sync(tmp_path, gh)
+    assert "#905 Foo: awaiting-author" in out and any("GATE-Foo~1 created" in line for line in out)
+
+
 def test_no_gate_round_is_filed_while_a_review_of_a_pool_authors_pull_request_repairs_it(tmp_path):
     ai_review = comment(950, "2026-10-28T10:00:00Z", f"\U0001f916 AI review (codex, m) of {SHA}\n\nVerdict: CHANGES "
                         "NEEDED\n\n1. **F01** (P1) the hypothesis on p is missing\n", user="bob")

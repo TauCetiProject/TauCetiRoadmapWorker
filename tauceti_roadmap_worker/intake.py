@@ -58,6 +58,7 @@ from . import (
     summary,
 )
 from .board import Job, Outcome
+from .config import ignored_logins
 from .gh import GHError, transient
 from .lanes.base import open_roadmap_prs, pr_answerers, sibling_readmes
 from .lanes.port import pr_number_from_report
@@ -1718,7 +1719,7 @@ def sync_pull_requests(ctx) -> list[str]:
         events = events_from_api(pulled.reviews, pulled.comments, pulled.inline)
         want, drop = replies.wanted_label(events, pr_answerers(cfg, p["owner"]), p["head"], markers=r.review_markers,
                                           housekeeping=r.housekeeping_prefixes, approvers=r.approvers,
-                                          ignore=set(r.ignore_logins), awaiting_author=r.awaiting_author,
+                                          ignore=ignored_logins(cfg), awaiting_author=r.awaiting_author,
                                           awaiting_review=r.awaiting_review, maintainers=set(r.maintainer_logins),
                                           maintainer_prefix=r.maintainer_review_prefix, owner=p["owner"])
         have = {label["name"] for label in data.get("labels", [])}
