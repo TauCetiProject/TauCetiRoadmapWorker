@@ -92,6 +92,28 @@ def test_a_real_process_streams_into_the_log(tmp_path, monkeypatch):
     assert "brief chars: 200000" in task.log_err.read_text()   # a large brief reaches stdin whole
 
 
+def test_only_the_events_that_report_usage_are_kept_in_memory(tmp_path):
+    """The reader writes every line to the raw file and the log and keeps the usage events only: a
+    run's other events are its whole transcript (2026-11-16: 0.8 GB held by each working worker)."""
+    import io
+    transcript = [{"type": "assistant", "message": {"content": [{"type": "text", "text": "x" * 5000}]}}] * 50
+    for agent, events in (("claude", CLAUDE_EVENTS), ("codex", CODEX_EVENTS)):
+        stream = io.StringIO("".join(json.dumps(e) + "\n" for e in [*transcript, *events]) + "not JSON\n")
+        out, raw, kept = io.StringIO(), io.StringIO(), []
+        agents._read_events(stream, agent, out, raw, kept)
+        assert kept and {e["type"] for e in kept} <= set(agents.USAGE_EVENTS)
+        assert agents.usage_from_events(agent, kept) == agents.usage_from_events(agent, events)
+        assert len(raw.getvalue().splitlines()) == len(transcript) + len(events) + 1
+        assert "not JSON" in out.getvalue()
+
+
+def test_releasing_memory_never_fails(monkeypatch):
+    from tauceti_roadmap_worker import worker
+    worker.release_memory()
+    monkeypatch.setattr(worker.ctypes, "CDLL", lambda name: (_ for _ in ()).throw(OSError("no such library")))
+    worker.release_memory()
+
+
 def test_command_lines_ask_for_the_event_streams(tmp_path):
     run = agents.AgentRun(agent="claude", model="m", workdir=tmp_path, brief="b", log_out=tmp_path / "o",
                           log_err=tmp_path / "e", claude_hook=False)

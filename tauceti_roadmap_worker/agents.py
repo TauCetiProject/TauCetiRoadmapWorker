@@ -249,7 +249,7 @@ def events_path(log_out: Path) -> Path:
 def run_agent(run: AgentRun, launch=None) -> AgentResult:
     """Run the agent on the brief. Its events are rendered into the log as they arrive (`tail` follows
     it) and kept raw beside it; the usage-limit check reads the rendered log and stderr, and the
-    token usage comes from the events. `launch` (tests) replaces `subprocess.Popen`. Raises
+    token usage comes from the events that report it (the others are not kept in memory). `launch` (tests) replaces `subprocess.Popen`. Raises
     SandboxUnavailable, before anything runs, when the requested sandbox cannot run here."""
     problem = sandbox_problem(run.sandbox_profile, run.proxy_url, run.netjail)
     if problem:
@@ -327,9 +327,15 @@ def _feed(stdin, brief: str) -> None:
             pass
 
 
+USAGE_EVENTS = ("result", "turn.completed")     # the events `usage_from_events` reads
+
+
 def _read_events(stream, agent: str, out, raw, events: list[dict]) -> None:
-    """Read the agent's stdout line by line: keep each line raw, render it into the log, and keep the
-    parsed events for the usage. A line that is not JSON is logged as it is."""
+    """Read the agent's stdout line by line: write each line raw beside the log, render it into the
+    log, and keep the parsed events that carry the usage (`USAGE_EVENTS`), those only. A run's
+    events are its whole transcript, every file it read and every tool result: kept parsed until the
+    run ended, they held most of a gigabyte in each worker for as long as it worked (2026-11-16:
+    sixteen workers, 13 GB). A line that is not JSON is logged as it is."""
     for line in stream:
         raw.write(line)
         raw.flush()
@@ -342,7 +348,8 @@ def _read_events(stream, agent: str, out, raw, events: list[dict]) -> None:
                 out.write(line if line.endswith("\n") else line + "\n")
                 out.flush()
             continue
-        events.append(event)
+        if event.get("type") in USAGE_EVENTS:
+            events.append(event)
         for text in render_event(agent, event):
             out.write(text.rstrip("\n") + "\n")
         out.flush()
