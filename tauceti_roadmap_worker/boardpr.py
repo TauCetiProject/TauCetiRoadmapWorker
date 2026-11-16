@@ -673,10 +673,117 @@ def pusher(comments: list[dict], fix: Job) -> dict:
     return {}
 
 
+def package_lines(ctx, old: str, new: str, name: str) -> int | None:
+    """Insertions plus deletions between two heads of a board pull request in the package `name`, the
+    reports aside (a repair writes its own); None when the comparison cannot be read, is cut short by
+    GitHub (300 files), or lists a file outside the package (a merge of main, another roadmap)."""
+    try:
+        compared = ctx.gh.api(f"repos/{repo(ctx)}/compare/{old}...{new}") or {}
+    except GHError:
+        return None
+    files = compared.get("files")
+    if not isinstance(files, list) or len(files) >= 300:
+        return None
+    pkg = board.package_dir(ctx.cfg.board.packages_dir, name) + "/"
+    total = 0
+    for f in files:
+        path = str(f.get("filename") or "")
+        if not path.startswith(pkg):
+            return None
+        if not path.startswith(pkg + "reports/"):
+            total += int(f.get("additions") or 0) + int(f.get("deletions") or 0)
+    return total
+
+
+def minor_settled(ctx, fix: Job, number: int, head: str, jobs: list[Job]) -> dict | None:
+    """With `[board] settle_minor`: the record that the package review `fix` repairs ends with this
+    repair, or None when another review round follows. It ends when every finding of the review is P3
+    (its report on the board's main) and the repair, from the head it was asked at (`base_head`) to
+    `head`, changed at most `[prreview] small_change_lines` lines of the package and nothing outside
+    it. `review`, `fix`, `from`, `head`, `findings` and `lines`, as the verdict file records them."""
+    from .intake import review_text
+    j = board.parse_job_id(fix.id)
+    base = str(fix.inputs.get("base_head") or "")
+    if not ctx.cfg.board.settle_minor or (j.prefix, j.subject) != ("FIX", "PKG") or not base or base == head:
+        return None
+    review = next((x for x in jobs if x.kind == "review" and x.id == fix.inputs.get("review")), None)
+    if review is None or int(review.inputs.get("board_pr") or 0) != number:
+        return None
+    found = prreviews.findings_with_bodies(review_text(ctx, review))
+    if not found or any(severity != "P3" for _fid, severity, _title, _body in found):
+        return None
+    lines = package_lines(ctx, base, head, fix.name)
+    if lines is None or lines > ctx.cfg.prreview.small_change_lines:
+        return None
+    return {"review": review.id, "fix": fix.id, "from": base, "head": head, "findings": len(found), "lines": lines}
+
+
+MINOR_NOTE = ("Intake: every finding of `{review}` is P3 ({findings}) and `{fix}` changes {lines} line{s} of the "
+              "package at `{head}`, so no further review round is filed: the package goes on as an accepted one.")
+MINOR_RECORD = ("every finding of `{review}` ({findings}) was P3 and `{fix}` repaired them at `{head}`, changing "
+                "{lines} line{s} of the package; no further review round was filed")
+
+
+def settled_outcome(settled: dict | None, number: int, pr: dict) -> Outcome:
+    """What a pushed fix tells `board.successors`: an acceptance when it settled its review."""
+    return Outcome(verdict="accepted", pr=number, operator=pr["user"]["login"]) if settled else Outcome()
+
+
+def accept_settled(ctx, settled: dict, number: int, jobs: list[Job]) -> None:
+    """A settled review's acceptance on the board: the verdict record the pull request's merge writes
+    (`accepted_verdict`) kept on the review's job, the supplier gaps the package added announced as
+    at an acceptance, and a note on the pull request. Once: a scan that comes here again (a run
+    stopped on the way) finds the record and adds nothing."""
+    review = next((j for j in jobs if j.id == settled["review"]), None)
+    if review is None or review.inputs.get("accepted_review"):
+        return
+    said = {"review": review.id, "findings": settled["findings"], "fix": settled["fix"], "lines": settled["lines"],
+            "s": "" if settled["lines"] == 1 else "s", "head": settled["head"][:7]}
+    review.inputs["accepted_review"] = {
+        "status": "accepted", "reviewer": f"independent-review-{review.id}", "date": now().date().isoformat(),
+        "findings": 0, "blocking": 0, "settled": dict(settled), "notes": MINOR_RECORD.format(**said)}
+    ctx.board.update_spec(review)
+    from .intake import announce_package_gaps
+    package = next((x for x in jobs if x.id == board.make_id("package", review.name)), review)
+    announce_package_gaps(ctx, package, jobs, settled["head"])
+    note(ctx, number, MINOR_NOTE.format(**said))
+
+
+def settle_untaken(ctx, job: Job, number: int, pr: dict, jobs: list[Job], yes: bool) -> str:
+    """With `[board] settle_minor`: a package review round nobody has taken, filed after a repair that
+    settled the review before it (the switch was turned on since), is closed as superseded and the
+    red team follows on the pull request. '' when the round stands: it is taken or reviewed, its
+    repair settled nothing, or no red team is configured (then the round runs)."""
+    j = board.parse_job_id(job.id)
+    if not ctx.cfg.board.settle_minor or (job.kind, j.subject, job.state) != ("review", "PKG", "available"):
+        return ""
+    fix = next((x for x in jobs if x.id in job.after and x.kind == "fix" and x.state == "done"), None)
+    settled = minor_settled(ctx, fix, number, pr["head"]["sha"], jobs) if fix else None
+    if not settled:
+        return ""
+    nxt = board.inherit_origin(fix, board.successors(
+        fix, settled_outcome(settled, number, pr), max_rounds=ctx.cfg.board.max_rounds,
+        redteam_rounds=ctx.cfg.redteam.rounds, redteam_agents=tuple(p.agent for p in ctx.cfg.redteam.passes),
+        redteam_models=tuple(p.model for p in ctx.cfg.redteam.passes)))
+    if not nxt or any(x.kind != "redteam" for x in nxt):
+        return ""
+    if not yes:
+        return f"#{number}: {job.id} would be superseded: {fix.id} settled {settled['review']} (dry run)"
+    from .intake import supersede
+    if not supersede(ctx, job, f"Every finding of `{settled['review']}` was P3 and `{fix.id}` repaired them in "
+                               f"{settled['lines']} line{'' if settled['lines'] == 1 else 's'} of the package",
+                     closing="No further review round is needed"):
+        return ""
+    accept_settled(ctx, settled, number, jobs)
+    opened = open_for_review(ctx, number, pr, nxt, jobs, yes)
+    return opened.replace("open for review", f"{job.id} superseded ({fix.id} settled {settled['review']}: P3 only)")
+
+
 def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool, comments: list[dict]) -> str:
     """A fix the pull request's owner pushed: recorded as its author, the next round created (or,
     after the last red-team round, the merge and the port), then the fix done. A fix that did not
-    move the head goes back to available."""
+    move the head goes back to available. A package fix that settled its review (`minor_settled`:
+    P3 findings only, a small repair) is followed by what an acceptance releases, not by a review."""
     if not yes:
         return f"#{number}: {fix.id} pushed; the next round follows (dry run)"
     head = pr["head"]["sha"]
@@ -693,10 +800,13 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
         ctx.board.set_state(fix, "available", f"Released by the board: #{number} is still at `{head[:7]}`; the fix "
                                               "was not pushed.")
         return f"#{number}: {fix.id} did not move the head; available again"
+    settled = minor_settled(ctx, fix, number, head, jobs)
     nxt = board.inherit_origin(fix, board.successors(
-        fix, Outcome(), max_rounds=ctx.cfg.board.max_rounds, redteam_rounds=ctx.cfg.redteam.rounds,
-        redteam_agents=tuple(p.agent for p in ctx.cfg.redteam.passes),
+        fix, settled_outcome(settled, number, pr), max_rounds=ctx.cfg.board.max_rounds,
+        redteam_rounds=ctx.cfg.redteam.rounds, redteam_agents=tuple(p.agent for p in ctx.cfg.redteam.passes),
         redteam_models=tuple(p.model for p in ctx.cfg.redteam.passes)))
+    if settled:
+        accept_settled(ctx, settled, number, jobs)
     if any(j.kind == "port" for j in nxt):
         why = merge(ctx, number, pr, jobs, accepted_verdict(ctx, fix, number, jobs), blocker=fix, last=fix)
         if why:
@@ -710,8 +820,10 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
     # pull request that no unfinished job named, which no scan reads.
     opened = open_for_review(ctx, number, pr, nxt, jobs, yes)
     if fix.state != "done":
-        finish_job(ctx, fix, f"Intake: fix pushed to #{number} at `{head[:7]}`.")
-    return opened.replace("open for review", f"{fix.id} done; next round")
+        finish_job(ctx, fix, f"Intake: fix pushed to #{number} at `{head[:7]}`."
+                   + (f" Every finding of `{settled['review']}` was P3: no further review round." if settled else ""))
+    return opened.replace("open for review", f"{fix.id} done; " + (
+        f"{settled['review']} settled (P3 only, {settled['lines']} lines); no further review" if settled else "next round"))
 
 
 def accepted_verdict(ctx, fix: Job, number: int, jobs: list[Job]) -> dict | None:
@@ -1029,6 +1141,12 @@ def scan(ctx, shared=None, yes: bool = False) -> list[str]:
                 continue
             for job in sorted(open_jobs, key=lambda j: j.id):
                 found = reviews_for(ctx, job, comments, head, jobs, shared, number, out)
+                if not found and (line := settle_untaken(ctx, job, number, pr, jobs, yes)):
+                    out.append(line)
+                    if job.state == "done":
+                        concluded[job.id] = job
+                    jobs = listing()
+                    continue
                 if not found or worker_pending(ctx, job, found, shared):
                     continue
                 conclude = conclude_review if job.kind == "review" else conclude_pass

@@ -44,7 +44,9 @@ def seeded_sample(items: list[str], k: int, seed: str) -> list[str]:
 def verdict_problems(data: dict, job_id: str, declared: set[str] | None = None, subject: str = "design") -> list[str]:
     """`subject`: a package acceptance lists no finding at all (the same rule as the pull-request
     review: a repair, whatever its priority, is requested with `needs_changes` and applied by a fix
-    round before the package is ported); a design acceptance may carry non-blocking notes."""
+    round before the package is ported; under `[board] settle_minor` the intake records the
+    acceptance itself once the repair of a review with P3 findings only is in, `boardpr.accept_settled`);
+    a design acceptance may carry non-blocking notes."""
     review = data.get("review") if isinstance(data, dict) else None
     if not isinstance(review, dict):
         return ["verdict file: no review object"]

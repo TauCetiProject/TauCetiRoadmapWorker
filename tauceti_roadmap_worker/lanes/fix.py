@@ -2,7 +2,8 @@
 
 * `FIX-DESIGN-Name~r` / `FIX-PKG-Name~r`: round r of a design or package, edited in the board's
   package folder only, after the review of round r-1 did not accept it. A fresh independent review
-  of round r follows.
+  of round r follows (but for a small package repair of a review that found P3 points only, under
+  `[board] settle_minor`: `boardpr.minor_settled`).
 * `FIX-RT-Name~r`: the repairs after red-team round r, on the pull request branch (only the branch
   owner can push there, so the job names its operator). Port of mk-redfix.sh / mk-redfix2.sh /
   mk-gfix.sh: the brief is the same, the reviews are the round's pass reports, and after the

@@ -729,6 +729,10 @@ def outcome_at_rest(ctx, job: Job, jobs: list[Job]) -> Outcome:
                        operator=job.inputs.get("operator", ""))
     if job.kind in ("target", "redteam"):
         return outcome_for(ctx, job, {}, jobs)
+    if job.kind == "fix" and any(x.kind == "review" and ((x.inputs.get("accepted_review") or {}).get("settled") or {})
+                                 .get("fix") == job.id for x in jobs):
+        # The repair that settled its review (`boardpr.minor_settled`): the package was accepted with it.
+        return Outcome(verdict="accepted", pr=int(job.inputs.get("board_pr") or 0), operator=job.inputs.get("operator", ""))
     return Outcome()
 
 
