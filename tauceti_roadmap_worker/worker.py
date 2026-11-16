@@ -13,11 +13,9 @@ worker's claim meanwhile.
 
 from __future__ import annotations
 
-import ctypes
 import dataclasses
 import datetime as dt
 import fcntl
-import gc
 import os
 import shutil
 import socket
@@ -27,6 +25,7 @@ import json
 from pathlib import Path
 
 from . import board, claims
+from .agents import release_memory
 from .board import Job
 from .config import AGENTS, STAGE_ORDER
 from .gh import GHError, GHHalt, GHRateLimited
@@ -655,18 +654,6 @@ def blind_limit(result: LaneResult) -> bool:
     """A usage limit that names no reset time and stopped the agent before it did any work: the
     sign of an account that is out of credits, as against a quota that comes back on a schedule."""
     return result.status == "limited" and not result.retry_at and result.worked < LIMIT_WORK_NOTED
-
-
-def release_memory() -> None:
-    """Give the memory a round freed back to the system. A round reads the board's whole listing and
-    drops it; glibc keeps the heap of a long-lived process at its high-water mark, so without this a
-    worker that waits, or runs an agent for an hour, holds what its last poll needed. Best effort:
-    another C library has no `malloc_trim`, and then nothing is done."""
-    gc.collect()
-    try:
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
-    except (OSError, AttributeError):
-        pass
 
 
 def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=print, sleep=time.sleep,

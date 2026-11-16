@@ -28,7 +28,9 @@ network tools, proxy changes and credential access in shell commands.
 
 from __future__ import annotations
 
+import ctypes
 import datetime as dt
+import gc
 import json
 import os
 import re
@@ -246,6 +248,20 @@ def events_path(log_out: Path) -> Path:
     return log_out.with_suffix(".jsonl")
 
 
+def release_memory() -> None:
+    """Give the memory this process freed back to the system. glibc keeps the heap of a long-lived
+    process at its high-water mark, so a worker carried what its last heavy step needed for as long
+    as it then waited: preparing a brief compares the roadmap with every open one and frees it all
+    again, which left 0.76 GB in each worker for the hour its agent ran, where the trim leaves 40 MB
+    (2026-11-16, measured). Best effort: another C library has no `malloc_trim`, and then nothing
+    is done."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def run_agent(run: AgentRun, launch=None) -> AgentResult:
     """Run the agent on the brief. Its events are rendered into the log as they arrive (`tail` follows
     it) and kept raw beside it; the usage-limit check reads the rendered log and stderr, and the
@@ -258,6 +274,7 @@ def run_agent(run: AgentRun, launch=None) -> AgentResult:
     if launch is None and not shutil.which(argv[0]) and not Path(argv[0]).is_file():
         raise FileNotFoundError(f"{argv[0]} is not installed (run `tauceti-roadmap doctor`)")
     run.log_out.parent.mkdir(parents=True, exist_ok=True)
+    release_memory()       # the brief is prepared: nothing it needed is held while the agent runs
     started = time.time()
     events: list[dict] = []
     with open(run.log_out, "a", encoding="utf-8") as out, open(run.log_err, "a", encoding="utf-8") as err, \
