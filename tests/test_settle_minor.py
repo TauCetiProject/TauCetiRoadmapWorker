@@ -1,10 +1,11 @@
-"""A package review whose every finding is P3 ends with its repair (`[board] settle_minor`): the
-repair round is not reviewed again, and the package goes on to its red team as an accepted one."""
+"""A design or package review whose every finding is P3 ends with its repair (`[board] settle_minor`):
+the repair round is not reviewed again. The package goes on to its red team as an accepted one; the
+design is merged and its package follows."""
 
 import pytest
 
 from tauceti_roadmap_worker import boardpr, intake, prreviews
-from tauceti_roadmap_worker.board import SUPERSEDED_LABEL, Outcome, new_job, successors
+from tauceti_roadmap_worker.board import SUPERSEDED_LABEL, Outcome, encode_submission, new_job, successors
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes.review import verdict_problems
 
@@ -181,8 +182,12 @@ def test_a_package_fix_with_an_accepting_outcome_releases_what_an_acceptance_doe
     assert nxt[0].inputs == {"board_pr": 12, "operator": "alice", "authors": ["PKG-Foo", "FIX-PKG-Foo~2", "FIX-PKG-Foo~3"]}
     assert [j.id for j in successors(fix, Outcome(verdict="accepted"), redteam_rounds=0)] == ["PORT-Foo"]
     assert [j.id for j in successors(fix, Outcome())] == ["REV-PKG-Foo~3"]
-    design = new_job("FIX-DESIGN-Foo~3", inputs={"board_pr": 12})        # a design repair is always reviewed again
-    assert [j.id for j in successors(design, Outcome(verdict="accepted"))] == ["REV-DESIGN-Foo~3"]
+    design = new_job("FIX-DESIGN-Foo~3", inputs={"board_pr": 12})
+    [package] = successors(design, Outcome(verdict="accepted"))
+    assert (package.id, package.after) == ("PKG-Foo", ["FIX-DESIGN-Foo~3"])
+    assert [j.id for j in successors(design, Outcome())] == ["REV-DESIGN-Foo~3"]
+    red_team = new_job("FIX-RT-Foo~1", inputs={"board_pr": 12})          # a red-team fix reads no such outcome
+    assert [j.id for j in successors(red_team, Outcome(verdict="accepted"), redteam_rounds=1)] == ["PORT-Foo"]
 
 
 def test_a_fix_that_settled_its_review_reads_as_an_acceptance_at_rest():
@@ -193,3 +198,94 @@ def test_a_fix_that_settled_its_review_reads_as_an_acceptance_at_rest():
     found = intake.outcome_at_rest(ctx, fix, [rev, fix, later])
     assert (found.verdict, found.pr, found.operator) == ("accepted", 12, "alice")
     assert intake.outcome_at_rest(ctx, later, [rev, fix, later]).verdict == ""
+
+
+# --- a design: accepted by the merge of its pull request, and its package follows ---------------------
+
+DESIGN_SMALL = [("packages/Foo/design/README.md", 6, 4), ("packages/Foo/reports/FIX-DESIGN-Foo~2.md", 80, 0)]
+
+
+class DesignRepo(Repo):
+    """A design's board pull request: its files, and a merge that can fail."""
+
+    def __init__(self, head, changed):
+        super().__init__(head, changed)
+        self.pr["body"] = "Refs #3\n\n" + encode_submission("DESIGN-Foo", "w1", "alice", "codex", "gpt-6.1-sol")
+        self.pr["labels"] = [{"name": "needs-review"}]
+        self.fail_merge = ""
+
+    def api(self, path, paginate=False):
+        if "/pulls/12/files" in path:
+            return [{"filename": f, "status": "added"} for f in ("packages/Foo/design/README.md",
+                                                                 "packages/Foo/reports/DESIGN-Foo.md")]
+        if "/pulls?state=open" in path:
+            return [] if self.merged or self.pr.get("merged") else [self.pr]
+        return super().api(path, paginate)
+
+    def write(self, method, path, payload=None):
+        if path.endswith("/pulls/12/merge") and self.fail_merge:
+            self.writes.append((method, path, payload))
+            raise GHError(self.fail_merge)
+        return super().write(method, path, payload)
+
+
+def design_repaired(severities=("P3",), changed=DESIGN_SMALL):
+    """A design whose first review asked for changes and whose repair round was pushed."""
+    cfg = example_config()
+    cfg.review.comment_reviewers = ["roed-math"]
+    cfg.board.bot_logins = ["board-bot"]
+    cfg.board.settle_minor = True
+    design = new_job("DESIGN-Foo", inputs={"review_pr": 12})
+    design.number, design.state = 3, "submitted"
+    rev = new_job("REV-DESIGN-Foo", inputs={"board_pr": 12, "operator": "alice"})
+    rev.number, rev.state = 4, "claimed"
+    b, gh = Jobs([design, rev]), DesignRepo("a" * 40, changed)
+    ctx = bot_context(cfg=cfg, gh=gh, board=b, operator="board-bot")
+    gh.say("roed-math", asks("a" * 40, *severities))
+    assert boardpr.scan(ctx, yes=True)[0].startswith("#12: REV-DESIGN-Foo needs_changes; created FIX-DESIGN-Foo~2")
+    fix = b.find("FIX-DESIGN-Foo~2")
+    assert fix.inputs["base_head"] == "a" * 40 and not gh.merged
+    fix.state = "submitted"
+    gh.pr["head"]["sha"] = "c" * 40
+    return ctx, gh, b, design, fix
+
+
+def test_a_design_review_with_p3_findings_only_ends_with_its_small_repair():
+    ctx, gh, b, design, fix = design_repaired()
+    out = boardpr.scan(ctx, yes=True)
+    assert len(out) == 1 and out[0].startswith(
+        "#12: FIX-DESIGN-Foo~2 done; REV-DESIGN-Foo settled (P3 only, 10 lines); merged; created PKG-Foo")
+    assert gh.merged and design.state == "done" and fix.state == "done" and b.find("REV-DESIGN-Foo~2") is None
+    assert b.find("PKG-Foo").after == ["FIX-DESIGN-Foo~2"] and b.find("PKG-Foo").state == "available"
+    written = gh.files["packages/Foo/design/review.json"]
+    assert '"status": "accepted"' in written and "independent-review-REV-DESIGN-Foo" in written
+    assert '"fix": "FIX-DESIGN-Foo~2"' in written and "10 lines of the design" in written
+    record = b.find("REV-DESIGN-Foo").inputs["accepted_review"]
+    assert verdict_problems({"review": record}, "REV-DESIGN-Foo", subject="design") == []
+    assert any("`FIX-DESIGN-Foo~2` changes 10 lines of the design at `ccccccc`" in c["body"] for c in gh.comments)
+    assert boardpr.scan(ctx, yes=True) == []
+
+
+def test_a_settled_design_whose_merge_fails_is_merged_by_a_later_scan():
+    ctx, gh, b, _design, fix = design_repaired()
+    gh.fail_merge = "gh api -X PUT: gh: HTTP 502: Bad Gateway"
+    out = boardpr.scan(ctx, yes=True)
+    assert "FIX-DESIGN-Foo~2 pushed and REV-DESIGN-Foo settled, but not merged yet" in out[0]
+    assert fix.state == "submitted" and not gh.merged and b.find("PKG-Foo") is None
+    assert "accepted_review" not in b.find("REV-DESIGN-Foo").inputs
+    gh.fail_merge = ""
+    out = boardpr.scan(ctx, yes=True)
+    assert "REV-DESIGN-Foo settled (P3 only, 10 lines); merged; created PKG-Foo" in out[0]
+    assert gh.merged and fix.state == "done"
+
+
+@pytest.mark.parametrize("over", [
+    {"severities": ("P3", "P1")},
+    {"changed": [("packages/Foo/design/README.md", 151, 0)]},
+    {"changed": [("packages/Foo/design/README.md", 1, 0), ("ORDER.txt", 1, 0)]},
+])
+def test_another_design_review_round_follows_every_other_repair(over):
+    ctx, gh, b, _design, fix = design_repaired(**over)
+    out = boardpr.scan(ctx, yes=True)
+    assert out[0].startswith("#12: FIX-DESIGN-Foo~2 done; next round; created REV-DESIGN-Foo~2")
+    assert fix.state == "done" and not gh.merged and b.find("PKG-Foo") is None

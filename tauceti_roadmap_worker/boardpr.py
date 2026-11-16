@@ -674,9 +674,10 @@ def pusher(comments: list[dict], fix: Job) -> dict:
 
 
 def package_lines(ctx, old: str, new: str, name: str) -> int | None:
-    """Insertions plus deletions between two heads of a board pull request in the package `name`, the
-    reports aside (a repair writes its own); None when the comparison cannot be read, is cut short by
-    GitHub (300 files), or lists a file outside the package (a merge of main, another roadmap)."""
+    """Insertions plus deletions between two heads of a board pull request in the package folder of
+    `name` (its design too), the reports aside (a repair writes its own); None when the comparison
+    cannot be read, is cut short by GitHub (300 files), or lists a file outside the folder (a merge
+    of main, another roadmap)."""
     try:
         compared = ctx.gh.api(f"repos/{repo(ctx)}/compare/{old}...{new}") or {}
     except GHError:
@@ -696,15 +697,17 @@ def package_lines(ctx, old: str, new: str, name: str) -> int | None:
 
 
 def minor_settled(ctx, fix: Job, number: int, head: str, jobs: list[Job]) -> dict | None:
-    """With `[board] settle_minor`: the record that the package review `fix` repairs ends with this
-    repair, or None when another review round follows. It ends when every finding of the review is P3
-    (its report on the board's main) and the repair, from the head it was asked at (`base_head`) to
-    `head`, changed at most `[prreview] small_change_lines` lines of the package and nothing outside
-    it. `review`, `fix`, `from`, `head`, `findings` and `lines`, as the verdict file records them."""
+    """With `[board] settle_minor`: the record that the design or package review `fix` repairs ends
+    with this repair, or None when another review round follows. It ends when every finding of the
+    review is P3 (its report on the board's main) and the repair, from the head it was asked at
+    (`base_head`) to `head`, changed at most `[prreview] small_change_lines` lines of the package
+    folder and nothing outside it. `review`, `fix`, `from`, `head`, `findings` and `lines`, as the
+    verdict file records them."""
     from .intake import review_text
     j = board.parse_job_id(fix.id)
     base = str(fix.inputs.get("base_head") or "")
-    if not ctx.cfg.board.settle_minor or (j.prefix, j.subject) != ("FIX", "PKG") or not base or base == head:
+    if not ctx.cfg.board.settle_minor or j.prefix != "FIX" or j.subject not in ("DESIGN", "PKG") or not base \
+            or base == head:
         return None
     review = next((x for x in jobs if x.kind == "review" and x.id == fix.inputs.get("review")), None)
     if review is None or int(review.inputs.get("board_pr") or 0) != number:
@@ -719,9 +722,23 @@ def minor_settled(ctx, fix: Job, number: int, head: str, jobs: list[Job]) -> dic
 
 
 MINOR_NOTE = ("Intake: every finding of `{review}` is P3 ({findings}) and `{fix}` changes {lines} line{s} of the "
-              "package at `{head}`, so no further review round is filed: the package goes on as an accepted one.")
+              "{what} at `{head}`, so no further review round is filed: the {what} goes on as an accepted one.")
 MINOR_RECORD = ("every finding of `{review}` ({findings}) was P3 and `{fix}` repaired them at `{head}`, changing "
-                "{lines} line{s} of the package; no further review round was filed")
+                "{lines} line{s} of the {what}; no further review round was filed")
+
+
+def settled_words(settled: dict) -> dict:
+    """The fields of `MINOR_NOTE` and `MINOR_RECORD` for a settled review."""
+    return {"review": settled["review"], "findings": settled["findings"], "fix": settled["fix"],
+            "lines": settled["lines"], "s": "" if settled["lines"] == 1 else "s", "head": settled["head"][:7],
+            "what": "design" if board.parse_job_id(settled["review"]).subject == "DESIGN" else "package"}
+
+
+def settled_record(review: Job, settled: dict) -> dict:
+    """The accepting verdict record of a review that ended with its repair (`minor_settled`): no
+    finding stands, and `settled` says which repair ended it, between which heads."""
+    return {"status": "accepted", "reviewer": f"independent-review-{review.id}", "date": now().date().isoformat(),
+            "findings": 0, "blocking": 0, "settled": dict(settled), "notes": MINOR_RECORD.format(**settled_words(settled))}
 
 
 def settled_outcome(settled: dict | None, number: int, pr: dict) -> Outcome:
@@ -737,16 +754,43 @@ def accept_settled(ctx, settled: dict, number: int, jobs: list[Job]) -> None:
     review = next((j for j in jobs if j.id == settled["review"]), None)
     if review is None or review.inputs.get("accepted_review"):
         return
-    said = {"review": review.id, "findings": settled["findings"], "fix": settled["fix"], "lines": settled["lines"],
-            "s": "" if settled["lines"] == 1 else "s", "head": settled["head"][:7]}
-    review.inputs["accepted_review"] = {
-        "status": "accepted", "reviewer": f"independent-review-{review.id}", "date": now().date().isoformat(),
-        "findings": 0, "blocking": 0, "settled": dict(settled), "notes": MINOR_RECORD.format(**said)}
+    review.inputs["accepted_review"] = settled_record(review, settled)
     ctx.board.update_spec(review)
     from .intake import announce_package_gaps
     package = next((x for x in jobs if x.id == board.make_id("package", review.name)), review)
     announce_package_gaps(ctx, package, jobs, settled["head"])
-    note(ctx, number, MINOR_NOTE.format(**said))
+    note(ctx, number, MINOR_NOTE.format(**settled_words(settled)))
+
+
+def design_settled(ctx, fix: Job, settled: dict, number: int, pr: dict, jobs: list[Job], comments: list[dict]) -> str:
+    """A design repair that settled its review (`minor_settled`): the design is accepted as by an
+    accepting review. Its pull request is merged at the repaired head with the verdict file; then
+    the pusher is recorded, the acceptance kept on the review's job, the plan's supplier gaps
+    announced, the package job created and the roadmap placed in the merge order. The fix becomes
+    done last: a merge that fails leaves it submitted, and the next scan comes here again."""
+    from .intake import add_to_order, announce_gaps
+    review = next(j for j in jobs if j.id == settled["review"])
+    record = settled_record(review, settled)
+    pkg = board.package_dir(ctx.cfg.board.packages_dir, fix.name)
+    why = merge(ctx, number, pr, jobs, {"path": f"{pkg}/design/review.json", "review": record}, blocker=fix, last=fix)
+    if why:
+        return f"#{number}: {fix.id} pushed and {review.id} settled, but not merged yet ({why})"
+    record_pusher(ctx, fix, number, comments)
+    review.inputs["accepted_review"] = record
+    ctx.board.update_spec(review)
+    note(ctx, number, MINOR_NOTE.format(**settled_words(settled)))
+    design = next((x for x in jobs if x.id == board.make_id("design", fix.name)), None)
+    if design is not None:
+        announce_gaps(ctx, design, jobs)
+    nxt = board.inherit_origin(fix, board.successors(fix, settled_outcome(settled, 0, pr)))
+    existing = {j.id for j in ctx.board.all_jobs()}
+    created = [board.made_note(ctx.board, j, ctx.board.create(j)) for j in nxt if j.id not in existing]
+    order = add_to_order(ctx, fix.name)
+    if fix.state != "done":
+        finish_job(ctx, fix, f"Intake: fix pushed to #{number} at `{pr['head']['sha'][:7]}`. Every finding of "
+                             f"`{review.id}` was P3: no further review round.")
+    return (f"#{number}: {fix.id} done; {review.id} settled (P3 only, {settled['lines']} lines); merged; created "
+            + (", ".join(created) or "nothing") + "; " + order)
 
 
 def settle_untaken(ctx, job: Job, number: int, pr: dict, jobs: list[Job], yes: bool) -> str:
@@ -782,8 +826,9 @@ def settle_untaken(ctx, job: Job, number: int, pr: dict, jobs: list[Job], yes: b
 def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool, comments: list[dict]) -> str:
     """A fix the pull request's owner pushed: recorded as its author, the next round created (or,
     after the last red-team round, the merge and the port), then the fix done. A fix that did not
-    move the head goes back to available. A package fix that settled its review (`minor_settled`:
-    P3 findings only, a small repair) is followed by what an acceptance releases, not by a review."""
+    move the head goes back to available. A design or package fix that settled its review
+    (`minor_settled`: P3 findings only, a small repair) is followed by what an acceptance releases,
+    not by a review: a package by its red team, a design by its merge and its package (`design_settled`)."""
     if not yes:
         return f"#{number}: {fix.id} pushed; the next round follows (dry run)"
     head = pr["head"]["sha"]
@@ -801,6 +846,8 @@ def fix_pushed(ctx, fix: Job, number: int, pr: dict, jobs: list[Job], yes: bool,
                                               "was not pushed.")
         return f"#{number}: {fix.id} did not move the head; available again"
     settled = minor_settled(ctx, fix, number, head, jobs)
+    if settled and board.parse_job_id(fix.id).subject == "DESIGN":
+        return design_settled(ctx, fix, settled, number, pr, jobs, comments)
     nxt = board.inherit_origin(fix, board.successors(
         fix, settled_outcome(settled, number, pr), max_rounds=ctx.cfg.board.max_rounds,
         redteam_rounds=ctx.cfg.redteam.rounds, redteam_agents=tuple(p.agent for p in ctx.cfg.redteam.passes),

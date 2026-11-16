@@ -45,11 +45,12 @@ packages_dir = "packages"
 # state:available runs it (and every later round parks the same way), closing it stops. A fix
 # worker's self-acceptance never counts.
 max_rounds = 5
-# A package review whose every finding is P3 ends with its repair: when the repair round changed at
-# most `[prreview] small_change_lines` lines of the package (its report aside) and nothing outside
-# it, no further review round is filed and the package goes on as an accepted one, to its red team
-# or its port. A review round filed earlier that nobody has taken is closed in the same way. Off by
-# default: every repair round is reviewed again.
+# A design or package review whose every finding is P3 ends with its repair: when the repair round
+# changed at most `[prreview] small_change_lines` lines of the package folder (its report aside) and
+# nothing outside it, no further review round is filed. The package goes on as an accepted one, to
+# its red team or its port; the design is merged and its package follows. A package review round
+# filed earlier that nobody has taken is closed in the same way. Off by default: every repair round
+# is reviewed again.
 # settle_minor = true
 # Logins whose comments are the board's own (claim notices, intake notes).
 bot_logins = ["github-actions[bot]"]

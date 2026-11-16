@@ -467,8 +467,11 @@ outside the package, the intake files no further review round: it records the ac
 review's job (the verdict file the merge writes names the review, the repair, both heads, the number
 of findings and of lines), says so on the board pull request, and creates what an accepted package
 releases, the red team on that pull request or, without one, the port. A repair of a review with a
-P1 or P2 finding, a larger repair, one that touched another file, and every design repair are
-reviewed again as before. A package review round that was filed before the switch was turned on,
+P1 or P2 finding, a larger repair, and one that touched another file are reviewed again as before.
+A design review that found P3 points only ends in the same way: once its small repair is pushed,
+the intake merges the design's pull request at the repaired head with an accepting verdict file of
+the same form, announces the plan's supplier gaps, creates the package job and places the roadmap
+in the merge order; a merge that fails is tried again by the next scan. A package review round that was filed before the switch was turned on,
 and that nobody has taken, is closed as `superseded` on the same test when a red team follows; a
 round somebody took runs to its end. After `[board] max_rounds`
 rounds (5 in the example) the next fix round is created as `state:blocked`, listing the last
