@@ -23,15 +23,66 @@ def test_transient_github_errors():
     assert not transient(GHError("gh api: HTTP 422: Validation Failed")) and not transient(ValueError("502"))
 
 
-def test_an_existing_pull_request_for_the_head_is_reused():
-    class GH:
-        def write(self, method, path, payload=None):
-            raise GHError("gh api: HTTP 422: A pull request already exists for alice:w1/PKG-Foo.")
+class Pulls:
+    """A repository that refuses a second pull request for a head, in the words `gh` reports it."""
 
-        def api(self, path, paginate=False):
-            assert "head=alice:w1/PKG-Foo" in path
-            return [{"number": 77, "html_url": "https://x/77"}]
-    assert gitops.open_pull_request(GH(), "o/jobs", "alice:w1/PKG-Foo", "main", "t", "b", False)["number"] == 77
+    def __init__(self, listed, refusal="gh api -X POST: gh: Validation Failed (HTTP 422)"):
+        self.listed, self.refusal = listed, refusal
+
+    def write(self, method, path, payload=None):
+        raise GHError(self.refusal)
+
+    def api(self, path, paginate=False):
+        assert "head=alice:w1/PKG-Foo" in path and "state=open" in path
+        return list(self.listed)
+
+
+def test_an_existing_pull_request_for_the_head_is_reused():
+    """`gh` words the refusal "Validation Failed (HTTP 422)" and nothing more (2026-11-15: a port whose
+    pull request existed failed there on every attempt, each after pushing a new port over it)."""
+    mine = {"number": 77, "html_url": "https://x/77", "head": {"label": "alice:w1/PKG-Foo", "sha": "a" * 40}}
+    args = ("o/jobs", "alice:w1/PKG-Foo", "main", "t", "b", False)
+    assert gitops.open_pull_request(Pulls([mine]), *args)["number"] == 77
+    worded = "gh api -X POST: gh: Validation Failed (HTTP 422) [A pull request already exists for alice:w1/PKG-Foo.]"
+    assert gitops.open_pull_request(Pulls([mine], worded), *args)["number"] == 77
+    with pytest.raises(GHError, match="422"):                  # a 422 for another reason stands
+        gitops.open_pull_request(Pulls([]), *args)
+    stranger = {"number": 5, "head": {"label": "bob:other", "sha": "b" * 40}}
+    with pytest.raises(GHError, match="422"):                  # a listing that ignored the filter adopts nobody's
+        gitops.open_pull_request(Pulls([stranger]), *args)
+    with pytest.raises(GHError, match="502"):                  # any other error is not looked up
+        gitops.open_pull_request(Pulls([mine], "gh api -X POST: HTTP 502: Bad Gateway"), *args)
+
+
+def test_the_pull_request_a_push_would_replace():
+    mine = {"number": 77, "head": {"label": "alice:w1/PKG-Foo", "sha": "a" * 40}}
+    assert gitops.replaced_pull(Pulls([mine]), "o/r", "alice:w1/PKG-Foo", "c" * 40)["number"] == 77
+    assert gitops.replaced_pull(Pulls([mine]), "o/r", "alice:w1/PKG-Foo", "a" * 40) is None     # this run's own push
+    assert gitops.replaced_pull(Pulls([]), "o/r", "alice:w1/PKG-Foo", "c" * 40) is None
+
+
+def test_an_api_errors_details_reach_the_message(monkeypatch):
+    from types import SimpleNamespace
+
+    from tauceti_roadmap_worker import gh as ghmod
+    body = ('{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom",'
+            '"message":"A pull request already exists for alice:w1/PKG-Foo."}],"status":"422"}')
+    assert ghmod.error_detail(body) == " [A pull request already exists for alice:w1/PKG-Foo.]"
+    assert ghmod.error_detail('{"message":"Not Found"}') == "" == ghmod.error_detail("not JSON") == ghmod.error_detail("[]")
+    assert ghmod.error_detail('{"errors":["a string", {"code":"missing_field"}]}') == " [a string; missing_field]"
+    monkeypatch.setattr(ghmod.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=1, stdout=body, stderr="gh: Validation Failed (HTTP 422)"))
+    with pytest.raises(GHError, match=r"Validation Failed \(HTTP 422\) \[A pull request already exists"):
+        ghmod.GH().api("repos/o/r/pulls")
+
+
+def test_a_finish_that_needs_a_human_blocks_the_job(ctx, monkeypatch):  # noqa: F811
+    def finish(ws):
+        raise lane_base.LaneBlocked("Foo has an open pull request already (#7, at `abcdef0`)")
+    job, lane, calls = lane_with(ctx, monkeypatch, finish)
+    result = lane.deliver(job, ctx, lane.prepare(job, ctx))
+    assert result.status == "blocked" and "open pull request already (#7" in result.detail
+    assert "submit" not in calls and lane_base.read_pending(ctx, job) is None
 
 
 def test_a_slow_github_in_the_submission_keeps_the_run(ctx, monkeypatch):  # noqa: F811

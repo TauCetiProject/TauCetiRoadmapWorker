@@ -25,6 +25,25 @@ from pathlib import Path
 from dataclasses import dataclass
 
 
+def error_detail(body: str) -> str:
+    """What an API error object says beyond its message, as ` [...]` to append to an error: the
+    `errors` it lists. `gh api` prints the object on stdout and only its message on stderr, so a
+    pull request that existed already read "Validation Failed (HTTP 422)" and nothing told it from
+    any other refusal. '' when the body is not such an object or lists nothing."""
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return ""
+    errors = data.get("errors") if isinstance(data, dict) else None
+    found = []
+    for item in errors if isinstance(errors, list) else []:
+        text = item if isinstance(item, str) else (item.get("message") or item.get("code") or "") \
+            if isinstance(item, dict) else ""
+        if text:
+            found.append(str(text))
+    return f" [{'; '.join(found)[:300]}]" if found else ""
+
+
 class GHError(Exception):
     pass
 
@@ -157,7 +176,7 @@ class GH:
                 raise GHError(f"gh {' '.join(args[:3])}: {exc}") from exc
             if result.returncode == 0:
                 return result.stdout
-            message = f"gh {' '.join(args[:3])}: {result.stderr.strip()[:400]}"
+            message = f"gh {' '.join(args[:3])}: {result.stderr.strip()[:400]}" + error_detail(result.stdout)
             if HALT.search(result.stderr):
                 if delay is not None and UNAUTHORIZED.search(result.stderr) and not SUSPENDED.search(result.stderr):
                     self.sleep(delay)
