@@ -109,9 +109,27 @@ def test_only_the_events_that_report_usage_are_kept_in_memory(tmp_path):
 
 def test_releasing_memory_never_fails(monkeypatch):
     from tauceti_roadmap_worker import worker
-    worker.release_memory()
-    monkeypatch.setattr(worker.ctypes, "CDLL", lambda name: (_ for _ in ()).throw(OSError("no such library")))
-    worker.release_memory()
+    assert worker.release_memory is agents.release_memory       # the loop trims after each round with the same call
+    agents.release_memory()
+    monkeypatch.setattr(agents.ctypes, "CDLL", lambda name: (_ for _ in ()).throw(OSError("no such library")))
+    agents.release_memory()
+
+
+def test_memory_is_released_before_the_agent_is_launched(tmp_path, monkeypatch):
+    """What preparing the brief needed is given back before the worker waits on its agent (2026-11-16:
+    0.76 GB carried through every job by each worker)."""
+    order = []
+    monkeypatch.setattr(agents, "release_memory", lambda: order.append("released"))
+    monkeypatch.setattr(agents, "command_for", lambda run: ([sys.executable, "-c", "pass"], {}, tmp_path))
+    real = __import__("subprocess").Popen
+
+    def launch(*a, **k):
+        order.append("launched")
+        return real(*a, **k)
+    task = agents.AgentRun(agent="codex", model="m", workdir=tmp_path, brief="b",
+                           log_out=tmp_path / "run-1.out", log_err=tmp_path / "run-1.err")
+    assert agents.run_agent(task, launch=launch).exit_code == 0
+    assert order == ["released", "launched"]
 
 
 def test_command_lines_ask_for_the_event_streams(tmp_path):
