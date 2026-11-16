@@ -98,8 +98,11 @@ operator's to choose: `late_authors` and `late_except` (as `[prreview] late_auth
 for this host's workers alone: the reviews of those authors' pull requests are taken after every other
 job, the pull requests named excepted; both tables' lists count), and `author_models`, login to model: a
 review of a pull request by that author, one `late_except` does not name, is taken only by a worker of
-the host that runs that model (started with `--model`), and the host's other workers leave it. The
-board, its jobs and the project file say nothing of either. `doctor` prints what the overlay set. The commands a brief gives agents carry the same
+the host that runs that model (started with `--model`), and the host's other workers leave it.
+`held_logins` lists logins whose reviews and comments the host answers by hand: its `board sync` files
+no gate round and moves no label for them, and its gate rounds do not count them among the reviews to
+answer, as for the logins of `[replies] ignore_logins`. The
+board, its jobs and the project file say nothing of any of these. `doctor` prints what the overlay set. The commands a brief gives agents carry the same
 `--overlay`. The saved copy of a URL configuration stays the project's file alone.
 
 ```toml

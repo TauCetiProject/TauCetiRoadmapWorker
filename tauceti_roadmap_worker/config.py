@@ -415,6 +415,10 @@ class Worker:
     late_authors: list[str] = field(default_factory=list)
     late_except: list[int] = field(default_factory=list)
     author_models: dict[str, str] = field(default_factory=dict)
+    # Logins whose reviews and comments this host answers by hand: its `board sync` files no gate round
+    # and moves no label for them, and its gate rounds do not count them among the reviews to answer.
+    # A human reads them first. They count with `[replies] ignore_logins` (`ignored_logins`).
+    held_logins: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -610,6 +614,8 @@ def validate(cfg: Config) -> None:
     login = r"[A-Za-z0-9][A-Za-z0-9-]*"
     if any(not isinstance(a, str) or not re.fullmatch(login, a) for a in cfg.worker.late_authors):
         problems.append("worker.late_authors must list GitHub logins")
+    if any(not isinstance(a, str) or not re.fullmatch(login, a) for a in cfg.worker.held_logins):
+        problems.append("worker.held_logins must list GitHub logins")
     if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in cfg.worker.late_except):
         problems.append("worker.late_except must list pull request numbers")
     if any(not (isinstance(k, str) and re.fullmatch(login, k) and isinstance(v, str) and v)
@@ -697,6 +703,12 @@ def fetch(url: str, opener=None, sleep=time.sleep, delays: tuple[int, ...] = RET
         except (OSError, ValueError) as exc:   # URLError, HTTPError, timeouts are OSErrors
             last = exc
     raise last if last else OSError(f"{url}: not read")
+
+
+def ignored_logins(cfg) -> set[str]:
+    """The logins whose reviews and comments no worker of this host answers: the project's
+    `[replies] ignore_logins` (bots) and the host's own `[worker] held_logins` (answered by hand)."""
+    return set(cfg.replies.ignore_logins) | set(cfg.worker.held_logins)
 
 
 def read_overlay(overlay: str | None = None) -> tuple[dict, str]:

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .. import gates, gitops, prompts, replies
 from ..board import Job
+from ..config import ignored_logins
 from ..gh import GHError
 from .base import (
     CONTENT_COMMENT,
@@ -239,7 +240,7 @@ class GateLane(Lane):
         inline = inline_comments(ctx, pr)
         authors = pr_answerers(ctx.cfg, mine["owner"])
         since = replies.unanswered(timeline(ctx, pr) + inline, authors, r.review_markers,
-                                   r.housekeeping_prefixes, set(r.ignore_logins), maintainers=set(r.maintainer_logins),
+                                   r.housekeeping_prefixes, ignored_logins(ctx.cfg), maintainers=set(r.maintainer_logins),
                                    maintainer_prefix=r.maintainer_review_prefix, owner=mine["owner"])
         if since:
             # Every inline comment of the reviews being answered (a maintainer's review under the owner's
