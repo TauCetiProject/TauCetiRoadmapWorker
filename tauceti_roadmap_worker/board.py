@@ -398,9 +398,10 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
     The order is design -> review (-> fix -> review ...) -> package -> review (-> fix -> review ...)
     -> red-team rounds -> port. The red-team passes and their fixes run on the package's open board
     pull request (`board_pr`, owned by `operator`), like its reviews; the port follows the last
-    round's fix, and the roadmap pull request then gets human reviews only. A package fix that
-    arrives with an accepting outcome (the repair of a review whose every finding was P3, under
-    `[board] settle_minor`) releases what an accepted package releases. Red-team pass jobs name
+    round's fix, and the roadmap pull request then gets human reviews only. A design or package
+    fix that arrives with an accepting outcome (the repair of a review whose every finding was P3,
+    under `[board] settle_minor`) releases what the accepted design or package releases. Red-team
+    pass jobs name
     the agent (`requires_agent`) and, when `[redteam] passes` pins one, the model
     (`requires_model`) of their pass; they are independent of every author of the package."""
     j = parse_job_id(job.id)
@@ -434,6 +435,9 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
         # The repair of a package review whose every finding was P3 (`boardpr.minor_settled`): the
         # review ends with it, so the package goes on as an accepted one and no review round follows.
         return accepted_package()
+    if (j.prefix, art) == ("FIX", "DESIGN") and outcome.verdict == "accepted":
+        # The same for a design (`boardpr.design_settled`): its package follows, as after an accepting review.
+        return [new_job(make_id("package", name), after=[job.id])]
     if art and j.prefix != "REV":
         review = review_of(job.id)
         return [new_job(review, after=[job.id], independent_of=authors_of_round(art, name, j.round),

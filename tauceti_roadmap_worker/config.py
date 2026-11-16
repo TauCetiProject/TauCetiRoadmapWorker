@@ -76,9 +76,10 @@ class Board:
     namespace_label: str = "roadmap-job"
     packages_dir: str = "packages"
     max_rounds: int = 3
-    # A package review whose every finding is P3 ends with its repair: when the repair round changed at
-    # most `[prreview] small_change_lines` lines of the package and nothing outside it, no further
-    # review round is filed and the package goes on as an accepted one (its red team, or its port).
+    # A design or package review whose every finding is P3 ends with its repair: when the repair round
+    # changed at most `[prreview] small_change_lines` lines of the package folder and nothing outside
+    # it, no further review round is filed. The package goes on as an accepted one (its red team, or
+    # its port); the design is merged and its package follows.
     settle_minor: bool = False
     bot_logins: list[str] = field(default_factory=lambda: ["github-actions[bot]"])
     stale_hours: float = 24.0
