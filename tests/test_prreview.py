@@ -516,8 +516,14 @@ def test_a_head_reviewed_twice_gets_a_check_round_only_for_a_rewritten_descripti
     third = review_job(42, 3, 12, H1, "done")
     third.inputs["text_rereview"] = True
     assert run(answer("PRREVIEW-Foo~3", text=True), [first, second, third])[1].created == []
-    # A second dispute, an answer to the first review only, and an accepted head file nothing.
-    assert run(answer("PRREVIEW-Foo~2"), [first, second])[1].created == []
+    rest = ("#12: no round is due at 1111111 (Foo was reviewed there {} times and the last review does not accept "
+            "it): it waits for a push or an operator's round")
+    out, fake = run(answer("PRREVIEW-Foo~3", text=True), [first, second, third])
+    assert fake.created == [] and out == [rest.format(3)]
+    # A second dispute, an answer to the first review only, and an accepted head file nothing; the head that
+    # is left unapproved is reported, since nothing else will ever say so.
+    out, fake = run(answer("PRREVIEW-Foo~2"), [first, second])
+    assert fake.created == [] and out == [rest.format(2)]
     assert run(answer("PRREVIEW-Foo~1", text=True), [first, second])[1].created == []
     assert run(answer("PRREVIEW-Foo~2", text=True), [first, second], status="accepted")[1].created == []
 

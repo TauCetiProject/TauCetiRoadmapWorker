@@ -1959,6 +1959,16 @@ def text_pending(jobs: list[Job], comments: list[dict], head: str, verdict: dict
     return False
 
 
+def at_rest(out: list[str], number: int, folder: str, head: str, jobs: list[Job], verdict: dict | None) -> None:
+    """Report a head no further round is due at whose latest review does not accept it: reviewed, answered
+    without a push, reviewed again (and its text once more), it is settled for the intake and stays
+    unapproved until a push moves it or an operator files a round. 2026-11-16: a pull request sat a week in
+    this state with nothing in any report (seventeen others waited on it)."""
+    if verdict and verdict.get("status") != "accepted":
+        out.append(f"#{number}: no round is due at {head[:7]} ({folder} was reviewed there {len(jobs)} times and "
+                   "the last review does not accept it): it waits for a push or an operator's round")
+
+
 def head_worker(comments: list[dict], head: str) -> str:
     """The worker whose reply on a pull request records `head` as the head it answered at (its
     answered record, `replies.answered_record`: a gate round's, or a review's repair), the latest such
@@ -2804,6 +2814,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                     since = round_key(max(checks, key=round_key))
                     same = [j for j in same if round_key(j) >= since]
                 if any(j.inputs.get("text_rereview") for j in same):
+                    at_rest(out, number, folder, head, same, latest_verdict(ctx, same, head, texts))
                     continue
                 twice = any(j.inputs.get("dispute_rereview") or j.inputs.get("text_check") for j in same)
                 if number not in threads:
@@ -2816,6 +2827,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                     continue             # an earlier step of this run could not read its comments
                 verdict = latest_verdict(ctx, same, head, texts)
                 if twice and not text_pending(same, threads[number], head, verdict):
+                    at_rest(out, number, folder, head, same, verdict)
                     continue
                 if not twice and not dispute_pending(same, threads[number], head, verdict):
                     continue
