@@ -179,16 +179,39 @@ def kebab(name: str) -> str:
     return s.lower()
 
 
+def open_pull_for(gh: GH, repo: str, head: str) -> dict | None:
+    """The open pull request of `repo` whose head is `head` (`owner:branch`), or None. An entry that
+    names another head is never taken: a listing that ignored the filter would hand back a stranger's
+    pull request."""
+    for found in gh.api(f"repos/{repo}/pulls?head={head}&state=open&per_page=10") or []:
+        label = str((found.get("head") or {}).get("label") or "")
+        if not label or label.lower() == head.lower():
+            return found
+    return None
+
+
+def replaced_pull(gh: GH, repo: str, head: str, sha: str) -> dict | None:
+    """The open pull request for `head` that a push of `sha` to its branch would replace: it stands
+    at another commit. None when there is none, or it is at `sha` already (this run's own push)."""
+    found = open_pull_for(gh, repo, head)
+    standing = str(((found or {}).get("head") or {}).get("sha") or "")
+    return found if found and standing and standing != sha else None
+
+
 def open_pull_request(gh: GH, repo: str, head: str, base: str, title: str, body: str, draft: bool) -> dict | None:
     """Open the pull request, or, when one is already open for this head (an earlier attempt opened
-    it before its answer was lost), return that one."""
+    it before its answer was lost), return that one. GitHub refuses the second with a 422 whose
+    reason is in the error's details, and `gh` words the refusal "Validation Failed (HTTP 422)"
+    alone: any 422 is looked up, and stands as an error when no pull request is open for the head
+    (2026-11-15: a port opened its pull request, lost the answer of a later step, and every further
+    attempt failed here)."""
     try:
         return gh.write("POST", f"repos/{repo}/pulls", {"title": title, "head": head, "base": base, "body": body,
                                                         "draft": draft})
     except GHError as exc:
-        if "already exists" not in str(exc):
+        if "already exists" not in str(exc) and "422" not in str(exc):
             raise
-        found = gh.api(f"repos/{repo}/pulls?head={head}&state=open&per_page=10") or []
-        if not found:
+        found = open_pull_for(gh, repo, head)
+        if found is None:
             raise
-        return found[0]
+        return found

@@ -1620,7 +1620,7 @@ class Lane:
 
     def deliver(self, job: Job, ctx: Context, ws: Workspace) -> LaneResult:
         """The lane's last steps and the submission, once the checks passed. A branch that moved
-        while the job ran blocks the job for a human. A submission that stops before it is done keeps
+        while the job ran, or a step that needs a human (`LaneBlocked`), blocks the job for a human. A submission that stops before it is done keeps
         the run (`pending-push/`) with what it still owes, when the stop may pass (a refused push, a
         GitHub 5xx or timeout) or when the submission has already changed something on GitHub (a
         push, a comment); the next attempt on this worker finishes it without running the agent.
@@ -1635,7 +1635,7 @@ class Lane:
             save_pending(ctx, job, ws, str(exc))
             return LaneResult(job.id, "lease-lost", f"{exc}; nothing more is submitted, and the run is kept in "
                               f"{ws.job_dir / PENDING_DIR} for the next attempt on this worker")
-        except gitops.BranchMoved as exc:
+        except (gitops.BranchMoved, LaneBlocked) as exc:
             if not submission_started(ctx, job):
                 clear_pending(ctx, job)
             return LaneResult(job.id, "blocked", str(exc))

@@ -17,10 +17,14 @@ from pathlib import Path
 from .. import depgraph, gates, gitops
 from ..board import Job
 from ..gh import GHError
-from .base import (PR_MARKER, Context, Lane, LaneError, Workspace, count, dropped_names, ensure_in_order_logged,
+from .base import (PR_MARKER, Context, Lane, LaneBlocked, LaneError, Workspace, count, dropped_names, ensure_in_order_logged,
                    load_order, merged_for, open_cycle_inputs, open_roadmap_prs, order_path, repair_order_file, scan_problems,
                    sibling_checkouts, sibling_readmes)
 from .pr import fresh_worktree, release_branch
+
+PORTED_ALREADY = ("{name} has an open pull request already (#{pr}, at `{head}`), opened by an earlier run of this "
+                  "port that did not finish: this run's port is not pushed over it. A human closes this job when "
+                  "that pull request is the port, or closes the pull request and releases the job.")
 
 
 def extract_synopsis(report: str) -> str:
@@ -160,6 +164,14 @@ class PortLane(Lane):
         if ctx.dry_run:
             return f"[dry-run] would open a draft pull request {title!r}"
         fork = self.push(lambda: gitops.ensure_fork(ctx.gh, cfg.repositories.content, ctx.operator))
+        ported = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
+        standing = self.push(lambda: gitops.replaced_pull(ctx.gh, cfg.repositories.content,
+                                                          f"{ctx.operator}:{ws.extra['branch']}", ported))
+        if standing:
+            # An earlier run of this job opened it and never finished: this run's push would replace
+            # what was reviewed there since (2026-11-16: four runs each replaced a reviewed head).
+            raise LaneBlocked(PORTED_ALREADY.format(name=job.name, pr=standing.get("number"),
+                                                    head=str((standing.get("head") or {}).get("sha") or "")[:7]))
         self.push(lambda: gitops.push(ws.workdir, fork, ws.extra["branch"]))
         pr = self.push(lambda: gitops.open_pull_request(
             ctx.gh, cfg.repositories.content, f"{ctx.operator}:{ws.extra['branch']}", cfg.project.branch, title, body,
