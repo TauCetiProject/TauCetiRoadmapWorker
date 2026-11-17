@@ -21,9 +21,8 @@ Lean file of the folder, a nested roadmap's aside:
   pull requests that add it, or none: a roadmap that exists nowhere waits too), and every open revision
   whose numbering it cites, less what the folder's own README already cites on main or at the merge
   base, supplier by supplier and id by id (`record_of`: a pin bump does not wait for a supplier its
-  roadmap has long named), and except a supplier that a roadmap on main newly names: the dependency
-  check rejects that as an UPWARD edge, which the author removes rather than waits on (the run logs
-  it);
+  roadmap has long named); a supplier that a roadmap on main newly names is an UPWARD edge, which the
+  dependency check rejects: it waits all the same, and the run logs it for the author to drop;
 * every dependency its description declares (its `<!-- depends-on -->` block, then its prose), until
   `met`: a pull request that merged, or the one that added a roadmap another pull request has since
   brought to main (`added_at_base`: no folder of that name at its merge base); one closed without
@@ -158,11 +157,12 @@ def record_of(state, index: dict, pr: dict, body: str, changed) -> dict:
     at its path; a folder new at its path has none, unless the pull request moves a roadmap there
     (`overlaps.rename_source`).
 
-    A roadmap on main never waits for one that is not: the dependency check rejects such an edge as
-    UPWARD (`depgraph.check_order`), and the remedy is to drop it, the newer roadmap consuming the one
-    on main if anything, never to hold the roadmap on main back. So a supplier not on main that the
-    README or Lean of a folder on main newly names is `upward` (roadmap -> {prs, on}), not a wait; one
-    its description alone declares still waits."""
+    The dependency check rejects an edge from a roadmap on main to one that is not as UPWARD
+    (`depgraph.check_order`), and the remedy it asks of the author is to drop the edge, the newer
+    roadmap consuming the one on main if anything. Until the edge is dropped, merging the pull request
+    first would leave main citing a roadmap it lacks, so a supplier not on main that the README or Lean
+    of a folder on main newly names is a wait like any other, and also `upward` (roadmap -> {prs, on})
+    for the run to log."""
     ref = openroadmaps.pr_ref(pr["pr"])
     main_ref = f"refs/heads/{index.get('branch', 'main')}"
     base = overlaps._merge_base(state, main_ref, ref)
@@ -195,12 +195,11 @@ def record_of(state, index: dict, pr: dict, body: str, changed) -> dict:
         for s in record["suppliers"]:
             if s["roadmap"] in had:
                 continue
+            suppliers.setdefault(s["roadmap"], set()).update(s["prs"])
             if on_main and s["cited"]:
                 got = upward.setdefault(s["roadmap"], {"prs": set(), "on": set()})
                 got["prs"].update(s["prs"])
                 got["on"].add(name)
-            else:
-                suppliers.setdefault(s["roadmap"], set()).update(s["prs"])
         revisions |= {(r["pr"], r["roadmap"]) for r in record["revisions"]
                       if any((r["pr"], i) not in cited for i in r["ids"])}
         declared |= {(d["pr"], d["roadmap"]) for d in record["declared"]}
@@ -298,9 +297,9 @@ def run(ctx, label: str) -> list[str]:
                 waits.add(f"#{n} (declared{'' if n in open_prs else ', closed without merging'})")
         waits = sorted(waits)
         for s, got in sorted(record.get("upward", {}).items()):
-            out.append(f"#{number}: UPWARD, not waited for: {', '.join(sorted(got['on']))} (on main) -> {s} "
+            out.append(f"#{number}: UPWARD: {', '.join(sorted(got['on']))} (on main) -> {s} "
                        f"({', '.join(f'#{n}' for n in sorted(got['prs'])) or 'in no open pull request'}); "
-                       f"a roadmap on main does not wait for one that is not, so the edge goes")
+                       f"waited for until {s} is on main or the edge is dropped")
         if waits and not labelled:
             write("POST", number, "waits for " + ", ".join(waits))
         elif labelled and not waits and known:
