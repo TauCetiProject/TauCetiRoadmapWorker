@@ -99,6 +99,9 @@ for this host's workers alone: the reviews of those authors' pull requests are t
 job, the pull requests named excepted; both tables' lists count), and `author_models`, login to model: a
 review of a pull request by that author, one `late_except` does not name, is taken only by a worker of
 the host that runs that model (started with `--model`), and the host's other workers leave it.
+`no_review_authors` lists authors whose pull requests the host's workers do not review at all, the pull
+requests `no_review_except` names excepted: no worker of the host takes such a review, whatever agent or
+model the job names, so the operator decides when one is reviewed.
 `held_logins` lists logins whose reviews and comments the host answers by hand: its `board sync` files
 no gate round and moves no label for them, and its gate rounds do not count them among the reviews to
 answer, as for the logins of `[replies] ignore_logins`. The

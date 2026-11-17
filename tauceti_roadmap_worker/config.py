@@ -415,6 +415,11 @@ class Worker:
     late_authors: list[str] = field(default_factory=list)
     late_except: list[int] = field(default_factory=list)
     author_models: dict[str, str] = field(default_factory=dict)
+    # Authors whose pull requests this host's workers do not review at all (their operator reads them, or
+    # asks for a review of one by naming it in `no_review_except`): no worker of the host takes such a
+    # review, whatever agent or model the job names.
+    no_review_authors: list[str] = field(default_factory=list)
+    no_review_except: list[int] = field(default_factory=list)
     # Logins whose reviews and comments this host answers by hand: its `board sync` files no gate round
     # and moves no label for them, and its gate rounds do not count them among the reviews to answer.
     # A human reads them first. They count with `[replies] ignore_logins` (`ignored_logins`).
@@ -616,6 +621,10 @@ def validate(cfg: Config) -> None:
         problems.append("worker.late_authors must list GitHub logins")
     if any(not isinstance(a, str) or not re.fullmatch(login, a) for a in cfg.worker.held_logins):
         problems.append("worker.held_logins must list GitHub logins")
+    if any(not isinstance(a, str) or not re.fullmatch(login, a) for a in cfg.worker.no_review_authors):
+        problems.append("worker.no_review_authors must list GitHub logins")
+    if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in cfg.worker.no_review_except):
+        problems.append("worker.no_review_except must list pull request numbers")
     if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in cfg.worker.late_except):
         problems.append("worker.late_except must list pull request numbers")
     if any(not (isinstance(k, str) and re.fullmatch(login, k) and isinstance(v, str) and v)

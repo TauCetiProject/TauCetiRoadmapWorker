@@ -244,6 +244,8 @@ def for_job(ctx: Context, job: Job, paused: dict[str, dt.datetime] | None = None
     leaves a job that needs another model; one pinned with `--agent` only lets the lane pick it. A
     family in `paused` (a usage limit, until when) is left until then."""
     cfg = ctx.cfg
+    if no_review(cfg, job):       # the operator's own choice, before anything the job names
+        return None, "this host takes no review of this author's pull requests"
     agent = ctx.agent if ctx.agent_fixed else (job.requires_agent or cfg.lane_agent(job.kind)[0])
     if job.requires_agent and job.requires_agent != agent:
         return None, f"needs agent {job.requires_agent}"
@@ -267,6 +269,22 @@ def for_job(ctx: Context, job: Job, paused: dict[str, dt.datetime] | None = None
     if agent != ctx.agent and not shutil.which(agent):
         return None, "its agent is not installed here"
     return dataclasses.replace(ctx, agent=agent, model=model), ""
+
+
+def no_review(cfg, job: Job) -> bool:
+    """Whether a job is a review of a pull request by one of this host's `[worker] no_review_authors` that
+    its `no_review_except` does not name: no worker of the host takes it."""
+    own = getattr(cfg, "worker", None)
+    authors = {str(a).lower() for a in getattr(own, "no_review_authors", None) or []}
+    if job.kind != "prreview" or not authors:
+        return False
+    try:
+        number = int(job.inputs.get("pr") or 0)
+    except (TypeError, ValueError):
+        number = 0
+    if number in {int(n) for n in getattr(own, "no_review_except", None) or []}:
+        return False
+    return str(job.inputs.get("owner") or "").lower() in authors
 
 
 def author_model(cfg, job: Job) -> str:
