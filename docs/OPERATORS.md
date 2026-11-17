@@ -811,7 +811,7 @@ created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N
 (head moved)`. A head that moved without changing the roadmap folders is not such a move
 (`carry_unchanged`, below).
 
-A head already reviewed gets a further round in three cases only. The first two are read from the
+A head already reviewed gets a further round in four cases only. The first two are read from the
 answered record of the reply on the pull request. A review that did not accept and was answered without moving the
 head (the record names the reviewed head: a dispute) gets one more round, a full review by another
 worker (`dispute_rereview`). When the answer to that second review rewrote the pull request's title
@@ -819,7 +819,7 @@ or description (`repair_text`; its record then carries `"text": true`), the head
 round (`text_rereview`, with `rereview`, `previous_head` equal to the head and `previous_job` the
 second review): an incremental re-review of an unchanged folder whose brief says that the title and
 description are what changed. After that the head is settled, whatever the check round finds, until
-it moves.
+it moves or the fourth case applies.
 
 The third is a check of an accepted head's text. A review records in its verdict the digest of the
 pull request's text it read (`text`, `summary.text_digest`: the title, the `roadmap-summary` block and
@@ -862,6 +862,17 @@ request), then those that wait only for such, and so on; then `awaiting-review` 
 non-drafts before drafts, and the oldest first. The titles and descriptions are read for the run in
 batches (`prbatch.pull_texts`). The log reads `#N: PRREVIEW-<Leaf>~k created (a check of its title and
 description: changed since its review; dependency depth 0)`.
+
+The fourth needs no record: a title or description that is not the text the head's latest review read,
+when that review does not accept (`intake.text_moved`: the verdict's `text` against the digest of the
+text now). An author outside the worker pool leaves no answered record and answers a review of the text
+by correcting the description, with no push; before 2026-11-17 such a correction was never read and the
+pull request stayed unapproved. The head gets the second case's check round (`text_rereview`, with the
+digest as `text_digest`), whether it was reviewed once or twice, and again for each later text, up to
+`intake.TEXT_ROUNDS` (3) such rounds at one head counted from its latest check; then it is settled until
+it moves, and the run says so (`#N: no round is due at <head7> ...`). A verdict of an older build, which
+records no digest, files nothing. The texts of the open pull requests are read in one batch, the one the
+checks of accepted heads' texts use.
 
 **Passes before the final review.** With `[prreview] pre_passes` the first rounds of a roadmap folder of a
 pull request the pool repairs are passes on `pre_model` (a model that may also write the roadmaps and the

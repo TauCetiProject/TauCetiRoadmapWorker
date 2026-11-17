@@ -766,6 +766,75 @@ def test_an_older_builds_check_never_overrides_a_later_verdicts_digest():
     assert job.inputs["text_check"] is True and job.inputs["text_digest"] == digest_a and job.id == "PRREVIEW-Foo~4"
 
 
+def test_a_text_corrected_without_an_answered_record_gets_its_round():
+    # 2026-11-17: the check of an accepted head's text asked for a correction, and the author, outside the pool,
+    # corrected the description: no push, and no answered record (only a worker's reply carries one). The text
+    # is not the one the check read: it gets its round.
+    texts = ["It builds Foo.\n", "It builds Foo from Bar.\n", "It builds Foo from Bar and Baz.\n",
+             "It builds Foo from Bar, Baz and Qux.\n", "It builds Foo from all of them.\n"]
+    digests = [summary.text_digest("Roadmap: Foo", t) for t in texts]
+    done, check = review_job(40, 1, 12, H1, "done"), review_job(41, 2, 12, H1, "done")
+    check.inputs.update(text_check=True, text_digest=digests[0])
+    files = {**verdict_file(done, "accepted", H1), **verdict_read(check, "needs_changes", H1, digests[0])}
+    thanks = {12: [{"id": 9, "user": {"login": "carol"}, "body": "Thanks: F01 is corrected in the description."}]}
+    rest = ("#12: no round is due at 1111111 (Foo was reviewed there {} times and the last review does not accept "
+            "it): it waits for a push or an operator's round")
+
+    def run(body, jobs, records):
+        return sync(ContentGH([node(12, H1)], pulls=text_pr(12, body=body), files=records, comments=thanks), jobs)
+
+    out, fake = run(texts[1], [done, check], files)
+    [(job, _s, _p)] = fake.created
+    assert job.id == "PRREVIEW-Foo~3" and out == ["#12: PRREVIEW-Foo~3 created"]
+    assert job.inputs == {"pr": 12, "head": H1, "owner": "carol", "name": "Foo", "folder": "Foo", "rereview": True,
+                          "previous_head": H1, "previous_job": "PRREVIEW-Foo~2", "text_rereview": True,
+                          "text_digest": digests[1]}
+    # The text the check read is still there: nothing reads it again, and the head is reported at rest.
+    out, fake = run(texts[0], [done, check], files)
+    assert fake.created == [] and out == [rest.format(1)]
+    # Each later text gets its round as well, three rounds at most from the check on; the round that read a
+    # text is not filed for it again.
+    rounds = []
+    for i in (1, 2, 3):
+        job = review_job(41 + i, 2 + i, 12, H1, "done")
+        job.inputs.update(text_rereview=True, text_digest=digests[i])
+        rounds.append(job)
+        files = {**files, **verdict_read(job, "needs_changes", H1, digests[i])}
+        out, fake = run(texts[i], [done, check, *rounds], files)
+        assert fake.created == [] and out == [rest.format(1 + i)]
+        out, fake = run(texts[i + 1], [done, check, *rounds], files)
+        if i < 3:
+            [(job, _s, _p)] = fake.created
+            assert job.id == f"PRREVIEW-Foo~{3 + i}" and job.inputs["text_digest"] == digests[i + 1]
+        else:
+            assert fake.created == [] and out == [rest.format(4)]
+    # A round that accepts the text ends it.
+    accepted = {**files, **verdict_read(rounds[-1], "accepted", H1, digests[3])}
+    out, fake = run(texts[4], [done, check, *rounds], accepted)
+    assert fake.created == [] and out == ["#12: ai-approved added (the AI review of 1111111 accepts it)"]
+
+
+def test_a_first_review_answered_by_a_corrected_text_gets_a_text_round():
+    # The head's only review asked for changes and read text A; the description is now B and no reply carries an
+    # answered record. The round reads the text (it is no dispute); the same text, a verdict of an older build
+    # (no digest) and a text that cannot be read file nothing and say nothing: the head waits for its author.
+    text_a, text_b = "It builds Foo.\n", "It builds Foo from Bar.\n"
+    digest_a, digest_b = summary.text_digest("Roadmap: Foo", text_a), summary.text_digest("Roadmap: Foo", text_b)
+    first = review_job(40, 1, 12, H1, "done")
+    read = verdict_read(first, "needs_changes", H1, digest_a)
+    out, fake = sync(ContentGH([node(12, H1)], pulls=text_pr(12, body=text_b), files=read), [first])
+    [(job, _s, _p)] = fake.created
+    assert job.id == "PRREVIEW-Foo~2" and out == ["#12: PRREVIEW-Foo~2 created"]
+    assert job.inputs == {"pr": 12, "head": H1, "owner": "carol", "name": "Foo", "folder": "Foo", "rereview": True,
+                          "previous_head": H1, "previous_job": "PRREVIEW-Foo~1", "text_rereview": True,
+                          "text_digest": digest_b}
+    for gh in (ContentGH([node(12, H1)], pulls=text_pr(12, body=text_a), files=read),
+               ContentGH([node(12, H1)], pulls=text_pr(12, body=text_b), files=verdict_file(first, "needs_changes", H1)),
+               ContentGH([node(12, H1)], files=read)):
+        out, fake = sync(gh, [first])
+        assert fake.created == [] and out == []
+
+
 def test_each_folders_text_correction_gets_its_round_whatever_the_other_folder_answered():
     # Both folders' checks asked for a text-only correction at the same head; Foo's answer came first, Bar's
     # last. Each folder's answer is its own: both get their check round.

@@ -1959,6 +1959,26 @@ def text_pending(jobs: list[Job], comments: list[dict], head: str, verdict: dict
     return False
 
 
+TEXT_ROUNDS = 3     # the rounds one unmoved head gets for a rewritten title or description (since its last check)
+
+
+def text_moved(jobs: list[Job], verdict: dict | None, got: dict | None) -> str:
+    """The digest of a pull request's title and description (`got`, `summary.text_digest`) when it is not
+    the text the latest review of the head among `jobs` (one folder's rounds of the head, all finished)
+    read and that review does not accept; '' otherwise: no round, an accepting or missing verdict, a
+    verdict of an older build that records no digest, a text that could not be read (`got` is None), or
+    the same text. Nothing but the digest is asked for: a reply by an author outside the worker pool
+    carries no answered record, and such an author answers a review of the text by correcting the
+    description. 2026-11-17: two pull requests whose check of the text had asked for a correction had
+    it made by their authors the next day and stayed unapproved, the correction unread, because the
+    head had not moved and no record said that the text had."""
+    if not jobs or got is None or not verdict or verdict.get("status") == "accepted":
+        return ""
+    read = str(verdict.get("text") or "")
+    digest = summary.text_digest(got.get("title") or "", got.get("body") or "")
+    return digest if read and digest != read else ""
+
+
 def at_rest(out: list[str], number: int, folder: str, head: str, jobs: list[Job], verdict: dict | None) -> None:
     """Report a head no further round is due at whose latest review does not accept it: reviewed, answered
     without a push, reviewed again (and its text once more), it is settled for the intake and stays
@@ -2592,6 +2612,16 @@ def sync_pr_reviews(ctx) -> list[str]:
     unchanged: dict[int, str] = {}          # a head that only moved: the earlier head whose acceptance stands
     accepted_at: dict[int, dict[str, str]] = {}     # an accepted pull request: folder -> the head reviewed for it
     threads: dict[int, list[dict] | None] = {}
+    pr_texts: dict[int, dict | None] = {}
+
+    def pull_text(number: int) -> dict | None:
+        """The title and description of an open pull request as they are now; those of all the open pull
+        requests are read in one batch the first time one is asked for (the checks of the accepted pull
+        requests' texts, `file_text_checks`, then read nothing again)."""
+        if not pr_texts:
+            pr_texts.update(prbatch.pull_texts(ctx.gh, repo, [int(e["pr"]) for e in listed], batch))
+        return pr_texts.get(number)
+
     for entry in listed:
         number, head = int(entry["pr"]), entry.get("head", "")
         labelled = p.label in entry.get("labels", [])
@@ -2791,6 +2821,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                 continue         # settled at an earlier head, and the folder holds the files it held there
             same = [j for j in ours if j.inputs.get("head") == head]
             dispute = text_round = False
+            moved = ""
             if same and settled:
                 continue
             read_here = finished_reviews(same, head)
@@ -2809,39 +2840,49 @@ def sync_pr_reviews(ctx) -> list[str]:
                 # review: a correction it asks for that is answered without a push gets the same check round.
                 # A text check starts a sequence of its own (the text it read is later than what the earlier
                 # rounds of the head settled), so only the rounds from the latest one on count here.
+                # 2026-11-17: whatever the records say, a title or description that is not the one the head's
+                # latest review read (and did not accept) gets a round of the same kind (`text_moved`): an
+                # author outside the pool leaves no record. `TEXT_ROUNDS` of them at one head, counted from its
+                # latest check, and then the head is settled until it moves.
                 checks = [j for j in same if j.inputs.get("text_check")]
                 if checks:
                     since = round_key(max(checks, key=round_key))
                     same = [j for j in same if round_key(j) >= since]
-                if any(j.inputs.get("text_rereview") for j in same):
-                    at_rest(out, number, folder, head, same, latest_verdict(ctx, same, head, texts))
-                    continue
-                twice = any(j.inputs.get("dispute_rereview") or j.inputs.get("text_check") for j in same)
-                if number not in threads:
-                    try:
-                        threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
-                    except GHError as exc:
-                        out.append(f"#{number}: comments not read ({str(exc).splitlines()[0][:160]})")
-                        continue
-                if threads[number] is None:
-                    continue             # an earlier step of this run could not read its comments
+                rounds = sum(1 for j in same if j.inputs.get("text_rereview"))
+                twice = bool(rounds) or any(j.inputs.get("dispute_rereview") or j.inputs.get("text_check")
+                                            for j in same)
                 verdict = latest_verdict(ctx, same, head, texts)
-                if twice and not text_pending(same, threads[number], head, verdict):
-                    at_rest(out, number, folder, head, same, verdict)
-                    continue
-                if not twice and not dispute_pending(same, threads[number], head, verdict):
-                    continue
-                dispute, text_round = not twice, twice
+                pending = False
+                if not rounds:
+                    if number not in threads:
+                        try:
+                            threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
+                        except GHError as exc:
+                            out.append(f"#{number}: comments not read ({str(exc).splitlines()[0][:160]})")
+                            continue
+                    if threads[number] is None:
+                        continue             # an earlier step of this run could not read its comments
+                    pending = (text_pending if twice else dispute_pending)(same, threads[number], head, verdict)
+                if not pending:
+                    # (the texts are read only for a head whose unaccepting review recorded the text it read)
+                    if rounds < TEXT_ROUNDS and verdict and verdict.get("status") != "accepted" and verdict.get("text"):
+                        moved = text_moved(same, verdict, pull_text(number))
+                    if not moved:
+                        if twice:
+                            at_rest(out, number, folder, head, same, verdict)
+                        continue
+                dispute, text_round = pending and not twice, twice or bool(moved)
             if made >= p.per_run:
                 waiting += 1
                 continue
-            file_round(number, entry, folder, ours, mine, {"text_rereview": True} if text_round else {}, dispute,
+            extra = {"text_rereview": True, **({"text_digest": moved} if moved else {})} if text_round else {}
+            file_round(number, entry, folder, ours, mine, extra, dispute,
                        answered=max(same, key=round_key).id if same and (dispute or text_round) else "",
                        final=after_pass)
     if waiting:
         out.append(f"{waiting} review job(s) wait ([prreview] per_run = {p.per_run})")
     if text_due and p.text_per_run:
-        file_text_checks(ctx, listed, text_due, texts, file_round, lambda: made, out)
+        file_text_checks(ctx, listed, text_due, texts, file_round, lambda: made, out, pr_texts)
     return out
 
 
@@ -2900,7 +2941,8 @@ def text_read(ctx, ours: list[Job], at: str, head: str, digest: str, texts: dict
     return bool(job and job.inputs.get("text_check") and job.inputs.get("text_digest") == digest), ""
 
 
-def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round, made, out: list[str]) -> None:
+def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round, made, out: list[str],
+                     read: dict[int, dict | None] | None = None) -> None:
     """The check rounds of accepted pull requests' title and description (`[prreview] text_per_run`),
     filed by `sync_pr_reviews` after its other rounds, within `[prreview] per_run`.
 
@@ -2920,8 +2962,8 @@ def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round
     room = min(p.text_per_run, p.per_run - made())
     if room <= 0:
         return
-    bodies = prbatch.pull_texts(ctx.gh, cfg.repositories.content, [int(e["pr"]) for e in listed],
-                                cfg.board.graphql_batch)
+    bodies = read or prbatch.pull_texts(ctx.gh, cfg.repositories.content, [int(e["pr"]) for e in listed],
+                                        cfg.board.graphql_batch)
     ready = []
     for number, entry, heads, mine in due:
         got, head = bodies.get(number), entry.get("head", "")
