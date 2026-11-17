@@ -95,3 +95,25 @@ def test_the_hosts_own_table_names_the_model_an_authors_reviews_are_taken_on():
     pinned = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "owner": "dave"}, requires_agent="claude", requires_model="fable")
     assert worker.for_job(fable, pinned)[0] is fable                    # a job that names its model keeps it
     assert worker.author_model(example_config(), theirs) == ""          # nothing named: nothing changes
+
+
+def test_the_hosts_own_table_names_the_authors_whose_pull_requests_it_does_not_review():
+    """`[worker] no_review_authors`: no worker of this host takes a review of a pull request by a named
+    author, whatever the worker runs and whatever the job names; the pull requests `no_review_except`
+    names, other authors' and other kinds of job are as before."""
+    fable = base(agent="claude", model="fable", agent_fixed=True, model_fixed=True)
+    opus = base(agent="claude", model="claude-opus-5-5", agent_fixed=True, model_fixed=True)
+    free = base()
+    theirs = new_job("PRREVIEW-Foo~1", inputs={"pr": 12, "owner": "Dave"})
+    pinned = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "owner": "dave"}, requires_agent="claude",
+                     requires_model="claude-opus-5-5")
+    asked = new_job("PRREVIEW-Bar~1", inputs={"pr": 14, "owner": "dave"})
+    others = new_job("PRREVIEW-Baz~1", inputs={"pr": 15, "owner": "carol"})
+    for ctx in (fable, opus, free):
+        ctx.cfg.worker.no_review_authors, ctx.cfg.worker.no_review_except = ["dave"], [14]
+    why = "this host takes no review of this author's pull requests"
+    for ctx in (fable, opus, free):
+        assert worker.for_job(ctx, theirs) == (None, why) and worker.for_job(ctx, pinned) == (None, why)
+    assert worker.for_job(fable, asked)[0] is fable and worker.for_job(fable, others)[0] is fable
+    assert worker.for_job(opus, new_job("PKG-Foo", inputs={"owner": "dave"}))[0] is opus      # not a review of a pull request
+    assert not worker.no_review(example_config(), theirs)                                     # nothing named: nothing changes

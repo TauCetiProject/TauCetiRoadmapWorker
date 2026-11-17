@@ -88,9 +88,16 @@ def test_the_overlay_carries_the_order_and_models_of_the_hosts_own_workers(tmp_p
     cfg = config.load(str(conf), overlay=str(held))
     assert cfg.worker.held_logins == ["Erin"] and config.ignored_logins(cfg) == {"github-actions[bot]", "Erin"}
     assert config.ignored_logins(config.load(str(conf))) == {"github-actions[bot]"}
+    left = tmp_path / "left.toml"
+    left.write_text('[worker]\nno_review_authors = ["dave"]\nno_review_except = [7]\n')
+    cfg = config.load(str(conf), overlay=str(left))
+    assert (cfg.worker.no_review_authors, cfg.worker.no_review_except) == (["dave"], [7])
+    assert config.load(str(conf)).worker.no_review_authors == []
     for bad, why in (('late_authors = ["not a login"]', "worker.late_authors"), ("late_except = [0]", "worker.late_except"),
                      ('author_models = { dave = "" }', "worker.author_models"),
-                     ('held_logins = ["not a login"]', "worker.held_logins")):
+                     ('held_logins = ["not a login"]', "worker.held_logins"),
+                     ('no_review_authors = ["not a login"]', "worker.no_review_authors"),
+                     ("no_review_except = [0]", "worker.no_review_except")):
         with pytest.raises(config.ConfigError, match=why):
             config.parse(f'[project]\nname = "P"\n[worker]\n{bad}\n', "x.toml")
 
