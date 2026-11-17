@@ -11,8 +11,9 @@ consume only:
   is on main), or when they drop an id this roadmap cites (below).
 
 A roadmap already on main (this pull request revises it) consumes only the first two: it never names
-a roadmap that is not on main as a supplier, whatever the merge order says (the dependency check
-reports that edge UPWARD, and it is never waited for).
+a roadmap that is not on main as a supplier, whatever the merge order says. The dependency check
+reports that edge UPWARD; remove it. While it stays, the dependency label holds this pull request
+back until that supplier reaches main.
 
 Never cite these roadmaps as suppliers: __DROPPED__.
 
