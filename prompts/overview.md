@@ -75,7 +75,10 @@ has failed.
 
 Begin with `**Summary.**`. Roughly 250 to 450 words for a short roadmap, up to about 700 for a long
 one, in several paragraphs: length spent on plain explanation is welcome, length spent on listing is
-not. A paragraph of the old opening that is not summary and that a reader needs (a warning that two
+not. The worker counts as `wc -w` does: every run of characters between spaces is a word, so each
+symbol of a formula written with spaces counts. It refuses an opening of more than 850 by that count
+and you then have to write it again, so run `wc -w` on your file before you finish and stay at or
+under 700 by that count. A paragraph of the old opening that is not summary and that a reader needs (a warning that two
 notions differ, the sentence on what `Suggested.lean` is) may stay word for word.
 
 ## The one rule that matters most: add nothing, strengthen nothing, weaken nothing
