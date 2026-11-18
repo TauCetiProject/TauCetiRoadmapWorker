@@ -80,8 +80,11 @@ class Event:
 
 def text_version(body: str) -> str:
     """A short digest of a review's or comment's text: a new version exactly when the text is edited
-    (the REST API gives reviews no update time, and an inline comment's line moves with every push)."""
-    return hashlib.sha256((body or "").encode("utf-8")).hexdigest()[:12]
+    (the REST API gives reviews no update time, and an inline comment's line moves with every push).
+    An AI review the worker rebuilt in the posted layout without changing what it says
+    (`reformat-reviews`) pins the version of the text it replaced (`prreviews.pinned_version`): it keeps
+    that version, so a reply that answered the review still does."""
+    return prreviews.pinned_version(body) or hashlib.sha256((body or "").encode("utf-8")).hexdigest()[:12]
 
 
 def _markers_re(markers: list[str]) -> re.Pattern:

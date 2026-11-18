@@ -289,6 +289,8 @@ def source_issues(body: str) -> list[dict]:
         if line.startswith("## "):
             inside = line.strip().lower().startswith("## source issues")
             continue
+        if line.startswith("<details") or line.lstrip().startswith("<!--"):
+            inside = False             # (a comment's collapsed block, or its marker, ends the section)
         if not inside:
             continue
         if re.match(r"^\s*[-*]\s", line):
@@ -364,7 +366,7 @@ def human_flags(report: str) -> list[str] | None:
             fenced = not fenced
         if fenced:
             continue
-        if line.startswith("## "):
+        if line.startswith("## ") or (inside and (line.startswith("<details") or line.lstrip().startswith("<!--"))):
             if inside:
                 break
             inside = bool(HUMAN_HEADING.match(line))
@@ -507,3 +509,333 @@ def render_pr_review(head: str, status: str, report: str, marker: dict, reviewed
 def prreview_marker(body: str) -> dict:
     """The marker of a pull-request review comment ({job, head, verdict, agent, model, worker, mode}), or {}."""
     return worker_marker(body, PRREVIEW_MARK_RE)
+
+
+# --- the posted layout of a pull-request review, and the reading of both its forms -------------------
+#
+# The comment a pull-request review posts reads, top to bottom: the header lines tools read (the
+# `🤖 AI review` line, `Verdict:`, `Reviewed head:`, `Roadmap folder:`), a `**Summary.**` of two to four
+# sentences, then `## Findings`, `## Small corrections (non-blocking)`, `## Format notes (non-blocking)`,
+# `## Questions for the author`, `## For the human reviewers` and `## Source issues`, each only when it
+# has something, then one collapsed block of what was checked, then the marker. Comments posted before
+# this layout (the status sentence and the gate's sentence under the header, the `Source independence:`
+# and `Research link:` statements, the findings straight after them, then `## Previous findings`,
+# `## Verified sound`, `## Not verifiable` and the rest) are read by the same parser (`read_posted`).
+
+POSTED_HEAD = re.compile(r"^\W*AI review \((?P<agent>[^,)\n]+),\s*(?P<model>[^)\n]*)\) of (?P<sha>[0-9a-f]{7,40})"
+                         r"(?: \(incremental re-review since (?P<since>[0-9a-f]{7,40})\))?\s*$")
+REMARK = re.compile(r"^(?P<n>\d+)\.\s+\*\*(?P<id>[FCN]\d+)\*\*\s*(?:\((?P<sev>P[123])\))?\s*(?P<title>.*)$")
+FINDINGS_HEADING = "Findings"
+CORRECTIONS_HEADING = "Small corrections (non-blocking)"
+NOTES_HEADING = "Format notes (non-blocking)"
+QUESTIONS_HEADING = "Questions for the author"
+SOURCE_HEADING = "Source issues"
+# The visible sections after the remarks, in this order; everything else goes in the collapsed block.
+VISIBLE = (QUESTIONS_HEADING, HUMAN_SECTION, SOURCE_HEADING)
+DROPPED = ("Verified sound",)
+DETAILS_OPEN = "<details><summary>What was checked</summary>"
+DETAILS_CLOSE = "</details>"
+SUMMARY_LEAD = "**Summary.**"
+PASS_LEAD = "This is a pass before the final review."
+ONE_OF = re.compile(r"also adds or changes (\d+) other roadmap folders?")
+GATE_SENTENCE = re.compile(r"^At `[0-9a-f]{7}`: ")
+PIN_MARK = "tauceti-roadmap-text-version"
+PIN_RE = re.compile(r"<!--\s*" + PIN_MARK + r"\s*(\{.*?\})\s*-->", re.DOTALL)
+FENCE_LINE = re.compile(r"^\s*(```|~~~)")
+
+
+@dataclass
+class Remark:
+    id: str                 # F01, C01, N01
+    severity: str           # P1, P2, P3 for a finding; '' otherwise
+    title: str
+    body: list[str]         # its lines as posted (indented under the item)
+
+    def lines(self, number: int) -> list[str]:
+        return [f"{number}. **{self.id}**" + (f" ({self.severity})" if self.severity else "") + f" {self.title}".rstrip(),
+                *self.body]
+
+
+@dataclass
+class Posted:
+    """A pull-request review comment, read into its parts (`read_posted`)."""
+    head: str                                                   # the first line, as posted
+    agent: str = ""
+    model: str = ""
+    sha: str = ""
+    since: str = ""
+    verdict_line: str = ""
+    conditional_line: str = ""
+    reviewed: str = ""                                          # the `Reviewed head:` line
+    folder: str = ""                                            # the `Roadmap folder:` line
+    pass_note: str = ""
+    others: int = 0                                             # other roadmap folders of the pull request
+    summary: str = ""                                           # the `**Summary.**` paragraph (new form)
+    gate: str = ""                                              # the sentence on the worker's gate
+    findings: list[Remark] = field(default_factory=list)
+    corrections: list[Remark] = field(default_factory=list)
+    notes: list[Remark] = field(default_factory=list)
+    sections: list[tuple[str, str]] = field(default_factory=list)   # (heading, text) of the other `##` sections
+    loose: list[str] = field(default_factory=list)              # paragraphs under no heading, kept in the block
+    details: str = ""                                           # the collapsed block's text (new form)
+    markers: list[str] = field(default_factory=list)            # the marker comments at the end, verbatim
+    new_form: bool = False
+
+    @property
+    def verdict(self) -> str:
+        m = re.search(r"(APPROVE|CHANGES NEEDED|REJECT)", self.verdict_line)
+        return {"APPROVE": "accepted", "CHANGES NEEDED": "needs_changes", "REJECT": "rejected"}.get(
+            m.group(1) if m else "", "")
+
+    def section(self, heading: str) -> str:
+        return next((text for h, text in self.sections if h == heading), "")
+
+
+def _paragraphs(lines: list[str]) -> list[list[str]]:
+    out, cur = [], []
+    for line in lines:
+        if line.strip():
+            cur.append(line)
+        elif cur:
+            out.append(cur)
+            cur = []
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _items(lines: list[str]) -> tuple[list[Remark], list[str]]:
+    """The numbered remarks at the start of `lines` (each with its indented body), and what follows them."""
+    out: list[Remark] = []
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    while i < len(lines) and (m := REMARK.match(lines[i])):
+        body, i = [], i + 1
+        while i < len(lines) and (not lines[i].strip() or lines[i][:1] in (" ", "\t")) and not REMARK.match(lines[i]):
+            body.append(lines[i])
+            i += 1
+        while body and not body[-1].strip():
+            body.pop()
+        out.append(Remark(m.group("id"), m.group("sev") or "", m.group("title").strip(), body))
+        while i < len(lines) and not lines[i].strip():
+            i += 1
+    return out, lines[i:]
+
+
+def read_posted(body: str) -> Posted | None:
+    """A pull-request review comment in either layout, read into its parts; None for a comment that is
+    not one (its first line is not a review's, or it carries no `tauceti-roadmap-prreview` marker)."""
+    lines = (body or "").rstrip("\n").split("\n")
+    if not lines or not (m := POSTED_HEAD.match(lines[0].strip())) or not PRREVIEW_MARK_RE.search(body or ""):
+        return None
+    p = Posted(lines[0].rstrip(), agent=m["agent"].strip(), model=m["model"].strip(), sha=m["sha"], since=m["since"] or "")
+    # The marker comments close the comment; whatever comes after them is kept with them.
+    end = len(lines)
+    while end > 1 and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("<!--")):
+        end -= 1
+    p.markers = [x for x in lines[end:] if x.strip()]
+    rest = lines[1:end]
+    # Split off the `##` sections and the collapsed block (outside code fences).
+    top, sections, details, current, fenced, in_details = [], [], [], None, False, False
+    for line in rest:
+        if FENCE_LINE.match(line):
+            fenced = not fenced
+        if not fenced and line.strip() == DETAILS_OPEN:
+            in_details, current = True, None
+            p.new_form = True
+            continue
+        if in_details:
+            if not fenced and line.strip() == DETAILS_CLOSE:
+                in_details = False
+            else:
+                details.append(line)
+            continue
+        if not fenced and line.startswith("## "):
+            current = [line[3:].strip(), []]
+            sections.append(current)
+        elif current is not None:
+            current[1].append(line)
+        else:
+            top.append(line)
+    p.details = "\n".join(details).strip("\n")
+    # The header lines and the paragraphs before the first remark or section.
+    first = next((k for k, line in enumerate(top) if REMARK.match(line)), len(top))
+    for para in _paragraphs(top[:first]):
+        lead = para[0].strip()
+        text = "\n".join(para)
+        if re.match(r"^\W*verdict\W", lead, re.IGNORECASE) and not p.verdict_line:
+            p.verdict_line = para[0]
+            p.conditional_line = next((x for x in para[1:] if x.startswith("Conditional on")), "")
+        elif lead.startswith("Reviewed head:") and not p.reviewed:
+            p.reviewed = para[0]
+        elif lead.startswith("Roadmap folder:") and not p.folder:
+            p.folder = para[0]
+        elif lead.startswith(PASS_LEAD):
+            p.pass_note = text
+        elif lead.startswith(SUMMARY_LEAD):
+            p.summary = text
+        elif lead in PR_STATUS_LINES.values() or lead.startswith("The AI review accepts this roadmap folder"):
+            if mm := ONE_OF.search(text):
+                p.others = int(mm.group(1))
+        elif GATE_SENTENCE.match(lead) and not p.gate:
+            p.gate = text
+        elif PROVENANCE_LINE.match(lead) or lead.startswith("**For the human reviewers:** this review raises"):
+            continue                       # restated elsewhere, or not posted any more
+        else:
+            p.loose.append(text)
+    p.findings, after = _items(top[first:])
+    p.loose += ["\n".join(x) for x in _paragraphs(after)]
+    for heading, text in sections:
+        if heading in (FINDINGS_HEADING, CORRECTIONS_HEADING, NOTES_HEADING):
+            found, after = _items(text)
+            {FINDINGS_HEADING: p.findings, CORRECTIONS_HEADING: p.corrections, NOTES_HEADING: p.notes}[heading].extend(found)
+            if any(x.strip() for x in after):
+                p.sections.append((f"{heading} (continued)", "\n".join(after).strip("\n")))
+        else:
+            p.sections.append((heading, "\n".join(text).strip("\n")))
+    return p
+
+
+def _bullets(text: str) -> list[str]:
+    return [x for x in text.split("\n") if re.match(r"^\s*[-*]\s+\S", x) and not NO_FLAG.match(re.sub(r"^\s*[-*]\s+", "", x))]
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _clip(title: str, limit: int = 160) -> str:
+    title = " ".join(title.split()).rstrip(".")
+    return title if len(title) <= limit else title[:limit - 1].rstrip() + "…"
+
+
+def posted_summary(p: Posted) -> str:
+    """The `**Summary.**` a review comment opens with, composed from its parts: the verdict in words,
+    the main findings by their own titles (P1 and P2 first), the counts of findings, small corrections
+    and format notes, and what is left for a human to decide. Two to four sentences."""
+    questions = len(_bullets(p.section(HUMAN_SECTION)))
+    asked = len(_bullets(p.section(QUESTIONS_HEADING)))
+    minor = []
+    if p.corrections:
+        minor.append(_plural(len(p.corrections), "small correction"))
+    if p.notes:
+        minor.append(_plural(len(p.notes), "format note"))
+    if p.verdict == "accepted":
+        first = ("Accepted: this roadmap folder is ready for a human's final approval" if not p.others else
+                 f"Accepted for this roadmap folder; the pull request is ready for a human's final approval once its "
+                 f"{_plural(p.others, 'other roadmap folder')} {'is' if p.others == 1 else 'are'} accepted too")
+        sentences = [first + " (the AI does not approve or merge)."]
+        if minor:
+            sentences.append(" and ".join(minor).capitalize() + ", none blocking.")
+    else:
+        counts = [f"{sum(1 for f in p.findings if f.severity == s)} {s}" for s in ("P1", "P2", "P3")
+                  if any(f.severity == s for f in p.findings)]
+        what = (f"{_plural(len(p.findings), 'finding')} block{'s' if len(p.findings) == 1 else ''} this head"
+                + (f" ({', '.join(counts)})" if counts else ""))
+        sentences = [("Changes needed: the review rejects the roadmap as it stands; " if p.verdict == "rejected"
+                      else "Changes needed: ") + what + "."]
+        main = [f for f in p.findings if f.severity in ("P1", "P2")][:2] or p.findings[:1]
+        if main:
+            sentences.append(("The main one" if len(main) == 1 else "The main ones") + ": "
+                             + "; ".join(f"{f.id}, {_clip(f.title)}" for f in main) + ".")
+        if minor:
+            sentences.append(" and ".join(minor).capitalize() + " besides, none blocking.")
+    left = []
+    if asked:
+        left.append(f"{_plural(asked, 'question')} for the author")
+    if questions:
+        left.append(f"{_plural(questions, 'question')} for the human reviewers, which do not change the verdict")
+    sentences.append("It leaves " + " and ".join(left) + "." if left else "Nothing is left for a human to decide.")
+    return SUMMARY_LEAD + " " + " ".join(sentences[:4])
+
+
+DETAIL_LABELS = {"Previous findings": "Earlier findings", "Not verifiable": "Not verified",
+                 "Deferred findings": "Deferred findings"}
+
+
+def posted_details(p: Posted) -> str:
+    """The collapsed block of an old-form comment: the gate's sentence, the paragraphs under no heading,
+    and the sections that are not posted in the open (earlier findings, what could not be verified, the
+    deferred findings, any other), each under a bold label; `## Verified sound` is not posted."""
+    if p.new_form:
+        return p.details
+    parts = [x for x in [p.gate, *p.loose] if x.strip()]
+    for heading, text in p.sections:
+        if heading in VISIBLE or heading in DROPPED or not text.strip():
+            continue
+        base = heading.split(" (", 1)[0]
+        label = DETAIL_LABELS.get(base, base) + heading[len(base):]
+        parts.append(f"**{label}.**\n\n{text.strip()}")
+    return "\n\n".join(parts)
+
+
+def render_posted(p: Posted, pin: str = "") -> str:
+    """The comment of `p` in the posted layout, with the text-version pin `pin` when given (`pin_marker`)."""
+    out = [p.head, "", p.verdict_line] + ([p.conditional_line] if p.conditional_line else []) + [""]
+    out += [x for line in (p.reviewed, p.folder, p.pass_note) if line for x in (line, "")]
+    out += [p.summary or posted_summary(p), ""]
+    for heading, remarks in ((FINDINGS_HEADING, p.findings), (CORRECTIONS_HEADING, p.corrections),
+                             (NOTES_HEADING, p.notes)):
+        if remarks:
+            out += [f"## {heading}", ""]
+            for k, remark in enumerate(remarks, 1):
+                out += [*remark.lines(k), ""]
+        if heading == FINDINGS_HEADING and p.section(f"{heading} (continued)"):
+            out += [p.section(f"{heading} (continued)"), ""]
+    for heading in VISIBLE:
+        text = p.section(heading)
+        if not any(x.strip() and not NO_FLAG.match(re.sub(r"^\s*[-*]\s+", "", x)) for x in text.split("\n")):
+            continue                     # (nothing, or `- none`: the section is left out)
+        out += [f"## {heading}", "", text.strip(), ""]
+    details = posted_details(p)
+    if details.strip():
+        out += [DETAILS_OPEN, "", details.strip(), "", DETAILS_CLOSE, ""]
+    markers = [m for m in p.markers if not PIN_RE.search(m)]
+    if pin:
+        markers.append(pin_marker(pin))
+    return "\n".join(out).rstrip("\n") + "\n\n" + "\n".join(markers) + "\n"
+
+
+def pin_marker(version: str) -> str:
+    """The comment that pins a reformatted review's text version to that of the text it replaced."""
+    return f"<!-- {PIN_MARK} {json.dumps({'version': version})} -->"
+
+
+def pinned_version(body: str) -> str:
+    """The text version a review comment pins (`pin_marker`), honoured only on a comment that carries a
+    pull-request review's marker; '' when there is none."""
+    if not PRREVIEW_MARK_RE.search(body or ""):
+        return ""
+    found = PIN_RE.findall(body or "")
+    try:
+        version = json.loads(found[-1]).get("version") if found else ""
+    except (ValueError, AttributeError):
+        return ""
+    return version if isinstance(version, str) and re.fullmatch(r"[0-9a-f]{12}", version) else ""
+
+
+def posted_identity(body: str) -> tuple:
+    """What the pipeline reads from a review comment, which a reformatting must leave as it was: the
+    first line's agent, model, head and incremental base, the verdict and the gaps it is conditional on,
+    the reviewed head and the folder, the findings' ids, severities and titles (`findings_with_bodies`),
+    the marker, the questions for the human reviewers and the source issues."""
+    p = read_posted(body)
+    if p is None:
+        return ()
+    gaps = gap_slugs(p.conditional_line.split(":", 1)[1]) if ":" in p.conditional_line else []
+    return (p.agent, p.model, p.sha, p.since, p.verdict, tuple(gaps), p.reviewed.strip(), p.folder.strip(),
+            tuple((f, s, t) for f, s, t, _b in findings_with_bodies(body)),
+            json.dumps(prreview_marker(body), sort_keys=True), tuple(human_flags(body) or []),
+            json.dumps(source_issues(body), sort_keys=True))
+
+
+def reformat_posted(body: str, version: str) -> str | None:
+    """A review comment rebuilt in the posted layout (`render_posted`), pinned to `version` (the text
+    version of the comment as first posted: a pin already there is kept), or None when it is not a
+    review comment or the rebuild would change what the pipeline reads from it (`posted_identity`)."""
+    p = read_posted(body)
+    if p is None:
+        return None
+    new = render_posted(p, pinned_version(body) or version)
+    return new if posted_identity(new) == posted_identity(body) else None
