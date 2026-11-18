@@ -1293,6 +1293,55 @@ or changes are touched: a README it leaves alone is as on main and is left alone
 build on the shared continuous integration, which also builds the merge queue: run it in small
 batches (`--limit`).
 
+### Rewriting the opening overview (`overview`)
+
+The README-shape brief opens a roadmap with an overview a mathematician can read cold: what it builds,
+its two to four headline theorems in ordinary language with their real hypotheses, the two to five
+neighbours in Tau Ceti that place it (one clause each, never the full supplier list), and a short
+guide to the layers. `tauceti-roadmap overview` writes it for the READMEs of open pull requests, with
+the agent and model of the `summary` command (`--agent`, `--model`; run it with the fix model, not a
+review model), from `prompts/overview.md`:
+
+    tauceti-roadmap overview --pr 1201 [--pr 1187] [--list] [--force]       # proposals only
+    tauceti-roadmap overview --pool [--accepted-only] --yes [--pace 2] [--limit N]
+    tauceti-roadmap overview --author alice --yes
+
+For each README the pull request adds or changes, the worker reorders the sections (`layout`),
+corrects inside the sections that moved the direction words the move made wrong when the phrase
+names what it points at (`overview.DIRECTIONS`: "the layer headings below" in a scope section that
+now follows the layers becomes "above"; "the supplier contracts below" there stays), and gives the
+agent the reordered README and `Suggested.lean`. The agent writes the new opening and a plan: whether
+it folded a short `## How to read the build` into the opening (the section then goes, whole), the
+direction fixes it proposes in the sections that moved (accepted only as swaps of below/above,
+following/preceding, later/earlier, after/before, of a phrase found once in that section), and, for
+the operator, where each headline and neighbour comes from. The opening is held to its form (it opens
+with `**Summary.**`, at most about 500 words, no heading, no locator, no pull-request number, no Lean
+name the old opening did not use); one refusal is sent back to the agent once. Then the whole README is
+checked against the one at the head (`layout.rewrite_problems`): it may differ only in (a) the
+opening, (b) the order of the top-level sections, (c) a `## How to read the build` section gone whole,
+(d) direction-word swaps inside the scope, the supplier contracts and the guide. A README the check
+refuses is never pushed; the agent's output stays in the scratch folder and the line says why.
+
+Without `--yes` nothing is pushed: each README's proposal is written to
+`<state>/overviews/pr-<N>/<folder>/README.proposed.md` (beside it the README at the head, the agent's
+`opening.md` and `overview.json`, and `record.json`), and the line gives the opening's size before and
+after (`[dry run] #N (alice) Foo: opening 295 -> 410 words (2,060 -> 2,890 characters); moves …;
+proposed README: …`). With `--yes` the checked READMEs of a pull request go up in one commit, as for
+`layout` (the head read again just before, the note posted, then the branch moved without force), with
+the note `Housekeeping at <sha7>: the opening overview of the README was rewritten in Foo/ since
+<sha7>, and its sections were put in the new order …` and a `tauceti-roadmap-layout` record of kind
+`overview`. It refuses an approved or queued pull request, skips one with a round under way, and skips
+one that already carries an overview record of ours (`--force` to redo it). Several processes may run
+it on disjoint lists: each works in its own scratch folder and re-reads the head before it pushes.
+
+`board sync` carries the AI acceptance across such a push as it does across a pure reordering
+(`carry_layout`): it runs the same check on the two heads' READMEs, the other files of the folder
+must be identical, and a chain carries (an accepted head, its reordering, then the overview on top of
+that: the overview head is compared with the accepted head directly). One condition more: an opening
+rewritten by an overview pass counts only when a comment by a pool member (or a maintainer, or a
+listed comment reviewer) records that pass for this head, as the command's note does. An opening
+anybody else rewrote is a change like any other and is reviewed.
+
 ### Rebuilding the posted reviews (`reformat-reviews`)
 
 A review comment is posted in this layout, top to bottom: the header lines the tools read (`🤖 AI

@@ -163,3 +163,87 @@ def in_order(text: str) -> bool:
         return reorder(text) == text
     except LayoutError:
         return False
+
+# --- an overview pass: the opening rewritten, the sections reordered ------------------------------------
+#
+# `overview` rewrites a README's opening and reorders its sections in one pass, correcting inside the
+# sections that move the direction words the move made wrong. `rewrite_problems` is the check that the
+# pass changed nothing else; the intake runs it on the two heads' READMEs as it runs
+# `section_permutation`.
+
+MOVED = (HOW_TO_READ, SCOPE, SUPPLIERS)
+SWAPS = {"below": "above", "above": "below", "following": "preceding", "preceding": "following",
+         "later": "earlier", "earlier": "later", "after": "before", "before": "after"}
+TOKEN = re.compile(r"(\w+)")
+
+
+def split_opening(text: str) -> tuple[str, str]:
+    """(the `# Roadmap:` title line, the opening after it) of a README: the opening is everything up to
+    the first `##` heading, without its surrounding blank lines."""
+    found = parts(text)
+    lines = found[0].body.split("\n")
+    title = lines[0] if lines and lines[0].startswith("# ") else ""
+    rest = lines[1:] if title else lines
+    return title, "\n".join(rest).strip("\n")
+
+
+def swaps(a: str, b: str) -> int | None:
+    """How many direction words (`SWAPS`) turn `a` into `b`; None when they differ in anything else."""
+    ta, tb = TOKEN.split(a), TOKEN.split(b)
+    if len(ta) != len(tb):
+        return None
+    n = 0
+    for x, y in zip(ta, tb):
+        if x == y:
+            continue
+        if SWAPS.get(x.lower()) == y.lower() and x[:1].isupper() == y[:1].isupper():
+            n += 1
+            continue
+        return None
+    return n
+
+
+def rewrite_problems(old: str, new: str) -> list[str]:
+    """Why `new` is not `old` with only the changes an overview pass may make ([] when it is): (a) the
+    opening, (b) the order of the top-level sections, (c) a `## How to read the build` section gone
+    whole (folded into the opening), (d) direction-word swaps (`SWAPS`) inside the sections that move
+    (`MOVED`). The title stays, the opening opens with `**Summary.**`, and every other section is the
+    same byte for byte (the blank lines between sections aside)."""
+    try:
+        a, b = parts(old), parts(new)
+    except LayoutError as exc:
+        return [f"not readable as sections: {exc}"]
+    problems = []
+    if split_opening(old)[0] != split_opening(new)[0]:
+        problems.append("the title changed")
+    if not split_opening(new)[1].startswith("**Summary.**"):
+        problems.append("the opening does not open with `**Summary.**`")
+
+    def body(p: Part) -> str:
+        return p.body.removesuffix("\n").removesuffix("\r")
+    common = Counter(map(body, a[1:])) & Counter(map(body, b[1:]))
+    gone, came, left = [], [], dict(common)
+    for p in a[1:]:
+        if left.get(body(p), 0):
+            left[body(p)] -= 1
+        else:
+            gone.append(p)
+    left = dict(common)
+    for p in b[1:]:
+        if left.get(body(p), 0):
+            left[body(p)] -= 1
+        else:
+            came.append(p)
+    for p in came:
+        match = next((q for q in gone if q.title == p.title and p.title in MOVED and swaps(body(q), body(p))), None)
+        if match is None:
+            problems.append(f"the section `## {p.body.split(chr(10), 1)[0][3:].strip()}` changed (only the opening, "
+                            "the order of the sections, a folded guide and direction words in the sections that move "
+                            "may change)")
+        else:
+            gone.remove(match)
+    folded = [p for p in gone if p.title == HOW_TO_READ]
+    for p in gone:
+        if p.title != HOW_TO_READ or len(folded) > 1:
+            problems.append(f"the section `## {p.body.split(chr(10), 1)[0][3:].strip()}` is gone")
+    return problems
