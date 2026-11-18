@@ -93,9 +93,12 @@ requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned l
 5. **Supplier-order audit**: run the dependency check below, read every `*Needs:*` line and supplier
    citation, and flag upward citations, cycles, unowned prerequisites and supplier drift. A roadmap
    the merge order does not list yet is checked as placed after its last supplier (not a finding).
-6. **Shape and completeness**: every definition has its API and at least three discriminating
-   Checks, every theorem its exact hypotheses and a locator, every layer its dependencies; the README
-   shape and the Lean form below, elaborated with `__ELABORATE__` (`sorry` the only warning).
+6. **Completeness**: every theorem its exact hypotheses and a locator, every layer its
+   dependencies, every Check true and testing something; the Lean form below, elaborated with
+   `__ELABORATE__` (`sorry` the only warning). A key definition with an evident plausible wrong
+   variant and no Check is at most a format note suggesting one; the README's shape (the order of its sections, its headings, whether a layer ends with Examples and Dependencies) and the number of Checks a definition has are never a finding (at most a
+   format note), and a roadmap in the older order, scope and supplier contracts near the top, is
+   not raised at all.
 7. **Headline theorems and padding.** List the roadmap's headline theorems from the README. Are the
    headline theorems that are statable at the pins stated in `Suggested.lean`, and is each one that
    is not statable named in its module docstring? A statable headline that is absent, or one forced

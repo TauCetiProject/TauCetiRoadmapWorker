@@ -71,8 +71,10 @@ context, and of every bold README target, with the values you computed on each s
    object) must cite the owner instead.
 5. **Sources**: verify every locator you can against the text (legal sources only); flag misprints
    copied from a source, and citations that do not support the claim as stated.
-6. **Checks**: each definition has at least three discriminating README Checks; flag Checks that
-   are false, vacuous or restatements.
+6. **Checks**: flag a Check that is false, or vacuous (every candidate object passes it, the wrong
+   one included), or a restatement of the definition. There is no quota: a definition without a
+   Check is not a finding; a key definition with an evident plausible wrong variant and no Check is
+   at most a note suggesting one.
 7. **Policy**: the package is only its folder (`__OUTSIDE_CHECK__` shows what the pull request
    changes); no pull-request numbers or process narrative in the README or docstrings; `theorem`,
    not `lemma`; every target has a locator; no `set_option`; no computational algorithms.

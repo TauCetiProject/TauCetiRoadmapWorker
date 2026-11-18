@@ -25,8 +25,8 @@ Test every class on every target.
    versus ℕ with junk values, additive versus multiplicative normalisations, different hypotheses
    for the same notion.
 8. **Checks**: a Check that is false, vacuous (it also holds for the wrong object), or a
-   restatement of the definition; fewer than three Checks for a definition; a Check about a carrier
-   that does not exist in the file.
+   restatement of the definition; a Check about a carrier that does not exist in the file. (How many
+   Checks a definition has is not a defect.)
 9. **Lean signature defects**: a truncated type, a sorry'd data field, a Lean statement at a
    different generality from the README (a missing Noetherian, topological-group or open-subgroup
    hypothesis), arbitrary-topology carriers that make a statement vacuous or false; a `def` or

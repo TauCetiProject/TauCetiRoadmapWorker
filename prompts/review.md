@@ -94,13 +94,16 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
    supplier citation; flag upward citations, cycles, unowned prerequisites and supplier drift
    (a cited section or declaration that does not exist where it is cited, resolved as the section on
    suppliers below says). Declared supplier gaps are contracts, not unowned prerequisites (below).
-6. **Shape and completeness**: every definition has its API and at least three discriminating
-   Checks; every theorem its exact hypotheses and a locator; every layer its dependencies; the
-   organisation is the roadmap's own (a README that says it follows a source, a layer named after
+6. **Completeness**: every theorem its exact hypotheses and a locator; every layer its
+   dependencies; every Check true and testing something (a Check every candidate passes tests
+   nothing); a key definition with an evident plausible wrong variant and no Check at all is at most
+   a note suggesting one, never a finding; the organisation is the roadmap's own (a README that says it follows a source, a layer named after
    a source's chapter, or a run of layers in a source's chapter order that their dependency lines
    do not force is P2; the witness is the sentence or heading, or the layers and the dependency
-   lines that leave the order free; an order the dependencies force is no finding); the
-   README shape and house style below; for a package, the Lean form below, elaborated with
+   lines that leave the order free; an order the dependencies force is no finding); the house
+   style below (but the README's shape (the order of its sections, its headings, whether a layer ends with Examples and Dependencies) and the number of Checks a definition has are never a finding, and a roadmap in the
+   older order, scope and supplier contracts near the top, is not raised at all); for a package,
+   the Lean form below, elaborated with
    `__ELABORATE__` (`sorry` the only warning; say so if the command is not available).
 7. **Headline theorems and padding** (a package). List the roadmap's headline theorems from the
    README. Are the headline theorems that are statable at the pins stated in `Suggested.lean`, and

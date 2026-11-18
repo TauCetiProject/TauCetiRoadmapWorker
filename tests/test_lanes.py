@@ -45,7 +45,12 @@ def test_validate_plan():
     bad["layers"][0]["targets"][1]["prerequisites"] = ["target:9.9", "Mathlib Nat.card"]
     bad["gaps"] = []
     problems = validate_plan(bad, "Foo")
-    assert any("fewer than three tests" in p for p in problems)
+    # One Check, or none, is fine: Checks are sanity checks, with no quota.
+    assert not any("tests" in p for p in problems)
+    bad["layers"][0]["targets"][0]["tests"] = "three"
+    assert "plan.json: target 1.1: `tests` must be a list" in validate_plan(bad, "Foo")
+    del bad["layers"][0]["targets"][0]["tests"]
+    assert not any("tests" in p for p in validate_plan(bad, "Foo"))
     assert any("no locator and no recorded gap" in p for p in problems)
     assert any("unknown target:9.9" in p for p in problems)
     assert any("is not mathlib:/tauceti:/roadmap:/target:" in p for p in problems)

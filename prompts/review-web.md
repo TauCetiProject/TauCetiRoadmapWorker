@@ -65,9 +65,10 @@ the merge order __ORDER__ (suppliers before consumers, one roadmap per line).
    merge order; flag upward citations, cycles, unowned prerequisites and supplier drift (a cited
    section or declaration that does not exist where it is cited). Declared supplier gaps are
    contracts, not unowned prerequisites (below).
-6. **Shape and completeness**: every definition has its API and at least three discriminating
-   Checks; every theorem its exact hypotheses and a locator; every layer its dependencies; the
-   README shape and the Lean form below.
+6. **Completeness**: every theorem its exact hypotheses and a locator; every layer its
+   dependencies; every Check true and testing something; the Lean form below. A key definition with
+   an evident plausible wrong variant and no Check is at most a note suggesting one; the README's shape (the order of its sections, its headings, whether a layer ends with Examples and Dependencies) and the number of Checks a definition has are never a finding,
+   and a roadmap in the older order is not raised at all.
 7. **Headline theorems and padding** (a package). List the roadmap's headline theorems from the
    README. Are the headline theorems that are statable at the pins stated in `Suggested.lean`, and
    is each one that is not statable named in its module docstring? A statable headline that is

@@ -59,8 +59,9 @@ For each finding:
 2. **If it is right**, repair it as asked, or in the mathematically correct way if the suggested
    repair is itself flawed (say why): restate the target with the missing hypotheses, replace a
    false statement by the true one, assign an unowned prerequisite to a named supplier or state it as
-   a target here with hypotheses, locator and three Checks, add the boundary example as a README
-   Check (prose, not a Lean declaration). A finding that asks for padding in `Suggested.lean` (a
+   a target here with hypotheses and a locator (and a Check if it is a key definition with an
+   evident wrong variant), add the boundary example as a README Check (prose, not a Lean
+   declaration). A finding that asks for padding in `Suggested.lean` (a
    declaration that mirrors a Check, an `example` per definition, a boundary-case theorem, an API
    lemma) is applied in the README only (`applied differently`); a sorried theorem that follows in
    one tactic from the library is deleted from `Suggested.lean` and kept as a README target, never
@@ -80,6 +81,12 @@ For each finding:
    hypothesis, sign or citation and repair every occurrence; name the other places in the report. A repair is new text: run the adversarial pass
    on every statement you add or change, including lemmas you introduce to make a repair work, and
    recompute every Check and worked example that uses the object you changed.
+4a. **Repair the sentence, not the document.** A repair changes the text that is wrong. It does not
+   restructure the README, rename or reorder sections, turn prose into lists, delete a section the
+   author wrote to explain scope, delete proposed names or credits, or delete a statement kept as a
+   sanity check, unless that content is itself false. A finding or note about the order of the
+   sections is settled by a pure reordering only (each section moved whole, as `tauceti-roadmap
+   layout` does), never by rewriting sections.
 5. Keep the README and `Suggested.lean` in agreement: a Lean statement whose README target changes
    changes with it (binders, hypotheses, docstring), every new Lean name appears in the README and
    every deleted one leaves it, and every consumer of a changed name inside this roadmap is updated.

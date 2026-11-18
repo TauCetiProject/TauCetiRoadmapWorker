@@ -20,7 +20,6 @@ from .base import Context, Lane, Workspace, count, load_order, merged_for, order
 
 PREREQ = re.compile(r"^(?:mathlib|tauceti):[A-Za-z_][\w.'!?]*$|^roadmap:[A-Z][A-Za-z0-9]*(?:\s.*)?$|^target:[\w.]+$"
                     r"|^gap:[A-Za-z0-9][\w.-]*$")
-DEF_KINDS = ("definition", "construction")
 
 
 def validate_plan(data: dict, name: str) -> list[str]:
@@ -45,8 +44,10 @@ def validate_plan(data: dict, name: str) -> list[str]:
             for key in ("kind", "statement"):
                 if not t.get(key):
                     problems.append(f"plan.json: target {tid} has no {key}")
-            if t.get("kind") in DEF_KINDS and len(t.get("tests", [])) < 3:
-                problems.append(f"plan.json: definition {tid} has fewer than three tests")
+            # Checks are sanity checks where they earn their place: no number of tests is required,
+            # only that the list is one (2026-11-18: the three-per-definition quota is gone)
+            if "tests" in t and not isinstance(t.get("tests"), list):
+                problems.append(f"plan.json: target {tid}: `tests` must be a list")
             loc = t.get("locator") or {}
             if not (loc.get("source") and loc.get("where")) and tid not in gaps_for:
                 problems.append(f"plan.json: target {tid} has no locator and no recorded gap")
