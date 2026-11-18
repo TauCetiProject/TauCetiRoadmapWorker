@@ -73,6 +73,28 @@ def test_refresh_lists_open_roadmap_work_and_reuses_a_fresh_index(world):
     assert openroadmaps.rows(index)[0].startswith("#7  ThetaSeries (new)  @alice")
 
 
+def test_a_pull_request_whose_head_ref_github_lacks_is_left_out_not_fatal(world, monkeypatch):
+    cfg, gh = world
+    listing = gh.graphql
+
+    def with_a_headless_one(query, **variables):
+        data = listing(query, **variables)
+        nodes = data["repository"]["pullRequests"]["nodes"]
+        nodes.append({"number": 9, "title": "No head ref", "isDraft": False, "headRefOid": "0" * 40,
+                      "author": {"login": "dan"},
+                      "files": {"nodes": [{"path": "TauCetiRoadmap/Headless/README.md"}]}})
+        return data
+    monkeypatch.setattr(gh, "graphql", with_a_headless_one, raising=False)
+    index = openroadmaps.refresh(gh, cfg, force=True)
+    assert [p["pr"] for p in index["prs"]] == [7] and index["unfetched"] == [9]
+    assert openroadmaps.read(cfg.state_dir(), index, openroadmaps.pr_ref(7), "ThetaSeries").startswith("# Roadmap: theta")
+    # Any other fetch failure still raises.
+    monkeypatch.setattr(gitops, "url", lambda repo: "/nonexistent/origin")
+    monkeypatch.setattr(openroadmaps, "mirror", lambda state: state / "fresh-mirror" / "content.git")
+    with pytest.raises(gitops.GitError):
+        openroadmaps.refresh(gh, cfg, force=True)
+
+
 def test_grep_searches_open_heads_first_then_main(world):
     cfg, gh = world
     index = openroadmaps.refresh(gh, cfg)
