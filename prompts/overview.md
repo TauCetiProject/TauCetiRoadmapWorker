@@ -21,15 +21,46 @@ what the roadmap builds, what its main theorems say, where it sits in Tau Ceti, 
 below are arranged. The rest of the README is the specification: the opening introduces it, it does
 not replace it and does not repeat its bookkeeping.
 
+## The voice: a person writing for colleagues, not a table of contents
+
+Write it as you would write the introduction of a paper for colleagues in neighbouring fields. This
+matters as much as the content: an opening that is accurate but reads like a compressed inventory
+has failed.
+
+- **Say what the subject is before what the roadmap contains.** One or two sentences on the question
+  or the phenomenon ("A polynomial with distinct roots can still have repeated factors modulo a
+  prime."), then what the roadmap does about it.
+- **Full sentences, one idea each.** No sentence that strings together more than three items. Never a
+  run of noun phrases joined by commas ("the closure and summand theorems, the dual correspondence,
+  isolation, and the spherical classification with its consequences"): pick the two to four results
+  that matter and give each its own sentence saying what it asserts.
+- **Do not compress.** If saying something plainly takes a second sentence, write the second
+  sentence. Prefer "Every such representation is a direct sum of irreducible ones" to "complete
+  reducibility". A term of art that a reader from a neighbouring field may not know gets a few words
+  on what it is the first time it appears.
+- **No project vocabulary and no internal codes.** Not "carrier", "supplier", "consumer", "endpoint",
+  "interface", "adapter", "owns", "pins", "statable", "continuation"; not layer or section codes
+  (`SR.0–SR.6`, `C3.1`); no slash-joined pairs ("smooth/unitary"). Say "builds on", "is used by",
+  "the main results", "the second part of".
+- **No formula for the prose.** "There are three main theorems. The first …" is fine when it helps,
+  but do not force every opening into it, and do not start every paragraph the same way. Read your
+  draft once as its reader: where it sounds like a list being read aloud, rewrite it as explanation.
+
 ## What the opening says, in this order
 
 1. **What the roadmap builds**, in one or two sentences: its main objects. If every statement of the
    roadmap rests on a standing hypothesis (all rings unital, all manifolds second countable), say it
    once here, in the words the README uses.
-2. **Its headline theorems**, two to four, each in ordinary mathematical language with its real
-   hypotheses: "There are three headline theorems. The first …". Take them from the README's own
-   layers and from `Suggested.lean`; prefer the ones `Suggested.lean` states or its docstring names.
-   A headline may carry one small example, if the README gives it (a Check or a worked example).
+2. **Its headline theorems**, two to four, each in ordinary mathematical language with the
+   hypotheses a reader needs to understand it. Take them from the README's own layers and from
+   `Suggested.lean`; prefer the ones `Suggested.lean` states or its docstring names. A headline may
+   carry one small example, if the README gives it (a Check or a worked example): an example often
+   says more than a second clause of hypotheses.
+   A theorem whose exact statement needs a list of constants or parameter ranges is described, not
+   transcribed: say what is assumed, what is concluded and what is uniform in what ("for every
+   probability law on partitions satisfying three explicit estimates, the probability … is at most a
+   fixed negative power of n, with constants that do not depend on the law"), and leave the exact
+   ranges to the layer.
 3. **Where it sits in Tau Ceti**: the two to five roadmaps or library areas a reader needs to place
    it, by name, one clause each saying what passes between them. Choose them from the README's
    supplier contracts and downstream consumers, and from what it says the library already has. The
@@ -42,15 +73,15 @@ not replace it and does not repeat its bookkeeping.
    notes on `Suggested.lean`) or is long, leave it where it is, set `fold_guide` to false, and keep
    your guide to a few lines or leave it to that section.
 
-Begin with `**Summary.**`. Roughly 150 to 350 words for a short roadmap, up to about 500 for a long
-one; several paragraphs are fine. A paragraph of the old opening that is not summary and that a
-reader needs (a warning that two notions differ, the sentence on what `Suggested.lean` is) may stay
-word for word.
+Begin with `**Summary.**`. Roughly 250 to 450 words for a short roadmap, up to about 700 for a long
+one, in several paragraphs: length spent on plain explanation is welcome, length spent on listing is
+not. A paragraph of the old opening that is not summary and that a reader needs (a warning that two
+notions differ, the sentence on what `Suggested.lean` is) may stay word for word.
 
 ## The one rule that matters most: add nothing, strengthen nothing, weaken nothing
 
-Every statement in the opening must already be in the README or in `Suggested.lean`, with the same
-hypotheses. You are restating, not proving or improving. In particular:
+Every statement in the opening must already be in the README or in `Suggested.lean`. You are
+restating, not proving or improving, and you never say more than the README does. In particular:
 
 - Keep every hypothesis that changes the truth of the statement, however fussy it looks: "p odd",
   "the base Noetherian", "the map proper and flat", "the group finite and the coefficients a field
@@ -58,6 +89,9 @@ hypotheses. You are restating, not proving or improving. In particular:
   "rank at most d" rather than "rank d", "the space possibly empty". If you cannot tell which
   reading the README means (a "regular" ring or a "regular" scheme, a "small" category in which
   sense), keep the README's own words.
+- Being readable never licenses being wrong. Where the plain version would need a hypothesis you are
+  leaving to the layer, say that there is one ("under an explicit growth condition", "for parameters
+  in a stated range"): a visibly less specific sentence is fine, a silently stronger one is not.
 - Do not upgrade a quantifier ("for some n" is not "for every n"), a conclusion ("homotopy
   equivalent" is not "homeomorphic") or a scope ("number fields" is not "global fields").
 - Do not state a theorem the README marks as conditional, deferred to another roadmap, or not built
@@ -85,8 +119,12 @@ theorem, with its hypotheses, as the README does.
 A bad opening, the kind you are replacing: one long sentence that runs through every layer in
 brackets and every supplier's carriers ("From A's X, B's Y and C's Z … the roadmap builds P (Layer 0),
 Q (Layer 1), …"), then a list of declaration names. Another bad one: a short list of topics
-("normal forms, genericity, deformations, …") and no theorem. A good one reads like the first page of
-a monograph: the objects, the theorems with their hypotheses, the neighbours, the plan.
+("normal forms, genericity, deformations, …") and no theorem. A third: every sentence correct and
+every sentence a list ("The first part supplies the smooth category, Hecke algebras, induction and
+restriction functors, admissibility, … Its endpoints are the closure and summand theorems, the dual
+correspondence, …"), which tells a reader the table of contents and nothing about the mathematics.
+A good one reads like the first page of a monograph: what the subject is, the objects, the theorems
+said in sentences, the neighbours, the plan.
 
 ## Direction words in the sections that moved
 
