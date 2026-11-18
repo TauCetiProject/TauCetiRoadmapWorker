@@ -1,6 +1,8 @@
 ## Defect classes that reviewers keep finding
 
-Test every class on every target.
+Test every class on every target. A class says what to look for, not how much it weighs: whether a
+hit is a finding, a small correction or a format note is decided by what it does to the mathematics
+(the section on writing remarks).
 
 1. **Missing finiteness, flatness or smoothness hypotheses**: a finite set of places, a Noetherian
    base, proper and flat rather than merely proper, the whole group scheme smooth rather than its
@@ -25,8 +27,8 @@ Test every class on every target.
    versus ℕ with junk values, additive versus multiplicative normalisations, different hypotheses
    for the same notion.
 8. **Checks**: a Check that is false, vacuous (it also holds for the wrong object), or a
-   restatement of the definition; fewer than three Checks for a definition; a Check about a carrier
-   that does not exist in the file.
+   restatement of the definition; a Check about a carrier that does not exist in the file. (How many
+   Checks a definition has is not a defect.)
 9. **Lean signature defects**: a truncated type, a sorry'd data field, a Lean statement at a
    different generality from the README (a missing Noetherian, topological-group or open-subgroup
    hypothesis), arbitrary-topology carriers that make a statement vacuous or false; a `def` or
@@ -49,6 +51,6 @@ Test every class on every target.
     literature's and Mathlib's name for the object, or define the new one.
 16. **Padding in Suggested.lean**: declarations that restate definitions, follow in one tactic from
     the library, mirror Checks or compute small values (and boundary-case theorems, "controls",
-    examples per definition): a P3 finding whose repair is deleting them (the README keeps the
+    examples per definition): a small correction whose repair is deleting them (the README keeps the
     statement as a target or Check), never proving them in place. And the converse: a headline
     theorem that is statable at the pins but absent (P2).

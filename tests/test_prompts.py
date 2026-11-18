@@ -44,8 +44,14 @@ def test_every_brief_renders_completely(lane):
 
 HEADLINE_RULE = ("`Suggested.lean` is the roadmap's acceptance test, not an API catalogue. It states the roadmap's\n"
                  "headline theorems")
-PADDING_QUESTIONS = ("statable at the pins stated in `Suggested.lean`", "Is anything padding?", "one-tactic probe",
-                     "as P3 with the repair \"delete it from `Suggested.lean`\"", "never as \"prove it in place\"")
+PADDING_QUESTIONS = ("statable at the pins stated in `Suggested.lean`", "Is anything padding?", "one-tactic probe")
+# Our own packages keep `Suggested.lean` to the headline statements: their reviews ask for padding to go, as
+# a small correction (never a blocking finding); a review of anyone's pull request asks for the smallest
+# repair and never deletes a statement kept as a sanity check (2026-11-18).
+PADDING_REPAIR = {"prreview": ("a small correction that says so and offers the smallest repair", "never \"prove it in place\"",
+                               "never a deletion of a statement the author kept as a sanity check")}
+PADDING_DEFAULT = ("as a small correction with the repair \"delete it from `Suggested.lean`\"",
+                   "never as \"prove it in place\"")
 # The rules the acceptance test replaced: an example quota and Lean counterparts of README Checks.
 RETIRED = ("two proved", "at most two", "lean mirror", "proved examples that test", "has its `example`",
            "`example` where statable", "with no Lean `example`", "and a Lean test", "one of them computes",
@@ -71,8 +77,9 @@ def test_no_brief_asks_for_an_example_quota_or_lean_counterparts_of_checks(lane)
 @pytest.mark.parametrize("lane", ["review", "review-web", "redteam", "redteam-section", "prreview"])
 def test_review_and_red_team_briefs_ask_for_headlines_and_padding(lane):
     text = " ".join(prompts.render(lane, all_values()).split())
-    for phrase in PADDING_QUESTIONS:
+    for phrase in PADDING_QUESTIONS + PADDING_REPAIR.get(lane, PADDING_DEFAULT):
         assert phrase in text, f"{lane}: {phrase}"
+    assert "as P3" not in text                     # there is no P3 finding in a new review
     assert "Padding in Suggested.lean" in text or lane == "redteam-section"   # the defect class
 
 

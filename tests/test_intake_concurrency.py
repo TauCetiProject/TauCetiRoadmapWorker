@@ -189,12 +189,12 @@ def test_a_reviews_only_sync_never_takes_the_board_lock(monkeypatch, capsys):
     board_key, reviews_key = intake.lock_key(cfg.project.name), intake.reviews_key(cfg.project.name)
     monkeypatch.setattr(cli, "_board_steps", lambda *a, **k: pytest.fail("a full sync ran"))
     ran = []
-    monkeypatch.setattr(intake, "sync_pr_reviews", lambda ctx: ran.append("reviews") or ["#7: ai-approved added"])
+    monkeypatch.setattr(intake, "sync_pr_reviews", lambda ctx: ran.append("reviews") or ["#7: ai-found-no-errors added"])
     # the board is free: the run still leaves it alone, and takes the reviews lock only
     lock = Lock(claims.ACQUIRED)
     monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: lock)
     assert cli.board_run(board_args("sync", "--reviews-only", "--yes"), cfg, run_context(cfg)) == 0
-    assert capsys.readouterr().out.splitlines() == ["#7: ai-approved added"]
+    assert capsys.readouterr().out.splitlines() == ["#7: ai-found-no-errors added"]
     assert ran == ["reviews"] and lock.released == [reviews_key]
     assert [k for k, _ in lock.acquired] == [reviews_key] and board_key != reviews_key
     # a dry run reads the reviews with no lock at all
@@ -212,9 +212,9 @@ def test_a_full_sync_reads_the_pull_request_reviews_under_the_reviews_lock(monke
     ctx = run_context(cfg)
     key = intake.reviews_key(cfg.project.name)
     ran = []
-    monkeypatch.setattr(intake, "sync_pr_reviews", lambda ctx: ran.append("reviews") or ["#7: ai-approved added"])
+    monkeypatch.setattr(intake, "sync_pr_reviews", lambda ctx: ran.append("reviews") or ["#7: ai-found-no-errors added"])
     lock = Lock(claims.ACQUIRED)
-    assert intake.locked_pr_reviews(ctx, lock) == ["#7: ai-approved added"]
+    assert intake.locked_pr_reviews(ctx, lock) == ["#7: ai-found-no-errors added"]
     assert ran == ["reviews"] and lock.acquired == [(key, intake.LOCK_TTL)] and lock.released == [key]
     # held by a sync that found the board held: this run leaves the step to it
     lock = Lock(claims.HELD, {"owner": "intake:host-1", "acquired_at": 0})

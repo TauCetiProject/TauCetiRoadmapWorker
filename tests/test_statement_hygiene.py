@@ -347,7 +347,7 @@ def test_the_gate_counts_the_hits_and_the_review_sees_their_rule_severity_and_re
     r = scan_folder("Toy", CLEAN_README, BAD_LEAN, GateOptions())
     assert r.counts["statement-hygiene"] == 1 and not r.ok
     report = lane_prreview.gate_document(r, "a" * 40)
-    assert "## statement-hygiene (1)" in report and "Rule: Suggested.lean states its targets cleanly" in report
+    assert "## Suggested.lean states its targets cleanly" in report and "About substance. 1 hit:" in report
     line = BAD_LEAN.splitlines().index("theorem Toy.equiv (A B : Type) : Nonempty (A ≃ B) := sorry") + 1
     assert re.search(rf"- line {line}: P3 theorem `Toy\.equiv` concludes `Nonempty \(A ≃ B\)`; "
                      r"repair: state the canonical map", report), report

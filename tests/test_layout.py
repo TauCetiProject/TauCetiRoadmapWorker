@@ -136,7 +136,7 @@ def test_the_command_reorders_a_local_readme(tmp_path, capsys):
 FOO = "TauCetiRoadmap/Foo"
 
 
-def layout_gh(new_readme: str, lean_changed: bool = False, labels=("ai-approved",), comments=None):
+def layout_gh(new_readme: str, lean_changed: bool = False, labels=("ai-found-no-errors",), comments=None):
     """Pull request #12 moved from H1, accepted, to H2, whose README is `new_readme` (H1's is OLD)."""
     job = review_job(40, 1, 12, H1, "done")
     entries = {(H1, FOO): {"README.md": "readme-1", "Suggested.lean": "lean-1", "metadata.toml": "meta"},
@@ -151,9 +151,9 @@ def layout_gh(new_readme: str, lean_changed: bool = False, labels=("ai-approved"
 def test_a_push_that_only_reorders_the_readme_sections_keeps_the_label_and_files_no_review():
     gh, job = layout_gh(layout.reorder(OLD))
     out, fake = sync(gh, [job])
-    assert created(fake) == [] and ("DELETE", f"repos/{REPO}/issues/12/labels/ai-approved", {}) not in gh.writes
+    assert created(fake) == [] and ("DELETE", f"repos/{REPO}/issues/12/labels/ai-found-no-errors", {}) not in gh.writes
     assert out == [f"#12: layout note posted ({H2[:7]} only reorders the README sections of {H1[:7]})",
-                   (f"#12: ai-approved kept (the roadmap folders at {H2[:7]} are those of {H1[:7]}, up to the order of "
+                   (f"#12: ai-found-no-errors kept (the roadmap folders at {H2[:7]} are those of {H1[:7]}, up to the order of "
                     "the README sections of Foo, whose acceptance stands: the head only moved, no review filed)")]
     [(method, path, payload)] = gh.writes
     assert (method, path) == ("POST", f"repos/{REPO}/issues/12/comments")
@@ -169,11 +169,11 @@ def test_a_push_that_only_reorders_the_readme_sections_keeps_the_label_and_files
     # A note already on the pull request (the command posted it) is not posted again.
     gh, job = layout_gh(layout.reorder(OLD), comments={12: [{"id": 7, "body": note, "user": {"login": "carol"}}]})
     out, fake = sync(gh, [job])
-    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#12: ai-approved kept")
+    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#12: ai-found-no-errors kept")
     # An unlabelled pull request gets its label back on the same ground.
     gh, job = layout_gh(layout.reorder(OLD), labels=())
     out, fake = sync(gh, [job])
-    assert ("POST", f"repos/{REPO}/issues/12/labels", {"labels": ["ai-approved"]}) in gh.writes and created(fake) == []
+    assert ("POST", f"repos/{REPO}/issues/12/labels", {"labels": ["ai-found-no-errors"]}) in gh.writes and created(fake) == []
 
 
 @pytest.mark.parametrize("edit", ["word", "lean", "section"])
@@ -185,7 +185,7 @@ def test_a_reordering_with_any_other_edit_in_the_same_push_is_not_carried(edit):
         readme += "\n## Notes\n\nA new section.\n"
     gh, job = layout_gh(readme, lean_changed=edit == "lean")
     out, fake = sync(gh, [job])
-    assert out[0] == "#12: ai-approved removed (head moved)" and created(fake) == [("PRREVIEW-Foo~2", "Foo")]
+    assert out[0] == "#12: ai-found-no-errors removed (head moved)" and created(fake) == [("PRREVIEW-Foo~2", "Foo")]
     assert not any("/comments" in path for _m, path, _p in gh.writes)
 
 
@@ -198,7 +198,7 @@ def test_a_reordering_of_a_head_whose_review_asked_for_changes_carries_nothing()
     # Switched off: the ordinary rule applies, and nothing is read for it.
     gh, job = layout_gh(layout.reorder(OLD))
     out, fake = sync(gh, [job], carry_layout=False)
-    assert out[0] == "#12: ai-approved removed (head moved)" and gh.layout_queries == 0
+    assert out[0] == "#12: ai-found-no-errors removed (head moved)" and gh.layout_queries == 0
 
 
 def test_files_github_does_not_give_leave_the_pull_request_as_it_is():
@@ -213,7 +213,7 @@ def test_files_github_does_not_give_leave_the_pull_request_as_it_is():
     gh.raw_file = missing
     out, fake = sync(gh, [job])
     assert gh.writes == [] and created(fake) == []
-    assert out == [(f"#12: ai-approved not checked (the roadmap folders at {H2[:7]} could not be compared with those "
+    assert out == [(f"#12: ai-found-no-errors not checked (the roadmap folders at {H2[:7]} could not be compared with those "
                     "of an earlier head)")]
 
 
@@ -298,11 +298,12 @@ def test_the_command_pushes_one_commit_of_the_readmes_alone_and_posts_the_note()
     lines, slept = command(gh, numbers=[1, 2], write=True, pace=2.5)
     assert slept == [2.5]                       # one pause, between the two pushes
     writes = [(m, p) for m, p, _x in gh.writes]
+    # The note goes up just before the branch moves, so that the intake finds its record with the new head.
     assert writes == [("POST", "repos/carol/fork1/git/trees"), ("POST", "repos/carol/fork1/git/commits"),
-                      ("PATCH", "repos/carol/fork1/git/refs/heads/roadmap/1"), ("POST", f"repos/{REPO}/issues/1/comments"),
+                      ("POST", f"repos/{REPO}/issues/1/comments"), ("PATCH", "repos/carol/fork1/git/refs/heads/roadmap/1"),
                       ("POST", "repos/carol/fork2/git/trees"), ("POST", "repos/carol/fork2/git/commits"),
-                      ("PATCH", "repos/carol/fork2/git/refs/heads/roadmap/2"), ("POST", f"repos/{REPO}/issues/2/comments")]
-    tree, commit, ref, note = (x for _m, _p, x in gh.writes[:4])
+                      ("POST", f"repos/{REPO}/issues/2/comments"), ("PATCH", "repos/carol/fork2/git/refs/heads/roadmap/2")]
+    tree, commit, note, ref = (x for _m, _p, x in gh.writes[:4])
     assert tree == {"base_tree": "tree-1111", "tree": [{"path": "TauCetiRoadmap/Foo1/README.md", "mode": "100644",
                                                         "type": "blob", "content": layout.reorder(OLD)}]}
     assert commit["parents"] == ["1" * 40] and commit["tree"] == "new-tree" and "Layout only" in commit["message"]
@@ -331,8 +332,21 @@ def test_a_branch_that_moved_is_not_pushed_and_a_rate_limit_stops_the_run():
     gh.moved = {1: H2}
     lines, _slept = command(gh, numbers=[1, 2], write=True)
     assert lines[0] == f"#1: not pushed: the pull request moved to {H2[:7]} before the push; nothing pushed"
-    assert not any(p.endswith("refs/heads/roadmap/1") for _m, p, _x in gh.writes)
+    assert not any(p.endswith(("refs/heads/roadmap/1", "issues/1/comments")) for _m, p, _x in gh.writes)
     assert lines[1].startswith("#2: pushed")
+
+    # A branch update GitHub refuses (the branch moved after the last read) takes the note down again.
+    class Refusing(PullsGH):
+        def write(self, method, path, payload=None):
+            if method == "PATCH":
+                raise GHError("HTTP 422: Update is not a fast forward")
+            out = super().write(method, path, payload)
+            return {"id": 77} if path.endswith("/comments") else out
+    gh = Refusing(pulls(1).nodes, pulls(1).readmes)
+    lines, _slept = command(gh, numbers=[1], write=True)
+    assert lines[0] == "#1: not pushed: HTTP 422: Update is not a fast forward"
+    assert [(m, p) for m, p, _x in gh.writes][-2:] == [("POST", f"repos/{REPO}/issues/1/comments"),
+                                                       ("DELETE", f"repos/{REPO}/issues/comments/77")]
 
     class Limited(PullsGH):
         def write(self, method, path, payload=None):

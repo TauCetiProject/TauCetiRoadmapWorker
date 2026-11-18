@@ -54,12 +54,16 @@ write "the congruence kernel is closed under inverses", not a new declaration.
 ## Method
 
 1. Generate the README skeleton from `plan.json` (layers, targets, statements, hypotheses, API,
-   tests, locators, prerequisites) and then write it into prose in the shape below. Every target,
-   Check and worked example of the design stays; size is whatever the content needs.
+   tests, locators, prerequisites) and then write it into prose in the shape below: the opening
+   overview first (what the roadmap builds, its headline theorems with their hypotheses, its two to
+   five nearest neighbours, a guide to the layers), then conventions and the layers, and the scope
+   and the supplier contracts at the end. Every target, Check and worked example of the design
+   stays; size is whatever the content needs.
 2. **Duplication sweep** before you finish: check every definition and theorem against the current
    roadmaps on main, the open roadmap pull requests and the pinned libraries, by mathematical object.
    What exists elsewhere is deleted here and cited (roadmap section, or module and declaration) in
-   the supplier contracts and in "Scope and ownership". List every removal in your report.
+   the supplier contracts and in "Scope and ownership", both at the end of the README. List every
+   removal in your report.
 3. **Headline theorems first.** Before writing `Suggested.lean`, list the roadmap's headline
    theorems: the deep results the finished roadmap will prove, which a reader would name it by.
    Then write the file as the acceptance test below, from the start: state each headline theorem

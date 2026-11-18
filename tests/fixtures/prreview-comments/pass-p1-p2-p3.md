@@ -4,7 +4,7 @@ Verdict: CHANGES NEEDED
 
 Reviewed head: 9c8fbb0b937a14ca234d55040258a2294a4a1474
 
-This is a pass before the final review. It does not decide `ai-approved`: the final review, on another model, follows it.
+This is a pass before the final review. It does not decide `ai-found-no-errors`: the final review, on another model, follows it.
 
 Roadmap folder: `TauCetiRoadmap/RepresentationTheory/CompactGroups/`
 

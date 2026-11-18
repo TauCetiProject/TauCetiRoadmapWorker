@@ -122,6 +122,18 @@ def test_an_answered_review_stays_answered_after_it_is_reformatted():
     assert unanswered(old.replace("Replace the first sentence", "Rewrite the first sentence")) != []
 
 
+def test_a_review_the_lane_posts_in_the_layout_is_left_as_it_is():
+    """A comment a worker of this build posted is in the layout already: the command leaves it, unpinned."""
+    report = ("# Review of Foo (pull request #905 at 1111111)\n\n**Verdict:** accepted\n\n**Summary.** Accepted.\n\n"
+              "## C01 — Example 2 names the wrong group\n\nIt is the dihedral group of order 8.\n\n"
+              "## Verified sound\n\n| Statement | Instances tried | Values | Result | Change |\n|---|---|---|---|---|\n"
+              "| 1.1 | ℤ/6 | 6 = 6 | true | none |\n\n## Not verifiable\n\n- none\n")
+    for validation in ("At `1111111`: every automatic check passed.", ""):
+        body = prreviews.render_pr_review(prreviews.pr_review_head("claude", "fable", "1" * 40), "accepted", report,
+                                          {"job": "PRREVIEW-Foo~1", "head": "1" * 40}, "1" * 40, validation)
+        assert prreviews.reformat_posted(body, replies.text_version(body)) == body
+
+
 def test_a_pin_counts_only_on_a_review_comment():
     pin = prreviews.pin_marker("abcdef012345")
     assert replies.text_version("A note.\n" + pin) != "abcdef012345"

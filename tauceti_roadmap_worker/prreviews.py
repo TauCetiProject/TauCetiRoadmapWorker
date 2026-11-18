@@ -20,10 +20,13 @@ and a red-team pass the same, with the first line `Red team round <N> pass <x> (
 The errata of a roadmap's sources are a comment on the errata job's own issue, first line
 `Errata (<agent>) of <sha7>`, then `Verdict: recorded`, then its `## Source issues`, `## Checked`
 and `## Not verifiable` sections.
-The AI review of a roadmap pull request on the content repository (`render_pr_review`) is a comment
-in the same shape, first line `🤖 AI review (<agent>, <model>) of <sha40>` (an incremental re-review
-adds ` (incremental re-review since <sha7>)`), its verdict `APPROVE`,
-`CHANGES NEEDED` or `REJECT`, and its own marker (`tauceti-roadmap-prreview`).
+The AI review of a roadmap pull request on the content repository (`render_pr_review`) has the
+posted layout (`render_posted`): first line `🤖 AI review (<agent>, <model>) of <sha40>` (an incremental
+re-review adds ` (incremental re-review since <sha7>)`), its verdict `APPROVE`, `CHANGES NEEDED` or
+`REJECT`, the head and folder reviewed, a `**Summary.**`, the findings (F01…), small corrections
+(C01…) and format notes (N01…) apart, the questions, one collapsed block of what was checked, and
+its own marker (`tauceti-roadmap-prreview`). Only findings decide a verdict; nothing reads a small
+correction or a format note as one. Comments posted before this layout are read too (`read_posted`).
 A comment whose first line is `reviewing` (optionally `reviewing (<agent>)`) claims the open review.
 Only the shapes are read; everything else in a comment is data. This module is the pure part:
 parsing, the contract a review or pass is held to whichever route it came by (`contract_problems`),
@@ -36,7 +39,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from . import claims
+from . import claims, gates
 from .board import Job
 
 MARK = "tauceti-roadmap-review"
@@ -489,21 +492,30 @@ PR_ACCEPTED_ONE_OF = ("The AI review accepts this roadmap folder at this head. T
 
 def render_pr_review(head: str, status: str, report: str, marker: dict, reviewed: str,
                      validation: str = "", conditional: list[str] | None = None, *, folder: str = "",
-                     others: int = 0) -> str:
-    """A pull-request review's comment: `head` (`pr_review_head`), the verdict line, the head reviewed
-    (`Reviewed head: <sha>`), the roadmap folder reviewed (`folder`), what the verdict means for the
-    human who approves (with `others` other roadmap folders in the pull request, an acceptance covers
-    this one only), the worker's gate at that head (`validation`), then the report's findings and
-    sections (`render`) and the marker `tauceti-roadmap-prreview` ({job, head, verdict, agent, model,
-    worker, mode}: `incremental` or `full`)."""
-    meaning = PR_STATUS_LINES.get(status, PR_STATUS_LINES["needs_changes"])
-    if status == "accepted" and others:
-        meaning = PR_ACCEPTED_ONE_OF.format(others=others, s="s" if others != 1 else "")
-    preamble = [f"Reviewed head: {reviewed}", "", *([f"Roadmap folder: `{folder}/`", ""] if folder else []), meaning]
-    if validation:
-        preamble += ["", validation]
-    return render(head, PR_VERDICTS.get(status, PR_VERDICTS["needs_changes"]), report, marker,
-                  conditional if status == "accepted" else None, preamble=preamble, mark=PRREVIEW_MARK)
+                     others: int = 0, pass_note: str = "") -> str:
+    """A pull-request review's comment, in the posted layout (`render_posted`): `head`
+    (`pr_review_head`), the verdict line (and the gaps an acceptance is conditional on), the head
+    reviewed (`Reviewed head: <sha>`), the roadmap folder (`folder`), `pass_note` for a pass before the
+    final review, then the report's `**Summary.**` (composed by `posted_summary` when the report has
+    none: with `others` other roadmap folders an acceptance covers this one only), its findings
+    (renumbered F01, …), small corrections (C01, …), format notes (N01, …), questions for the author,
+    questions for the human reviewers and source issues; then one collapsed block of what was
+    checked: the sentence on the worker's checks (`validation`), the earlier findings, what could not
+    be verified, the checks set aside as false positives; then the marker `tauceti-roadmap-prreview`
+    ({job, head, verdict, agent, model, worker, mode}: `incremental` or `full`). `## Verified sound`,
+    `Source independence:` and `Research link:` stay in the report and are not posted."""
+    p = posted_from_report(report)
+    p.head = head
+    p.verdict_line = f"Verdict: {PR_VERDICTS.get(status, PR_VERDICTS['needs_changes'])}"
+    if status == "accepted" and conditional:
+        p.conditional_line = "Conditional on the announced gaps: " + ", ".join(f"`{g}`" for g in conditional)
+    p.reviewed = f"Reviewed head: {reviewed}"
+    p.folder = f"Roadmap folder: `{folder}/`" if folder else ""
+    p.pass_note, p.others, p.gate = pass_note, others, validation
+    if p.summary and status == "accepted" and others and "other roadmap folder" not in p.summary:
+        p.summary += " " + others_sentence(others).replace("Accepted for this roadmap folder. ", "")
+    p.markers = [f"<!-- {PRREVIEW_MARK} {json.dumps(marker, sort_keys=True)} -->"]
+    return render_posted(p)
 
 
 def prreview_marker(body: str) -> dict:
@@ -722,10 +734,8 @@ def posted_summary(p: Posted) -> str:
     if p.notes:
         minor.append(_plural(len(p.notes), "format note"))
     if p.verdict == "accepted":
-        first = ("Accepted: this roadmap folder is ready for a human's final approval" if not p.others else
-                 f"Accepted for this roadmap folder; the pull request is ready for a human's final approval once its "
-                 f"{_plural(p.others, 'other roadmap folder')} {'is' if p.others == 1 else 'are'} accepted too")
-        sentences = [first + " (the AI does not approve or merge)."]
+        sentences = ["Accepted: this roadmap folder is ready for a human's final approval (the AI does not approve or "
+                     "merge)." if not p.others else others_sentence(p.others)]
         if minor:
             sentences.append(" and ".join(minor).capitalize() + ", none blocking.")
     else:
@@ -748,6 +758,13 @@ def posted_summary(p: Posted) -> str:
         left.append(f"{_plural(questions, 'question')} for the human reviewers, which do not change the verdict")
     sentences.append("It leaves " + " and ".join(left) + "." if left else "Nothing is left for a human to decide.")
     return SUMMARY_LEAD + " " + " ".join(sentences[:4])
+
+
+def others_sentence(others: int) -> str:
+    """What an acceptance of one roadmap folder means when the pull request has `others` more."""
+    return (f"Accepted for this roadmap folder. The pull request also adds or changes {_plural(others, 'other roadmap folder')}, "
+            "each reviewed on its own: it is ready for a human's final approval once every one is accepted (the AI "
+            "does not approve or merge).")
 
 
 DETAIL_LABELS = {"Previous findings": "Earlier findings", "Not verifiable": "Not verified",
@@ -837,5 +854,142 @@ def reformat_posted(body: str, version: str) -> str | None:
     p = read_posted(body)
     if p is None:
         return None
+    if not pinned_version(body) and render_posted(p).rstrip("\n") == (body or "").rstrip("\n"):
+        return body              # posted in this layout already (by a worker of this build): nothing to pin
     new = render_posted(p, pinned_version(body) or version)
     return new if posted_identity(new) == posted_identity(body) else None
+
+
+# --- a pull-request review's report, read into the posted layout ----------------------------------------
+
+REPORT_REMARK = re.compile(r"^## ([CN])(\d+)\s*(?:[(\[]P[123][)\]])?\s*[:—–-]*\s*(.*)$")
+FALSE_POSITIVES = re.compile(r"^\W*Automatic checks set aside as false positives\b", re.IGNORECASE)
+
+
+def report_sections(report: str) -> tuple[list[str], list[tuple[str, list[str]]]]:
+    """(the lines before the first `## ` heading, [(heading text, its lines)]) of a report, outside code
+    fences."""
+    top: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    fenced = False
+    for line in (report or "").split("\n"):
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced = not fenced
+        if not fenced and line.startswith("## "):
+            sections.append((line[3:].strip(), []))
+        elif sections:
+            sections[-1][1].append(line)
+        else:
+            top.append(line)
+    return top, sections
+
+
+def report_remarks(report: str) -> tuple[list[tuple[str, list[str]]], list[tuple[str, list[str]]]]:
+    """(the small corrections, the format notes) of a report: its `## C01 — title` and `## N01 — title`
+    blocks, each as (title, body lines)."""
+    corrections, notes = [], []
+    for heading, lines in report_sections(report)[1]:
+        m = REPORT_REMARK.match("## " + heading)
+        if m:
+            body = list(lines)
+            while body and not body[-1].strip():
+                body.pop()
+            while body and not body[0].strip():
+                body.pop(0)
+            (corrections if m.group(1) == "C" else notes).append((m.group(3).strip(), body))
+    return corrections, notes
+
+
+def report_summary(report: str) -> str:
+    """The report's `**Summary.**` paragraph ('' when it has none)."""
+    top, _sections = report_sections(report)
+    for para in _paragraphs(top):
+        if para[0].strip().startswith(SUMMARY_LEAD):
+            return "\n".join(x.strip() for x in para)
+    return ""
+
+
+def _indented(lines: list[str]) -> list[str]:
+    return [("   " + line) if line.strip() else "" for line in lines]
+
+
+def posted_from_report(report: str) -> Posted:
+    """A worker's report as the parts of a posted comment (`render_posted`): its summary, its findings
+    (`report_findings`, renumbered F01…), small corrections and format notes (`report_remarks`), the
+    sections posted in the open (questions for the author, for the human reviewers, source issues),
+    and, for the collapsed block, the earlier findings, what could not be verified, the deferred
+    findings and the checks set aside as false positives. The verified-sound evidence, the
+    provenance statements and anything else stay in the report."""
+    p = Posted("")
+    p.summary = report_summary(report)
+    for k, (severity, title, body) in enumerate(report_findings(report)[0], 1):
+        lines = _indented(body)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        p.findings.append(Remark(f"F{k:02d}", severity, title, lines))
+    corrections, notes = report_remarks(report)
+    p.corrections = [Remark(f"C{k:02d}", "", title, ["", *_indented(body)] if body else [])
+                     for k, (title, body) in enumerate(corrections, 1)]
+    p.notes = [Remark(f"N{k:02d}", "", title, ["", *_indented(body)] if body else [])
+               for k, (title, body) in enumerate(notes, 1)]
+    _top, sections = report_sections(report)
+    folded = []
+    for heading, lines in sections:
+        text = "\n".join(lines).strip("\n")
+        base = heading.split(" (", 1)[0]
+        if REPORT_FINDING.match("## " + heading) or REPORT_REMARK.match("## " + heading):
+            continue
+        if heading in VISIBLE:
+            p.sections.append((heading, text))
+            continue
+        skipped = [x for x in lines if FALSE_POSITIVES.match(x)]
+        if skipped:
+            p.loose.extend(x.strip() for x in skipped)
+            text = "\n".join(x for x in lines if not FALSE_POSITIVES.match(x)).strip("\n")
+        if base in DETAIL_LABELS and text.strip():
+            folded.append((heading, text))
+    p.sections += folded
+    return p
+
+
+# --- plain language: what a posted remark may not contain -------------------------------------------------
+
+def _rule_ids() -> re.Pattern:
+    keys = [k for k in gates.RULE_KINDS if k != "set_option"]
+    hyphenated = [k for k in keys if "-" in k] + ["prnum", "depcheck"]
+    return re.compile(r"`(?:" + "|".join(map(re.escape, keys)) + r")`"
+                      r"|(?<![\w-])(?:" + "|".join(map(re.escape, hyphenated)) + r")(?![\w-])"
+                      r"|\bgate\s*:\s*\w|\bgate\s+(?:rule|check|failure|report|result|scanner|label)s?\b"
+                      r"|\bthe\s+(?:worker's\s+)?gate\b", re.IGNORECASE)
+
+
+PRIVATE_FILE = re.compile(
+    r"(?<![\w.-])(?:gate\.md|gate\.json|changes\.md|pull-request\.md|overlaps\.md|library-matches\.md|reviews\.md|"
+    r"answered\.json|repair-report\.md|needs-references\.toml|brief(?:-[\w-]+)?\.md)(?!\w)"
+    r"|\bscratch/|\bjob folder\b|\bthe\s+(?:worker's\s+)?brief\b|/home/|/tmp/|/Users/", re.IGNORECASE)
+JOB_ID = re.compile(r"\b(?:PRREVIEW|GATE|REV|RT|FIX|PORT|PKG|DESIGN|TARGET|ERRATA)-[A-Z][\w~-]*")
+
+
+def plain_language_problems(report: str) -> list[str]:
+    """What a pull-request review's report would post that names a check's label (`prnum`,
+    `readme-ids-missing`, "gate: residue"), a file or folder of the worker (its check report, a
+    scratch file, the brief, the job folder), a job id or a local path: each a problem asking for the
+    sentence instead. Only what is posted is read (`posted_from_report`); the verified-sound evidence
+    stays in the report and may name what it likes."""
+    p = posted_from_report(report)
+    parts = [("the summary", p.summary)]
+    report_ids = report_finding_ids(report)
+    parts += [(report_ids[k] if k < len(report_ids) else f.id, "\n".join([f.title, *f.body]))
+              for k, f in enumerate(p.findings)]
+    parts += [(r.id, "\n".join([r.title, *r.body])) for r in (*p.corrections, *p.notes)]
+    parts += [(f"`## {h}`", text) for h, text in p.sections] + [("the line on checks set aside", x) for x in p.loose]
+    rule_id, out = _rule_ids(), []
+    for label, text in parts:
+        for pattern, what in ((rule_id, "the label of an automatic check"),
+                              (PRIVATE_FILE, "a file or folder of the worker, or a local path"), (JOB_ID, "a job id")):
+            m = pattern.search(text or "")
+            if m:
+                out.append(f"report: {label} names {what} ({m.group(0).strip()!r}): say in a sentence what the rule "
+                           "is and why it matters here (the plain words are beside each check in the list of "
+                           "automatic checks), never a check's label, a worker's file, a job id or a path")
+    return out

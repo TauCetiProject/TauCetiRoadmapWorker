@@ -38,7 +38,8 @@ First check that `git status --short` is empty and that `git rev-parse --short=7
 
 The source package, read-only: `__PACKAGE__/` (`README.md`, `Suggested.lean`, `metadata.toml`,
 `sources.toml`, the accepted review `review.json` and the reports under `reports/`; keep the review's
-decisions and apply its non-blocking notes). The target folder is
+decisions and apply its non-blocking remarks: the small corrections, and the format notes where they
+make the text clearer). The target folder is
 `__ACTIVE_DIR__/__ROADMAP__/{README.md,Suggested.lean,metadata.toml}`. Do not edit the top-level
 README's roadmap list (it is regenerated after merge) or anything outside the folder.
 
@@ -48,10 +49,15 @@ open roadmap pull requests at their heads, read-only: __SIBLINGS__.
 ## The port
 
 - **README.md** keeps the full detail of the package (every target with exact hypotheses and a
-  locator, every definition with its API and at least three Checks, worked examples, exact supplier
-  contracts, the opening `**Summary.**` paragraph) in the shape below. Cross-roadmap citations name
-  the roadmap and its section or target; a roadmap that is still a pull request is cited the same
-  way, never by number.
+  locator, every definition with its API and the Checks the package gives it, worked examples,
+  exact supplier contracts) in the shape below: the opening overview first (beginning
+  `**Summary.**`: what the roadmap builds, its headline theorems with their hypotheses, its two to
+  five nearest neighbours, a guide to the layers), then conventions and layers, with scope and
+  ownership and the supplier contracts at the end before the references. A package README in the
+  old order is brought into this order as a pure reordering (each section moved whole), and its
+  opening is rewritten as that overview from what the package states, adding no claim.
+  Cross-roadmap citations name the roadmap and its section or target; a roadmap that is still a
+  pull request is cited the same way, never by number.
 - **Suggested.lean** follows the Lean form below: the roadmap's headline theorems that are
   statable at the pins, with the simple definitions they need. If the package's file already
   satisfies it, keep it apart from import and supplier repairs. If it develops theory, holds

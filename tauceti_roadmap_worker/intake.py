@@ -2215,10 +2215,14 @@ def folders_accepted(ctx, folders, jobs: list[Job], head: str,
 
 def carried_record(verdict: dict | None, small: int) -> dict | None:
     """The record a review's verdict carries when the review ended with its repair (`[prreview]
-    carry_minor`; the lane's `carry_record`), or None: the verdict asks for changes, names the head it
-    reviewed as the record's `from`, and the repair changed at most `small` lines of the folder."""
+    carry_minor`; the lane's `carry_record`), or None: the verdict asks for changes (every finding P3,
+    in the reviews before 2026-11-18), or accepts and applied its small corrections (`corrections`),
+    names the head it reviewed as the record's `from`, and the repair changed at most `small` lines of
+    the folder."""
     record = (verdict or {}).get("carried")
-    if not isinstance(record, dict) or (verdict or {}).get("status") != "needs_changes":
+    status = (verdict or {}).get("status")
+    if not isinstance(record, dict) or not (status == "needs_changes"
+                                            or status == "accepted" and record.get("corrections")):
         return None
     lines = record.get("lines")
     if not record.get("head") or not isinstance(record.get("head"), str) or record.get("from") != verdict.get("head"):
@@ -2246,9 +2250,11 @@ def settle_points(ctx, folders, jobs: list[Job], small: int,
         verdict = prreview_verdicts(ctx, job.name, [job], "", texts).get(job.id)
         if not verdict or verdict.get("head") != job.inputs.get("head"):
             continue
-        if verdict.get("status") == "accepted":
+        if verdict.get("status") == "accepted" and not (minor and carried_record(verdict, small)):
             at[folder] = str(verdict["head"])
         elif minor and (record := carried_record(verdict, small)):
+            # (P3-only findings repaired, or an acceptance whose small corrections were applied: the folder
+            # is settled at the head the repair left)
             at[folder] = record["head"]
             if record["head"] != record["from"]:
                 changed = record.get("folders")
@@ -2292,6 +2298,10 @@ class LayoutCheck:
     def __init__(self, gh, repo: str, batch: int):
         self.gh, self.repo, self.batch = gh, repo, batch
         self.known: dict[tuple[str, str, str], bool | None] = {}
+        # "order": only the order of the sections changed; "overview": an overview pass
+        # (`layout.rewrite_problems`: the opening rewritten as well, a guide folded into it, direction
+        # words swapped in the sections that moved), which counts only with its record (`overview_recorded`)
+        self.kinds: dict[tuple[str, str, str], str] = {}
 
     def same(self, pairs) -> dict[tuple[str, str, str], bool | None]:
         """(commit a, commit b, folder path) -> whether the folder at `b` is the folder at `a` up to the
@@ -2319,29 +2329,72 @@ class LayoutCheck:
                 old, new = (a, f"{path}/README.md"), (b, f"{path}/README.md")
                 if old not in texts or new not in texts:
                     self.known[(a, b, path)] = None
+                elif texts[old] is None or texts[new] is None:
+                    self.known[(a, b, path)] = False
+                elif layout.section_permutation(texts[old], texts[new]):
+                    self.known[(a, b, path)], self.kinds[(a, b, path)] = True, "order"
+                elif not layout.rewrite_problems(texts[old], texts[new]):
+                    self.known[(a, b, path)], self.kinds[(a, b, path)] = True, "overview"
                 else:
-                    self.known[(a, b, path)] = bool(texts[old] is not None and texts[new] is not None
-                                                    and layout.section_permutation(texts[old], texts[new]))
+                    self.known[(a, b, path)] = False
         return {x: self.known[x] for x in pairs}
+
+    def kind(self, pairs) -> str:
+        """"overview" when one of the pairs `same` found equal is an overview pass, else "order"."""
+        return "overview" if any(self.kinds.get(x) == "overview" for x in pairs) else "order"
 
 
 LAYOUT_MARK = "tauceti-roadmap-layout"
 LAYOUT_RE = re.compile(r"<!--\s*" + LAYOUT_MARK + r"\b(.*?)-->", re.DOTALL)
 
 
-def layout_note(source: str, head: str, folders) -> str:
+def layout_note(source: str, head: str, folders, kind: str = "order") -> str:
     """The housekeeping note on a pull request whose head differs from an accepted head only in the
-    order of its READMEs' sections, with its record (`layout_record`). It opens with a housekeeping
-    prefix and says that no further change is needed, so that no reading of the timeline takes it for
-    a review (`replies.is_review`), whoever posts it."""
+    order of its READMEs' sections (`kind` "order"), or by an overview pass (`kind` "overview": the
+    opening rewritten as well, `overview`), with its record (`layout_record`). It opens with a
+    housekeeping prefix and says that no further change is needed, so that no reading of the timeline
+    takes it for a review (`replies.is_review`), whoever posts it."""
     folders = list(folders)
     names = ", ".join(f"`{f}/`" for f in folders)
-    data = {"from": source, "head": head, "folders": folders}
-    return (f"Housekeeping at `{head[:7]}`: only the order of the README's sections changed in {names} since "
-            f"`{source[:7]}`. Every section reads as it did there, word for word, and every other file of the "
-            f"roadmap folder{'s' if len(folders) != 1 else ''} is unchanged, so the AI review's acceptance of "
-            f"`{source[:7]}` holds for this head: no further change is needed and no new review is filed.\n\n"
+    data = {"from": source, "head": head, "folders": folders, **({"kind": kind} if kind != "order" else {})}
+    rest = "s" if len(folders) != 1 else ""
+    if kind == "overview":
+        what = (f"the opening overview of the README was rewritten in {names} since `{source[:7]}`, and its "
+                "sections were put in the new order (scope and supplier contracts at the end). The mathematics "
+                "of the layers is unchanged: every other section reads as it did there, word for word, apart "
+                "from direction words such as \"below\" in the sections that moved, and every other file of the "
+                f"roadmap folder{rest} is unchanged")
+    else:
+        what = (f"only the order of the README's sections changed in {names} since `{source[:7]}`. Every section "
+                f"reads as it did there, word for word, and every other file of the roadmap folder{rest} is "
+                "unchanged")
+    return (f"Housekeeping at `{head[:7]}`: {what}, so the AI review's acceptance of `{source[:7]}` holds for "
+            "this head: no further change is needed and no new review is filed.\n\n"
             f"<!-- {LAYOUT_MARK} {json.dumps(data, sort_keys=True)} -->\n")
+
+
+def layout_trusted(cfg) -> set[str]:
+    """The logins whose layout records count for an overview pass: the pool, the maintainers and the
+    listed comment reviewers (lower case)."""
+    return {str(x).lower() for x in (*cfg.roadmap.pool, *cfg.replies.maintainer_logins,
+                                     *cfg.review.comment_reviewers) if x}
+
+
+def overview_recorded(ctx, repo: str, number: int, head: str, threads: dict, batch: int) -> bool | None:
+    """Whether a comment on the pull request by a trusted login (`layout_trusted`) records an overview
+    pass that left `head` (`layout_record`, kind "overview"): the `overview` command posts it as the
+    branch moves. An opening rewritten by anyone else is a change like any other. None when the
+    comments could not be read."""
+    if number not in threads:
+        try:
+            threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
+        except GHError:
+            threads[number] = None
+    if threads[number] is None:
+        return None
+    trusted = layout_trusted(ctx.cfg)
+    return any((r := layout_record(c.get("body") or "")) and r.get("head") == head and r.get("kind") == "overview"
+               and str(((c.get("user") or {}).get("login")) or "").lower() in trusted for c in threads[number])
 
 
 def layout_record(body: str) -> dict | None:
@@ -2357,7 +2410,15 @@ def layout_record(body: str) -> dict | None:
     return record if isinstance(record, dict) else {}
 
 
-def note_layout(ctx, repo: str, number: int, source: str, head: str, folders, threads: dict, batch: int) -> str:
+def layout_words(kind: str, folders) -> str:
+    """The clause of a log line on a carry across a layout change of `folders`' READMEs."""
+    what = ("the opening overview and the order of the README sections" if kind == "overview"
+            else "the order of the README sections")
+    return f", up to {what} of " + ", ".join(folders)
+
+
+def note_layout(ctx, repo: str, number: int, source: str, head: str, folders, threads: dict, batch: int,
+                kind: str = "order") -> str:
     """The housekeeping note of a layout-only change (`layout_note`) on the pull request, once per head:
     '' when a comment records it already (the command that made the change posts it), else what was
     done. A note GitHub refuses (a token that cannot write to the content repository) is reported."""
@@ -2371,7 +2432,8 @@ def note_layout(ctx, repo: str, number: int, source: str, head: str, folders, th
     if any((layout_record(c.get("body") or "") or {}).get("head") == head for c in threads[number]):
         return ""
     try:
-        ctx.gh.write("POST", f"repos/{repo}/issues/{number}/comments", {"body": layout_note(source, head, folders)})
+        ctx.gh.write("POST", f"repos/{repo}/issues/{number}/comments", {"body": layout_note(source, head, folders,
+                                                                                          kind)})
     except GHError as exc:
         return f"#{number}: layout note not posted ({str(exc).splitlines()[0][:160]})"
     return f"#{number}: layout note posted ({head[:7]} only reorders the README sections of {source[:7]})"
@@ -2399,7 +2461,7 @@ def reviewed_heads(folders, jobs: list[Job], head: str) -> list[str]:
 
 def unchanged_folders(ctx, repo: str, head: str, folders, jobs: list[Job], small: int,
                       texts: dict[str, str | None] | None, batch: int, minor: bool,
-                      layout_check: LayoutCheck | None = None) -> tuple[dict[str, str], bool]:
+                      layout_check: LayoutCheck | None = None, recorded=None) -> tuple[dict[str, str], bool]:
     """With `[prreview] carry_unchanged_folders`: (roadmap folder -> the head its latest finished review
     settled it at, for the folders of a pull request that need no review at `head`; whether that could
     be told). A folder needs none when that review settles it (`settle_points`: it accepted, or with
@@ -2436,7 +2498,14 @@ def unchanged_folders(ctx, repo: str, head: str, folders, jobs: list[Job], small
         found = layout_check.same([(moved[f], head, path_of[f]) for f in reordered])
         if any(found[(moved[f], head, path_of[f])] is None for f in reordered):
             return {}, False
-        out.update({f: moved[f] for f in reordered if found[(moved[f], head, path_of[f])]})
+        same = [f for f in reordered if found[(moved[f], head, path_of[f])]]
+        if layout_check.kind([(moved[f], head, path_of[f]) for f in same]) == "overview":
+            # (an overview pass counts only with the record of the command that made it)
+            ok = recorded() if recorded is not None else False
+            if ok is None:
+                return {}, False
+            same = same if ok else [f for f in same if layout_check.kinds.get((moved[f], head, path_of[f])) == "order"]
+        out.update({f: moved[f] for f in same})
     return out, True
 
 
@@ -2538,13 +2607,22 @@ def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: 
         if any(v is None for v in found.values()):
             known = False
             continue
+        kind = check.kind([(source, head, path_of[f]) for f in differ])
+        if kind == "overview":
+            # an overview pass rewrote an opening: it counts only with the record of the command that made it
+            recorded = overview_recorded(ctx, repo, number, head, threads, batch)
+            if recorded is None:
+                known = False
+                continue
+            if not recorded:
+                continue
         for f, at in later.items():
             if found[(at, head, path_of[f])]:
                 verdict = latest_verdict(ctx, [last[f]], at, texts)
                 if not verdict or verdict.get("status") != "accepted":
                     return "", True
         if how is not None:
-            how["layout"] = differ
+            how["layout"], how["kind"] = differ, kind
         return source, True
     return "", known
 
@@ -2735,7 +2813,8 @@ def sync_pr_reviews(ctx) -> list[str]:
             return {}, True
         if number not in kept:
             kept[number] = unchanged_folders(ctx, repo, head, folders, mine, p.small_change_lines, texts, batch,
-                                             p.carry_minor, layout_check)
+                                             p.carry_minor, layout_check,
+                                             lambda: overview_recorded(ctx, repo, number, head, threads, batch))
         return kept[number]
 
     def close_untaken(number: int, mine: list[Job], head: str, still: dict[str, str]) -> None:
@@ -2755,7 +2834,7 @@ def sync_pr_reviews(ctx) -> list[str]:
     carried_prs: set[int] = set()
     by_folder: set[int] = set()             # accepted folder by folder, some at an earlier head with the same files
     unchanged: dict[int, str] = {}          # a head that only moved: the earlier head whose acceptance stands
-    reordered: dict[int, tuple[str, list[str]]] = {}    # ... up to the order of these folders' README sections
+    reordered: dict[int, tuple[str, list[str], str]] = {}   # ... up to these folders' README layout (kind)
     accepted_at: dict[int, dict[str, str]] = {}     # an accepted pull request: folder -> the head reviewed for it
     threads: dict[int, list[dict] | None] = {}
     pr_texts: dict[int, dict | None] = {}
@@ -2827,15 +2906,17 @@ def sync_pr_reviews(ctx) -> list[str]:
                                       f"{source[:7]}, whose acceptance stands")):
                         out.append(f"#{number}: {job.id} superseded")
                 if how.get("layout"):
-                    # Only the order of a README's sections changed: say so on the pull request, once.
-                    reordered[number] = (source, list(how["layout"]))
-                    line = note_layout(ctx, repo, number, source, head, how["layout"], threads, batch)
+                    # Only the order of a README's sections changed (or an overview pass, whose command posted
+                    # the note): say so on the pull request, once.
+                    reordered[number] = (source, list(how["layout"]), how.get("kind", "order"))
+                    line = note_layout(ctx, repo, number, source, head, how["layout"], threads, batch,
+                                       how.get("kind", "order"))
                     if line:
                         out.append(line)
                 if labelled:
                     out.append(f"#{number}: {p.label} kept (the roadmap folders at {head[:7]} are those of "
-                               f"{source[:7]}" + (", up to the order of the README sections of "
-                                                  + ", ".join(how["layout"]) if how.get("layout") else "")
+                               f"{source[:7]}" + (layout_words(how.get("kind", "order"), how["layout"])
+                                                  if how.get("layout") else "")
                                + ", whose acceptance stands: the head only moved, no review filed)")
         if not accepted and folders and p.carry_unchanged_folders:
             still, known = kept_folders(number, folders, mine, head)
@@ -2860,7 +2941,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                 ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [p.label]})
                 out.append(f"#{number}: {p.label} added ("
                            + (f"the roadmap folders at {head[:7]} are those of {unchanged[number][:7]}"
-                              + (", up to the order of the README sections of " + ", ".join(reordered[number][1])
+                              + (layout_words(reordered[number][2], reordered[number][1])
                                  if number in reordered else "")
                               + ", whose acceptance stands: the head only moved" if number in unchanged
                               else f"every roadmap folder at {head[:7]} holds the files its last review settled"

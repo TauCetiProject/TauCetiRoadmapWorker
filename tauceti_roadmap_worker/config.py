@@ -280,7 +280,7 @@ class PRReview:
     # covers yet, and a pull request whose every roadmap folder an AI review of its current head
     # accepts carries `label`. A human still approves and merges.
     enabled: bool = False
-    label: str = "ai-approved"
+    label: str = "ai-found-no-errors"
     # The label `roadmaps dependency-labels` keeps (when it is given no `--label`): on an open roadmap
     # pull request exactly while it waits for another pull request, recomputed from the current heads,
     # descriptions and main on every run (`deplabels`). `board sync` does not touch it.

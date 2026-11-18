@@ -192,20 +192,36 @@ def pull_request_document(number: int, data: dict, owner: str, change: str = "")
         *([change.rstrip("\n"), ""] if change else [])])
 
 
+# The automatic checks an acceptance may not pass over in silence, each in the words the lane's refusal uses.
+HARD_CHECKS = {"build": "the roadmap's Lean files do not build",
+               "depcheck": "the merge-order check reports a cycle or a supplier that comes later"}
+
+GATE_PREAMBLE = """These are the results of automatic scanners, not findings. For each check below, look at what it \
+flagged and decide. A false positive is dropped; if you drop any, say so in one plain line of your report, \
+`Automatic checks set aside as false positives: …`, describing each in words. A real failure of a check about \
+substance becomes a finding in your own words (or a small correction, when it misleads a reader without touching a \
+stated result); a real failure of a check about form becomes a format note. The build failing, or a cycle or an \
+upward supplier, is always a finding when real. In the review, never name a check by a label and never cite this \
+file: say what the rule is and why it matters here."""
+
+
 def gate_document(result: gates.GateResult | None, head: str) -> str:
-    """The worker's gate at the head reviewed, for the agent: the summary and every failing check with
-    its rule and hits."""
+    """The worker's automatic checks at the head reviewed, for the agent: every failing check under the
+    plain description of what it protects (`gates.GATE_RULES`), whether it is about substance or about
+    form (`gates.rule_kind`), and its hits. A failure is evidence for the reviewer, never a finding by
+    itself; the checks' labels are left out, so that the review is written in words."""
     if result is None:
-        return f"# The worker's gate at {head[:7]}\n\nNot run (a dry run).\n"
-    lines = [f"# The worker's gate at {head[:7]} (data)", "", result.summary(), ""]
+        return f"# The worker's automatic checks at {head[:7]}\n\nNot run (a dry run).\n"
+    lines = [f"# The worker's automatic checks at {head[:7]} (data)", ""]
     failing = [k for k, v in result.counts.items() if v]
     if not failing:
-        lines.append("Every check passed.")
+        return "\n".join(lines + ["Every check passed."]) + "\n"
+    lines += [GATE_PREAMBLE, ""]
     for key in failing:
-        lines.append(f"## {key} ({result.counts[key]})")
-        if key in gates.GATE_RULES:
-            lines += ["", f"Rule: {gates.GATE_RULES[key]}."]
-        lines.append("")
+        what = gates.GATE_RULES.get(key, "a check of the worker")
+        kind = "substance" if gates.rule_kind(key) == gates.SUBSTANCE else "form"
+        lines += [f"## {what[:1].upper()}{what[1:]}", "",
+                  f"About {kind}. {result.counts[key]} hit{'s' if result.counts[key] != 1 else ''}:", ""]
         lines += [f"- {getattr(h, 'text', h)}" if not getattr(h, "line", 0) else f"- line {h.line}: {h.text}"
                   for h in result.details.get(key, [])[:20]]
         lines.append("")
@@ -347,19 +363,20 @@ full review: check that the updates are correct.
 
 1. **The previous findings.** For each finding of the previous report (R01, R02, …), verify whether this
    head repairs it and whether the repair introduced a new problem. Account for every one under
-   `## Previous findings` (after this report's own findings, before `## Verified sound`), one bullet
+   `## Previous findings` (after this report's own remarks, before `## Verified sound`), one bullet
    each: `- R01 — repaired | partly repaired | not repaired: <the passage at this head, at most 40
-   words>`. A finding partly or not repaired is written again as a finding of this report; a new
-   problem a repair introduced is a new finding.
+   words>`. A point partly or not repaired is written again in this report, as a finding, a small
+   correction or a format note by the rules below (an earlier P3 finding is now a small correction or
+   a format note, or nothing); a new problem a repair introduced is a new remark.
 2. **The changed passages.** Review in full, by the steps below, only the passages the diff adds or
    changes and anything that cites or depends on them: the names, section numbers and suppliers they
    mention or that mention them, and the Lean statements touched. The seeded sample is checked where
    it falls in them; a file changed outside the folder is checked as in a full review.
-   A finding of this report is one of three things: a previous finding not (fully) repaired, a problem
+   A remark of this report is one of three things: a previous point not (fully) repaired, a problem
    the repair introduced, or a defect in a changed passage or in text the change makes wrong. A defect
    in untouched text that the previous review passed is NOT a finding of an incremental re-review
-   (a review that found nothing wrong with it has had its say): mention it in one line under
-   `## Verified sound` as a remark, without an R-number and without asking for a change.
+   (a review that found nothing wrong with it has had its say): at most a small correction or a
+   format note, which do not block.
    The report of an incremental re-review is short: its findings, the `## Previous findings`
    bullets, the rows for what changed, the gate result.
    The check of copyright, licences and scope compares the passages the diff adds or changes, and
@@ -371,15 +388,15 @@ full review: check that the updates are correct.
 3. **The pull request's text** is not untouched text: a change makes the title and description
    wrong whenever it changes what they describe, though they did not change themselves. Check them
    against this head as step 8 of the full review does, in every re-review: a sentence the head
-   contradicts, or a change of the pull request they leave unstated, is a finding, not a remark.
-4. **The gate and the elaboration** run as in a full review.
+   contradicts, or a change of the pull request they leave unstated, is a small correction.
+4. **The automatic checks and the elaboration** run as in a full review.
 5. **The adversarial table** has a row with computed values for every statement the diff changes
    or that a finding touches (when the diff changes no statement: one row for a statement the
    changed text cites). Do not copy the previous report's rows for untouched statements: one line
    after the table says that they stand as in the previous review, of `{since}`.
-6. **The verdict.** Accept when no finding remains at all (new, or carried from the previous report)
-   and the gate passes — remarks on untouched text do not block acceptance; the verdict file's `notes` say "incremental re-review of {lines} changed lines
-   since {since}", then what was checked.
+6. **The verdict.** Accept when no finding (P1 or P2) remains, new or carried from the previous
+   report: small corrections and format notes do not block. The verdict file's `notes` say
+   "incremental re-review of {lines} changed lines since {since}", then what was checked.
 
 Every deliverable below is the same as in a full review."""
 
@@ -473,7 +490,25 @@ def minor_note(record: dict) -> str:
     lines = record["lines"]
     what = (f"the repair changes {lines} line{'' if lines == 1 else 's'} of the folder" if record["head"] != record["from"]
             else "the answer changes nothing in the folder")
+    if record.get("corrections"):
+        return (f"This review accepted the head; its small corrections are applied here and {what}, so the "
+                "acceptance carries to this head and no further review of this folder is filed for it.")
     return f"Every finding of this review is P3 and {what}, so no further review of this folder is filed for this head."
+
+def remarks_brief(status: str, small: int) -> str:
+    """The paragraph of the repair brief on the review's three kinds of remark: an acceptance's repair
+    applies its small corrections only; a repair of findings applies the small corrections and the
+    format notes too."""
+    if status == "accepted":
+        return ("**This review accepts the head.** Apply its small corrections (C01, C02, …) and nothing else, each "
+                "in an H section of its own (`applied`, or `disputed` with the evidence); leave its format notes "
+                "(N01, …) for the author. Change only the sentences they name, in the smallest way: the whole change "
+                f"must stay within {small} changed lines of the folder, or the worker does not push it. The acceptance "
+                "then carries to the new head without another review.")
+    return ("The review may also list small corrections (C01, …: true and minor) and format notes (N01, …: form only). "
+            "Apply them too, each in an H section of its own, unless one is wrong (`disputed`, with the evidence); "
+            "they do not need a round of their own. A finding's number is F01, F02, …: those must each be answered.")
+
 
 OUTSIDE_BRIEF = """A point that only a change outside these files can settle (another roadmap's folder, another \
 pull request, the library, a record you may not edit) is neither applied nor disputed: head its section \
@@ -1194,15 +1229,29 @@ class PRReviewLane(Lane):
             problems += [missing] if missing else []
             listed = [f"{severity} {title}" for severity, title, _b in findings]
             if listed:
-                problems.append("report: an acceptance lists no finding (a repair, whatever its priority, asks for "
-                                "changes), but it has " + "; ".join(listed[:5]))
+                problems.append("report: an acceptance lists no finding (small corrections and format notes do not "
+                                "block, findings do), but it has " + "; ".join(listed[:5]))
+            # The two automatic checks whose real failure is always a finding: an acceptance does not pass
+            # over one in silence. The reviewer either reports it or says in words why it is a false positive.
             gate = ws.extra.get("gate")
-            if gate is not None and not gate.ok:
-                failing = ", ".join(f"{k}={v}" for k, v in gate.counts.items() if v)
-                problems.append(f"an acceptance needs the worker's gate to pass at this head, and it failed ({failing}; "
-                                f"see {ws.scratch / GATE_REPORT}): report each failure as a finding")
+            hard = [words for key, words in HARD_CHECKS.items() if gate is not None and gate.counts.get(key)]
+            if hard and not any(prreviews.FALSE_POSITIVES.match(line) for line in report.split("\n")):
+                problems.append("report: at this head " + " and ".join(hard) + ": an acceptance either reports that "
+                                "as a finding (and then asks for changes) or says why it is a false positive, in the "
+                                "line `Automatic checks set aside as false positives: …`")
         elif status in ("needs_changes", "rejected") and not findings:
-            problems.append("report: a verdict that asks for changes writes each finding as `## R01 (P1) — <short title>`")
+            problems.append("report: a verdict that asks for changes writes each finding as `## R01 (P1) — <the claim>`; "
+                            "small corrections and format notes alone do not ask for changes")
+        # (2026-11-18) A finding is P1 or P2: a point below that bar is a small correction or a format note,
+        # which never blocks, or it is left out.
+        minor = [f"{fid} {title}" for fid, (severity, title, _b) in zip(prreviews.report_finding_ids(report), findings)
+                 if severity == "P3"]
+        if minor:
+            problems.append("report: a finding is P1 or P2; write each point below that bar as a small correction "
+                            "(`## C01 — <the claim>`) or a format note (`## N01 — <the claim>`), or leave it out: "
+                            + "; ".join(minor[:5]))
+        if report:
+            problems += prreviews.plain_language_problems(report)
         if report:
             problems += self.provenance_problems(ws, report, line=status == "accepted")
         previous = ws.extra.get("previous_report")
@@ -1214,8 +1263,8 @@ class PRReviewLane(Lane):
         problems += self.board_edit_problems(job, ctx, ws)
         if not problems and len(self.comment_body(job, ctx, ws)) > COMMENT_LIMIT:
             problems.append(f"report: too long to post as one pull-request comment (the limit is {COMMENT_LIMIT:,} "
-                            "characters): keep every finding and the sampled rows of the adversarial table, and cut the "
-                            "per-target ledgers and the restated roadmap content")
+                            "characters): keep every finding, and shorten the small corrections, the format notes and "
+                            "what was not verified; drop restated roadmap content")
         return problems
 
     def board_edit_problems(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
@@ -1261,16 +1310,14 @@ class PRReviewLane(Lane):
         report = ws.report.read_text(encoding="utf-8") if ws.report.is_file() else ""
         line = folder_line(active, own)
         report = "\n".join(x for x in report.split("\n") if x.strip() != line)    # the comment names the folder itself
-        body = prreviews.render_pr_review(
+        # A pass before the final review says so under the header lines, so that a reader does not take
+        # the verdict line for the label's.
+        return prreviews.render_pr_review(
             prreviews.pr_review_head(ctx.agent, ctx.model, head, since), status, report, marker, head,
             replies.validation_sentence(head[:7], gate) if gate is not None else "",
             conditional if isinstance(conditional, list) else None,
-            folder=f"{active}/{own}", others=len(other_folders(job)))
-        if job.inputs.get("pre"):
-            # Said under the head reviewed, so that a reader does not take the verdict line for the label's.
-            line = f"Reviewed head: {head}"
-            body = body.replace(line, line + "\n\n" + PASS_NOTE.format(label=ctx.cfg.prreview.label), 1)
-        return body
+            folder=f"{active}/{own}", others=len(other_folders(job)),
+            pass_note=PASS_NOTE.format(label=ctx.cfg.prreview.label) if job.inputs.get("pre") else "")
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         repo, pr, head = ctx.cfg.repositories.content, ws.extra["pr"], ws.extra["head"]
@@ -1284,11 +1331,18 @@ class PRReviewLane(Lane):
             body = self.comment_body(job, ctx, ws)
             ws.extra["review_comment"] = self.comment_once(ctx, repo, pr, body, lambda text: same_review(text, job.id, head))
             settle(ctx, job, CONTENT_COMMENT)
-        label = self.update_label(job, ctx, pr, head, status)
+        # An acceptance that goes on to apply its small corrections leaves the label to the head they leave
+        # (the board's sync puts it there once the review is in); the label of the head reviewed would only
+        # be taken off again when the corrections are pushed.
+        correcting = repairing and status == "accepted"
+        label = "" if correcting else self.update_label(job, ctx, pr, head, status)
+        ws.extra["status"] = status
         summary = review_summary(f"review of #{pr} ({board.prreview_folder(job)}) at {head[:7]}", verdict,
                                  ws.report.read_text(encoding="utf-8") if ws.report.is_file() else "")
         # The record decides: an attempt that finishes a kept run carries on with the repair it began.
         repair = self.repair(job, ctx, ws) if any(owes(ctx, job, e) for e in REPAIR_EFFECTS) else ""
+        if correcting and repaired_head(ctx, job) in ("", head):
+            label = self.update_label(job, ctx, pr, head, status)        # nothing pushed: the head reviewed is it
         closed = self.close_round(job, ctx, ws, status, repair)
         return summary + "".join(f"; {x}" for x in (label, repair, closed) if x)
 
@@ -1303,13 +1357,16 @@ class PRReviewLane(Lane):
         base branch, a family index); `findings` and `lines`."""
         cfg = ctx.cfg
         report = ws.report.read_text(encoding="utf-8", errors="replace") if ws.report.is_file() else ""
-        findings = minor_findings(report)
+        accepted = self.verdict(job, ctx, ws).get("status") == "accepted"
+        # an acceptance whose small corrections were applied, or a review whose every finding is P3
+        findings = len(prreviews.report_remarks(report)[0]) if accepted else minor_findings(report)
         if not cfg.prreview.carry_minor or not findings or job.inputs.get("pre"):
             return None          # (a pass before the final review settles nothing: that review follows)
         head = ws.extra["head"]
         new, onto = repaired_head(ctx, job) or head, carried_onto(ctx, job)
         active, own = cfg.roadmap.active_dir.strip("/"), board.prreview_folder(job)
-        record = {"from": head, "head": new, "findings": findings, "lines": 0, "folders": []}
+        record = {"from": head, "head": new, "findings": findings, "lines": 0, "folders": [],
+                  **({"corrections": True} if accepted else {})}
         if new == head:
             return record
         added, removed = numstat_lines(gitops.git(ws.workdir, "diff", "--numstat", f"{head}..{new}", "--",
@@ -1335,7 +1392,8 @@ class PRReviewLane(Lane):
         those that stood already. Both are kept in the job's record, so an attempt that finishes a kept
         run writes the same; a repair that failed settles nothing. Returns the summary's words."""
         p = ctx.cfg.prreview
-        if status != "needs_changes" or not (p.carry_minor or p.defer_outside):
+        if not (status == "needs_changes" and (p.carry_minor or p.defer_outside)
+                or status == "accepted" and p.carry_minor):
             return ""
         entry = read_pending(ctx, job)
         record = (entry or {}).get("closed")
@@ -1368,7 +1426,8 @@ class PRReviewLane(Lane):
             path.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
         words = []
         if carried:
-            words.append(f"P3 only: no further review of {carried['head'][:7]} for this folder")
+            words.append(("small corrections applied" if carried.get("corrections") else "P3 only")
+                         + f": no further review of {carried['head'][:7]} for this folder")
         if added:
             words.append(f"{len(added)} finding{'s' if len(added) != 1 else ''} deferred as outside the folder ("
                          + ", ".join(d["id"] for d in added) + ")")
@@ -1381,9 +1440,19 @@ class PRReviewLane(Lane):
         operator are in the pool (`[roadmap] pool`), the pull request names its branch and head
         repository, and the run is not a dry run."""
         pool = set(ctx.cfg.roadmap.pool)
-        return bool(ctx.cfg.prreview.repair_pool and status == "needs_changes" and not ctx.dry_run
+        able = bool(ctx.cfg.prreview.repair_pool and not ctx.dry_run
                     and ws.extra.get("owner") in pool and ctx.operator in pool
                     and ws.extra.get("pr_branch") and ws.extra.get("head_repo"))
+        if status == "accepted":
+            return able and self.applies_corrections(job, ctx, ws)
+        return able and status == "needs_changes"
+
+    def applies_corrections(self, job: Job, ctx: Context, ws: Workspace) -> bool:
+        """Whether an acceptance goes on to apply its small corrections in one small commit, carried by
+        the acceptance (`[prreview] carry_minor`): the report lists small corrections, and the review
+        is not a pass before the final review. Format notes alone push nothing."""
+        report = ws.report.read_text(encoding="utf-8", errors="replace") if ws.report.is_file() else ""
+        return bool(ctx.cfg.prreview.carry_minor and not job.inputs.get("pre") and prreviews.report_remarks(report)[0])
 
     def repair(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """After the review's comment, before the board submission (the job stays claimed meanwhile, so
@@ -1418,6 +1487,14 @@ class PRReviewLane(Lane):
         gate = load_gate(ws.job_dir / REPAIR_GATE, new)
         if not new or gate is None or not report.is_file():
             raise LaneError("the repair's record is incomplete")
+        if ws.extra.get("status") == "accepted" and new != head and owes(ctx, job, CONTENT_PUSH):
+            small = ctx.cfg.prreview.small_change_lines
+            active = ctx.cfg.roadmap.active_dir.strip("/")
+            added, removed = numstat_lines(gitops.git(ws.workdir, "diff", "--numstat", f"{head}..{new}", "--",
+                                                      f"{active}/{board.prreview_folder(job)}", check=False))
+            if added + removed > small:
+                raise LaneError(f"the small corrections change {added + removed} lines of the folder, more than "
+                                f"[prreview] small_change_lines = {small}: not pushed (they stay listed in the review)")
         answered = json.loads((ws.job_dir / ANSWERED).read_text(encoding="utf-8"))
         text = []
         for attempt in range(CARRIES + 1):
@@ -1604,6 +1681,7 @@ class PRReviewLane(Lane):
         with_text = ctx.cfg.prreview.repair_text
         index = family_index_changed(ctx, ws, folder) if ctx.cfg.prreview.repair_index else []
         edits_brief = "\n\n".join(x for x in (
+            remarks_brief(ws.extra.get("status") or "needs_changes", ctx.cfg.prreview.small_change_lines),
             family_brief(index, folder), board_edits_brief(job, ctx, ws),
             description_brief(ws, pr_base(ctx, ws), f"{ctx.cfg.roadmap.active_dir}/{folder}") if with_text else "",
             summary_brief(ws) if with_text else "",

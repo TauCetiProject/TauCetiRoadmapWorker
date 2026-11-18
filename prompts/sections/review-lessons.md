@@ -8,7 +8,8 @@ its review without a round:
 - **Padding in `Suggested.lean`** (the most frequent finding): run the one-tactic probe on every
   sorried theorem, not a sample; a statement that `rfl`, `infer_instance` or `simp` closes, that
   restates a definition, mirrors a README Check, computes a small value or treats a boundary case
-  is a finding with the repair "delete it".
+  is a small correction with the repair "delete it" (our own packages keep `Suggested.lean` to the
+  headline statements).
 - **Statable headline theorems absent from `Suggested.lean`** (P2): list the headline theorems from
   the README's summary and check each is stated at the pins or named in the module docstring as
   not statable, with the reason.
@@ -16,11 +17,13 @@ its review without a round:
   resolve every backticked identifier the README attributes to this roadmap.
 - **Names that do not exist at the pin**: open each cited Mathlib or Tau Ceti declaration at the
   pinned libraries (file and line), in the README as well as in the Lean file.
-- **README shape**: layers with dependencies, every definition with its API and at least three
-  discriminating Checks, every theorem with its exact hypotheses and a locator.
+- **Completeness**: layers with dependencies, every theorem with its exact hypotheses and a
+  locator, every Check true and testing something. (The order of the sections and the number of
+  Checks are not what the pull-request review checks, and neither is a reason to hold a package.)
 - **Locator slips and the source manifest**: the sampled locators checked against the text, and
   every cited work recorded in the manifest.
-- **Process residue**: pull-request numbers, dates, hand-off notes, HTML anchors or machine paths
-  in the roadmap text; the import header (`import Mathlib`, then only the `TauCeti.*` modules used).
+- **Process residue**: pull-request numbers, dates, hand-off notes and HTML anchors in the roadmap
+  text, and the import header (`import Mathlib`, then only the `TauCeti.*` modules used), are format
+  notes; a machine path is a finding.
 - **Supplier drift**: a cited section or declaration of a supplier that no longer exists at the
   supplier's current head (the open pull requests move); resolve each citation now.

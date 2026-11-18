@@ -694,6 +694,27 @@ def layout_cmd(args) -> int:
     return 1 if any(line.startswith("stopped") or ": not pushed:" in line for line in lines) else 0
 
 
+def overview_cmd(args) -> int:
+    """Rewrite the opening of the READMEs of open roadmap pull requests as an overview, with the sections
+    in the new order (`overview.run`; proposals only unless --yes)."""
+    from . import overview
+    if not (args.pr or args.author or args.pool):
+        print("overview: name pull requests with --pr, authors with --author, or pass --pool", file=sys.stderr)
+        return 2
+    if args.pace < 0 or args.limit < 0:
+        print("overview: --pace and --limit are never negative", file=sys.stderr)
+        return 2
+    cfg = _load(args)
+    write = args.yes and not args.dry_run
+    ctx = _bot_context(args, cfg, not write)
+    agent = args.agent or "claude"
+    model = args.model or (cfg.agents.codex_model if agent == "codex" else cfg.agents.claude_model)
+    lines = overview.run(ctx, numbers=args.pr, authors=args.author, pool=args.pool, write=write, pace=args.pace,
+                         limit=args.limit, accepted_only=args.accepted_only, listing=args.list, force=args.force,
+                         agent=agent, model=model, report=lambda line: print(line, flush=True))
+    return 1 if any(line.startswith("stopped") or ": not pushed:" in line for line in lines) else 0
+
+
 def reformat_reviews_cmd(args) -> int:
     """Rebuild the latest AI review of each roadmap folder of the open roadmap pull requests in the
     posted layout (`reformat.run`; a dry run unless --yes)."""
@@ -1267,6 +1288,25 @@ def parser() -> argparse.ArgumentParser:
     lo.add_argument("--limit", type=int, default=0, help="push to at most this many pull requests (0: all)")
     lo.add_argument("--yes", action="store_true", help="push and post the notes (default: a dry run)")
 
+    ov = sub.add_parser("overview", help="rewrite the opening of the READMEs of open roadmap pull requests as a "
+                                         "readable overview, with the sections in the new order; checked "
+                                         "mechanically, the AI acceptance kept (proposals only unless --yes)")
+    ov.add_argument("--pr", type=int, action="append", default=[], help="a pull request (repeatable; in this order)")
+    ov.add_argument("--author", action="append", default=[], metavar="LOGIN",
+                    help="every open roadmap pull request of this author (repeatable)")
+    ov.add_argument("--pool", "--all-mine", dest="pool", action="store_true",
+                    help="every open roadmap pull request of the authors in [roadmap] pool")
+    ov.add_argument("--accepted-only", action="store_true",
+                    help="only the pull requests that carry the AI review label ([prreview] label)")
+    ov.add_argument("--pace", type=float, default=2.0, metavar="SECONDS", help="pause between two pushes (default 2)")
+    ov.add_argument("--limit", type=int, default=0, help="push to at most this many pull requests (0: all)")
+    ov.add_argument("--list", action="store_true", help="say which READMEs would be rewritten; run no agent")
+    ov.add_argument("--force", action="store_true", help="also a pull request that carries an overview record")
+    ov.add_argument("--agent", choices=["claude", "codex"], default="claude")
+    ov.add_argument("--model", default="", help="default: the configured model of the agent")
+    ov.add_argument("--yes", action="store_true", help="push the checked READMEs and post the notes (default: "
+                                                       "propose only, into the state directory)")
+
     rr = sub.add_parser("reformat-reviews", help="rebuild the latest AI review of each roadmap folder of the open "
                                                  "roadmap pull requests in the posted layout, without a model and "
                                                  "without changing what it says (a dry run unless --yes)")
@@ -1362,7 +1402,7 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {"doctor": doctor, "targets": targets, "work": work, "gate": gate, "merge-order": merge_order,
                 "summary": summary_cmd, "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd,
                 "usage": usage_cmd, "roadmaps": roadmaps_cmd, "throttle": throttle_cmd, "layout": layout_cmd,
-                "reformat-reviews": reformat_reviews_cmd}
+                "reformat-reviews": reformat_reviews_cmd, "overview": overview_cmd}
     try:
         return handlers[args.command](args)
     except GHRateLimited as exc:
