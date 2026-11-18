@@ -900,6 +900,7 @@ an operator files by hand at an accepted head (inputs `operator_check`) is not c
 | `enabled` | `false` | file and retire review jobs and keep the label (nothing is read while off) |
 | `label` | `"ai-found-no-errors"` | the label an accepted head carries on the content repository |
 | `dependency_label` | `""` | the label `roadmaps dependency-labels` keeps when given no `--label` (below); `board sync` does not touch it |
+| `approval_label` | `""` | the label the same run keeps on an accepted pull request that needs only a human approval, when given no `--approval-label` (below); empty: none |
 | `per_run` | `3` | new review jobs (one per roadmap folder) per `board sync` run, oldest pull request first |
 | `text_per_run` | `10` | of those, check rounds of an accepted head's title and description that its review did not read (above), filed last, least deep in the dependency graph first; `0` files none |
 | `pre_passes` | `0` | passes before the final review of a pull request the pool repairs (below); `0`: none |
@@ -1230,7 +1231,7 @@ has a finished review of its head, the most recent first, stopping at the first 
 accept. A human still approves and merges; the AI never does, and the awaiting-author and
 awaiting-review labels are left to the gate lane and `board sync`.
 
-**The dependency label.** `tauceti-roadmap roadmaps dependency-labels [--label NAME] [--yes]` (module
+**The dependency label.** `tauceti-roadmap roadmaps dependency-labels [--label NAME] [--approval-label NAME] [--yes]` (module
 `deplabels`; the label defaults to `[prreview] dependency_label`; a dry run without `--yes`) keeps the
 label on an open roadmap pull request exactly while it waits for another pull request, and takes it off
 merged pull requests. Nothing is recorded between runs: each run fetches the head of every open pull
@@ -1300,6 +1301,24 @@ manage the label. A run costs a fetch of the open heads (a fresh bare mirror on 
 140 MB) and a few dozen GraphQL queries, and takes about four minutes, so it suits a
 workflow of the content repository that runs on every merged pull request and hourly, with a token that
 may label its pull requests (TauCetiRoadmap's `dependency-labels.yml`).
+
+**The approval label.** The same run keeps a second label when it is given one (`--approval-label`, else
+`[prreview] approval_label`; neither: none): on an open roadmap pull request exactly while a human
+approval is all that stands between it and a merge. That is: it carries the acceptance label
+(`[prreview] label`), it waits for nothing by the reading above (and every answer that reading needs
+came), it is no draft, no approving review stands and no reviewer requests changes, it is not in the
+merge queue, and it does not conflict with its base branch. The first two are read from the run's own
+index and dependency records; the rest is read afresh for the pull requests those admit
+(`deplabels.merge_states`, one GraphQL query per 40). GitHub computes whether a pull request merges
+only when asked, so an `UNKNOWN` is read again, three readings in all, five seconds apart; one still
+unknown, or a pull request GitHub gave no answer for, keeps the label as it is (`#N: <label> left as it
+is (GitHub has not said whether it merges)`). The log reads `#N: <label> added (ai-found-no-errors,
+waits for nothing, and no approving review yet)` and `#N: <label> removed (it is approved)`, `(it waits
+for another pull request)`, `(it does not carry ai-found-no-errors)`, `(it is a draft)`, `(a reviewer
+requests changes)`, `(it is in the merge queue)`, `(it conflicts with its base branch)` or `(merged)`.
+The label follows the acceptance label and the dependency label with the delay of one run: a head
+accepted or approved between two runs is relabelled at the next. Create the label on the content
+repository beforehand to give it a colour and a description.
 
 The comment and the label are written with the operator's own token, which needs write access to
 the content repository (triage at least, for labels); a token without it reports `ai-found-no-errors not

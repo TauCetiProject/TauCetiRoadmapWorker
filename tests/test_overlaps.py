@@ -6,6 +6,7 @@ cases that must not count as a removal (a head that fell behind main) or must (a
 import re
 import subprocess
 from types import SimpleNamespace
+from urllib.parse import unquote
 
 import pytest
 
@@ -54,16 +55,34 @@ def commit(repo, files, message):
 class ContentGH:
     """The content repository as `refresh` and `deplabels` read it: the open pull requests' listing (with
     labels), each pull request's state and description (`states`: number -> {state, body}, or "issue"),
-    the merged pull requests a label search finds, and every write. A number in `blip` gets a 502."""
+    the merged pull requests a label search finds (a list for every label, or label -> list), and every
+    write. A number in `blip` gets a 502. `merge`: number -> what GitHub says of its merge state now (a
+    node's fields, or a list of them for successive readings, the last one repeated); the rest are open,
+    unreviewed, mergeable pull requests outside the queue. `merge_blip`: numbers whose merge state gets a
+    502; `merge_asked`: the numbers of each such query."""
 
     def __init__(self, listed, states=None, merged_labelled=()):
         self.listed, self.states, self.merged_labelled = listed, dict(states or {}), list(merged_labelled)
         self.blip, self.writes, self.dry_run = set(), [], False
+        self.merge, self.merge_blip, self.merge_asked = {}, set(), []
 
     def graphql(self, query, **variables):
         if "pullRequests(states: OPEN" in query:
             return {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": self.listed}}}
         numbers = [int(n) for n in re.findall(r"p(\d+): issueOrPullRequest", query)]
+        if "mergeable" in query:
+            self.merge_asked.append(numbers)
+            if set(numbers) & self.merge_blip:
+                raise GHError("graphql: HTTP 502")
+            nodes = {}
+            for n in numbers:
+                got = self.merge.get(n, {})
+                if isinstance(got, list):
+                    got = got.pop(0) if len(got) > 1 else got[0]
+                nodes[f"p{n}"] = {"__typename": "PullRequest", "state": "OPEN", "isDraft": False,
+                                  "reviewDecision": "REVIEW_REQUIRED", "mergeable": "MERGEABLE",
+                                  "isInMergeQueue": False, **got}
+            return {"repository": nodes}
         if set(numbers) & self.blip:
             raise GHError("graphql: HTTP 502")
         nodes = {}
@@ -93,7 +112,10 @@ class ContentGH:
             return ([{"filename": a, "status": "added"} for a in got.get("added", [])]
                     + [{"filename": r, "status": "removed"} for r in got.get("removed", [])])
         if path.startswith("search/issues"):
-            return {"items": [{"number": n} for n in self.merged_labelled]}
+            found = self.merged_labelled
+            if isinstance(found, dict):
+                found = found.get(re.search(r"label:([\w-]+)", unquote(path)).group(1), [])
+            return {"items": [{"number": n} for n in found]}
         raise GHError(f"GET {path}: HTTP 404: Not Found")
 
     def write(self, method, path, payload=None):
@@ -441,6 +463,7 @@ def test_the_dependency_record_of_a_head(tmp_path, monkeypatch):
 
 
 DEPS = "awaiting-dependencies"
+READY = "awaiting-human-approval"
 
 
 def upward(number, on, supplier, prs):
@@ -505,9 +528,80 @@ def test_the_command_needs_a_label(world, monkeypatch, capsys):
         cli.main(["--conf", conf, "roadmaps", "dependency-labels"])
     seen = {}
     monkeypatch.setattr(cli, "_bot_context", lambda args, cfg, dry: SimpleNamespace(dry=dry))
-    monkeypatch.setattr(deplabels, "run", lambda ctx, label: seen.update(label=label, dry=ctx.dry) or ["ok"])
+    monkeypatch.setattr(deplabels, "run", lambda ctx, label, approval: seen.update(label=label, approval=approval,
+                                                                                    dry=ctx.dry) or ["ok"])
     assert cli.main(["--conf", conf, "roadmaps", "dependency-labels", "--label", DEPS]) == 0
-    assert seen == {"label": DEPS, "dry": True} and capsys.readouterr().out == "ok\n"
+    assert seen == {"label": DEPS, "approval": "", "dry": True} and capsys.readouterr().out == "ok\n"
+    assert cli.main(["--conf", conf, "roadmaps", "dependency-labels", "--label", DEPS, "--approval-label", READY]) == 0
+    assert seen["approval"] == READY
+
+
+def named_writes(gh, label):
+    """The (method, number) writes of one label."""
+    return sorted((method, int(re.search(r"issues/(\d+)/", path).group(1))) for method, path, payload in gh.writes
+                  if payload.get("labels") == [label] or path.endswith(f"/labels/{label}"))
+
+
+def test_the_approval_label_is_on_what_only_a_human_approval_holds_back(tmp_path, monkeypatch):
+    def new(name):
+        return {f"TauCetiRoadmap/{name}/README.md": f"# Roadmap: {name}\n"}
+    names = "Ready Waits Unreviewed Draft Approved Conflict Unknown Slow Changes Kept Queued Unanswered"
+    numbers = dict(zip(names.split(), range(60, 72)))
+    n = SimpleNamespace(**{k.lower(): v for k, v in numbers.items()})
+    cfg, _index = build(tmp_path, monkeypatch, [MAIN], [(v, "amy", 0, new(k)) for k, v in numbers.items()],
+                        bodies={n.waits: "Depends on #44.", n.unanswered: "Depends on #45."})
+    accept, gh = cfg.prreview.label, build.gh
+    assert accept
+    for pr in gh.listed:
+        got = pr["number"]
+        pr["labels"]["nodes"] = ([] if got == n.unreviewed else [{"name": accept}]) + (
+            [] if got in (n.ready, n.unknown, n.slow) else [{"name": READY}])
+        pr["isDraft"] = got == n.draft
+        pr["reviewDecision"] = "APPROVED" if got == n.approved else "REVIEW_REQUIRED"
+    gh.states.update({44: {"state": "open"}})
+    gh.blip = {45}                                    # what #71 waits for is not answered
+    gh.merge = {n.conflict: {"mergeable": "CONFLICTING"}, n.unknown: {"mergeable": "UNKNOWN"},
+                n.slow: [{"mergeable": "UNKNOWN"}, {"mergeable": "MERGEABLE"}],
+                n.changes: {"reviewDecision": "CHANGES_REQUESTED"}, n.queued: {"isInMergeQueue": True}}
+    gh.merged_labelled = {READY: [12]}
+    monkeypatch.setattr(deplabels, "PAUSE", 0)
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS, READY)
+    assert named_writes(gh, READY) == [("DELETE", 12), ("DELETE", n.waits), ("DELETE", n.unreviewed),
+                                       ("DELETE", n.draft), ("DELETE", n.approved), ("DELETE", n.conflict),
+                                       ("DELETE", n.changes), ("DELETE", n.queued), ("POST", n.ready),
+                                       ("POST", n.slow)]
+    assert named_writes(gh, DEPS) == [("POST", n.waits)]
+    for number, why in ((n.waits, "it waits for another pull request"), (n.unreviewed, f"it does not carry {accept}"),
+                        (n.draft, "it is a draft"), (n.approved, "it is approved"),
+                        (n.conflict, "it conflicts with its base branch"), (n.changes, "a reviewer requests changes"),
+                        (n.queued, "it is in the merge queue"), (12, "merged")):
+        assert f"#{number}: {READY} removed ({why})" in out
+    assert f"#{n.ready}: {READY} added ({accept}, waits for nothing, and no approving review yet)" in out
+    assert f"#{n.unknown}: {READY} left as it is (GitHub has not said whether it merges)" in out
+    assert f"#{n.unanswered}: {READY} left as it is (what it waits for was not read)" in out
+    assert not [line for line in out if line.startswith(f"#{n.kept}: {READY}")]
+    # Only what the index and the dependency records admit is asked about, and only an UNKNOWN again.
+    asked = sorted([n.ready, n.conflict, n.unknown, n.slow, n.changes, n.kept, n.queued])
+    assert gh.merge_asked == [asked, [n.unknown, n.slow], [n.unknown]]
+
+
+def test_an_unanswered_merge_state_keeps_the_approval_label_and_no_label_means_none(tmp_path, monkeypatch):
+    def new(name):
+        return {f"TauCetiRoadmap/{name}/README.md": f"# Roadmap: {name}\n"}
+    cfg, _index = build(tmp_path, monkeypatch, [MAIN], [(80, "amy", 0, new("A")), (81, "bea", 0, new("B"))])
+    accept, gh = cfg.prreview.label, build.gh
+    gh.listed[0]["labels"]["nodes"] = [{"name": accept}, {"name": READY}]
+    gh.listed[1]["labels"]["nodes"] = [{"name": READY}]
+    gh.merge_blip = {80}
+    monkeypatch.setattr(deplabels, "PAUSE", 0)
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS, READY)
+    assert named_writes(gh, READY) == [("DELETE", 81)]
+    assert f"#80: {READY} left as it is (its state was not read)" in out
+    # Without an approval label the run reads no merge state and writes no such label.
+    gh.writes.clear()
+    gh.merge_asked.clear()
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
+    assert not gh.writes and not gh.merge_asked and not [line for line in out if READY in line]
 
 
 def block(*items):

@@ -36,12 +36,22 @@ The label is added while a pull request waits for something and removed once it 
 pull request whose description, or the state of a pull request its description names, GitHub did not
 give keeps its label as it is; only GitHub's `HTTP 404` says that a number is no pull request. A merged
 pull request that still carries the label loses it.
+
+The approval label (`--approval-label`, else `[prreview] approval_label`; none when both are empty) is
+kept by the same run, on an open roadmap pull request exactly while a human approval is all that stands
+between it and a merge: it carries the acceptance label (`[prreview] label`: the AI review accepted its
+current head), it waits for nothing (as above, and every answer came), it is no draft, no approving
+review stands, no reviewer requests changes, it is not in the merge queue, and it does not conflict
+with its base branch (`merge_states`, read afresh for the pull requests the rest admits). A pull
+request GitHub gave no answer for, or whose mergeability it had not computed after `TRIES` readings,
+keeps the label as it is. Merged pull requests lose it.
 """
 
 from __future__ import annotations
 
 import re
 import subprocess
+import time
 from urllib.parse import quote
 
 from . import openroadmaps, overlaps
@@ -54,6 +64,10 @@ BODY = "p%d: issueOrPullRequest(number: %d) { __typename ... on PullRequest { st
 FILES = ("p%d: issueOrPullRequest(number: %d) { __typename ... on PullRequest { state "
          "files(first: 100) { totalCount nodes { path changeType } } } }")
 STATES = {"OPEN": "open", "MERGED": "merged", "CLOSED": "closed"}
+MERGE = ("p%d: issueOrPullRequest(number: %d) { __typename ... on PullRequest { state isDraft reviewDecision "
+         "mergeable isInMergeQueue } }")
+TRIES = 3                      # readings of a mergeability GitHub has not computed yet (it computes on request)
+PAUSE = 5.0                    # seconds between them
 
 
 def rest_state(gh, repo: str, number: int, files: bool = False) -> dict | None:
@@ -103,6 +117,57 @@ def pull_states(gh, repo: str, numbers, *, files: bool = False, batch: int = BAT
             else:
                 out[n] = {"state": STATES.get(node.get("state") or "", "closed"), "body": node.get("body") or ""}
     return out
+
+
+def merge_states(gh, repo: str, numbers, *, batch: int = BATCH) -> dict[int, dict | None]:
+    """number -> the node GitHub gives now for a pull request (`state`, `isDraft`, `reviewDecision`,
+    `mergeable`, `isInMergeQueue`), None when it gave none. A `mergeable` of UNKNOWN means GitHub has not
+    computed it; asking makes it compute, so those are read again, up to `TRIES` readings in all,
+    `PAUSE` seconds apart."""
+    owner, name = repo.split("/", 1)
+    out: dict[int, dict | None] = {int(n): None for n in numbers}
+    wanted = sorted(out)
+    for attempt in range(max(TRIES, 1)):
+        if not wanted:
+            break
+        if attempt:
+            time.sleep(PAUSE)
+        for i in range(0, len(wanted), batch):
+            chunk = wanted[i:i + batch]
+            try:
+                nodes = (gh.graphql(QUERY % " ".join(MERGE % (n, n) for n in chunk), owner=owner, name=name)
+                         or {}).get("repository") or {}
+            except GHError:
+                continue
+            for n in chunk:
+                node = nodes.get(f"p{n}")
+                if node and node.get("__typename") == "PullRequest":
+                    out[n] = node
+        wanted = [n for n in wanted if out[n] is None or out[n].get("mergeable") == "UNKNOWN"]
+    return out
+
+
+def only_approval(node: dict | None) -> tuple[bool | None, str]:
+    """Whether a human approval is all an accepted pull request that waits for nothing still needs, from
+    its `merge_states` node, and why not: (True, ""), (False, the reason), or (None, the reason) when
+    GitHub did not say."""
+    if node is None:
+        return None, "its state was not read"
+    if node.get("state") != "OPEN":
+        return False, "it is no longer open"
+    if node.get("isDraft"):
+        return False, "it is a draft"
+    if node.get("reviewDecision") == "APPROVED":
+        return False, "it is approved"
+    if node.get("reviewDecision") == "CHANGES_REQUESTED":
+        return False, "a reviewer requests changes"
+    if node.get("isInMergeQueue"):
+        return False, "it is in the merge queue"
+    if node.get("mergeable") == "CONFLICTING":
+        return False, "it conflicts with its base branch"
+    if node.get("mergeable") != "MERGEABLE":
+        return None, "GitHub has not said whether it merges"
+    return True, ""
 
 
 def _tree(state, ref: str, paths) -> list[str]:
@@ -250,10 +315,11 @@ def merged_with(gh, repo: str, label: str) -> list[int] | None:
     return sorted(int(i["number"]) for i in found.get("items") or [])
 
 
-def run(ctx, label: str) -> list[str]:
+def run(ctx, label: str, approval: str = "") -> list[str]:
     """Bring `label` in line with what every open roadmap pull request waits for now (module docstring),
-    and take it off merged pull requests. The log: one line per label written or left alone for want of
-    an answer."""
+    and take it off merged pull requests; with `approval`, keep that label on the accepted pull requests
+    a human approval alone would let merge. The log: one line per label written or left alone for want
+    of an answer."""
     cfg = ctx.cfg
     repo, state = cfg.repositories.content, cfg.state_dir()
     index = openroadmaps.refresh(ctx.gh, cfg, force=True, any_file=True)
@@ -267,7 +333,7 @@ def run(ctx, label: str) -> list[str]:
     states = pull_states(ctx.gh, repo, named, files=True)
     out = []
 
-    def write(method: str, number: int, why: str) -> None:
+    def write(method: str, number: int, why: str, label: str = label) -> None:
         path = f"repos/{repo}/issues/{number}/labels"
         try:
             if method == "POST":
@@ -279,9 +345,11 @@ def run(ctx, label: str) -> list[str]:
             out.append(f"#{number}: {label} not {'added' if method == 'POST' else 'removed'} "
                        f"({str(exc).splitlines()[0][:160]})")
 
+    free: dict[int, bool | None] = {}          # waits for nothing: True, False, or None when not all was read
     for p in sorted(prs, key=lambda x: x["pr"]):
         number, labelled = p["pr"], label in p.get("labels", [])
         record = records.get(number)
+        free[number] = None
         if record is None:
             if labelled:
                 out.append(f"#{number}: {label} left as it is (its description was not read)")
@@ -297,6 +365,7 @@ def run(ctx, label: str) -> list[str]:
             elif not ok:
                 waits.add(f"#{n} (declared{'' if n in open_prs else ', closed without merging'})")
         waits = sorted(waits)
+        free[number] = False if waits else True if known else None
         for s, got in sorted(record.get("upward", {}).items()):
             out.append(f"#{number}: UPWARD, not waited for: {', '.join(sorted(got['on']))} (on main) -> {s} "
                        f"({', '.join(f'#{n}' for n in sorted(got['prs'])) or 'in no open pull request'}); "
@@ -312,4 +381,44 @@ def run(ctx, label: str) -> list[str]:
         out.append(f"merged pull requests carrying {label}: not searched (GitHub did not answer)")
     for number in merged or []:
         write("DELETE", number, "merged")
+    if approval:
+        _approval(ctx, prs, free, approval, write, out)
     return out
+
+
+def _approval(ctx, prs: list[dict], free: dict[int, bool | None], approval: str, write, out: list[str]) -> None:
+    """Keep `approval` (module docstring) on the open pull requests of `prs`, given which of them wait
+    for nothing (`free`), and take it off merged ones."""
+    repo, accept = ctx.cfg.repositories.content, ctx.cfg.prreview.label
+    verdicts: dict[int, tuple[bool | None, str]] = {}
+    ask = []
+    for p in prs:
+        number = p["pr"]
+        if accept not in p.get("labels", []):
+            verdicts[number] = (False, f"it does not carry {accept}")
+        elif free.get(number) is False:
+            verdicts[number] = (False, "it waits for another pull request")
+        elif free.get(number) is None:
+            verdicts[number] = (None, "what it waits for was not read")
+        elif p.get("draft"):
+            verdicts[number] = (False, "it is a draft")
+        elif p.get("approved"):
+            verdicts[number] = (False, "it is approved")
+        else:
+            ask.append(number)
+    for number, node in merge_states(ctx.gh, repo, ask).items():
+        verdicts[number] = only_approval(node)
+    for p in sorted(prs, key=lambda x: x["pr"]):
+        number, labelled = p["pr"], approval in p.get("labels", [])
+        ready, why = verdicts[number]
+        if ready and not labelled:
+            write("POST", number, f"{accept}, waits for nothing, and no approving review yet", approval)
+        elif ready is False and labelled:
+            write("DELETE", number, why, approval)
+        elif ready is None and (labelled or number in ask):
+            out.append(f"#{number}: {approval} left as it is ({why})")
+    merged = merged_with(ctx.gh, repo, approval)
+    if merged is None:
+        out.append(f"merged pull requests carrying {approval}: not searched (GitHub did not answer)")
+    for number in merged or []:
+        write("DELETE", number, "merged", approval)
