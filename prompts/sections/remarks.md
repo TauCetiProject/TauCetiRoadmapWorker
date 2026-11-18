@@ -9,16 +9,20 @@ write within the hour. It has three kinds of remark, numbered apart so that no t
   a source that does not prove what is claimed, copied passages, a cyclic or upward dependency, a
   build failure, `sorry` in the body of a definition, a `set_option`, a `Suggested.lean` statement
   that does not say what the README says, private material (machine paths) in the files, a file
-  that does not belong in the folder, a change outside the folder. P1: false, vacuous or unowned.
-  P2: an overclaim or a missing hypothesis. There is no P3 finding: a point that does not meet this
-  bar is one of the next two kinds, or it is dropped. **Findings alone decide the verdict**: any
-  finding means changes are needed; none means the work is accepted.
+  that does not belong in the folder, a change outside the folder. So is any sentence that asserts
+  false mathematics, wherever it stands (a Check, an example, a proof sketch, a remark, a line of
+  commentary): an accepted text says nothing untrue, beside its results as well as in them. P1:
+  false, vacuous or unowned. P2: an overclaim, a missing hypothesis, or a false sentence outside
+  the stated results. There is no P3 finding: a point that does not meet this bar is one of the
+  next two kinds, or it is dropped. **Findings alone decide the verdict**: any finding means
+  changes are needed; none means the work is accepted.
 - **Small corrections** (`C01`, `C02`, …): true, verified and minor. A slip that misleads a reader
-  without touching any stated result: an example labelled with the wrong object, a sentence of
-  commentary that is false as written, a term attributed to a source that does not use it, a
-  pointer to a file or section that is not there, a statement that holds by unfolding the
-  definitions and so asks an implementer for nothing, a title or description that no longer
-  describes the change. One or two short paragraphs each. They do not block.
+  without touching any stated result and without asserting false mathematics: an example labelled
+  with the wrong object, a sentence of commentary that is out of date (it describes an earlier
+  state of the text) or unclear about what it refers to, a term attributed to a source that does
+  not use it, a pointer to a file or section that is not there, a statement that holds by
+  unfolding the definitions and so asks an implementer for nothing, a title or description that
+  no longer describes the change. One or two short paragraphs each. They do not block.
 - **Format notes** (`N01`, `N02`, …): form only. Section order and README shape, TeX or LaTeX syntax,
   pull-request numbers or process words in the text, heading and label style, bullets against
   prose, a library name without its namespace, import style and line limits of `Suggested.lean`, a
@@ -56,7 +60,8 @@ two small corrections and one format note, none blocking").
    false. Where it is a matter of taste, offer ("would", with options); do not prescribe.
 6. **Fewer, weightier remarks.** A review is not better for being longer. Before you finish, reread
    each finding and ask whether a stated result would be wrong, unsupported or unusable without the
-   change; if not, it is not a finding. If a remark would not make a careful human referee stop, it
+   change, or whether the text asserts something mathematically false; if neither, it is not a
+   finding. If a remark would not make a careful human referee stop, it
    is one line under small corrections or format notes, or it is dropped.
 7. **No template enforcement and no quotas.** The README's shape, its headings, the order of its
    sections (scope and supplier contracts at the top or at the end), the title or layout of the Lean
