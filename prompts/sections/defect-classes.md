@@ -1,6 +1,8 @@
 ## Defect classes that reviewers keep finding
 
-Test every class on every target.
+Test every class on every target. A class says what to look for, not how much it weighs: whether a
+hit is a finding, a small correction or a format note is decided by what it does to the mathematics
+(the section on writing remarks).
 
 1. **Missing finiteness, flatness or smoothness hypotheses**: a finite set of places, a Noetherian
    base, proper and flat rather than merely proper, the whole group scheme smooth rather than its
@@ -49,6 +51,6 @@ Test every class on every target.
     literature's and Mathlib's name for the object, or define the new one.
 16. **Padding in Suggested.lean**: declarations that restate definitions, follow in one tactic from
     the library, mirror Checks or compute small values (and boundary-case theorems, "controls",
-    examples per definition): a P3 finding whose repair is deleting them (the README keeps the
+    examples per definition): a small correction whose repair is deleting them (the README keeps the
     statement as a target or Check), never proving them in place. And the converse: a headline
     theorem that is statable at the pins but absent (P2).

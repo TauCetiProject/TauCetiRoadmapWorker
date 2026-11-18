@@ -51,6 +51,11 @@ Nothing else: no other folder, no tooling, no merge-order file, no pull-request 
 
 ## Method
 
+The reviews may also list small corrections (C01, …: true and minor) and format notes (N01, …: form
+only). Apply the small corrections, and the format notes where they make the text clearer, unless
+one is wrong; they need a section of the report only when you dispute one. Every finding (R01, F01,
+…) needs its section.
+
 For each finding:
 
 1. **Verify it** against the cited sources (legal sources only, as below), the roadmap's own

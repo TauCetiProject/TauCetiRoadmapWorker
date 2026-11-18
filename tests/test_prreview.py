@@ -224,7 +224,10 @@ def test_a_roadmap_folder_carrying_sources_notes_or_scratch_fails_the_gate(tmp_p
         "TauCetiRoadmap/Toy/notes/: not a roadmap file", "TauCetiRoadmap/Toy/references/: not a roadmap file"]
     assert "sources are the README's references" in gates.GATE_RULES["stray-files"]
     report = lane_prreview.gate_document(result, H1)
-    assert "## stray-files (4)" in report and "Rule: a roadmap folder holds only README.md" in report
+    # The reviewer reads what the check protects, in words, and whether it is about substance or form;
+    # never the check's label, which a review must not cite.
+    assert "## A roadmap folder holds only README.md" in report and "About substance. 4 hits:" in report
+    assert "stray-files" not in report and "A false positive is dropped" in report
     # A project may allow more files by name.
     allowed = gates.GateOptions(roadmap_files=["README.md", "Suggested.lean", "metadata.toml", "PROGRESS.md"])
     assert gates.run_gate(root, "Toy", allowed).counts["stray-files"] == 3
@@ -1828,7 +1831,13 @@ def test_an_acceptance_is_one_comment_with_the_approve_line_and_the_label(review
     [comment] = gh.comments
     lines = comment["body"].split("\n")
     assert lines[0] == f"\U0001f916 AI review (codex, gpt-x) of {H1}" and lines[2] == "Verdict: APPROVE"
-    assert f"Reviewed head: {H1}" in lines[:6] and "the targeted build succeeded" in comment["body"]
+    assert f"Reviewed head: {H1}" in lines[:6] and "the build succeeded with `sorry` as the only warning" in comment["body"]
+    # The posted layout: a summary at the top, the details folded, the evidence left in the report.
+    body = comment["body"]
+    assert any(x.startswith("**Summary.** Accepted: this roadmap folder is ready for a human's final approval")
+               for x in lines[:12])
+    assert body.index("<details><summary>What was checked</summary>") < body.index("<!-- tauceti-roadmap-prreview")
+    assert "## Verified sound" not in body and "| Statement |" not in body
     assert prreviews.prreview_marker(comment["body"]) == {"job": job.id, "head": H1, "verdict": "accepted",
                                                           "agent": "codex", "model": "gpt-x", "worker": "alice-1",
                                                           "mode": "full"}
@@ -1879,8 +1888,10 @@ def test_a_lost_comment_answer_is_found_and_not_posted_twice(review_env):
 @pytest.mark.parametrize("status,report,gate_ok,problem", [
     ("accepted", "no table", True, "adversarial table"),
     ("accepted", "blocking", True, "an acceptance lists no finding"),
-    ("accepted", "", False, "an acceptance needs the worker's gate to pass at this head"),
     ("needs_changes", "no findings", True, "a verdict that asks for changes writes each finding"),
+    ("needs_changes", "minor", True, "a finding is P1 or P2; write each point below that bar as a small correction"),
+    ("needs_changes", "rule id", True, "names the label of an automatic check ('`prnum`')"),
+    ("accepted", "private", True, "names a file or folder of the worker, or a local path ('gate.md')"),
     ("accepted", "wrong head line", True, "report: first line must be '# Review of Foo (pull request #905 at 1111111)'"),
 ])
 def test_the_checks_refuse_what_the_board_would_not_take(review_env, monkeypatch, status, report, gate_ok, problem):
@@ -1890,10 +1901,34 @@ def test_the_checks_refuse_what_the_board_would_not_take(review_env, monkeypatch
     lane, ws = finished_ws(review_env, ctx, job, status, gate_ok)
     text = ws.report.read_text()
     text = {"no table": text.replace(ADVERSARIAL, ""), "blocking": text.replace("## Verified sound", FINDING + "## Verified sound"),
-            "no findings": text.replace(FINDING, ""), "wrong head line": text.replace("# Review of Foo", "# Review of Bar")
+            "no findings": text.replace(FINDING, ""), "wrong head line": text.replace("# Review of Foo", "# Review of Bar"),
+            "minor": text.replace("## R01 (P1)", "## R01 (P3)"),
+            "rule id": text.replace("Witness: p = 2.", "The `prnum` check flagged it."),
+            "private": text.replace("## Verified sound", "## C01 — Example 2 names the wrong group\n\nSee gate.md.\n\n"
+                                    "## Verified sound"),
             }.get(report, text)
     ws.report.write_text(text)
     assert any(problem in p for p in lane.check(job, ctx, ws)), lane.check(job, ctx, ws)
+
+
+def test_an_acceptance_with_a_failing_check_set_aside_and_with_small_corrections_is_taken(review_env, monkeypatch):
+    """No forced relay: a failed automatic check is evidence the reviewer may set aside, and small corrections
+    and format notes never stop an acceptance."""
+    monkeypatch.setattr(lane_prreview.gitops, "git", lambda cwd, *args, **kw: H1 + "\n" if args[0] == "rev-parse" else "")
+    ctx = lane_ctx(review_env, gh=LabelGH())
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    lane, ws = finished_ws(review_env, ctx, job, "accepted", gate_ok=False)
+    ws.report.write_text(ws.report.read_text().replace("## Verified sound", (
+        "## C01 — Example 2 is labelled with the wrong group\n\nIt is the dihedral group of order 8.\n\n"
+        "## N01 — A link points at a pull request\n\nName the roadmap instead.\n\n## Verified sound")).replace(
+        "## Not verifiable\n\n- none\n", "## Not verifiable\n\n- none\n\nAutomatic checks set aside as false "
+        "positives: the merge-order check counts a consumer named in the scope as a supplier.\n"))
+    assert [p for p in lane.check(job, ctx, ws) if "provenance" not in p and "Overlap" not in p] == []
+    body = lane.comment_body(job, ctx, ws)
+    assert "## Small corrections (non-blocking)\n\n1. **C01** Example 2 is labelled with the wrong group" in body
+    assert "## Format notes (non-blocking)\n\n1. **N01** A link points at a pull request" in body
+    assert body.index("Automatic checks set aside as false positives") > body.index("<details>")
+    assert prreviews.findings_with_bodies(body) == []           # nothing a tool counts as a finding
 
 
 def test_a_verdict_must_name_the_pull_request_and_head_of_its_job():
@@ -2079,8 +2114,10 @@ def test_a_pass_before_the_final_review_says_so_and_leaves_the_label_alone(revie
     job = new_job("PRREVIEW-CompactGroups~1", inputs={**NESTED, "pre": True})
     lane, ws = finished_ws(review_env, ctx, job, "accepted")
     body = lane.comment_body(job, ctx, ws)
-    assert (f"Reviewed head: {H1}\n\nThis is a pass before the final review. It does not decide `ai-approved`: "
-            "the final review, on another model, follows it.") in body
+    # (under the header lines the tools read, before the summary)
+    assert (f"Reviewed head: {H1}\n\nRoadmap folder: `TauCetiRoadmap/RepresentationTheory/CompactGroups/`\n\n"
+            "This is a pass before the final review. It does not decide `ai-approved`: "
+            "the final review, on another model, follows it.\n\n**Summary.**") in body
     assert lane.update_label(job, ctx, 905, H1, "accepted") == (
         "a pass before the final review: ai-approved is decided by that review") and gh.labels == []
     # A pass that asks for changes takes a label off like any review, and its P3-only repair settles nothing.
@@ -2344,7 +2381,7 @@ def test_the_mode_follows_the_threshold_and_the_brief_renders_it(dry_ctx, tmp_pa
     if mode == "incremental":
         assert "**An incremental re-review.**" in text and "**A full review.**" not in text
         assert f"read `{first[:7]}`; since then the folder changed by 20 lines (at most `[prreview] small_change_lines` = 20)" in text
-        assert f'"incremental re-review of 20 changed lines\n   since {first[:7]}"' in text and "## Previous findings" in text
+        assert f'"incremental re-review of 20 changed lines since {first[:7]}"' in text and "## Previous findings" in text
     else:
         assert "**An incremental re-review.**" not in text
         assert ("**A full review.** This re-review of a repaired head is not incremental: the folder changed by 20 lines "
@@ -3375,7 +3412,8 @@ def test_only_a_review_asking_changes_of_a_pool_author_by_a_pool_operator_repair
     ctx.cfg.roadmap.pool = change.get("pool", ["alice", "carol"])
     ctx.cfg.prreview.repair_pool = change.get("repair_pool", True)
     ws = SimpleNamespace(extra={"owner": "carol", "pr_branch": "roadmap/foo",
-                                "head_repo": change.get("head_repo", "TauCetiProject/TauCetiRoadmap")})
+                                "head_repo": change.get("head_repo", "TauCetiProject/TauCetiRoadmap")},
+                         report=tmp_path / "no-report.md")
     job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
     assert lane_for(job).repairs(job, ctx, ws, change.get("status", "needs_changes")) is repairs
     assert config.Config().prreview.repair_pool is True
@@ -3595,16 +3633,18 @@ def test_a_p3_only_repair_of_one_folder_leaves_the_other_folders_settled():
     assert gh.writes == [] and created(fake) == [("PRREVIEW-Foo~2", "Foo")]
 
 
+CORRECTION = "## C01 — a locator names no page\n\nThe locator of 1.1 gives no page (line 9). Give it.\n\n"
+# A P3 finding, as the reviews before 2026-11-18 wrote them: still read wherever a report of then is read.
 MINOR = "## R01 (P3) — a locator names no page\n\nLocation: README line 9.\n\n"
 
 
-def reviewed_with(lane, job, ctx, head, findings, blocking):
-    """The review as its agent left it, asking for changes, with the findings given."""
+def reviewed_with(lane, job, ctx, head, remarks, blocking, status="needs_changes"):
+    """The review as its agent left it, with the findings and small corrections given."""
     ws = lane.prepare(job, ctx)
-    ws.report.write_text(REPORT.format(h7=head[:7], v="needs_changes", findings=findings))
+    ws.report.write_text(REPORT.format(h7=head[:7], v=status, findings=remarks))
     lane.verdict_file(job, ctx, ws).write_text(json.dumps({"review": {
-        "status": "needs_changes", "reviewer": f"independent-review-{job.id}", "head": head, "pr": 905, "folder": "Foo",
-        "date": "2026-10-28", "findings": findings.count("## R"), "blocking": blocking, "notes": "x",
+        "status": status, "reviewer": f"independent-review-{job.id}", "head": head, "pr": 905, "folder": "Foo",
+        "date": "2026-10-28", "findings": remarks.count("## R"), "blocking": blocking, "notes": "x",
         "carried": {"from": head, "head": head, "lines": 0}, "deferred": [{"id": "D09", "title": "the agent's own"}]}}))
     lane.scrub_outputs(job, ctx, ws)              # as the run does before it validates
     assert lane.validate(job, ctx, ws) == []
@@ -3619,43 +3659,56 @@ def submitted_verdict(lane, job, ctx, ws):
 
 
 @needs_git
-def test_the_lane_records_that_a_p3_only_review_ended_with_its_repair(hub, monkeypatch, tmp_path):  # noqa: F811
+def test_an_acceptance_applies_its_small_corrections_in_one_small_commit_and_the_acceptance_carries(
+        hub, monkeypatch, tmp_path):  # noqa: F811
+    """(2026-11-18) A review of a pool author's head that accepts with small corrections applies them in one
+    small commit; its verdict records the commit (`carried`, with `corrections`), and the intake reads the
+    folder as settled at the head the corrections left, as for the P3-only repairs before it. Format notes
+    alone push nothing."""
     rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
-    repair_agent(monkeypatch, [])
+    briefs = []
+    repair_agent(monkeypatch, briefs, report="## H01 (AI review PRREVIEW-Foo~2) — applied\nThe page is given.\n")
     ctx = pool_ctx(rh)
     ctx.cfg.prreview.carry_minor = True
     lane = lane_for(job)
-    ws = reviewed_with(lane, job, ctx, head, MINOR, 0)
+    ws = reviewed_with(lane, job, ctx, head, CORRECTION, 0, status="accepted")
     result = lane.deliver(job, ctx, ws)
     new = rh.head(905)
     assert result.status == "submitted" and new != head, result.detail
-    assert f"P3 only: no further review of {new[:7]} for this folder" in result.detail
+    assert f"small corrections applied: no further review of {new[:7]} for this folder" in result.detail
+    assert "This review accepts the head." in briefs[0][1] and "Apply its small corrections" in briefs[0][1]
     review = submitted_verdict(lane, job, ctx, ws)
     lines = review["carried"]["lines"]
-    assert review["carried"] == {"from": head, "head": new, "findings": 1, "lines": lines, "folders": ["Foo"]}
-    assert 0 < lines <= 150 and "deferred" not in review          # what the agent wrote under those keys is gone
+    assert review["status"] == "accepted" and review["carried"] == {
+        "from": head, "head": new, "findings": 1, "lines": lines, "folders": ["Foo"], "corrections": True}
     reply = rh.comments[905][-1]["body"]
-    assert (f"Every finding of this review is P3 and the repair changes {lines} line{'' if lines == 1 else 's'} of "
-            "the folder, so no further review of this folder is filed for this head.") in reply
-    # The intake reads that record as the lane wrote it.
+    assert ("This review accepted the head; its small corrections are applied here and the repair changes "
+            f"{lines} line{'' if lines == 1 else 's'} of the folder") in reply
+    # The intake reads the record, and settles the folder at the new head.
     assert intake.carried_record(review, 150) == review["carried"]
+    assert intake.carried_record({**review, "carried": {**review["carried"], "corrections": False}}, 150) is None
 
 
 @needs_git
-@pytest.mark.parametrize("findings,blocking,on", [(FINDING, 1, True), (MINOR + FINDING.replace("R01", "R02"), 1, True),
-                                                  (MINOR, 0, False)])
-def test_a_review_with_a_p1_or_p2_finding_or_the_setting_off_is_followed_by_a_review(
-        hub, monkeypatch, tmp_path, findings, blocking, on):  # noqa: F811
+@pytest.mark.parametrize("remarks,blocking,status,on", [
+    (FINDING, 1, "needs_changes", True), (CORRECTION + FINDING, 1, "needs_changes", True),
+    (CORRECTION, 0, "accepted", False), ("## N01 — a link names a pull request\n\nName the roadmap.\n\n", 0,
+                                         "accepted", True)])
+def test_findings_or_the_setting_off_or_format_notes_alone_carry_nothing(
+        hub, monkeypatch, tmp_path, remarks, blocking, status, on):  # noqa: F811
     rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
     repair_agent(monkeypatch, [])
     ctx = pool_ctx(rh)
     ctx.cfg.prreview.carry_minor = on
     lane = lane_for(job)
-    ws = reviewed_with(lane, job, ctx, head, findings, blocking)
+    ws = reviewed_with(lane, job, ctx, head, remarks, blocking, status=status)
     result = lane.deliver(job, ctx, ws)
-    assert result.status == "submitted" and "repaired at" in result.detail and "P3 only" not in result.detail
+    assert result.status == "submitted" and "small corrections applied" not in result.detail
     assert "carried" not in submitted_verdict(lane, job, ctx, ws)
-    assert "Every finding of this review is P3" not in rh.comments[905][-1]["body"]
+    if status == "needs_changes":
+        assert "repaired at" in result.detail
+    else:                                   # nothing pushed: an acceptance without corrections to apply
+        assert rh.head(905) == head and "repaired at" not in result.detail and "labelled ai-approved" in result.detail
 
 
 OUTSIDE_LINE = ("## H01 (AI review PRREVIEW-Foo~2) — outside this folder: the Bar roadmap's README\n"

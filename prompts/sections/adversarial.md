@@ -48,7 +48,7 @@ For EVERY theorem, identity, definition and convention:
    hypothesis that contains the conclusion is a defect, and so is a headline whose statement
    mentions none of the objects the roadmap defines.
 7. **Unused hypotheses.** A hypothesis that neither the statement's truth, the proof sketch nor any
-   consumer needs is a P3 note, not a finding, unless you show with an instance that the statement
+   consumer needs is a small correction, not a finding, unless you show with an instance that the statement
    holds without it. Do not search for a separating counterexample for every hypothesis.
 8. **Imported lemmas and proof routes.** Every input a proof route uses is a target here, a named
    supplier section, or a pinned declaration, and none of them is derived from the target itself; a

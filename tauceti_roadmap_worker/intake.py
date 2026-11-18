@@ -2215,10 +2215,14 @@ def folders_accepted(ctx, folders, jobs: list[Job], head: str,
 
 def carried_record(verdict: dict | None, small: int) -> dict | None:
     """The record a review's verdict carries when the review ended with its repair (`[prreview]
-    carry_minor`; the lane's `carry_record`), or None: the verdict asks for changes, names the head it
-    reviewed as the record's `from`, and the repair changed at most `small` lines of the folder."""
+    carry_minor`; the lane's `carry_record`), or None: the verdict asks for changes (every finding P3,
+    in the reviews before 2026-11-18), or accepts and applied its small corrections (`corrections`),
+    names the head it reviewed as the record's `from`, and the repair changed at most `small` lines of
+    the folder."""
     record = (verdict or {}).get("carried")
-    if not isinstance(record, dict) or (verdict or {}).get("status") != "needs_changes":
+    status = (verdict or {}).get("status")
+    if not isinstance(record, dict) or not (status == "needs_changes"
+                                            or status == "accepted" and record.get("corrections")):
         return None
     lines = record.get("lines")
     if not record.get("head") or not isinstance(record.get("head"), str) or record.get("from") != verdict.get("head"):
@@ -2246,9 +2250,11 @@ def settle_points(ctx, folders, jobs: list[Job], small: int,
         verdict = prreview_verdicts(ctx, job.name, [job], "", texts).get(job.id)
         if not verdict or verdict.get("head") != job.inputs.get("head"):
             continue
-        if verdict.get("status") == "accepted":
+        if verdict.get("status") == "accepted" and not (minor and carried_record(verdict, small)):
             at[folder] = str(verdict["head"])
         elif minor and (record := carried_record(verdict, small)):
+            # (P3-only findings repaired, or an acceptance whose small corrections were applied: the folder
+            # is settled at the head the repair left)
             at[folder] = record["head"]
             if record["head"] != record["from"]:
                 changed = record.get("folders")

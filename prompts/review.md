@@ -1,9 +1,10 @@
 # Independent review of a __SUBJECT__ — job __JOB__
 
 You review the __SUBJECT__ of the roadmap `__ROADMAP__` (round __ROUND__), written by another
-operator's agent. You did not write it, and you change none of its files: you report findings and
-a verdict, and a separate fix worker applies them. Be precise: every finding comes with a witness
-the fix worker can verify in minutes. A clean result is evidence too, so say what you checked.
+operator's agent. You did not write it, and you change none of its files: you write a referee's
+report (findings, small corrections, format notes) and a verdict, and a separate fix worker or the
+port applies them. Be precise: every remark comes with the evidence the fix worker can verify in
+minutes, and only findings block.
 
 ## Principles (binding)
 
@@ -77,12 +78,13 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
    restated.
    Then the overlap facts of `scratch/overlaps.md` (the rules are under "Overlap with open pull
    requests" below): an id this roadmap cites that an open pull request drops, with no citation of
-   the id as it is at its head, is P2 for a supplier citation and P3 otherwise; an id it cites that
-   only an open revision defines, when neither the description nor its merge-order paragraph names
-   that revision, is P3; an id this package drops that other roadmaps cite, with no old → new numbering,
-   is P3; a conflicting head of another open pull request changing this roadmap, with no stated order,
-   is P3; an object this roadmap and another roadmap, open or on main, both own, or hand to each other,
-   is P2. Name the other pull request and the cited file and line in the witness. A second copy of a
+   the id as it is at its head, is a finding (P2) for a supplier citation and a small correction
+   otherwise; an id it cites that only an open revision defines, when neither the description nor
+   its merge-order paragraph names that revision, is a small correction; an id this package drops
+   that other roadmaps cite, with no old → new numbering, is a small correction; a conflicting head
+   of another open pull request changing this roadmap, with no stated order, is a small correction;
+   an object this roadmap and another roadmap, open or on main, both own, or hand to each other, is
+   a finding (P2). Name the other pull request and the cited file and line in the witness. A second copy of a
    roadmap on main, once you have confirmed it, is P1 and is this round's only finding: give the ids
    main defines that this text lacks and, in a few lines, what this text has that main lacks and is
    worth carrying over; skip the remaining steps and ask for changes.
@@ -113,8 +115,9 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
    `exact` with one library lemma) on a copy of the file in your scratch directory, elaborated as
    above, or decide by reading the definition and the library at the pin when elaboration is not
    available. A declaration that closes that way, restates a definition, mirrors a README Check,
-   computes a small value or treats a boundary case is padding: report it as P3 with the repair
-   "delete it from `Suggested.lean`" (the README keeps the statement), never as "prove it in place".
+   computes a small value or treats a boundary case is padding: report it as a small correction with
+   the repair "delete it from `Suggested.lean`" (the README keeps the statement), never as "prove it
+   in place".
 8. **Copyright, licences and scope** (the section of that name below). The wording against the
    sources, the arrangement against the table of contents of the source cited most, and reuse: each
    is a finding as that section says. Close with the line `Source independence:` and the line
@@ -130,25 +133,28 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
       {"review": {"status": "accepted" | "needs_changes" | "rejected",
                   "reviewer": "independent-review-__JOB__", "date": "<YYYY-MM-DD>",
                   "findings": <number of findings>, "blocking": <number of P1 and P2 findings>,
+                  "corrections": <number of small corrections>, "format_notes": <number of format notes>,
                   "notes": "<what was checked, the sample verified, the elaboration outcome>",
                   "conditional_gaps": ["<slug>", ...]}}
 
-  For a package, `accepted` means no finding at all: a passing elaboration, the adversarial table
-  with its values, and nothing to repair, so that the pull request ported from it meets its own
-  review without a round. A repair you would write, whatever its priority, makes the verdict
-  `needs_changes` (a fix round applies it before the port); a remark that needs no change is not a
-  finding (record it under `## Verified sound`). For a design, `accepted` may carry non-blocking
-  notes (P3), which the package stage applies. `conditional_gaps` (optional, with `accepted` only)
-  lists the declared supplier gaps the acceptance is conditional on. `needs_changes` means at
-  least one finding (for a design: at least one P1 or P2). `rejected` is for a __SUBJECT__ that
+  `accepted` means no finding (P1 or P2): for a package, a passing elaboration and the adversarial
+  table with its values as well. Small corrections and format notes do not stop an acceptance: the
+  next stage (the package stage for a design, the port for a package) applies them. A finding makes
+  the verdict `needs_changes` (a fix round applies it). `conditional_gaps` (optional, with
+  `accepted` only) lists the declared supplier gaps the acceptance is conditional on.
+  `needs_changes` means at least one finding. `rejected` is for a __SUBJECT__ that
   cannot be repaired by fixes (it re-plans an existing roadmap, or its scope is wrong): a human decides.
 - `__REPORT__`: first line `# Review of __ROADMAP__ (__SUBJECT__, round __ROUND__)`, then
-  `**Verdict:** <accepted | needs changes | rejected>`, then findings numbered R01, R02, … as
-  `## R01 (P1) — <short title>` with: location (file and line, quoting at most 40 words), the claim,
-  the witness (a counterexample, a source line, a pinned declaration, a sibling file and line; at
-  most 40 words) and the exact repair, tested on the instance that refuted the original. Severity: P1 false, vacuous or unowned; P2 overclaim or missing hypothesis; P3
-  locator, Check, style or policy. Then `## Verified sound` (what you checked and found correct,
-  with counts) and `## Not verifiable` (each item and why). `accepted` is a claim backed by
+  `**Verdict:** <accepted | needs changes | rejected>`, then a `**Summary.**` of two to four plain
+  sentences (the verdict in words, the main findings, how many small corrections and format notes),
+  then the findings, `## R01 (P1) — <the claim, one sentence>`, each followed by a short paragraph or
+  two as the section on writing remarks below says (why it matters, how you know, the smallest
+  change, tested on the instance that refuted the original), then the small corrections
+  (`## C01 — <the claim>`) and the format notes (`## N01 — <the claim>`), then
+  `## Questions for the author` if you have any. Severity of a finding: P1 false, vacuous or
+  unowned; P2 overclaim or missing hypothesis; there is no P3 finding. Then `## Verified sound`
+  (what you checked and found correct, with counts) and `## Not verifiable` (each item and why, and
+  the line `Automatic checks set aside as false positives: …` if you set any aside). `accepted` is a claim backed by
   evidence: the adversarial table with the values you computed, the library declarations you
   opened (file and line at the pin) and the cross-roadmap citations you resolved. A section
   summarised as sound without them has not been reviewed: review it before you accept. `## Not
@@ -166,6 +172,8 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
   you found none. Never copy a passage: describe it.
   Then, last, `## For the human reviewers` (the section on copyright, licences and scope below):
   one bullet for each question a human decides, or `- none`.
+
+<!-- include: sections/remarks.md -->
 
 <!-- include: sections/review-lessons.md -->
 

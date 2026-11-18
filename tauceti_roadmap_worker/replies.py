@@ -457,11 +457,21 @@ def build_reply(head7: str, report: str, validation: str, intro: str = "reply to
 
 
 def validation_sentence(head7: str, gate) -> str:
-    """One sentence stating what the gate actually found at this head."""
+    """One sentence, in plain words, stating what the worker's automatic checks found at this head."""
     c = gate.counts
-    build = "the build was not run" if "build" not in c else (
-        "the targeted build succeeded with only `sorry` warnings" if c["build"] == 0 else f"the targeted build reported {c['build']} problem(s)")
-    ids = c.get("readme-ids-missing", "?")
-    dep = c.get("depcheck", "not run")
-    return (f"At `{head7}`: {build}; README identifiers missing from the Lean: {ids}; dependency check problems: {dep}; "
-            f"gate {'passed' if gate.ok else 'FAILED'}.")
+    build = ("the build was not run" if "build" not in c else
+             "the build succeeded with `sorry` as the only warning" if c["build"] == 0 else
+             f"the build reported {c['build']} problem{'s' if c['build'] != 1 else ''}")
+    ids = c.get("readme-ids-missing")
+    names = ("names in code font: not checked" if ids is None else
+             "every name the README gives in code font as this roadmap's own is declared in Suggested.lean" if ids == 0
+             else f"{ids} name{'s' if ids != 1 else ''} the README gives in code font as this roadmap's own "
+                  f"{'are' if ids != 1 else 'is'} not declared in Suggested.lean")
+    dep = c.get("depcheck")
+    order = ("the merge order was not checked" if dep is None else
+             "every supplier comes earlier in the merge order" if dep == 0 else
+             f"the merge-order check reported {dep} problem{'s' if dep != 1 else ''}")
+    failing = sum(1 for v in c.values() if v)
+    return (f"At `{head7}`: {build}; {names}; {order}; "
+            + ("every automatic check passed." if gate.ok else
+               f"{failing} automatic check{'s' if failing != 1 else ''} flagged something.") )

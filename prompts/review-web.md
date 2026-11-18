@@ -4,8 +4,8 @@ This pull request on the job board carries the __SUBJECT__ of the roadmap `__ROA
 roadmap repository `__CONTENT_REPO__`. You review it from a browser: you can read GitHub and the
 web, you cannot run anything, and you hold no sources locally. Leave your review as one comment on
 this pull request, in the shape below; the board reads it, and a fix round or the next stage
-follows. Be precise: every finding comes with a witness the fix worker can verify in minutes. A
-clean result is evidence too, so say what you checked.
+follows. Write as a referee to a colleague: findings, small corrections and format notes (below),
+each with the evidence the fix worker can verify in minutes; only findings block.
 
 ## Principles (binding)
 
@@ -75,8 +75,9 @@ the merge order __ORDER__ (suppliers before consumers, one roadmap per line).
    absent, or one forced through a stand-in, is P2. Is anything padding? Detect it with the
    one-tactic probe, by reading (you run nothing): a declaration that follows by one tactic or one
    library lemma from the pinned libraries, restates a definition, mirrors a README Check, computes
-   a small value or treats a boundary case is padding. Report it as P3 with the repair "delete it
-   from `Suggested.lean`" (the README keeps the statement), never as "prove it in place".
+   a small value or treats a boundary case is padding. Report it as a small correction with the
+   repair "delete it from `Suggested.lean`" (the README keeps the statement), never as "prove it in
+   place".
 8. **Copyright, licences and scope** (the section of that name below), against the legal copies you
    can open. The wording against the sources, the arrangement against the table of contents of the
    source cited most, and reuse: each is a finding as that section says. Close with the line
@@ -101,30 +102,38 @@ conditional on (only gaps the plan at this head declares, listed below; any othe
 
     Conditional on the announced gaps: `<slug>`, `<slug>`
 
-then your findings, numbered, each starting with its id and severity:
+then `**Summary.**` and two to four plain sentences (the verdict in words, the main findings, how
+many small corrections and format notes), then your findings, numbered, each starting with its id
+and severity, the claim as its title, then a short paragraph (why it matters, how you know, the
+smallest change):
 
-    1. **F01** (P1) <short title>
-       Location: <file and line, quoting at most 40 words>. Claim: <what is wrong>.
-       Witness: <a counterexample, a source locator, a declaration, a file and line>.
-       Repair: <the exact repair>.
-    2. **F02** (P3) ...
+    1. **F01** (P1) <the claim, one sentence>
 
-then `## Verified sound` (what you checked and found correct, with counts), `## Not verifiable`
-(each item and why) and, last, `## For the human reviewers` (one bullet for each question a human
-decides, or `- none`). Severity: P1 false, vacuous or unowned; P2 overclaim or missing hypothesis; P3
-locator, Check, style or policy. Test each repair you propose on the instance that refuted the
+       <why it matters; how you know: the computation, the source line, the declaration; the
+       smallest change that makes the text true>
+    2. **F02** (P2) ...
+
+then `## Small corrections (non-blocking)` with items `1. **C01** <the claim>` and `## Format notes
+(non-blocking)` with items `1. **N01** <the claim>` (only if you have any), `## Questions for the
+author` (only if any), `## Verified sound` (what you checked and found correct, with counts),
+`## Not verifiable` (each item and why) and, last, `## For the human reviewers` (one bullet for each
+question a human decides, or `- none`). Severity of a finding: P1 false, vacuous or unowned; P2
+overclaim or missing hypothesis; a point below that bar is a small correction or a format note. Test each repair you propose on the instance that refuted the
 original. Accept only with evidence: the instances you computed (with values), the declarations and
 cross-roadmap sections you opened; review a section you only skimmed before you accept, and put
 under `## Not verifiable` only what you cannot check (a text you cannot open), with the reason.
 An acceptance, and a red-team pass with no finding, carries the adversarial pass's table
 (`| Statement | Instances tried | Values | Result | Change |`, rows with the computed values), or it
-is not counted. `accepted` means no finding remains at all (an acceptance that lists a finding, P3
-included, is not counted: a repair asks for changes); `needs_changes` needs at least one finding; `rejected` is for a __SUBJECT__ no
+is not counted. `accepted` means no finding remains (an acceptance that lists a finding is not
+counted; small corrections and format notes do not stop an acceptance); `needs_changes` needs at
+least one finding; `rejected` is for a __SUBJECT__ no
 fix can repair (it re-plans an existing roadmap, or its scope is wrong): a human decides. Review only the head named in the first
 line: a review of an older head is not counted. Quote locators, never passages.
 
 To claim this review before you start, so that no worker starts it too, comment `reviewing` (one
 word) first.
+
+<!-- include: sections/remarks.md -->
 
 <!-- include: sections/gaps-and-order.md -->
 

@@ -6,7 +6,8 @@ of `__CONTENT_REPO__`. A whole-document pass of the same job has already
 read the roadmap end to end. Your pass is narrow and deep: **__SECTION_TITLE__**, lines
 __SECTION_LINES__ of `__FOLDER__/README.md`, and the declarations of
 `Suggested.lean` that state its targets. You are pass __PASS__; a repair worker will apply the union
-of every pass's findings, so every finding comes with a witness it can verify in minutes.
+of every pass's findings, so every remark comes with evidence it can verify in minutes; only findings
+(P1, P2) ask for a repair round.
 
 ## Principles (binding)
 
@@ -65,8 +66,8 @@ theorem, identity, convention, normalisation and Check, and its Lean declaration
    padding with the one-tactic probe, by reading the definition and the pinned library (you run no
    Lean here): a declaration that follows by one tactic or one library lemma, restates a
    definition, mirrors a README Check, computes a small value or treats a boundary case is padding.
-   Report it as P3 with the repair "delete it from `Suggested.lean`" (the README keeps the
-   statement), never as "prove it in place".
+   Report it as a small correction with the repair "delete it from `Suggested.lean`" (the README
+   keeps the statement), never as "prove it in place".
 
 ## Inputs
 
@@ -80,12 +81,14 @@ The merge order: `__ORDER__`.
 Write `__SECTION_REPORT__` incrementally. First line
 `# Section pass __SECTION_INDEX__/__SECTION_COUNT__ of #__PR__ __ROADMAP__ at __HEAD__: __SECTION_TITLE__`;
 then `**Verdict:** <changes needed | no blocking finding>`; then findings numbered R01, R02, …, each
-as `## R01 (P1) — <short title>` with: location (file:line, quoting at most 40 words), the claim,
-the instance that witnesses the defect (at most 40 words, with the computed values) and the exact
-repair text. Severity: P1 false or unowned, P2 overclaim, missing hypothesis or unpinned
-convention, P3 locator, Check or policy. Then `## Instances` (one line per statement: the
-instances tried and the result), `## Verified sound` and `## Not verifiable`. No praise, no style
-remarks, no restating of the roadmap.
+as `## R01 (P1) — <the claim, one sentence>` followed by a short paragraph (why it matters, the
+instance that witnesses the defect with the computed values, the smallest repair). Severity: P1
+false or unowned, P2 overclaim, missing hypothesis or unpinned convention; a point below that bar is
+a small correction (`## C01 — <the claim>`) or a format note (`## N01 — <the claim>`), or it is left
+out. Then `## Instances` (one line per statement: the instances tried and the result),
+`## Verified sound` and `## Not verifiable`. No praise, no restating of the roadmap.
+
+<!-- include: sections/remarks.md -->
 
 <!-- include: sections/adversarial.md -->
 

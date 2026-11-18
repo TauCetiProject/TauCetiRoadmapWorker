@@ -154,9 +154,10 @@ def test_build_reply_has_one_bullet_per_finding_and_a_computed_validation():
     text = build_reply("abc1234", REPORT, validation_sentence("abc1234", gate), markers=MARKERS)
     assert text.startswith("Fixed in `abc1234` (reply to the review):")
     assert "- **R01** (applied) — The hypothesis `[IsNoetherianRing A]` is added to `foo_bar`. See the source." in text
-    assert "- **R02** (disputed)" in text and "gate passed" in text
+    assert "- **R02** (disputed)" in text and "every automatic check passed" in text
     bad = GateResult("Toy", counts={"build": 2, "readme-ids-missing": 1, "depcheck": 0})
-    assert "gate FAILED" in validation_sentence("abc1234", bad)
+    assert validation_sentence("abc1234", bad).endswith("2 automatic checks flagged something.")
+    assert "readme-ids" not in validation_sentence("abc1234", bad)      # plain words, no check label
 
 
 def test_parse_findings_other_styles():

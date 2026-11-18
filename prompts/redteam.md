@@ -7,7 +7,8 @@ find every defect an expert external reviewer would find, before any reviewer of
 repository sees it.
 You are pass __PASS__; an independent reviewer of a different model family runs the same pass, and a
 repair worker will apply the union of your findings. Precision matters as much as recall: every
-finding comes with a witness a repair worker can verify in minutes.
+remark comes with the evidence a repair worker can verify in minutes, and only findings (P1, P2)
+ask for a repair round; small corrections and format notes are applied when the package is ported.
 
 ## Principles (binding)
 
@@ -84,8 +85,8 @@ context, and of every bold README target, with the values you computed on each s
    through a stand-in, is P2. Is anything padding? Detect it with the one-tactic probe, by reading
    the definition and the pinned library (you run no Lean here): a declaration that follows by one
    tactic or one library lemma, restates a definition, mirrors a README Check, computes a small
-   value or treats a boundary case is padding. Report it as P3 with the repair "delete it from
-   `Suggested.lean`" (the README keeps the statement), never as "prove it in place".
+   value or treats a boundary case is padding. Report it as a small correction with the repair
+   "delete it from `Suggested.lean`" (the README keeps the statement), never as "prove it in place".
 9. **Copyright, licences and scope** (the section of that name below). The wording against the
    sources, the arrangement against the table of contents of the source cited most, and reuse: each
    is a finding as that section says. Close with the line `Source independence:` and the line
@@ -99,14 +100,14 @@ context, and of every bold README target, with the values you computed on each s
 Write `__REPORT__` incrementally (findings as you go, so that partial work survives). First line
 `# Red-team review of #__PR__ __ROADMAP__ at __HEAD__ (pass __PASS__)`; then
 `**Verdict:** <changes needed | no blocking finding>`; then findings numbered R01, R02, … (S01, … in
-a second pass), each as `## R01 (P1) — <short title>` with: location (file:line, quoting at most 40
-words), the claim, the witness (counterexample, source line, sibling file:line or pinned
-declaration; at most 40 words) and the exact repair text, tested on the instance that refuted the
-original. Severity: P1 false or unowned, P2
-overclaim or missing hypothesis, P3 locator, Check or policy. Then `## Verified sound` (what you
-checked and found correct, with counts: declarations read, targets read, locators verified, Checks
-tested, sibling citations checked) and `## Not verifiable` (each item and why). No praise, no style
-remarks, no restating of the roadmap.
+a second pass), each as `## R01 (P1) — <the claim, one sentence>` followed by a short paragraph (why
+it matters, the witness: counterexample, source line, sibling file:line or pinned declaration; the
+smallest repair, tested on the instance that refuted the original). Severity: P1 false or unowned,
+P2 overclaim or missing hypothesis; a point below that bar is a small correction
+(`## C01 — <the claim>`) or a format note (`## N01 — <the claim>`), or it is left out. Then
+`## Verified sound` (what you checked and found correct, with counts: declarations read, targets
+read, locators verified, Checks tested, sibling citations checked) and `## Not verifiable` (each
+item and why). No praise, no restating of the roadmap.
 Then `## Source issues`: every mistake you found in a source while checking locators, one bullet
 each, in this exact shape (it is collected into the project's errata register, as the explorer's
 was): `- **Misprint** | **Error** | **Gap** in <source id> at <locator: theorem or section, printed
@@ -117,6 +118,8 @@ clear, an error a false statement or proof step, a gap a step the source does no
 you found none. Never copy a passage: describe it.
 Then, last, `## For the human reviewers` (the section on copyright, licences and scope below):
 one bullet for each question a human decides, or `- none`.
+
+<!-- include: sections/remarks.md -->
 
 <!-- include: sections/defect-classes.md -->
 

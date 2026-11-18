@@ -1154,6 +1154,17 @@ GATE_RULES = {
     "stray-files": "a roadmap folder holds only README.md, Suggested.lean, metadata.toml (`[gates] roadmap_files`), "
                    "other `*.lean` files and the folders of nested roadmaps: delete anything else (SOURCES.md, "
                    "PROGRESS.md, STATUS.md, notes, scratch, other subfolders); sources are the README's references",
+    "target-ids": "a layer's target subsections are numbered `### k.n Title` (digits only), so that the tools that "
+                  "count and sample the targets find them",
+    "missing-files": "the roadmap folder holds its README.md and its Suggested.lean",
+    "dirty": "the checkout the gate ran in has no uncommitted change",
+    "outside-folder": "the pull request changes nothing outside the roadmap folder (and the other folders it carries)",
+    "git": "the gate could compare the head with its base (a failure here is the worker's, not the head's: what it "
+           "would have checked is unverified)",
+    "source-material": "no copy of a source (a PDF, a scan, an extracted text, a long passage in a data file) is "
+                       "committed: sources are cited, never copied",
+    "build": "the roadmap's Lean files, and the files that import them, build at the pins with `sorry` as the only "
+             "warning",
     "depcheck": "every supplier the README names comes before this roadmap in the merge order (an UPWARD edge or a "
                 "CYCLE is a design defect: break it by moving ownership), and the roadmap is listed there; a roadmap "
                 "on the content repository's main is a supplier available to all, never upward; the merge-order "
@@ -1164,6 +1175,52 @@ GATE_RULES = {
                 "case stays where it is: an acyclic merge order comes before citing the more general form), and "
                 "never ask another pull request to change",
 }
+
+
+# What each rule protects, for a review of someone else's head (spec: no forced relay of the gate).
+# A real failure of a SUBSTANCE rule touches the mathematics, the sources or the integrity of the
+# folder: it is a finding (or, when it misleads without touching a stated result, a small
+# correction). A real failure of a FORMAT rule is a matter of form: at most a format note, which never
+# blocks. A false positive of either is set aside. The worker's own pushes still pass every rule.
+SUBSTANCE, FORMAT = "substance", "format"
+RULE_KINDS = {
+    "build": SUBSTANCE,                 # the folder does not elaborate
+    "depcheck": SUBSTANCE,              # a cycle or an upward supplier: no merge order exists
+    "sorry-data": SUBSTANCE,            # a definition with no content defines nothing
+    "sorry-examples": SUBSTANCE,        # an admitted example tests nothing
+    "set_option": SUBSTANCE,            # changes what the statements mean or how they are checked
+    "statement-hygiene": SUBSTANCE,     # statements that say less, or other, than they appear to
+    "private-paths": SUBSTANCE,         # private material in public files
+    "forbidden": SUBSTANCE,             # the project's own list of statements that must not enter
+    "dropped": SUBSTANCE,               # a citation of a roadmap the project dropped
+    "outside-folder": SUBSTANCE,        # a change the review of this folder does not cover
+    "stray-files": SUBSTANCE,           # a file that does not belong in a roadmap folder
+    "dirty": SUBSTANCE,                 # the head checked is not the head committed
+    "missing-files": SUBSTANCE,         # no README or no Suggested.lean: nothing to review
+    "source-material": SUBSTANCE,       # copied sources: a licence matter
+    "git": SUBSTANCE,                   # nothing compared: the comparison is unverified
+    "latex": FORMAT,
+    "tex": FORMAT,
+    "prnum": FORMAT,
+    "residue": FORMAT,                  # process words: the text is timeless, but that is form
+    "round-labels": FORMAT,
+    "long-fences": FORMAT,              # a passage copied into one is judged as copying, by the reviewer
+    "layer-ids": FORMAT,
+    "target-ids": FORMAT,
+    "empty-sections": FORMAT,
+    "imports": FORMAT,                  # an import that breaks the build fails the build
+    "mathlib-subimports": FORMAT,
+    "no-import-mathlib": FORMAT,
+    "lean-lines": FORMAT,
+    "metadata": FORMAT,
+    "blob": FORMAT,
+    "readme-ids-missing": FORMAT,       # names in code font that are declared nowhere: say they are proposed
+}
+
+
+def rule_kind(key: str) -> str:
+    """`substance` or `format` (`RULE_KINDS`); a rule not in the table counts as substance."""
+    return RULE_KINDS.get(key, SUBSTANCE)
 
 
 def outside_folder(changed: list[str], folder: str, allow: list[str]) -> list[str]:

@@ -38,7 +38,8 @@ First check that `git status --short` is empty and that `git rev-parse --short=7
 
 The source package, read-only: `__PACKAGE__/` (`README.md`, `Suggested.lean`, `metadata.toml`,
 `sources.toml`, the accepted review `review.json` and the reports under `reports/`; keep the review's
-decisions and apply its non-blocking notes). The target folder is
+decisions and apply its non-blocking remarks: the small corrections, and the format notes where they
+make the text clearer). The target folder is
 `__ACTIVE_DIR__/__ROADMAP__/{README.md,Suggested.lean,metadata.toml}`. Do not edit the top-level
 README's roadmap list (it is regenerated after merge) or anything outside the folder.
 
