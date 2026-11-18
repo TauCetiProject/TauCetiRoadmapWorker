@@ -6,7 +6,8 @@ run works it out again from the current state, and nothing is kept between runs:
 
 * every open pull request that changes a file under the roadmap directories, its head fetched into the
   host's mirror for this run (`openroadmaps.refresh(force=True, any_file=True)`); a refresh that fails
-  stops the run before anything is written;
+  stops the run before anything is written, except that an open pull request whose head ref GitHub
+  does not have is left out of the run, its labels as they are, and logged;
 * every open pull request's current description, and the state (and, once closed, the added files) of
   every other pull request a description names, read in batches (`pull_states`);
 * main as it is.
@@ -325,6 +326,8 @@ def run(ctx, label: str, approval: str = "") -> list[str]:
     repo, state = cfg.repositories.content, cfg.state_dir()
     index = openroadmaps.refresh(ctx.gh, cfg, force=True, any_file=True)
     prs = index.get("prs", [])
+    lost = [f"#{n}: left out of this run, its labels as they are (GitHub has no head ref for it to fetch)"
+            for n in index.get("unfetched", [])]
     open_prs = {p["pr"] for p in prs}
     bodies = {n: (got or {}).get("body") for n, got in pull_states(ctx.gh, repo, open_prs).items()}
     changed = overlaps.revisions(state, index)
@@ -332,7 +335,7 @@ def run(ctx, label: str, approval: str = "") -> list[str]:
                if bodies.get(p["pr"]) is not None}
     named = {n for r in records.values() for n, _roadmap in r["declared"]} - open_prs
     states = pull_states(ctx.gh, repo, named, files=True)
-    out = []
+    out = lost
 
     def write(method: str, number: int, why: str, label: str = label) -> None:
         path = f"repos/{repo}/issues/{number}/labels"

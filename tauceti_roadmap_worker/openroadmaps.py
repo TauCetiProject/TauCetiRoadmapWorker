@@ -46,6 +46,10 @@ MAX_AGE = 1800                 # seconds an index is used before it is rebuilt
 FETCH_BATCH = 100              # pull-request refspecs per `git fetch`
 TEXT_WIDTH = 240               # characters of a matching line shown
 FILES = ("README.md", "Suggested.lean")
+# git's message when the remote has no head ref for an open pull request. GitHub lists such a pull
+# request as open (its head repository was deleted, or the ref was never written), and one of them
+# must not stop every fetch.
+MISSING_HEAD = re.compile(r"couldn't find remote ref refs/pull/(\d+)/head")
 
 QUERY = """query($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -217,8 +221,9 @@ def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any
     """The index of open roadmap pull requests, rebuilt when older than `max_age` (or `force`): the
     listing from GitHub, every head fetched into the shared mirror, stale heads dropped. With
     `any_file`, it also lists the pull requests whose only changes under the roadmap directories are
-    other files (an extra Lean file of a roadmap: `inventory`). Raises on a GitHub or git failure; the
-    caller decides what a missing index means."""
+    other files (an extra Lean file of a roadmap: `inventory`). A pull request whose head ref the
+    remote does not have is left out and its number recorded under `unfetched`. Raises on any other
+    GitHub or git failure; the caller decides what a missing index means."""
     state, repo, branch = cfg.state_dir(), cfg.repositories.content, cfg.project.branch
     dirs = (cfg.roadmap.active_dir, cfg.roadmap.completed_dir)
     with _lock(state):
@@ -229,10 +234,23 @@ def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any
         if not (mirror(state) / "HEAD").exists():
             mirror(state).parent.mkdir(parents=True, exist_ok=True)
             git(None, "clone", "-q", "--bare", "--no-tags", gitops.url(repo), str(mirror(state)))
-        refspecs = [f"+refs/heads/{branch}:{_main_ref(branch)}"] + \
-                   [f"+refs/pull/{p['pr']}/head:{pr_ref(p['pr'])}" for p in prs]
+        heads = {p["pr"]: f"+refs/pull/{p['pr']}/head:{pr_ref(p['pr'])}" for p in prs}
+        refspecs = [f"+refs/heads/{branch}:{_main_ref(branch)}"] + list(heads.values())
+        unfetched: list[int] = []
         for i in range(0, len(refspecs), FETCH_BATCH):
-            git(mirror(state), "fetch", "-q", "--no-tags", "origin", *refspecs[i:i + FETCH_BATCH])
+            batch = refspecs[i:i + FETCH_BATCH]
+            while batch:
+                try:
+                    git(mirror(state), "fetch", "-q", "--no-tags", "origin", *batch)
+                    break
+                except gitops.GitError as exc:
+                    found = MISSING_HEAD.search(str(exc))
+                    gone = heads.get(int(found.group(1))) if found else None
+                    if gone is None or gone not in batch:
+                        raise
+                    batch.remove(gone)
+                    unfetched.append(int(found.group(1)))
+        prs = [p for p in prs if p["pr"] not in unfetched]
         keep = {pr_ref(p["pr"]) for p in prs}
         for ref in git(mirror(state), "for-each-ref", "--format=%(refname)", "refs/open/").split():
             if ref not in keep:
@@ -242,7 +260,8 @@ def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any
             p["adds"] = [n for n in p["roadmaps"] if n not in on_main]
         index = {"at": (now or dt.datetime.now(dt.UTC)).strftime("%Y-%m-%dT%H:%M:%SZ"), "repo": repo, "branch": branch,
                  "main": git(mirror(state), "rev-parse", _main_ref(branch)).strip(), "dirs": list(dirs),
-                 "main_roadmaps": sorted(on_main), "main_folders": on_main, "prs": prs}
+                 "main_roadmaps": sorted(on_main), "main_folders": on_main, "prs": prs,
+                 "unfetched": sorted(unfetched)}
         tmp = index_path(state).with_suffix(".tmp")
         tmp.write_text(json.dumps(index, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
         os.replace(tmp, index_path(state))

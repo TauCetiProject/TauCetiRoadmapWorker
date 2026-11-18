@@ -2957,6 +2957,11 @@ def sync_pr_reviews(ctx) -> list[str]:
             elif labelled and not accepted:
                 ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
                 out.append(f"#{number}: {p.label} removed ({reason})")
+                if p.approval_label and p.approval_label in entry.get("labels", []):
+                    # no accepted head, so a human approval is not all it needs: `roadmaps
+                    # dependency-labels`, which keeps this label, would take it off only at its next run
+                    ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.approval_label, safe='')}")
+                    out.append(f"#{number}: {p.approval_label} removed ({p.label} is off)")
         except GHError as exc:
             out.append(f"#{number}: {p.label} on {repo} not {'added' if accepted else 'removed'} "
                        f"({str(exc).splitlines()[0][:160]})")

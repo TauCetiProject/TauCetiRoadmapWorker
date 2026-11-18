@@ -1277,6 +1277,15 @@ def test_the_label_is_added_once_every_folder_accepts_and_goes_when_one_blocks_o
     out, fake = sync(gh, [foo, bar])
     assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and created(fake) == [
         ("PRREVIEW-Bar~2", "Bar"), ("PRREVIEW-Foo~2", "Foo")]
+    # With it goes the label that says a human approval is all the pull request needs, when one is kept.
+    ready = "awaiting-human-approval"
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors", ready])])
+    out, _fake = sync(gh, [foo, bar], approval_label=ready)
+    assert gh.writes[:2] == [("DELETE", f"{labels}/ai-found-no-errors", {}), ("DELETE", f"{labels}/{ready}", {})]
+    assert out[:2] == ["#1164: ai-found-no-errors removed (head moved)", f"#1164: {ready} removed (ai-found-no-errors is off)"]
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors", ready])])
+    sync(gh, [foo, bar])                                  # no approval label configured: not this step's
+    assert ("DELETE", f"{labels}/{ready}", {}) not in gh.writes
     # A token that may not write the content repository says so.
     gh = ContentGH([two_folder_pr(H1)], files={**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)},
                    refuse=True)

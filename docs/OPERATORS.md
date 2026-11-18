@@ -1321,9 +1321,18 @@ for another pull request)`, `(it does not carry ai-found-no-errors)`, `(it carri
 `(it is a draft)`, `(a reviewer
 requests changes)`, `(it is in the merge queue)`, `(it conflicts with its base branch)` or `(merged)`.
 The label follows the acceptance label and the dependency label with the delay of one run: a head
-accepted or approved between two runs is relabelled at the next. One removal does not wait: `board
-sync` takes the label off in the write that puts `awaiting-author` on a pull request (it never adds
-it). Create the label on the content repository beforehand to give it a colour and a description.
+accepted or approved between two runs is relabelled at the next. Two removals do not wait: `board
+sync` takes the label off in the write that puts `awaiting-author` on a pull request, and in the
+write that takes the acceptance label off (`#N: <label> removed (ai-found-no-errors is off)`); it
+never adds it. Create the label on the content repository beforehand to give it a colour and a
+description.
+
+An open pull request whose head ref GitHub does not have (`refs/pull/N/head` missing: its head
+repository was deleted, or the ref was never written) is left out of the index of open roadmap pull
+requests (`openroadmaps.refresh` records its number under `unfetched`) instead of failing the fetch
+of every other head. The label run logs `#N: left out of this run, its labels as they are (GitHub
+has no head ref for it to fetch)` and goes on; any other fetch failure still stops it before
+anything is written.
 
 The comment and the label are written with the operator's own token, which needs write access to
 the content repository (triage at least, for labels); a token without it reports `ai-found-no-errors not

@@ -506,6 +506,20 @@ def test_the_label_follows_what_each_open_pull_request_waits_for_now(tmp_path, m
     assert ("DELETE", 33) in label_writes(gh)
 
 
+def test_a_pull_request_without_a_head_ref_is_left_out_of_the_label_run(tmp_path, monkeypatch):
+    def new(name, text="Plain."):
+        return {f"TauCetiRoadmap/{name}/README.md": f"# Roadmap: {name}\n\n{text}\n"}
+    cfg, _index = build(tmp_path, monkeypatch, [MAIN], [(50, "kim", 0, new("A")), (51, "lou", 0, new("B"))],
+                        labels={50: [DEPS], 51: [DEPS]})
+    gh = build.gh
+    gh.listed.append({"number": 59, "title": "PR 59", "isDraft": False, "headRefOid": "0" * 40,
+                      "author": {"login": "max"}, "labels": {"nodes": [{"name": DEPS}]},
+                      "files": {"nodes": [{"path": "TauCetiRoadmap/Headless/README.md", "changeType": "ADDED"}]}})
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
+    assert label_writes(gh) == [("DELETE", 50), ("DELETE", 51)]            # the rest of the run goes on
+    assert "#59: left out of this run, its labels as they are (GitHub has no head ref for it to fetch)" in out
+
+
 def test_what_github_does_not_answer_keeps_the_label(tmp_path, monkeypatch):
     def new(name):
         return {f"TauCetiRoadmap/{name}/README.md": f"# Roadmap: {name}\n"}
