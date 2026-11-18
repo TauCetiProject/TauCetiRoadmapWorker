@@ -216,14 +216,32 @@ def age(index: dict, now: dt.datetime | None = None) -> float:
     return ((now or dt.datetime.now(dt.UTC)) - built).total_seconds()
 
 
+def _head_from_merge(repo_dir: Path, number: int, want: str) -> bool:
+    """Write the open ref of pull request `number` from GitHub's test merge of it, whose second parent
+    is the head, when the remote has the merge ref and that parent is `want`, the head GitHub lists."""
+    scratch = f"refs/open-merge/{number}"
+    try:
+        git(repo_dir, "fetch", "-q", "--no-tags", "origin", f"+refs/pull/{number}/merge:{scratch}")
+        head = git(repo_dir, "rev-parse", "--verify", "-q", f"{scratch}^2").strip()
+        if not head or head != want:
+            return False
+        git(repo_dir, "update-ref", pr_ref(number), head)
+        return True
+    except gitops.GitError:
+        return False
+    finally:
+        git(repo_dir, "update-ref", "-d", scratch, check=False)
+
+
 def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any_file: bool = False,
             max_age: float = MAX_AGE) -> dict:
     """The index of open roadmap pull requests, rebuilt when older than `max_age` (or `force`): the
     listing from GitHub, every head fetched into the shared mirror, stale heads dropped. With
     `any_file`, it also lists the pull requests whose only changes under the roadmap directories are
     other files (an extra Lean file of a roadmap: `inventory`). A pull request whose head ref the
-    remote does not have is left out and its number recorded under `unfetched`. Raises on any other
-    GitHub or git failure; the caller decides what a missing index means."""
+    remote does not have is read from its test merge when that has the listed head as second parent
+    (`_head_from_merge`); otherwise it is left out and its number recorded under `unfetched`. Raises
+    on any other GitHub or git failure; the caller decides what a missing index means."""
     state, repo, branch = cfg.state_dir(), cfg.repositories.content, cfg.project.branch
     dirs = (cfg.roadmap.active_dir, cfg.roadmap.completed_dir)
     with _lock(state):
@@ -250,6 +268,8 @@ def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any
                         raise
                     batch.remove(gone)
                     unfetched.append(int(found.group(1)))
+        listed = {p["pr"]: p.get("head", "") for p in prs}
+        unfetched = [n for n in unfetched if not _head_from_merge(mirror(state), n, listed[n])]
         prs = [p for p in prs if p["pr"] not in unfetched]
         keep = {pr_ref(p["pr"]) for p in prs}
         for ref in git(mirror(state), "for-each-ref", "--format=%(refname)", "refs/open/").split():

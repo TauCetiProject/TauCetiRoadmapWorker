@@ -69,13 +69,23 @@ def sync_checkout(repo: str, dest: Path, ref: str = "main", scrub: tuple[str, ..
 
 
 def checkout_pr(repo: str, dest: Path, number: int) -> str:
-    """A read-only checkout of pull request #number at its head (refs/pull/N/head)."""
+    """A read-only checkout of pull request #number at its head (refs/pull/N/head). GitHub sometimes
+    lists a pull request as open without that ref; its test merge (refs/pull/N/merge) then still has the
+    head as its second parent, and the checkout is made from there."""
     if not (dest / ".git").exists():
         dest.parent.mkdir(parents=True, exist_ok=True)
         git(None, "clone", "-q", "--filter=blob:none", "--no-checkout", url(repo), str(dest))
-    git(dest, "fetch", "-q", "origin", f"pull/{number}/head", "main")
-    git(dest, "checkout", "-q", "--force", "--detach", "FETCH_HEAD")
-    git(dest, "reset", "-q", "--hard", "FETCH_HEAD")
+    head = "FETCH_HEAD"
+    try:
+        git(dest, "fetch", "-q", "origin", f"pull/{number}/head", "main")
+    except GitError as exc:
+        if f"couldn't find remote ref pull/{number}/head" not in str(exc):
+            raise
+        git(dest, "fetch", "-q", "origin", "main")
+        git(dest, "fetch", "-q", "origin", f"pull/{number}/merge")
+        head = git(dest, "rev-parse", "--verify", "FETCH_HEAD^2").strip()
+    git(dest, "checkout", "-q", "--force", "--detach", head)
+    git(dest, "reset", "-q", "--hard", head)
     git(dest, "clean", "-qffd")
     return git(dest, "rev-parse", "HEAD").strip()
 
