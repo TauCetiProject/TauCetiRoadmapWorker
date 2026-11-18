@@ -90,12 +90,14 @@ def _cased(word: str, like: str) -> str:
     return word.capitalize() if like[:1].isupper() else word
 
 
-def fix_directions(original: str, reordered: str) -> tuple[str, list[tuple[str, str, str]]]:
-    """`reordered` (the reordering of `original`) with the direction words of the tested patterns
-    (`DIRECTIONS`) put right inside the sections that moved: (the text, [(heading, old phrase, new
-    phrase)]). A phrase is corrected only when every section it refers to lies on one side of the
-    section it stands in; every other byte stays."""
-    moved = {layout.title_key(h[3:]) for h in layout.moved(original)}
+def fix_directions(reordered: str) -> tuple[str, list[tuple[str, str, str]]]:
+    """`reordered` (a README in the new order) with the direction words of the tested patterns
+    (`DIRECTIONS`) put right inside the sections the reordering moves (`layout.MOVED`), whether this
+    pass moved them or an earlier one did (`layout` reorders without touching a word): (the text,
+    [(heading, old phrase, new phrase)]). A phrase is corrected only when every section it refers to
+    lies on one side of the section it stands in, so a phrase that points the right way stays; every
+    other byte stays."""
+    moved = set(layout.MOVED)
     found = layout.parts(reordered)
     sections, changes, out = found[1:], [], []
     for i, s in enumerate(sections):
@@ -181,11 +183,17 @@ class Folder:
 def agent_values(ctx, workdir: Path, folder: str, original: str, fixed: list[tuple[str, str, str]]) -> dict:
     opening = layout.split_opening(original)[1]
     moved = layout.moved(original)
+    # A README an earlier pass reordered: the sections it moved stand where they were put, with the
+    # direction words they had before, so the agent reads them all the same.
+    standing = [p.body.split("\n", 1)[0].strip() for p in layout.parts(original)[1:] if p.title in layout.MOVED]
     guide = next((p for p in layout.parts(original)[1:] if p.title == layout.HOW_TO_READ), None)
     return {"ROADMAP": folder.rsplit("/", 1)[-1], "README": str(workdir / "README.md"),
             "LEAN": str(workdir / "Suggested.lean"), "OUT": str(workdir / OUT_NAME), "PLAN": str(workdir / PLAN_NAME),
             "OLD_WORDS": str(words(opening)),
-            "MOVED": ", ".join(f"`{h}`" for h in moved) or "none (the README was in the new order already)",
+            "MOVED": (", ".join(f"`{h}`" for h in moved)
+                      or (", ".join(f"`{h}`" for h in standing) + " (an earlier pass put them where they are, "
+                          "without touching a word: read them for direction words all the same)" if standing
+                          else "none (the README was in the new order already)")),
             "GUIDE": (f"The README has `## How to read the build` ({words(guide.body)} words)." if guide
                       else "The README has no `## How to read the build` section."),
             "MECHANICAL": "\n".join(f"- in `## {h}`: “{a}” became “{b}”" for h, a, b in fixed) or "- none"}
@@ -202,7 +210,7 @@ def propose(ctx, workdir: Path, folder: str, path: str, readme: str, lean: str, 
     except layout.LayoutError as exc:
         out.why = f"not reordered ({exc})"
         return out
-    fixed_text, fixed = fix_directions(readme, reordered)
+    fixed_text, fixed = fix_directions(reordered)
     if workdir.exists():
         shutil.rmtree(workdir)
     workdir.mkdir(parents=True)
