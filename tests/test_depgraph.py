@@ -259,3 +259,20 @@ def test_a_late_supplier_is_pulled_up_with_its_chain_when_that_moves_fewer():
     loop = supplier_edges({"Alpha": "*Needs:* Toy §1.\n", "Toy": "*Needs:* Alpha §2.\n"}, {"Alpha", "Toy"})
     with pytest.raises(OrderCycle):
         repair_edge("Alpha\nToy\n", "Alpha", set(loop["Alpha"]), loop)
+
+
+def test_the_opening_overview_never_declares_a_supplier():
+    """An opening names neighbours of both kinds in one sentence ("A supplies X, and B uses Y"): no
+    supplier is read from it, while the supplier contracts and `*Needs:*` lines below still are."""
+    text = (
+        "# Roadmap: Foo\n\n"
+        "**Summary.** Alpha supplies the smooth theory, and Gamma uses the isolation theorems proved here.\n\n"
+        "## Layer 1\n\n"
+        "Prove the theorem.\n\n*Needs:* Beta §2.1.\n\n"
+        "## Exact supplier contracts\n\n### From Alpha\n\nThe smooth theory of §1.\n")
+    edges = supplier_edges({"Foo": text}, {"Alpha", "Beta", "Gamma"})
+    assert set(edges["Foo"]) == {"Alpha", "Beta"}
+    # The same sentence under a heading is read as before (a prose line that says "supplies").
+    moved = text.replace("**Summary.** Alpha", "## Scope and ownership\n\nAlpha", 1)
+    assert "Gamma" in supplier_edges({"Foo": moved}, {"Alpha", "Beta", "Gamma"})["Foo"]
+
