@@ -3,7 +3,8 @@
 Ported from the maintainer's decycle/depcheck_units.py, depcheck.py and merge_order.py, as pure
 functions over README texts (no /tmp lists, no hard-coded pull requests or bundles):
 
-* `units(text)` yields the README lines and clauses that name suppliers: `*Needs:*` clauses (cut
+* `units(text)` yields the README lines and clauses that name suppliers (never a prose sentence of
+  the opening, the overview before the first `##` heading, which names consumers too): `*Needs:*` clauses (cut
   at their first sentence end), lines saying "Supplied by", "supplier", "prerequisites are", rows
   of supplier tables, supplier-contract bullets, `### From <Name>` headings and the sentences of a
   `### Dependencies` section, minus anything that describes consumers: a consumers section
@@ -120,10 +121,17 @@ def _units(text: str, name: str = ""):
     lines = text.split("\n")
     sec_supplier = sec_consumer = sec_deplist = False
     consumer_level = 0            # the level of the consumers heading whose section this is (0: none)
+    # The opening (everything before the first `##` heading) is an overview in prose. It names the
+    # roadmap's neighbours of both kinds in one breath ("A supplies X, and B uses Y"), so a sentence
+    # there never declares a supplier: the supplier contracts, the `*Needs:*` lines and the
+    # Dependencies sections do.
+    opening = any(heading_level(x) == 2 for x in lines if x.startswith("#"))    # (a text with no `##` heading has none)
     buf: list[tuple[int, str]] = []
     for i, line in enumerate(lines):
         if line.startswith("#"):
             level = heading_level(line)
+            if 2 <= level <= 6:
+                opening = False
             if consumer_level and level > consumer_level:
                 continue          # a heading nested in a consumers section: still consumers
             sec_consumer = bool(CONSUMER_HEADING.search(line))
@@ -149,7 +157,7 @@ def _units(text: str, name: str = ""):
                 buf = []
             continue
         if re.search(r"\*Needs:\*|^\s*Needs:|Supplied by|\| *Supplied|supplies|supplier|prerequisites? (?:are|is|:)", line) \
-                and "*Needs:*" not in line:
+                and "*Needs:*" not in line and not opening:
             if re.match(r"\s*\|", line) or EXCL.search(line):
                 yield i + 1, line, True       # a table row, or a line EXCL refuses: judged whole
             else:
