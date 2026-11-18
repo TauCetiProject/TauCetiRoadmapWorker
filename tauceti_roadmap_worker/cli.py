@@ -694,6 +694,21 @@ def layout_cmd(args) -> int:
     return 1 if any(line.startswith("stopped") or ": not pushed:" in line for line in lines) else 0
 
 
+def reformat_reviews_cmd(args) -> int:
+    """Rebuild the latest AI review of each roadmap folder of the open roadmap pull requests in the
+    posted layout (`reformat.run`; a dry run unless --yes)."""
+    from . import reformat
+    if args.pace < 0 or args.limit < 0:
+        print("reformat-reviews: --pace and --limit are never negative", file=sys.stderr)
+        return 2
+    cfg = _load(args)
+    write = args.yes and not args.dry_run
+    ctx = _bot_context(args, cfg, not write)
+    lines = reformat.run(ctx, numbers=args.pr, logins=args.login, write=write, pace=args.pace, limit=args.limit,
+                         report=lambda line: print(line, flush=True))
+    return 1 if any(line.startswith("stopped") or " not edited: " in line for line in lines) else 0
+
+
 def sources_cmd(args) -> int:
     cfg = _load(args)
     s = cfg.sources
@@ -1252,6 +1267,16 @@ def parser() -> argparse.ArgumentParser:
     lo.add_argument("--limit", type=int, default=0, help="push to at most this many pull requests (0: all)")
     lo.add_argument("--yes", action="store_true", help="push and post the notes (default: a dry run)")
 
+    rr = sub.add_parser("reformat-reviews", help="rebuild the latest AI review of each roadmap folder of the open "
+                                                 "roadmap pull requests in the posted layout, without a model and "
+                                                 "without changing what it says (a dry run unless --yes)")
+    rr.add_argument("--pr", type=int, action="append", default=[], help="only this pull request (repeatable)")
+    rr.add_argument("--login", action="append", default=[], metavar="LOGIN",
+                    help="also rebuild reviews this login posted (repeatable; the token must be allowed to edit them)")
+    rr.add_argument("--pace", type=float, default=1.0, metavar="SECONDS", help="pause between two edits (default 1)")
+    rr.add_argument("--limit", type=int, default=0, help="edit at most this many comments (0: all)")
+    rr.add_argument("--yes", action="store_true", help="edit the comments (default: a dry run)")
+
     s = sub.add_parser("sources", help="fetch a legal source, check a manifest, classify a URL, cache a manifest's "
                                        "texts, OCR a scan, render a needs-references request")
     s.add_argument("action", choices=["fetch", "check", "classify", "cache", "ocr", "request"])
@@ -1336,7 +1361,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     handlers = {"doctor": doctor, "targets": targets, "work": work, "gate": gate, "merge-order": merge_order,
                 "summary": summary_cmd, "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd,
-                "usage": usage_cmd, "roadmaps": roadmaps_cmd, "throttle": throttle_cmd, "layout": layout_cmd}
+                "usage": usage_cmd, "roadmaps": roadmaps_cmd, "throttle": throttle_cmd, "layout": layout_cmd,
+                "reformat-reviews": reformat_reviews_cmd}
     try:
         return handlers[args.command](args)
     except GHRateLimited as exc:

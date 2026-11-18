@@ -4,12 +4,15 @@ the latest review of each folder in place without changing what the pipeline rea
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from tauceti_roadmap_worker import prreviews, replies
+from tauceti_roadmap_worker import prreviews, reformat, replies
+from tauceti_roadmap_worker.gh import GHRateLimited
 
-from .fakes import example_config
+from .fakes import FakeBoard, example_config
+from .test_prreview import ContentGH, node, review_job
 
 FIXTURES = Path(__file__).parent / "fixtures" / "prreview-comments"
 NAMES = ("accepted-incremental", "p3-incremental", "pass-p1-p2-p3", "full-p2-p3")
@@ -136,3 +139,91 @@ def test_a_rebuild_that_would_change_what_the_pipeline_reads_is_refused(monkeypa
     monkeypatch.setattr(prreviews, "render_posted", drops_a_finding)
     assert prreviews.reformat_posted(old, "a" * 12) is None
     assert prreviews.reformat_posted("Just a comment.", "a" * 12) is None
+
+
+# --- the command -------------------------------------------------------------------------------------
+
+def comment(cid, body, login="carol", t="2026-11-18T09:00:00Z"):
+    return {"id": cid, "body": body, "user": {"login": login}, "created_at": t}
+
+
+def command(gh, jobs=(), write=False, **kw):
+    cfg = example_config()
+    cfg.roadmap.pool = ["carol", "dave"]
+    ctx = SimpleNamespace(cfg=cfg, gh=gh, board=FakeBoard(jobs=list(jobs)), operator="carol", dry_run=not write)
+    slept = []
+    return reformat.run(ctx, write=write, report=lambda line: None, sleep=slept.append, **kw), slept
+
+
+FOLDER = "TauCetiRoadmap/DenoisingDiffusion"
+
+
+def threads():
+    old = fixture("p3-incremental")
+    other = fixture("full-p2-p3")
+    # (#12: two reviews of one folder; only the later one is rebuilt)
+    return {12: [comment(1, old, t="2026-11-17T09:00:00Z"), comment(2, old), comment(3, "A reply.")],
+            13: [comment(4, other, login="erin")],
+            14: [comment(5, fixture("accepted-incremental"))]}
+
+
+def pulls_gh(comments=None):
+    return ContentGH([node(12, "1" * 40, author="dave"), node(13, "2" * 40), node(14, "3" * 40)],
+                     comments=comments or threads())
+
+
+def test_the_dry_run_prints_each_latest_review_with_its_sizes_and_writes_nothing():
+    gh = pulls_gh()
+    lines, slept = command(gh)
+    old = fixture("p3-incremental")
+    new = prreviews.reformat_posted(old, replies.text_version(old))
+    assert gh.writes == [] and slept == []
+    assert lines[0] == f"[dry run] #12 {FOLDER}: comment 2: {len(old):,} -> {len(new):,} characters"
+    assert lines[1] == "#13 TauCetiRoadmap/MarkovDecisionProcesses: the latest review is not ours (erin): left as it is"
+    assert lines[2].startswith("[dry run] #14 TauCetiRoadmap/MatesDoubleCategories: comment 5: ")
+    assert lines[3].startswith("[dry run] in all: ")
+
+
+def test_the_command_edits_the_latest_review_of_each_folder_in_place_and_is_idempotent():
+    gh = pulls_gh()
+    lines, slept = command(gh, write=True, pace=0.5, logins=["erin"])
+    assert [(m, p) for m, p, _x in gh.writes] == [("PATCH", f"repos/{gh_repo()}/issues/comments/{n}") for n in (2, 4, 5)]
+    assert slept == [0.5, 0.5] and lines[-1].startswith("3 comments reformatted (")
+    for (_m, _p, payload), cid in zip(gh.writes, (2, 4, 5)):
+        old = next(c["body"] for t in threads().values() for c in t if c["id"] == cid)
+        assert prreviews.posted_identity(payload["body"]) == prreviews.posted_identity(old)
+    # A second pass finds them in the layout already.
+    done = threads()
+    for _m, path, payload in gh.writes:
+        cid = int(path.rsplit("/", 1)[1])
+        for t in done.values():
+            for c in t:
+                if c["id"] == cid:
+                    c["body"] = payload["body"]
+    gh = pulls_gh(done)
+    lines, _slept = command(gh, write=True, logins=["erin"])
+    assert gh.writes == [] and lines[:3] == [f"#12 {FOLDER}: comment 2: already in the posted layout",
+                                             ("#13 TauCetiRoadmap/MarkovDecisionProcesses: comment 4: already in the "
+                                              "posted layout"),
+                                             ("#14 TauCetiRoadmap/MatesDoubleCategories: comment 5: already in the "
+                                              "posted layout")]
+
+
+def gh_repo():
+    return example_config().repositories.content
+
+
+def test_a_pull_request_with_a_round_under_way_is_skipped_and_a_rate_limit_stops_the_run():
+    gh = pulls_gh()
+    busy = review_job(40, 3, 12, "1" * 40, "claimed", name="DenoisingDiffusion")
+    lines, _slept = command(gh, [busy], write=True, numbers=[12, 14])
+    assert lines[0] == "#12: skipped: PRREVIEW-DenoisingDiffusion~3 is claimed (run again once it is over)"
+    assert [p for _m, p, _x in gh.writes] == [f"repos/{gh_repo()}/issues/comments/5"]
+
+    class Limited(ContentGH):
+        def write(self, method, path, payload=None):
+            raise GHRateLimited("API rate limit exceeded", 0)
+    gh = Limited([node(12, "1" * 40), node(14, "3" * 40)], comments=threads())
+    lines, _slept = command(gh, write=True)
+    assert lines == ["stopped at #12: API rate limit exceeded; 0 edited, run again later",
+                     "0 comments reformatted (0 -> 0 characters)"]
