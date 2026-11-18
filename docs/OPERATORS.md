@@ -962,10 +962,12 @@ A review is a referee's report with three kinds of remark, numbered apart (`prom
   result false or unsupported, or the plan unsound (a false theorem, a missing hypothesis, a wrong
   definition, a source that does not prove the claim, copied passages, a cycle or an upward
   supplier, a build failure, sorry'd data, a `set_option`, a Lean statement that does not say what
-  the README says, private material, a file that does not belong, a change outside the folder);
+  the README says, private material, a file that does not belong, a change outside the folder),
+  and any sentence that asserts false mathematics, wherever it stands (a Check, an example, a proof
+  sketch, commentary): P2 when it is outside the stated results;
 - **small corrections** (`C01`…): true, verified and minor slips that mislead a reader without
-  touching a stated result (a wrong label, a false sentence of commentary, a stale description, a
-  statement true by unfolding the definitions);
+  touching a stated result and without asserting false mathematics (a wrong label, an out-of-date
+  sentence of commentary, a stale description, a statement true by unfolding the definitions);
 - **format notes** (`N01`…): form only (section order and shape, TeX, pull-request numbers and
   process words, heading style, namespaces, import style, a suggested Check, wording).
 

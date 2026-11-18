@@ -67,6 +67,18 @@ def test_briefs_that_write_or_review_the_lean_carry_the_headline_rule(lane):
     assert text.count("Fermat's Last Theorem") == 1                     # the rule is stated once
 
 
+@pytest.mark.parametrize("lane", ["review", "review-web", "redteam", "redteam-section", "prreview"])
+def test_a_false_sentence_blocks_wherever_it_stands(lane):
+    # An accepted head carries the label that says the review found no errors: a sentence of commentary
+    # that asserts false mathematics is a finding, never a small correction (2026-11-18: a first review
+    # accepted a README whose commentary gave a bound wrong by a factor of two).
+    text = " ".join(prompts.render(lane, all_values()).split())
+    assert "any sentence that asserts false mathematics, wherever it stands" in text
+    assert "a false sentence outside the stated results" in text
+    assert "commentary that is false as written" not in text
+    assert "without asserting false mathematics" in text
+
+
 @pytest.mark.parametrize("lane", prompts.BRIEFS)
 def test_no_brief_asks_for_an_example_quota_or_lean_counterparts_of_checks(lane):
     text = prompts.render(lane, all_values()).lower()
