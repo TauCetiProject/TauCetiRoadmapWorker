@@ -6,7 +6,9 @@ import os
 import subprocess
 from types import SimpleNamespace
 
-from tauceti_roadmap_worker import openroadmaps
+import pytest
+
+from tauceti_roadmap_worker import gitops, openroadmaps
 from tauceti_roadmap_worker.lanes import base, lake, pr
 
 from .fakes import example_config
@@ -171,6 +173,32 @@ def test_a_pull_request_branch_with_another_pin_gets_its_own_packages(tmp_path, 
     assert ws.extra["lake"].reason == "lake exe cache get exited 1"             # conftest: the fetch is `false`
     assert target(wt / ".lake" / "packages") == str(ws.extra["lake"].packages.resolve())
     assert lake.ready_pin(shared_a) == lake.lake_pin(content)                  # main's readiness untouched
+
+
+@needs_git
+def test_a_pull_request_without_a_head_ref_is_checked_out_from_its_test_merge(tmp_path, monkeypatch):
+    monkeypatch.setattr(lake, "lake_on_path", lambda: LAKE)
+    remote = origin(tmp_path / "origin", PIN_A)
+    def sha(ref):
+        return subprocess.run(["git", "rev-parse", ref], cwd=remote, check=True, capture_output=True, text=True).stdout.strip()
+    main = sha("main")
+    run(remote, "checkout", "-q", "-b", "work")
+    (remote / "extra.txt").write_text("extra\n")
+    run(remote, "add", "-A")
+    run(remote, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work")
+    head = sha("HEAD")
+    run(remote, "checkout", "-q", "--detach", main)
+    run(remote, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "test merge", head)
+    run(remote, "update-ref", "refs/pull/9/merge", "HEAD")                     # GitHub has no refs/pull/9/head
+    run(remote, "checkout", "-q", "main")
+    content = tmp_path / "w1" / "content"
+    run(tmp_path, "clone", "-q", str(remote), str(content))
+    ctx = worker(tmp_path)
+    fetched(ctx.state, content)
+    wt, tip = pr.pr_branch_worktree(ctx, content, "Alpha", 9, "roadmap/alpha", workspace(tmp_path, content))
+    assert tip == head and (wt / "extra.txt").read_text() == "extra\n"
+    with pytest.raises(gitops.GitError):                                       # neither ref: still an error
+        gitops.fetch_pr_head(content, 99)
 
 
 @needs_git

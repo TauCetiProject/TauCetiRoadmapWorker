@@ -112,9 +112,9 @@ def pr_branch_worktree(ctx: Context, content: Path, name: str, pr: int, branch: 
     """A worktree on the pull request's branch at its current head, wired for the branch's own pin.
     Returns (worktree, head sha)."""
     wt = _add_worktree(content, ctx.wdir / "pr" / name)
-    gitops.git(wt, "fetch", "-q", "origin", f"pull/{pr}/head")
+    fetched = gitops.fetch_pr_head(wt, pr)        # the head ref, or the test merge's second parent
     release_branch(content, branch, keep=wt)      # an earlier lane's worktree may still hold the branch
-    gitops.git(wt, "checkout", "-q", "-B", branch, "FETCH_HEAD")
+    gitops.git(wt, "checkout", "-q", "-B", branch, fetched)
     wire_worktree(ctx, content, wt, ws)
     return wt, gitops.git(wt, "rev-parse", "HEAD").strip()
 
