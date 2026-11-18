@@ -50,6 +50,7 @@ from . import (
     filers,
     gates,
     gitops,
+    layout,
     openroadmaps,
     overlaps,
     prbatch,
@@ -2279,6 +2280,103 @@ def settled_folders(ctx, folders, jobs: list[Job], head: str, small: int,
     return out
 
 
+class LayoutCheck:
+    """Whether a roadmap folder holds the same files at two commits up to the order of its README's
+    top-level sections (`[prreview] carry_layout`): the folder's entries at both commits
+    (`prbatch.tree_entries`) agree except `README.md`, and the two READMEs (`prbatch.blob_texts`) hold
+    the same opening and the same sections, each byte for byte, in any order
+    (`layout.section_permutation`). Any other difference, however small, is a change. Read through
+    GraphQL, each pair once per run (`same`), and only for a pair whose folder trees differ: the
+    callers ask when an earlier head's acceptance or settlement would otherwise be lost."""
+
+    def __init__(self, gh, repo: str, batch: int):
+        self.gh, self.repo, self.batch = gh, repo, batch
+        self.known: dict[tuple[str, str, str], bool | None] = {}
+
+    def same(self, pairs) -> dict[tuple[str, str, str], bool | None]:
+        """(commit a, commit b, folder path) -> whether the folder at `b` is the folder at `a` up to the
+        order of its README's sections; None when GitHub did not give what the answer needs."""
+        todo = [x for x in dict.fromkeys(pairs) if x not in self.known]
+        if todo:
+            entries = prbatch.tree_entries(self.gh, self.repo, [(sha, path) for a, b, path in todo for sha in (a, b)],
+                                           self.batch)
+            readmes = []
+            for a, b, path in todo:
+                if (a, path) not in entries or (b, path) not in entries:
+                    self.known[(a, b, path)] = None
+                    continue
+                ea, eb = entries[(a, path)] or {}, entries[(b, path)] or {}
+                differ = {n for n in set(ea) | set(eb) if ea.get(n) != eb.get(n)}
+                if not ea or not eb or not differ <= {"README.md"} or "README.md" not in ea or "README.md" not in eb:
+                    self.known[(a, b, path)] = False
+                elif not differ:
+                    self.known[(a, b, path)] = True
+                else:
+                    readmes.append((a, b, path))
+            texts = prbatch.blob_texts(self.gh, self.repo, [(sha, f"{path}/README.md") for a, b, path in readmes
+                                                            for sha in (a, b)], self.batch)
+            for a, b, path in readmes:
+                old, new = (a, f"{path}/README.md"), (b, f"{path}/README.md")
+                if old not in texts or new not in texts:
+                    self.known[(a, b, path)] = None
+                else:
+                    self.known[(a, b, path)] = bool(texts[old] is not None and texts[new] is not None
+                                                    and layout.section_permutation(texts[old], texts[new]))
+        return {x: self.known[x] for x in pairs}
+
+
+LAYOUT_MARK = "tauceti-roadmap-layout"
+LAYOUT_RE = re.compile(r"<!--\s*" + LAYOUT_MARK + r"\b(.*?)-->", re.DOTALL)
+
+
+def layout_note(source: str, head: str, folders) -> str:
+    """The housekeeping note on a pull request whose head differs from an accepted head only in the
+    order of its READMEs' sections, with its record (`layout_record`). It opens with a housekeeping
+    prefix and says that no further change is needed, so that no reading of the timeline takes it for
+    a review (`replies.is_review`), whoever posts it."""
+    folders = list(folders)
+    names = ", ".join(f"`{f}/`" for f in folders)
+    data = {"from": source, "head": head, "folders": folders}
+    return (f"Housekeeping at `{head[:7]}`: only the order of the README's sections changed in {names} since "
+            f"`{source[:7]}`. Every section reads as it did there, word for word, and every other file of the "
+            f"roadmap folder{'s' if len(folders) != 1 else ''} is unchanged, so the AI review's acceptance of "
+            f"`{source[:7]}` holds for this head: no further change is needed and no new review is filed.\n\n"
+            f"<!-- {LAYOUT_MARK} {json.dumps(data, sort_keys=True)} -->\n")
+
+
+def layout_record(body: str) -> dict | None:
+    """A comment's layout record (the last one): {from, head, folders}; {} for one that does not parse,
+    None for a comment without one."""
+    found = LAYOUT_RE.findall(body or "")
+    if not found:
+        return None
+    try:
+        record = json.loads(found[-1].strip())
+    except ValueError:
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def note_layout(ctx, repo: str, number: int, source: str, head: str, folders, threads: dict, batch: int) -> str:
+    """The housekeeping note of a layout-only change (`layout_note`) on the pull request, once per head:
+    '' when a comment records it already (the command that made the change posts it), else what was
+    done. A note GitHub refuses (a token that cannot write to the content repository) is reported."""
+    if number not in threads:
+        try:
+            threads[number] = prbatch.PullReader(ctx.gh, repo, [number], batch).comments(number)
+        except GHError:
+            threads[number] = None
+    if threads[number] is None:
+        return f"#{number}: layout note not posted (its comments could not be read)"
+    if any((layout_record(c.get("body") or "") or {}).get("head") == head for c in threads[number]):
+        return ""
+    try:
+        ctx.gh.write("POST", f"repos/{repo}/issues/{number}/comments", {"body": layout_note(source, head, folders)})
+    except GHError as exc:
+        return f"#{number}: layout note not posted ({str(exc).splitlines()[0][:160]})"
+    return f"#{number}: layout note posted ({head[:7]} only reorders the README sections of {source[:7]})"
+
+
 REVIEWED_HEADS = 3            # earlier heads a moved head is compared with (`unchanged_acceptance`), per source
 
 
@@ -2300,15 +2398,16 @@ def reviewed_heads(folders, jobs: list[Job], head: str) -> list[str]:
 
 
 def unchanged_folders(ctx, repo: str, head: str, folders, jobs: list[Job], small: int,
-                      texts: dict[str, str | None] | None, batch: int, minor: bool
-                      ) -> tuple[dict[str, str], bool]:
+                      texts: dict[str, str | None] | None, batch: int, minor: bool,
+                      layout_check: LayoutCheck | None = None) -> tuple[dict[str, str], bool]:
     """With `[prreview] carry_unchanged_folders`: (roadmap folder -> the head its latest finished review
     settled it at, for the folders of a pull request that need no review at `head`; whether that could
     be told). A folder needs none when that review settles it (`settle_points`: it accepted, or with
     `minor` found P3 points only and had its repair) at `head`, or at an earlier head where the folder
     held the files it holds at `head` (one git tree, `prbatch.tree_ids`): the head moved by a repair of
-    another folder or a merge of the base branch, and this folder is byte for byte what was read. The
-    review that counts is the folder's latest finished one, so an acceptance is never carried past a
+    another folder or a merge of the base branch, and this folder is byte for byte what was read; with
+    `layout_check` (`[prreview] carry_layout`), or what was read with its README's sections reordered
+    (`LayoutCheck`). The review that counts is the folder's latest finished one, so an acceptance is never carried past a
     later review of the folder; a folder with a review under way is left to that review. ({}, False)
     when GitHub did not give a tree: nothing is known, and the caller files nothing and labels nothing
     on that ground."""
@@ -2323,17 +2422,27 @@ def unchanged_folders(ctx, repo: str, head: str, folders, jobs: list[Job], small
     ids = prbatch.tree_ids(ctx.gh, repo, [(sha, path_of[folder]) for folder, start in moved.items()
                                           for sha in (head, start)], batch)
     out = {folder: start for folder, start in at.items() if start == head}
+    reordered = []
     for folder, start in moved.items():
         here, there = (head, path_of[folder]), (start, path_of[folder])
         if here not in ids or there not in ids:
             return {}, False
         if ids[here] and ids[here] == ids[there]:
             out[folder] = start
+        elif ids[here] and ids[there] and layout_check is not None:
+            reordered.append(folder)
+    if reordered:
+        # (`[prreview] carry_layout`: only the order of the README's sections changed since that head)
+        found = layout_check.same([(moved[f], head, path_of[f]) for f in reordered])
+        if any(found[(moved[f], head, path_of[f])] is None for f in reordered):
+            return {}, False
+        out.update({f: moved[f] for f in reordered if found[(moved[f], head, path_of[f])]})
     return out, True
 
 
 def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: list[Job], texts, p,
-                         threads: dict, batch: int, labelled: bool, moves: int = 0) -> tuple[str, bool]:
+                         threads: dict, batch: int, labelled: bool, moves: int = 0,
+                         how: dict | None = None) -> tuple[str, bool]:
     """With `[prreview] carry_unchanged`: (the earlier head whose acceptance stands at `head`, whether
     the comparison could be made). The acceptance of an earlier head stands at `head` when the git tree
     of every roadmap folder of the pull request is the same at both (the head only moved: a rebase, a
@@ -2345,7 +2454,14 @@ def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: 
     nothing is carried. So does the latest finished review of a folder, when it read the files `head`
     holds and did not accept them: an acceptance is not carried past a later review of the same files.
     ('', False) when GitHub did not give the trees: nothing is known, and the caller leaves the pull
-    request as it is. `moves`: see `carried_acceptance`, which asks this of the head a record carries from."""
+    request as it is. `moves`: see `carried_acceptance`, which asks this of the head a record carries from.
+
+    With `[prreview] carry_layout`, a folder whose README only had its top-level sections reordered
+    since the earlier head, every other file of the folder unchanged (`LayoutCheck`), holds the same
+    files as well, however many lines moved: the acceptance stands, and `how["layout"]` lists those
+    folders. That comparison is made only for an earlier head that was accepted, so that the reads it
+    costs are spent where an acceptance would otherwise be lost; a later review that read the same
+    files in either order and did not accept stands, as above."""
     if refused_at(ctx, folders, jobs, head, texts):
         return "", True
     tried = reviewed_heads(folders, jobs, head)[:REVIEWED_HEADS]
@@ -2389,19 +2505,47 @@ def unchanged_acceptance(ctx, repo: str, number: int, head: str, folders, jobs: 
             if not verdict or verdict.get("status") != "accepted":
                 return "", True
     known = True
+    check = LayoutCheck(ctx.gh, repo, batch) if p.carry_layout else None
+
+    def accepted(source: str) -> bool:
+        return bool(folders_accepted(ctx, folders, jobs, source, texts)[0]
+                    or (marked and carried_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads,
+                                                      batch, moves)[0])
+                    or (p.carry_minor
+                        and set(folders) <= settled_folders(ctx, folders, jobs, source, p.small_change_lines, texts)))
     for source in tried:
         if any((source, path) not in ids for path in paths):
             known = False
             continue
-        if any(not ids[(head, path)] or ids[(source, path)] != ids[(head, path)] for path in paths):
+        if any(not ids[(head, path)] for path in paths):
             continue
-        if folders_accepted(ctx, folders, jobs, source, texts)[0]:
+        differ = [f for f, path in path_of.items() if ids[(source, path)] != ids[(head, path)]]
+        if differ and (check is None or any(not ids[(source, path_of[f])] for f in differ)):
+            continue
+        if not accepted(source):
+            continue
+        if not differ:
             return source, True
-        if marked and carried_acceptance(ctx, repo, number, source, folders, jobs, texts, p, threads, batch,
-                                         moves)[0]:
-            return source, True
-        if p.carry_minor and set(folders) <= settled_folders(ctx, folders, jobs, source, p.small_change_lines, texts):
-            return source, True
+        # Only the order of the README's sections may differ, folder by folder; and a later review of a
+        # folder that read the files `head` holds, up to that order, and did not accept them stands.
+        later = {f: str(last[f].inputs["head"]) for f in differ if f in last
+                 and str(last[f].inputs["head"]) != source and ids[(str(last[f].inputs["head"]), path_of[f])]
+                 and ids[(str(last[f].inputs["head"]), path_of[f])] != ids[(head, path_of[f])]}
+        found = check.same([(source, head, path_of[f]) for f in differ]
+                           + [(at, head, path_of[f]) for f, at in later.items()])
+        if any(found[(source, head, path_of[f])] is False for f in differ):
+            continue
+        if any(v is None for v in found.values()):
+            known = False
+            continue
+        for f, at in later.items():
+            if found[(at, head, path_of[f])]:
+                verdict = latest_verdict(ctx, [last[f]], at, texts)
+                if not verdict or verdict.get("status") != "accepted":
+                    return "", True
+        if how is not None:
+            how["layout"] = differ
+        return source, True
     return "", known
 
 
@@ -2582,6 +2726,7 @@ def sync_pr_reviews(ctx) -> list[str]:
         return minor[number]
 
     kept: dict[int, tuple[dict[str, str], bool]] = {}
+    layout_check = LayoutCheck(ctx.gh, repo, batch) if p.carry_layout else None
 
     def kept_folders(number: int, folders, mine: list[Job], head: str) -> tuple[dict[str, str], bool]:
         """The folders of #number that need no review at `head`, each with the head its latest review
@@ -2590,7 +2735,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             return {}, True
         if number not in kept:
             kept[number] = unchanged_folders(ctx, repo, head, folders, mine, p.small_change_lines, texts, batch,
-                                             p.carry_minor)
+                                             p.carry_minor, layout_check)
         return kept[number]
 
     def close_untaken(number: int, mine: list[Job], head: str, still: dict[str, str]) -> None:
@@ -2610,6 +2755,7 @@ def sync_pr_reviews(ctx) -> list[str]:
     carried_prs: set[int] = set()
     by_folder: set[int] = set()             # accepted folder by folder, some at an earlier head with the same files
     unchanged: dict[int, str] = {}          # a head that only moved: the earlier head whose acceptance stands
+    reordered: dict[int, tuple[str, list[str]]] = {}    # ... up to the order of these folders' README sections
     accepted_at: dict[int, dict[str, str]] = {}     # an accepted pull request: folder -> the head reviewed for it
     threads: dict[int, list[dict] | None] = {}
     pr_texts: dict[int, dict | None] = {}
@@ -2659,9 +2805,10 @@ def sync_pr_reviews(ctx) -> list[str]:
         if not accepted and folders and set(folders) <= minor_settled(number, folders, mine, head):
             accepted, carried = True, True
             accepted_at[number] = {f: last_reviewed_head(mine, f, head) for f in folders}
+        how: dict = {}
         if not accepted and folders and p.carry_unchanged:
             source, known = unchanged_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads, batch,
-                                                 labelled)
+                                                 labelled, how=how)
             if not known:
                 carried_prs.add(number)         # nothing is known this run: the label stays as it is, no review is filed
                 out.append(f"#{number}: {p.label} not checked (the roadmap folders at {head[:7]} could not be "
@@ -2679,9 +2826,17 @@ def sync_pr_reviews(ctx) -> list[str]:
                             ctx, job, f"Superseded: the roadmap folders of #{number} at {head[:7]} are those of "
                                       f"{source[:7]}, whose acceptance stands")):
                         out.append(f"#{number}: {job.id} superseded")
+                if how.get("layout"):
+                    # Only the order of a README's sections changed: say so on the pull request, once.
+                    reordered[number] = (source, list(how["layout"]))
+                    line = note_layout(ctx, repo, number, source, head, how["layout"], threads, batch)
+                    if line:
+                        out.append(line)
                 if labelled:
                     out.append(f"#{number}: {p.label} kept (the roadmap folders at {head[:7]} are those of "
-                               f"{source[:7]}, whose acceptance stands: the head only moved, no review filed)")
+                               f"{source[:7]}" + (", up to the order of the README sections of "
+                                                  + ", ".join(how["layout"]) if how.get("layout") else "")
+                               + ", whose acceptance stands: the head only moved, no review filed)")
         if not accepted and folders and p.carry_unchanged_folders:
             still, known = kept_folders(number, folders, mine, head)
             if not known:
@@ -2704,8 +2859,10 @@ def sync_pr_reviews(ctx) -> list[str]:
             if accepted and not labelled:
                 ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [p.label]})
                 out.append(f"#{number}: {p.label} added ("
-                           + (f"the roadmap folders at {head[:7]} are those of {unchanged[number][:7]}, whose "
-                              "acceptance stands: the head only moved" if number in unchanged
+                           + (f"the roadmap folders at {head[:7]} are those of {unchanged[number][:7]}"
+                              + (", up to the order of the README sections of " + ", ".join(reordered[number][1])
+                                 if number in reordered else "")
+                              + ", whose acceptance stands: the head only moved" if number in unchanged
                               else f"every roadmap folder at {head[:7]} holds the files its last review settled"
                               if number in by_folder
                               else f"every roadmap folder is settled at {head[:7]}: the last reviews accepted, or found "

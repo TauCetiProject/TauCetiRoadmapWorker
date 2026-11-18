@@ -365,6 +365,12 @@ class PRReview:
     # new head for `label`. Only the folders whose files changed since their last review are read again.
     # Off: every folder of a pull request is reviewed at every head one of its folders' repairs leaves.
     carry_unchanged_folders: bool = True
+    # With the two settings above, a roadmap folder whose README only had its top-level sections
+    # reordered (each section byte for byte, every other file of the folder unchanged: `layout.reorder`,
+    # the `layout` command) holds the same files as before, however many lines moved: the acceptance or
+    # settlement of the earlier head stands, no review is filed, and the pull request gets one
+    # housekeeping note saying that only the order of the sections changed.
+    carry_layout: bool = True
     # A repair may settle a finding as `outside this folder: <where>` when no edit of the files it may
     # change can act on it. The review's verdict records it (`deferred`), each later review of the folder
     # is told of it, does not raise it again and does not count it against acceptance, and it leaves the

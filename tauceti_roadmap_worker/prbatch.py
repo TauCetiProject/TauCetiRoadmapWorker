@@ -257,3 +257,68 @@ def tree_ids(gh, repo: str, wanted: list[tuple[str, str]], batch: int) -> dict[t
                 node = nodes[f"t{i}"]
                 out[pair] = str(node["oid"]) if isinstance(node, dict) and node.get("oid") else None
     return out
+
+
+def tree_entries(gh, repo: str, wanted: list[tuple[str, str]], batch: int) -> dict[tuple[str, str], dict | None]:
+    """The entries of each folder at each commit (`wanted`: (commit, path) pairs), as {name: git object
+    id}, read as `object(expression: "<commit>:<path>") { ... on Tree { entries { name oid } } }`, four
+    times `batch` pairs per GraphQL query: two commits hold the same file under the folder exactly when
+    the ids of its entry agree. None for a path, or a commit, that is not there (or is not a folder); a
+    pair of a batch whose query failed is left out (nothing is known about it)."""
+    out: dict[tuple[str, str], dict | None] = {}
+    if not wanted or not hasattr(gh, "graphql"):
+        return out
+    owner, name = repo.split("/", 1)
+    for chunk in chunks(sorted(set(wanted)), max(batch, 1) * 4):
+        fields = " ".join(f"e{i}: object(expression: {json.dumps(f'{sha}:{path}')}) "
+                          "{ ... on Tree { entries { name oid } } }" for i, (sha, path) in enumerate(chunk))
+        try:
+            data = gh.graphql(f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) "
+                              f"{{ {fields} }} }}", owner=owner, name=name)
+        except GHError:
+            continue
+        nodes = (data or {}).get("repository") or {}
+        for i, pair in enumerate(chunk):
+            if f"e{i}" in nodes:
+                node = nodes[f"e{i}"]
+                entries = node.get("entries") if isinstance(node, dict) else None
+                out[pair] = ({str(e.get("name")): str(e.get("oid")) for e in entries if isinstance(e, dict)}
+                             if isinstance(entries, list) else None)
+    return out
+
+
+def blob_texts(gh, repo: str, wanted: list[tuple[str, str]], batch: int) -> dict[tuple[str, str], str | None]:
+    """The text of each file at each commit (`wanted`: (commit, path) pairs), four times `batch` pairs
+    per GraphQL query (`object(expression:) { ... on Blob { text isTruncated } }`); a text GraphQL cut
+    short is read whole by REST. None for a file that is not there (or not text); a pair of a batch
+    whose query failed, and one REST could not read, is left out."""
+    out: dict[tuple[str, str], str | None] = {}
+    if not wanted:
+        return out
+    pending = sorted(set(wanted))
+    if hasattr(gh, "graphql"):
+        owner, name = repo.split("/", 1)
+        for chunk in chunks(pending, max(batch, 1) * 4):
+            fields = " ".join(f"b{i}: object(expression: {json.dumps(f'{sha}:{path}')}) "
+                              "{ ... on Blob { text isTruncated } }" for i, (sha, path) in enumerate(chunk))
+            try:
+                data = gh.graphql(f"query($owner: String!, $name: String!) {{ repository(owner: $owner, "
+                                  f"name: $name) {{ {fields} }} }}", owner=owner, name=name)
+            except GHError:
+                continue
+            nodes = (data or {}).get("repository") or {}
+            for i, pair in enumerate(chunk):
+                if f"b{i}" not in nodes:
+                    continue
+                node = nodes[f"b{i}"]
+                if not isinstance(node, dict):
+                    out[pair] = None
+                elif not node.get("isTruncated"):
+                    out[pair] = node.get("text") if isinstance(node.get("text"), str) else None
+    for pair in pending:
+        if pair not in out and hasattr(gh, "raw_file"):
+            try:
+                out[pair] = gh.raw_file(repo, pair[1], ref=pair[0])
+            except GHError:
+                continue
+    return out
