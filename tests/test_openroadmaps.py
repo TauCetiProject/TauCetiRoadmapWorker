@@ -95,6 +95,51 @@ def test_a_pull_request_whose_head_ref_github_lacks_is_left_out_not_fatal(world,
         openroadmaps.refresh(gh, cfg, force=True)
 
 
+def headless_pull_request(tmp_path, number, files):
+    """In the fixture's origin: a branch with `files`, and GitHub's test merge of it into main under
+    refs/pull/<number>/merge, with no refs/pull/<number>/head. Returns the head commit."""
+    origin = tmp_path / "origin"
+    main = git(origin, "rev-parse", "main").strip()
+    git(origin, "checkout", "-q", "-b", f"headless{number}", main)
+    head = commit(origin, files, f"headless {number}")
+    git(origin, "checkout", "-q", "--detach", main)
+    git(origin, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "test merge", head)
+    git(origin, "update-ref", f"refs/pull/{number}/merge", "HEAD")
+    git(origin, "checkout", "-q", "main")
+    return head
+
+
+def test_a_missing_head_ref_is_read_from_the_test_merge_when_it_has_the_listed_head(world, tmp_path, monkeypatch):
+    cfg, gh = world
+    files = {"TauCetiRoadmap/Headless/README.md": "# Roadmap: headless\n"}
+    head = headless_pull_request(tmp_path, 9, files)
+    listing = gh.graphql
+    listed_head = {"sha": head}
+
+    def with_the_headless_one(query, **variables):
+        data = listing(query, **variables)
+        data["repository"]["pullRequests"]["nodes"].append(
+            {"number": 9, "title": "No head ref", "isDraft": False, "headRefOid": listed_head["sha"],
+             "author": {"login": "dan"}, "files": {"nodes": [{"path": path} for path in files]}})
+        return data
+    monkeypatch.setattr(gh, "graphql", with_the_headless_one, raising=False)
+    index = openroadmaps.refresh(gh, cfg, force=True)
+    assert [p["pr"] for p in index["prs"]] == [7, 9] and index["unfetched"] == []
+    assert openroadmaps.read(cfg.state_dir(), index, openroadmaps.pr_ref(9), "Headless") == "# Roadmap: headless\n"
+    mirror = openroadmaps.mirror(cfg.state_dir())
+    assert git(mirror, "for-each-ref", "--format=%(refname)", "refs/open-merge/") == ""        # the scratch ref is gone
+    # A test merge of another head than the one GitHub lists is not used: the pull request is left out.
+    listed_head["sha"] = "1" * 40
+    index = openroadmaps.refresh(gh, cfg, force=True)
+    assert [p["pr"] for p in index["prs"]] == [7] and index["unfetched"] == [9]
+    # The read-only checkout of such a pull request comes from the same place.
+    dest = tmp_path / "checkout"
+    assert gitops.checkout_pr("o/r", dest, 9) == head
+    assert (dest / "TauCetiRoadmap/Headless/README.md").read_text() == "# Roadmap: headless\n"
+    with pytest.raises(gitops.GitError):
+        gitops.checkout_pr("o/r", dest, 99)                                                    # neither ref: still an error
+
+
 def test_grep_searches_open_heads_first_then_main(world):
     cfg, gh = world
     index = openroadmaps.refresh(gh, cfg)

@@ -1328,9 +1328,11 @@ never adds it. Create the label on the content repository beforehand to give it 
 description.
 
 An open pull request whose head ref GitHub does not have (`refs/pull/N/head` missing: its head
-repository was deleted, or the ref was never written) is left out of the index of open roadmap pull
-requests (`openroadmaps.refresh` records its number under `unfetched`) instead of failing the fetch
-of every other head. The label run logs `#N: left out of this run, its labels as they are (GitHub
+repository was deleted, or the ref was never written) is read from GitHub's test merge of it
+(`refs/pull/N/merge`, whose second parent is the head) when that parent is the head GitHub lists; the
+review lanes check it out the same way (`gitops.checkout_pr`). Without a usable test merge it is left
+out of the index of open roadmap pull requests (`openroadmaps.refresh` records its number under
+`unfetched`) instead of failing the fetch of every other head. The label run logs `#N: left out of this run, its labels as they are (GitHub
 has no head ref for it to fetch)` and goes on; any other fetch failure still stops it before
 anything is written.
 
