@@ -1,5 +1,5 @@
 """The AI review of every roadmap pull request (PRREVIEW): the job kind, the `[prreview]` table, the
-`board sync` step that files one review per new head, retires stale ones and keeps the `ai-approved`
+`board sync` step that files one review per new head, retires stale ones and keeps the `ai-found-no-errors`
 label honest, and the lane that reviews a head read-only, posts one comment and labels an accepted
 head. The final approval stays a human's."""
 
@@ -122,7 +122,7 @@ def test_the_prreview_table_defaults_off_and_parses():
     cfg = config.Config()
     assert (cfg.prreview.enabled, cfg.prreview.label, cfg.prreview.per_run, cfg.prreview.authors,
             cfg.prreview.skip_authors, cfg.prreview.max_folders, cfg.prreview.small_change_lines,
-            cfg.prreview.diff_cap_lines) == (False, "ai-approved", 3, [], [], 10, 150, 2000)
+            cfg.prreview.diff_cap_lines) == (False, "ai-found-no-errors", 3, [], [], 10, 150, 2000)
     text = ('[project]\nname = "P"\n[prreview]\nenabled = true\nlabel = "ai-ok"\nper_run = 5\nauthors = ["carol"]\n'
             'skip_authors = ["dave"]\nmax_folders = 4\nsmall_change_lines = 0\ndiff_cap_lines = 300\n')
     parsed = config.parse(text, "x.toml").prreview
@@ -459,9 +459,9 @@ def test_the_first_rounds_of_a_pool_pull_request_are_passes_before_the_final_rev
     assert "pre" not in fake.created[0][0].inputs and fake.created[0][0].inputs["head"] == H1
     assert out == ["#12: PRREVIEW-Foo~2 created (the final review, after 1 pass)"]
     # A label left on the pull request does not survive a pass either.
-    gh = ContentGH([node(12, H1, labels=["ai-approved"])], files=verdict_file(one, "accepted", H1))
+    gh = ContentGH([node(12, H1, labels=["ai-found-no-errors"])], files=verdict_file(one, "accepted", H1))
     out, _fake = sync(gh, [one], **PASSES)
-    assert ("DELETE", f"{labels}/ai-approved", {}) in gh.writes
+    assert ("DELETE", f"{labels}/ai-found-no-errors", {}) in gh.writes
     # A pass whose points were all P3 and whose repair is in settles nothing: the next round is filed.
     minor = {board.prreview_verdict_path("packages", one): json.dumps({"review": {
         "status": "needs_changes", "head": H1, "pr": 12, "folder": "Foo",
@@ -475,7 +475,7 @@ def test_the_first_rounds_of_a_pool_pull_request_are_passes_before_the_final_rev
     final = review_job(42, 3, 12, H3, "done")
     gh = ContentGH([node(12, H3)], files={**files, **verdict_file(final, "accepted", H3)})
     out, fake = sync(gh, [one, two, final], **PASSES)
-    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and fake.created == []
+    assert gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})] and fake.created == []
     gh = ContentGH([node(12, H4)], files={**files, **verdict_file(final, "needs_changes", H3)})
     _out, fake = sync(gh, [one, two, final], **PASSES)
     [(job, _state, _p)] = fake.created
@@ -512,7 +512,7 @@ def test_a_review_an_operator_filed_at_an_accepted_head_is_not_superseded():
     accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
     asked = review_job(44, 2, 1164, H2, "available", folder="Foo")
     asked.inputs["operator_check"] = True
-    out, fake = sync(ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2)),
+    out, fake = sync(ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, trees=same_trees(H1, H2)),
                      [foo, bar, asked])
     assert fake.states == [] and not any("superseded" in line for line in out)
 
@@ -572,7 +572,7 @@ def test_an_accepted_head_whose_text_its_review_did_not_read_gets_one_check_roun
     pulls = text_pr(12, body="It builds Foo.\n\n<!-- merge-order -->\n**Merge order.** #3 → this pull request.\n"
                              "<!-- /merge-order -->")
     digest = summary.text_digest("Roadmap: Foo", pulls[12]["body"])
-    listing = [node(12, H1, labels=["ai-approved", "awaiting-review"])]
+    listing = [node(12, H1, labels=["ai-found-no-errors", "awaiting-review"])]
     # The verdict predates the record of the text: one incremental round of the head checks it.
     out, fake = sync(ContentGH(listing, pulls=pulls, files=verdict_file(done, "accepted", H1)), [done], text_per_run=10)
     [(job, _s, _p)] = fake.created
@@ -612,7 +612,7 @@ def test_text_checks_go_first_to_the_pull_requests_that_wait_for_nothing():
               24: (["awaiting-review"], True, "Plain.")}
     listing, jobs, files, pulls = [], [], {}, {}
     for i, (n, (labels, draft, body)) in enumerate(sorted(shapes.items())):
-        listing.append(node(n, H1, paths=(f"TauCetiRoadmap/R{n}/README.md",), labels=["ai-approved", *labels],
+        listing.append(node(n, H1, paths=(f"TauCetiRoadmap/R{n}/README.md",), labels=["ai-found-no-errors", *labels],
                             draft=draft))
         job = review_job(60 + i, 1, n, H1, "done", name=f"R{n}", folder=f"R{n}")
         jobs.append(job)
@@ -668,7 +668,7 @@ def test_a_carried_acceptance_has_its_text_checked_against_the_verdict_it_carrie
     small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 5, "deletions": 2}]
 
     def run(files):
-        gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], pulls=pulls, files=files, comments=carried,
+        gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], pulls=pulls, files=files, comments=carried,
                        compares={(H1, H2): small})
         return sync(gh, [foo, bar], carry_accept=True, text_per_run=10)
 
@@ -677,7 +677,7 @@ def test_a_carried_acceptance_has_its_text_checked_against_the_verdict_it_carrie
     assert sorted(j.inputs["folder"] for j, _s, _p in fake.created) == ["Bar", "Foo"]
     assert all(j.inputs["head"] == H2 and j.inputs["previous_head"] == H1 and j.inputs["text_check"]
                for j, _s, _p in fake.created)
-    assert out[0].startswith("#1164: ai-approved kept") and "a check of its title and description" in out[1]
+    assert out[0].startswith("#1164: ai-found-no-errors kept") and "a check of its title and description" in out[1]
     read = {**verdict_read(foo, "accepted", H1, digest), **verdict_read(bar, "accepted", H1, digest)}
     assert run(read)[1].created == []
 
@@ -690,14 +690,14 @@ def test_every_folder_of_a_pull_request_has_its_own_check_of_the_text():
     pulls = text_pr(1164, title="Two roadmaps", body="Both.\n")
     digest = summary.text_digest("Two roadmaps", "Both.\n")
     accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
-    _out, fake = sync(ContentGH([two_folder_pr(H1, ["ai-approved"])], pulls=pulls, files=accepted), [foo, bar],
+    _out, fake = sync(ContentGH([two_folder_pr(H1, ["ai-found-no-errors"])], pulls=pulls, files=accepted), [foo, bar],
                       text_per_run=10)
     assert sorted(j.id for j, _s, _p in fake.created) == ["PRREVIEW-Bar~2", "PRREVIEW-Foo~2"]
     # Bar's check read the text and accepted; Foo's verdict still records none: Foo alone is checked.
     check = review_job(43, 2, 1164, H1, "done", name="Bar", folder="Bar")
     check.inputs.update(text_check=True, text_digest=digest)
     files = {**accepted, **verdict_read(check, "accepted", H1, digest)}
-    _out, fake = sync(ContentGH([two_folder_pr(H1, ["ai-approved"])], pulls=pulls, files=files), [foo, bar, check],
+    _out, fake = sync(ContentGH([two_folder_pr(H1, ["ai-found-no-errors"])], pulls=pulls, files=files), [foo, bar, check],
                       text_per_run=10)
     assert [j.id for j, _s, _p in fake.created] == ["PRREVIEW-Foo~2"]
 
@@ -733,7 +733,7 @@ def test_a_check_covers_the_text_its_worker_read_not_the_text_it_was_filed_for()
     digest_a, digest_b = summary.text_digest("Roadmap: Foo", text_a), summary.text_digest("Roadmap: Foo", text_b)
     check = review_job(41, 2, 12, H1, "done")
     check.inputs.update(text_check=True, text_digest=digest_a)
-    listing = [node(12, H1, labels=["ai-approved", "awaiting-review"])]
+    listing = [node(12, H1, labels=["ai-found-no-errors", "awaiting-review"])]
     # Filed for A, the text was B when the worker fetched it, and it is A again now: A is checked.
     files = {**verdict_file(done, "accepted", H1), **verdict_read(check, "accepted", H1, digest_b)}
     _out, fake = sync(ContentGH(listing, pulls=text_pr(12, body=text_a), files=files), [done, check], text_per_run=10)
@@ -759,10 +759,10 @@ def test_a_check_of_the_text_waiting_at_a_head_the_folders_settle_is_not_superse
         return job
 
     check = waiting(text_check=True, text_digest="0" * 16)
-    out, fake = sync(ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2)),
+    out, fake = sync(ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, trees=same_trees(H1, H2)),
                      [foo, bar, check])
     assert fake.states == [] and not any("superseded" in line for line in out)
-    _out, fake = sync(ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2)),
+    _out, fake = sync(ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, trees=same_trees(H1, H2)),
                       [foo, bar, waiting()])
     assert fake.states == [("PRREVIEW-Foo~2", "done")]
     first = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "needs_changes", H1)}
@@ -785,7 +785,7 @@ def test_an_older_builds_check_never_overrides_a_later_verdicts_digest():
     rewrite.inputs["text_rereview"] = True
     files = {**verdict_file(done, "accepted", H1), **verdict_file(legacy, "needs_changes", H1),
              **verdict_read(rewrite, "accepted", H1, digest_b)}
-    listing = [node(12, H1, labels=["ai-approved", "awaiting-review"])]
+    listing = [node(12, H1, labels=["ai-found-no-errors", "awaiting-review"])]
     _out, fake = sync(ContentGH(listing, pulls=text_pr(12, body=text_a), files=files), [done, legacy, rewrite],
                       text_per_run=10)
     [(job, _s, _p)] = fake.created
@@ -837,7 +837,7 @@ def test_a_text_corrected_without_an_answered_record_gets_its_round():
     # A round that accepts the text ends it.
     accepted = {**files, **verdict_read(rounds[-1], "accepted", H1, digests[3])}
     out, fake = run(texts[4], [done, check, *rounds], accepted)
-    assert fake.created == [] and out == ["#12: ai-approved added (the AI review of 1111111 accepts it)"]
+    assert fake.created == [] and out == ["#12: ai-found-no-errors added (the AI review of 1111111 accepts it)"]
 
 
 def test_a_first_review_answered_by_a_corrected_text_gets_a_text_round():
@@ -896,10 +896,10 @@ def test_a_check_of_the_text_that_asks_for_changes_ends_a_carried_acceptance():
     small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 1, "deletions": 1}]
     files = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1),
              **verdict_file(check, "needs_changes", H2)}
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], pulls=text_pr(1164), files=files, comments=carried,
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], pulls=text_pr(1164), files=files, comments=carried,
                    compares={(H1, H2): small})
     out, _fake = sync(gh, [foo, bar, check], carry_accept=True, text_per_run=10)
-    assert ("DELETE", f"repos/{REPO}/issues/1164/labels/ai-approved", {}) in gh.writes
+    assert ("DELETE", f"repos/{REPO}/issues/1164/labels/ai-found-no-errors", {}) in gh.writes
     assert not any("kept" in line for line in out)
 
 
@@ -916,7 +916,7 @@ def test_a_rebase_of_a_repaired_head_does_not_check_text_its_reviews_read():
     files = {**verdict_read(foo, "accepted", H1, digest),
              board.prreview_verdict_path("packages", bar): json.dumps(minor)}
     for head, trees in ((H2, None), (H3, same_trees(H2, H3))):
-        gh = ContentGH([two_folder_pr(head, ["ai-approved"])], pulls=pulls, files=files, trees=trees)
+        gh = ContentGH([two_folder_pr(head, ["ai-found-no-errors"])], pulls=pulls, files=files, trees=trees)
         out, fake = sync(gh, [foo, bar], carry_minor=True, text_per_run=10)
         assert created(fake) == [] and not any("check of its title" in line for line in out), head
 
@@ -934,9 +934,9 @@ def test_the_text_of_a_head_that_only_moved_is_held_against_the_review_that_acce
              **verdict_read(later, "needs_changes", H2, digest_b)}
     other = {**same_trees(H1, H3), (H2, "TauCetiRoadmap/Foo"): "repaired", (H2, "TauCetiRoadmap/Bar"): "tree-of-Bar"}
     pulls = text_pr(1164, title="Two roadmaps", body="Both, with Foo's new section.\n")
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], pulls=pulls, files=files, trees=other)
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], pulls=pulls, files=files, trees=other)
     out, fake = sync(gh, [foo, bar, later], text_per_run=10)
-    assert out[0].startswith("#1164: ai-approved kept")
+    assert out[0].startswith("#1164: ai-found-no-errors kept")
     checks = sorted((j.inputs["folder"], j.inputs["text_digest"]) for j, _s, _p in fake.created)
     assert checks == [("Bar", digest_b), ("Foo", digest_b)]
 
@@ -1004,15 +1004,15 @@ def test_an_old_rejection_brought_back_by_a_reset_does_not_cover_its_text():
     digest_a, digest_b = summary.text_digest("Two roadmaps", text_a), summary.text_digest("Two roadmaps", text_b)
     files = {**verdict_read(foo, "needs_changes", H1, digest_a), **verdict_read(bar, "accepted", H1, digest_a),
              **verdict_read(again, "accepted", H2, digest_b)}
-    gh = ContentGH([two_folder_pr(H1, ["ai-approved"])], pulls=text_pr(1164, title="Two roadmaps", body=text_a),
+    gh = ContentGH([two_folder_pr(H1, ["ai-found-no-errors"])], pulls=text_pr(1164, title="Two roadmaps", body=text_a),
                    files=files, trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar, again], text_per_run=10)
-    assert out[0].startswith("#1164: ai-approved kept")
+    assert out[0].startswith("#1164: ai-found-no-errors kept")
     assert [(j.inputs["folder"], j.inputs["text_digest"]) for j, _s, _p in fake.created] == [("Foo", digest_a)]
     # A check of A at H1 that accepted after H2's review is the later review, and covers A.
     check = review_job(44, 3, 1164, H1, "done", folder="Foo")
     check.inputs.update(text_check=True, text_digest=digest_a)
-    gh = ContentGH([two_folder_pr(H1, ["ai-approved"])], pulls=text_pr(1164, title="Two roadmaps", body=text_a),
+    gh = ContentGH([two_folder_pr(H1, ["ai-found-no-errors"])], pulls=text_pr(1164, title="Two roadmaps", body=text_a),
                    files={**files, **verdict_read(check, "accepted", H1, digest_a)}, trees=same_trees(H1, H2))
     assert sync(gh, [foo, bar, again, check], text_per_run=10)[1].created == []
 
@@ -1186,24 +1186,24 @@ def test_a_chore_carries_the_label_while_a_pool_member_records_an_accepting_chor
     # On: the accepting record of the current head labels it; no folder review is filed.
     gh = ContentGH([bump], comments=ok, tree=names)
     out, fake = sync(gh, chore_review=True, pool=["CBirkbeck"])
-    assert fake.created == [] and gh.writes == [("POST", labels, {"labels": ["ai-approved"]})]
-    assert f"#1800: ai-approved added (the AI review of {H1[:7]} accepts it)" in out
+    assert fake.created == [] and gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})]
+    assert f"#1800: ai-found-no-errors added (the AI review of {H1[:7]} accepts it)" in out
     # A record by a login outside the pool counts for nothing.
     stranger = {1800: [{**ok[1800][0], "user": {"login": "mallory"}}]}
     gh = ContentGH([bump], comments=stranger, tree=names)
     out, fake = sync(gh, chore_review=True, pool=["CBirkbeck"])
-    assert gh.writes == [] and not any("ai-approved" in line for line in out)
+    assert gh.writes == [] and not any("ai-found-no-errors" in line for line in out)
     # A blocking record: no label; a labelled chore whose head moved loses it.
     blocks = {1800: [{"id": 2, "body": replies.chore_marker(H1, "needs_changes"), "user": {"login": "CBirkbeck"}}]}
     gh = ContentGH([bump], comments=blocks, tree=names)
     out, fake = sync(gh, chore_review=True, pool=["CBirkbeck"])
-    assert gh.writes == [] and not any("ai-approved" in line for line in out)
-    moved = node(1800, H2, title="chore: bump the Tau Ceti pin", labels=["ai-approved"],
+    assert gh.writes == [] and not any("ai-found-no-errors" in line for line in out)
+    moved = node(1800, H2, title="chore: bump the Tau Ceti pin", labels=["ai-found-no-errors"],
                  paths=[f"TauCetiRoadmap/R{k:02d}/Suggested.lean" for k in range(30)])
     gh = ContentGH([moved], comments=ok, tree=names)
     out, fake = sync(gh, chore_review=True, pool=["CBirkbeck"])
-    assert gh.writes == [("DELETE", f"{labels}/ai-approved", {})]
-    assert f"#1800: ai-approved removed (not reviewed: chore by its title; no chore review of {H2[:7]})" in out
+    assert gh.writes == [("DELETE", f"{labels}/ai-found-no-errors", {})]
+    assert f"#1800: ai-found-no-errors removed (not reviewed: chore by its title; no chore review of {H2[:7]})" in out
 
 
 def test_completed_progress_reports_and_archives_are_not_reviewed():
@@ -1260,27 +1260,27 @@ def test_the_label_is_added_once_every_folder_accepts_and_goes_when_one_blocks_o
     # The last folder's verdict lands: the label is added.
     gh = ContentGH([two_folder_pr(H1)], files={**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)})
     out, _fake = sync(gh, [foo, bar])
-    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})]
-    assert out == [f"#1164: ai-approved added (the AI review of {H1[:7]} accepts all 2 roadmap folders)"]
+    assert gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})]
+    assert out == [f"#1164: ai-found-no-errors added (the AI review of {H1[:7]} accepts all 2 roadmap folders)"]
     # Labelled and both accepted: kept. A later review of one folder that blocks takes it off.
-    gh = ContentGH([two_folder_pr(H1, ["ai-approved"])],
+    gh = ContentGH([two_folder_pr(H1, ["ai-found-no-errors"])],
                    files={**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)})
     assert sync(gh, [foo, bar])[0] == [] and gh.writes == []
     blocks = review_job(43, 2, 1164, H1, "done", name="Bar", folder="Bar")
-    gh = ContentGH([two_folder_pr(H1, ["ai-approved"])], files={
+    gh = ContentGH([two_folder_pr(H1, ["ai-found-no-errors"])], files={
         **verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1), **verdict_file(blocks, "needs_changes", H1)})
     out, _fake = sync(gh, [foo, bar, blocks])
-    assert gh.writes == [("DELETE", f"{labels}/ai-approved", {})]
-    assert out == [f"#1164: ai-approved removed (the AI review of {H1[:7]} does not accept it (Bar))"]
+    assert gh.writes == [("DELETE", f"{labels}/ai-found-no-errors", {})]
+    assert out == [f"#1164: ai-found-no-errors removed (the AI review of {H1[:7]} does not accept it (Bar))"]
     # The head moves: the label goes, and both folders get a review of the new head.
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])])
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])])
     out, fake = sync(gh, [foo, bar])
-    assert out[0] == "#1164: ai-approved removed (head moved)" and created(fake) == [
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and created(fake) == [
         ("PRREVIEW-Bar~2", "Bar"), ("PRREVIEW-Foo~2", "Foo")]
     # A token that may not write the content repository says so.
     gh = ContentGH([two_folder_pr(H1)], files={**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)},
                    refuse=True)
-    assert sync(gh, [foo, bar])[0][0].startswith(f"#1164: ai-approved on {REPO} not added (gh api -X POST")
+    assert sync(gh, [foo, bar])[0][0].startswith(f"#1164: ai-found-no-errors on {REPO} not added (gh api -X POST")
 
 
 def test_small_repairs_with_a_carried_record_keep_the_label_and_file_no_review():
@@ -1293,30 +1293,30 @@ def test_small_repairs_with_a_carried_record_keep_the_label_and_file_no_review()
                        "user": {"login": "carol"}}]}
     small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 5, "deletions": 2},
              {"filename": "TauCetiRoadmap/Bar/README.md", "additions": 3, "deletions": 0}]
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, comments=carried, compares={(H1, H2): small})
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, comments=carried, compares={(H1, H2): small})
     out, fake = sync(gh, [foo, bar], carry_accept=True)
     assert gh.writes == [] and created(fake) == []
-    assert out == [f"#1164: ai-approved kept (the acceptance of {H1[:7]} carries to {H2[:7]}: 10 lines of repairs "
+    assert out == [f"#1164: ai-found-no-errors kept (the acceptance of {H1[:7]} carries to {H2[:7]}: 10 lines of repairs "
                    "inside the roadmap folders, no review filed)"]
     # Without the setting the ordinary rule applies: the label goes and both folders are reviewed.
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, comments=carried, compares={(H1, H2): small})
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, comments=carried, compares={(H1, H2): small})
     out, fake = sync(gh, [foo, bar])
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2
     # Too many lines: nothing carries.
     big = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 200, "deletions": 0}]
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, comments=carried, compares={(H1, H2): big})
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, comments=carried, compares={(H1, H2): big})
     out, fake = sync(gh, [foo, bar], carry_accept=True)
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2
     # A file outside the roadmap folders changed: nothing carries.
     outside = small + [{"filename": "scripts/x.py", "additions": 1, "deletions": 0}]
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, comments=carried, compares={(H1, H2): outside})
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, comments=carried, compares={(H1, H2): outside})
     out, fake = sync(gh, [foo, bar], carry_accept=True)
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2
     # A chain of two carries (H1 -> H2 -> H3) is followed back to the accepted head, with the total diff.
     chain = {1164: carried[1164] + [{"id": 2, "body": replies.carried_marker(H2, H3), "user": {"login": "carol"}}]}
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=chain, compares={(H1, H3): small})
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=accepted, comments=chain, compares={(H1, H3): small})
     out, fake = sync(gh, [foo, bar], carry_accept=True)
-    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-approved kept")
+    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-found-no-errors kept")
     # The record and marker round-trip; a reply without one has none.
     assert replies.carried_record(replies.carried_marker(H1, H2, "w")) == {"from": H1, "head": H2, "worker": "w"}
     assert replies.carried_record("Fixed in `abc`") is None and intake.carried_from([], H2) == ""
@@ -1333,46 +1333,46 @@ def test_a_head_that_only_moved_keeps_the_acceptance_of_the_head_it_came_from():
     foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar", folder="Bar")
     accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
     labels = f"repos/{REPO}/issues/1164/labels"
-    kept = (f"#1164: ai-approved kept (the roadmap folders at {H2[:7]} are those of {H1[:7]}, whose acceptance "
+    kept = (f"#1164: ai-found-no-errors kept (the roadmap folders at {H2[:7]} are those of {H1[:7]}, whose acceptance "
             "stands: the head only moved, no review filed)")
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2))
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar])
     assert out == [kept] and gh.writes == [] and created(fake) == [] and gh.tree_queries == 1
     # One folder changed with the move: the label goes and that folder is reviewed (the other is what its
     # review accepted, `carry_unchanged_folders`; both are reviewed with that off, as before).
     changed = {**same_trees(H1, H2), (H2, "TauCetiRoadmap/Bar"): "another-tree"}
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=changed)
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, trees=changed)
     out, fake = sync(gh, [foo, bar])
-    assert gh.writes == [("DELETE", f"{labels}/ai-approved", {})]
-    assert out[0] == "#1164: ai-approved removed (head moved)" and created(fake) == [("PRREVIEW-Bar~2", "Bar")]
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=changed)
+    assert gh.writes == [("DELETE", f"{labels}/ai-found-no-errors", {})]
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and created(fake) == [("PRREVIEW-Bar~2", "Bar")]
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, trees=changed)
     out, fake = sync(gh, [foo, bar], carry_unchanged_folders=False)
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2
     # The earlier head was not accepted: nothing to keep, and the folder that was refused is reviewed.
     refused = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "needs_changes", H1)}
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=refused, trees=same_trees(H1, H2))
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=refused, trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar])
-    assert out[0] == "#1164: ai-approved removed (head moved)" and created(fake) == [("PRREVIEW-Bar~2", "Bar")]
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and created(fake) == [("PRREVIEW-Bar~2", "Bar")]
     # Switched off: the head's own reviews alone count.
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2))
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=accepted, trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar], carry_unchanged=False, carry_unchanged_folders=False)
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2 and gh.tree_queries == 0
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2 and gh.tree_queries == 0
     # A second move is compared with the reviewed head again.
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, trees=same_trees(H1, H2, H3))
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=accepted, trees=same_trees(H1, H2, H3))
     out, fake = sync(gh, [foo, bar])
-    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-approved kept")
+    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-found-no-errors kept")
     # A later review of the same files that asked for changes decides: the earlier acceptance is not
     # carried past it, whether or not the other folder was reviewed at that head too.
     later = review_job(43, 2, 1164, H2, "done", folder="Foo")
     asked = {**accepted, **verdict_file(later, "needs_changes", H2)}
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=asked, trees=same_trees(H1, H2, H3))
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=asked, trees=same_trees(H1, H2, H3))
     out, fake = sync(gh, [foo, bar, later])
-    assert out[0] == "#1164: ai-approved removed (head moved)" and created(fake) == [("PRREVIEW-Foo~3", "Foo")]
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and created(fake) == [("PRREVIEW-Foo~3", "Foo")]
     # One that read other files does not: the head holds what the accepted head held.
     other = {**same_trees(H1, H3), (H2, "TauCetiRoadmap/Foo"): "repaired", (H2, "TauCetiRoadmap/Bar"): "tree-of-Bar"}
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=asked, trees=other)
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=asked, trees=other)
     out, fake = sync(gh, [foo, bar, later])
-    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-approved kept")
+    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-found-no-errors kept")
 
 
 def test_a_label_lost_to_a_move_is_put_back_and_the_untaken_reviews_of_the_moved_head_are_closed():
@@ -1381,9 +1381,9 @@ def test_a_label_lost_to_a_move_is_put_back_and_the_untaken_reviews_of_the_moved
     accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
     gh = ContentGH([two_folder_pr(H2)], files=accepted, trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar, again])
-    assert gh.writes == [("POST", f"repos/{REPO}/issues/1164/labels", {"labels": ["ai-approved"]})]
+    assert gh.writes == [("POST", f"repos/{REPO}/issues/1164/labels", {"labels": ["ai-found-no-errors"]})]
     assert out == ["#1164: PRREVIEW-Foo~2 superseded",
-                   f"#1164: ai-approved added (the roadmap folders at {H2[:7]} are those of {H1[:7]}, whose "
+                   f"#1164: ai-found-no-errors added (the roadmap folders at {H2[:7]} are those of {H1[:7]}, whose "
                    "acceptance stands: the head only moved)"]
     assert fake.states == [("PRREVIEW-Foo~2", "done")] and created(fake) == []
     assert fake.posted[0][1].startswith(f"Superseded: the roadmap folders of #1164 at {H2[:7]} are those of {H1[:7]}")
@@ -1409,18 +1409,18 @@ def test_a_label_lost_to_a_move_is_put_back_and_the_untaken_reviews_of_the_moved
     accepts = {**accepted, **verdict_file(blocks, "accepted", H2)}
     gh = ContentGH([two_folder_pr(H2)], files=accepts, trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar, blocks])
-    assert gh.writes == [("POST", f"repos/{REPO}/issues/1164/labels", {"labels": ["ai-approved"]})]
+    assert gh.writes == [("POST", f"repos/{REPO}/issues/1164/labels", {"labels": ["ai-found-no-errors"]})]
     assert created(fake) == []
 
 
 def test_trees_github_did_not_give_change_nothing():
     foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar", folder="Bar")
     accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
-    for labelled in (["ai-approved"], []):
+    for labelled in (["ai-found-no-errors"], []):
         gh = ContentGH([two_folder_pr(H2, labelled)], files=accepted, trees="unread")
         out, fake = sync(gh, [foo, bar])
         assert gh.writes == [] and created(fake) == []
-        assert out == [f"#1164: ai-approved not checked (the roadmap folders at {H2[:7]} could not be compared "
+        assert out == [f"#1164: ai-found-no-errors not checked (the roadmap folders at {H2[:7]} could not be compared "
                        "with those of an earlier head)"]
     assert prbatch.tree_ids(ContentGH(trees={(H1, "a/b"): "x"}), REPO, [(H1, "a/b"), (H2, "a/b")], 5) == {
         (H1, "a/b"): "x", (H2, "a/b"): f"{H2[:8]}:a/b"}
@@ -1455,14 +1455,14 @@ def test_a_folder_its_last_review_settled_is_not_reviewed_again_when_another_fol
     # Bar's review of the new head accepts: the label, with Foo accepted where it held these files.
     again = review_job(43, 2, 1164, H2, "done", name="Bar", folder="Bar")
     both = {**first, **verdict_file(again, "accepted", H2)}
-    added = f"#1164: ai-approved added (every roadmap folder at {H2[:7]} holds the files its last review settled)"
+    added = f"#1164: ai-found-no-errors added (every roadmap folder at {H2[:7]} holds the files its last review settled)"
     gh = ContentGH([two_folder_pr(H2)], files=both, trees=repaired)
     out, fake = sync(gh, [foo, bar, again])
-    assert out == [added] and gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and created(fake) == []
+    assert out == [added] and gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})] and created(fake) == []
     # Labelled: kept. An untaken review of Foo at the new head is closed here too.
-    gh = ContentGH([two_folder_pr(H2, ["ai-approved"])], files=both, trees=repaired)
+    gh = ContentGH([two_folder_pr(H2, ["ai-found-no-errors"])], files=both, trees=repaired)
     out, fake = sync(gh, [foo, bar, again])
-    kept = f"#1164: ai-approved kept (every roadmap folder at {H2[:7]} holds the files its last review settled: no review filed)"
+    kept = f"#1164: ai-found-no-errors kept (every roadmap folder at {H2[:7]} holds the files its last review settled: no review filed)"
     assert out == [kept] and gh.writes == [] and created(fake) == []
     untaken = review_job(44, 2, 1164, H2, "available", folder="Foo")
     gh = ContentGH([two_folder_pr(H2)], files=both, trees=repaired)
@@ -1474,20 +1474,20 @@ def test_a_folder_its_last_review_settled_is_not_reviewed_again_when_another_fol
     out, fake = sync(gh, [foo, bar, again, taken])
     assert out == [] and gh.writes == [] and created(fake) == []
     # The head moves again without touching either folder: the label stays, nothing is filed.
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=both, trees=repaired)
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=both, trees=repaired)
     out, fake = sync(gh, [foo, bar, again])
-    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-approved kept")
+    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-found-no-errors kept")
     # A later review of Foo that asked for changes is Foo's last word, though it read the same files.
     later = review_job(45, 2, 1164, H2, "done", folder="Foo")
     asked = {**both, **verdict_file(later, "needs_changes", H2)}
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=asked, trees=repaired)
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=asked, trees=repaired)
     out, fake = sync(gh, [foo, bar, again, later])
-    assert gh.writes == [("DELETE", f"{labels}/ai-approved", {})] and created(fake) == [("PRREVIEW-Foo~3", "Foo")]
+    assert gh.writes == [("DELETE", f"{labels}/ai-found-no-errors", {})] and created(fake) == [("PRREVIEW-Foo~3", "Foo")]
     # GitHub does not give the trees: nothing is known, so nothing is filed and the label is left.
     gh = ContentGH([two_folder_pr(H2)], files=both, trees="unread")
     out, fake = sync(gh, [foo, bar, again])
     assert gh.writes == [] and created(fake) == []
-    unknown = f"#1164: ai-approved not checked (the roadmap folders at {H2[:7]} could not be compared with those "
+    unknown = f"#1164: ai-found-no-errors not checked (the roadmap folders at {H2[:7]} could not be compared with those "
     assert out == [unknown + "of an earlier head)"]
     gh = ContentGH([two_folder_pr(H2)], files=both, trees="unread")
     out, fake = sync(gh, [foo, bar, again], carry_unchanged=False)
@@ -1495,7 +1495,7 @@ def test_a_folder_its_last_review_settled_is_not_reviewed_again_when_another_fol
     assert out == [unknown + "their last reviews read)"]
     gh = ContentGH([two_folder_pr(H2)], files=first, trees="unread")
     out, fake = sync(gh, [foo, bar], carry_unchanged=False)
-    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-approved not checked")
+    assert gh.writes == [] and created(fake) == [] and out[0].startswith("#1164: ai-found-no-errors not checked")
 
 
 def test_a_moved_head_keeps_what_small_repairs_carried_to_the_head_it_came_from():
@@ -1505,23 +1505,23 @@ def test_a_moved_head_keeps_what_small_repairs_carried_to_the_head_it_came_from(
     accepted = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H1)}
     carried = {1164: [{"id": 1, "body": replies.carried_marker(H1, H2, "maintainer"), "user": {"login": "carol"}}]}
     small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 5, "deletions": 2}]
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=carried, compares={(H1, H2): small},
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=accepted, comments=carried, compares={(H1, H2): small},
                    trees=same_trees(H2, H3))
     out, fake = sync(gh, [foo, bar], carry_accept=True)
     assert gh.writes == [] and created(fake) == []
-    assert out == [f"#1164: ai-approved kept (the roadmap folders at {H3[:7]} are those of {H2[:7]}, whose acceptance "
+    assert out == [f"#1164: ai-found-no-errors kept (the roadmap folders at {H3[:7]} are those of {H2[:7]}, whose acceptance "
                    "stands: the head only moved, no review filed)"]
     # Without the record's setting the repaired head was never accepted.
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=carried, compares={(H1, H2): small},
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=accepted, comments=carried, compares={(H1, H2): small},
                    trees=same_trees(H2, H3))
-    assert sync(gh, [foo, bar])[0][0] == "#1164: ai-approved removed (head moved)"
+    assert sync(gh, [foo, bar])[0][0] == "#1164: ai-found-no-errors removed (head moved)"
     # carry_minor: Bar's review of H1 found P3 points only and its repair left H2; H3 is H2 rebased.
     minor = json.loads(verdict_file(bar, "needs_changes", H1)[board.prreview_verdict_path("packages", bar)])
     minor["review"]["carried"] = {"from": H1, "head": H2, "lines": 4, "folders": ["Bar"], "findings": ["D01"]}
     files = {**verdict_file(foo, "accepted", H1), board.prreview_verdict_path("packages", bar): json.dumps(minor)}
     gh = ContentGH([two_folder_pr(H3)], files=files, trees=same_trees(H2, H3))
     out, fake = sync(gh, [foo, bar], carry_minor=True)
-    assert gh.writes == [("POST", f"repos/{REPO}/issues/1164/labels", {"labels": ["ai-approved"]})]
+    assert gh.writes == [("POST", f"repos/{REPO}/issues/1164/labels", {"labels": ["ai-found-no-errors"]})]
     assert created(fake) == [] and "the head only moved" in out[0]
 
 
@@ -1535,42 +1535,42 @@ def test_small_repairs_made_after_the_head_moved_keep_the_label():
     small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 5, "deletions": 2}]
     # H1 is accepted, H2 is H1 with the base branch merged, H3 repairs H2 and says so.
     after = {1164: [{"id": 1, "body": replies.carried_marker(H2, H3, "maintainer"), "user": {"login": "carol"}}]}
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=after, compares={(H2, H3): small},
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=accepted, comments=after, compares={(H2, H3): small},
                    trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar], carry_accept=True)
     assert gh.writes == [] and created(fake) == []
-    assert out == [f"#1164: ai-approved kept (the acceptance of {H1[:7]} carries to {H3[:7]}: 7 lines of repairs "
+    assert out == [f"#1164: ai-found-no-errors kept (the acceptance of {H1[:7]} carries to {H3[:7]}: 7 lines of repairs "
                    "inside the roadmap folders, no review filed)"]
     # H2 changed a folder (it did not only move), or moved heads carry nothing: the record holds nothing.
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=after, compares={(H2, H3): small})
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=accepted, comments=after, compares={(H2, H3): small})
     out, fake = sync(gh, [foo, bar], carry_accept=True)
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=after, compares={(H2, H3): small},
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=accepted, comments=after, compares={(H2, H3): small},
                    trees=same_trees(H1, H2))
     out, fake = sync(gh, [foo, bar], carry_accept=True, carry_unchanged=False)
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2
     # A repair (H1 -> H2), a merge of the base branch (H3), a second repair (H3 -> H4): both repairs count.
     chain = {1164: [{"id": 1, "body": replies.carried_marker(H1, H2, "maintainer"), "user": {"login": "carol"}},
                     {"id": 2, "body": replies.carried_marker(H3, H4, "maintainer"), "user": {"login": "carol"}}]}
     second = [{"filename": "TauCetiRoadmap/Bar/README.md", "additions": 60, "deletions": 40}]
-    gh = ContentGH([two_folder_pr(H4, ["ai-approved"])], files=accepted, comments=chain,
+    gh = ContentGH([two_folder_pr(H4, ["ai-found-no-errors"])], files=accepted, comments=chain,
                    compares={(H1, H2): small, (H3, H4): second}, trees=same_trees(H2, H3))
     out, fake = sync(gh, [foo, bar], carry_accept=True)
     assert gh.writes == [] and created(fake) == []
-    assert out == [f"#1164: ai-approved kept (the acceptance of {H1[:7]} carries to {H4[:7]}: 107 lines of repairs "
+    assert out == [f"#1164: ai-found-no-errors kept (the acceptance of {H1[:7]} carries to {H4[:7]}: 107 lines of repairs "
                    "inside the roadmap folders, no review filed)"]
     large = [{"filename": "TauCetiRoadmap/Bar/README.md", "additions": 100, "deletions": 45}]
-    gh = ContentGH([two_folder_pr(H4, ["ai-approved"])], files=accepted, comments=chain,
+    gh = ContentGH([two_folder_pr(H4, ["ai-found-no-errors"])], files=accepted, comments=chain,
                    compares={(H1, H2): small, (H3, H4): large}, trees=same_trees(H2, H3))
     out, fake = sync(gh, [foo, bar], carry_accept=True)
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2
     # Records that lead round in a ring of heads holding the same files settle nothing, and end.
     ring = {1164: [{"id": 1, "body": replies.carried_marker(H2, H3, "maintainer"), "user": {"login": "carol"}},
                    {"id": 2, "body": replies.carried_marker(H3, H2, "maintainer"), "user": {"login": "carol"}}]}
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=accepted, comments=ring, compares={(H2, H3): [], (H3, H2): []},
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=accepted, comments=ring, compares={(H2, H3): [], (H3, H2): []},
                    trees=same_trees(H2, H3))
     out, fake = sync(gh, [foo, bar], carry_accept=True)
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2
 
 
 def test_small_repairs_made_after_a_p3_only_repair_keep_the_label():
@@ -1582,40 +1582,40 @@ def test_small_repairs_made_after_a_p3_only_repair_keep_the_label():
     files = {**verdict_file(foo, "accepted", H1), board.prreview_verdict_path("packages", bar): json.dumps(minor)}
     record = {1164: [{"id": 1, "body": replies.carried_marker(H2, H3, "maintainer"), "user": {"login": "carol"}}]}
     small = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 5, "deletions": 2}]
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=files, comments=record, compares={(H2, H3): small})
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=files, comments=record, compares={(H2, H3): small})
     out, fake = sync(gh, [foo, bar], carry_accept=True, carry_minor=True)
     assert gh.writes == [] and created(fake) == []
-    assert out == [f"#1164: ai-approved kept (the acceptance of {H2[:7]} carries to {H3[:7]}: 11 lines of repairs "
+    assert out == [f"#1164: ai-found-no-errors kept (the acceptance of {H2[:7]} carries to {H3[:7]}: 11 lines of repairs "
                    "inside the roadmap folders, no review filed)"]
     # Without carry_minor the head the repair left was never settled; too many lines in all carry nothing.
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=files, comments=record, compares={(H2, H3): small})
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=files, comments=record, compares={(H2, H3): small})
     out, fake = sync(gh, [foo, bar], carry_accept=True)
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2
     large = [{"filename": "TauCetiRoadmap/Foo/README.md", "additions": 100, "deletions": 47}]
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=files, comments=record, compares={(H2, H3): large})
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=files, comments=record, compares={(H2, H3): large})
     out, fake = sync(gh, [foo, bar], carry_accept=True, carry_minor=True)
-    assert out[0] == "#1164: ai-approved removed (head moved)" and len(created(fake)) == 2
+    assert out[0] == "#1164: ai-found-no-errors removed (head moved)" and len(created(fake)) == 2
     # With text checks on: both reviews read this text at H1, and no review ran at H2, the head the P3-only
     # repair left. The text counts as read through H1's verdicts; a changed text gets its checks.
     digest = summary.text_digest("Two roadmaps", "Both.\n")
     minor["review"]["text"] = digest
     read = {**verdict_read(foo, "accepted", H1, digest),
             board.prreview_verdict_path("packages", bar): json.dumps(minor)}
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=read, comments=record, compares={(H2, H3): small},
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=read, comments=record, compares={(H2, H3): small},
                    pulls=text_pr(1164, title="Two roadmaps", body="Both.\n"))
     out, fake = sync(gh, [foo, bar], carry_accept=True, carry_minor=True, text_per_run=10)
-    assert created(fake) == [] and out[0].startswith("#1164: ai-approved kept")
-    gh = ContentGH([two_folder_pr(H3, ["ai-approved"])], files=read, comments=record, compares={(H2, H3): small},
+    assert created(fake) == [] and out[0].startswith("#1164: ai-found-no-errors kept")
+    gh = ContentGH([two_folder_pr(H3, ["ai-found-no-errors"])], files=read, comments=record, compares={(H2, H3): small},
                    pulls=text_pr(1164, title="Two roadmaps", body="Both, edited.\n"))
     _out, fake = sync(gh, [foo, bar], carry_accept=True, carry_minor=True, text_per_run=10)
     assert sorted(f for _id, f in created(fake)) == ["Bar", "Foo"]
 
 
 def test_a_chore_loses_a_label_put_on_by_hand():
-    chore = node(1187, H1, labels=["ai-approved"], title="chore: bump TauCeti", paths=("TauCetiRoadmap/Foo/Suggested.lean",))
+    chore = node(1187, H1, labels=["ai-found-no-errors"], title="chore: bump TauCeti", paths=("TauCetiRoadmap/Foo/Suggested.lean",))
     gh = ContentGH([chore], tree=TREE)
     out, fake = sync(gh)
-    assert out == ["#1187: ai-approved removed (not reviewed: chore by its title)", "#1187: not reviewed (chore by its title)"]
+    assert out == ["#1187: ai-found-no-errors removed (not reviewed: chore by its title)", "#1187: not reviewed (chore by its title)"]
     assert fake.created == []
 
 
@@ -1636,27 +1636,27 @@ def test_a_review_nobody_took_is_superseded_when_the_head_moves_or_the_pull_requ
 
 def test_the_label_goes_when_the_head_moves_and_stays_on_an_accepted_current_head():
     accepted_old = review_job(41, 1, 12, H1, "done")
-    labels = f"repos/{REPO}/issues/12/labels/ai-approved"
-    gh = ContentGH([node(12, H2, labels=["ai-approved", "awaiting-review"])], files=verdict_file(accepted_old, "accepted", H1))
+    labels = f"repos/{REPO}/issues/12/labels/ai-found-no-errors"
+    gh = ContentGH([node(12, H2, labels=["ai-found-no-errors", "awaiting-review"])], files=verdict_file(accepted_old, "accepted", H1))
     out, _fake = sync(gh, [accepted_old], per_run=0)
-    assert gh.writes == [("DELETE", labels, {})] and out[0] == "#12: ai-approved removed (head moved)"
+    assert gh.writes == [("DELETE", labels, {})] and out[0] == "#12: ai-found-no-errors removed (head moved)"
     accepted_now = review_job(42, 2, 12, H2, "done")
-    gh = ContentGH([node(12, H2, labels=["ai-approved"])], files=verdict_file(accepted_now, "accepted", H2))
+    gh = ContentGH([node(12, H2, labels=["ai-found-no-errors"])], files=verdict_file(accepted_now, "accepted", H2))
     out, _fake = sync(gh, [accepted_old, accepted_now])
     assert gh.writes == [] and out == []
     # A later review of the same head that blocks takes it off; one still being finished keeps it.
     blocking = review_job(43, 3, 12, H2, "done")
-    gh = ContentGH([node(12, H2, labels=["ai-approved"])],
+    gh = ContentGH([node(12, H2, labels=["ai-found-no-errors"])],
                    files={**verdict_file(accepted_now, "accepted", H2), **verdict_file(blocking, "needs_changes", H2)})
     out, _fake = sync(gh, [accepted_now, blocking])
-    assert out == [f"#12: ai-approved removed (the AI review of {H2[:7]} does not accept it)"]
+    assert out == [f"#12: ai-found-no-errors removed (the AI review of {H2[:7]} does not accept it)"]
     finishing = review_job(44, 4, 12, H3, "submitted")
-    gh = ContentGH([node(12, H3, labels=["ai-approved"])])
+    gh = ContentGH([node(12, H3, labels=["ai-found-no-errors"])])
     assert sync(gh, [finishing])[0] == [] and gh.writes == []
     # A label put on by hand, with no AI review at all, goes too; a token that may not write says so.
-    gh = ContentGH([node(14, H1, labels=["ai-approved"], paths=("TauCetiRoadmap/Baz/README.md",))], refuse=True)
+    gh = ContentGH([node(14, H1, labels=["ai-found-no-errors"], paths=("TauCetiRoadmap/Baz/README.md",))], refuse=True)
     out, _fake = sync(gh, per_run=0)
-    assert out[0].startswith(f"#14: ai-approved on {REPO} not removed (gh api -X DELETE")
+    assert out[0].startswith(f"#14: ai-found-no-errors on {REPO} not removed (gh api -X DELETE")
 
 
 def test_a_verdict_github_did_not_answer_for_keeps_the_label():
@@ -1665,7 +1665,7 @@ def test_a_verdict_github_did_not_answer_for_keeps_the_label():
     class Blip(ContentGH):
         def raw_file(self, repo, path, ref=""):
             raise GHError(f"gh api repos/{repo}/contents/{path}: HTTP 502: Bad Gateway")
-    gh = Blip([node(12, H2, labels=["ai-approved"])])
+    gh = Blip([node(12, H2, labels=["ai-found-no-errors"])])
     with pytest.raises(GHError, match="HTTP 502"):
         sync(gh, [accepted])
     assert gh.writes == []
@@ -1841,13 +1841,13 @@ def test_an_acceptance_is_one_comment_with_the_approve_line_and_the_label(review
     assert prreviews.prreview_marker(comment["body"]) == {"job": job.id, "head": H1, "verdict": "accepted",
                                                           "agent": "codex", "model": "gpt-x", "worker": "alice-1",
                                                           "mode": "full"}
-    assert gh.labels == ["awaiting-review", "ai-approved"]               # the awaiting-* labels are not touched
-    assert summary.endswith("labelled ai-approved") and "accepted" in summary
+    assert gh.labels == ["awaiting-review", "ai-found-no-errors"]               # the awaiting-* labels are not touched
+    assert summary.endswith("labelled ai-found-no-errors") and "accepted" in summary
     assert lane_base.read_pending(ctx, job)["done"] == ["content-comment"]
 
 
 def test_changes_asked_for_take_the_label_off(review_env):
-    gh = LabelGH(labels=["ai-approved", "awaiting-author"])
+    gh = LabelGH(labels=["ai-found-no-errors", "awaiting-author"])
     ctx = lane_ctx(review_env, gh=gh)
     job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
     lane, ws = finished_ws(review_env, ctx, job, "needs_changes")
@@ -1863,7 +1863,7 @@ def test_an_accepted_head_that_moved_meanwhile_is_not_labelled(review_env):
     ctx = lane_ctx(review_env, gh=gh)
     job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
     lane, ws = finished_ws(review_env, ctx, job, "accepted")
-    assert lane.finish(job, ctx, ws).endswith(f"not labelled ai-approved: #905 moved to {H2[:7]}")
+    assert lane.finish(job, ctx, ws).endswith(f"not labelled ai-found-no-errors: #905 moved to {H2[:7]}")
     assert len(gh.comments) == 1 and gh.labels == []
 
 
@@ -1882,7 +1882,7 @@ def test_a_lost_comment_answer_is_found_and_not_posted_twice(review_env):
     job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
     lane, ws = finished_ws(review_env, ctx, job, "accepted")
     lane.finish(job, ctx, ws)
-    assert len(gh.comments) == 1 and gh.labels == ["ai-approved"]
+    assert len(gh.comments) == 1 and gh.labels == ["ai-found-no-errors"]
 
 
 @pytest.mark.parametrize("status,report,gate_ok,problem", [
@@ -2119,9 +2119,9 @@ def test_an_acceptance_labels_the_pull_request_only_once_its_other_folders_accep
     assert lane.finish(job, ctx, ws).endswith("labelled later: 1 folder not yet accepted")
     assert gh.labels == [] and len(gh.comments) == 1
     gh.files.update(verdict_file(foo, "accepted", H1))
-    assert lane.update_label(job, ctx, 905, H1, "accepted") == "labelled ai-approved" and gh.labels == ["ai-approved"]
+    assert lane.update_label(job, ctx, 905, H1, "accepted") == "labelled ai-found-no-errors" and gh.labels == ["ai-found-no-errors"]
     # One folder asking for changes takes the label off, whatever the others say.
-    assert lane.update_label(job, ctx, 905, H1, "needs_changes") == "ai-approved removed" and gh.labels == []
+    assert lane.update_label(job, ctx, 905, H1, "needs_changes") == "ai-found-no-errors removed" and gh.labels == []
 
 
 def test_a_pass_before_the_final_review_says_so_and_leaves_the_label_alone(review_env, monkeypatch):
@@ -2133,13 +2133,13 @@ def test_a_pass_before_the_final_review_says_so_and_leaves_the_label_alone(revie
     body = lane.comment_body(job, ctx, ws)
     # (under the header lines the tools read, before the summary)
     assert (f"Reviewed head: {H1}\n\nRoadmap folder: `TauCetiRoadmap/RepresentationTheory/CompactGroups/`\n\n"
-            "This is a pass before the final review. It does not decide `ai-approved`: "
+            "This is a pass before the final review. It does not decide `ai-found-no-errors`: "
             "the final review, on another model, follows it.\n\n**Summary.**") in body
     assert lane.update_label(job, ctx, 905, H1, "accepted") == (
-        "a pass before the final review: ai-approved is decided by that review") and gh.labels == []
+        "a pass before the final review: ai-found-no-errors is decided by that review") and gh.labels == []
     # A pass that asks for changes takes a label off like any review, and its P3-only repair settles nothing.
-    gh.labels.append("ai-approved")
-    assert lane.update_label(job, ctx, 905, H1, "needs_changes") == "ai-approved removed"
+    gh.labels.append("ai-found-no-errors")
+    assert lane.update_label(job, ctx, 905, H1, "needs_changes") == "ai-found-no-errors removed"
     ctx.cfg.prreview.carry_minor = True
     assert lane.carry_record(job, ctx, ws) is None
     # The same review as a final one carries no such note.
@@ -2206,7 +2206,7 @@ def test_a_review_whose_run_stopped_after_its_comment_is_submitted_without_a_sec
     assert result.status == "submitted", result.detail
     [comment] = rh.comments[905]
     assert prreviews.prreview_marker(comment["body"])["head"] == head and "\nVerdict: APPROVE\n" in comment["body"]
-    assert rh.labels == ["ai-approved"]
+    assert rh.labels == ["ai-found-no-errors"]
     [opened] = rh.opened
     assert "PRREVIEW-Foo~1" in opened["body"] and ctx.board.states == [(job.id, "submitted")]
     assert lane_base.read_pending(ctx, job) is None
@@ -3592,11 +3592,11 @@ def test_a_p3_only_review_ends_with_its_repair():
     labels = f"repos/{REPO}/issues/12/labels"
     gh = ContentGH([node(12, H2)], files=carried_file(done, record))
     out, fake = sync(gh, [done], carry_minor=True)
-    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and fake.created == []
-    assert out == [f"#12: ai-approved added (every roadmap folder is settled at {H2[:7]}: the last reviews accepted, "
+    assert gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})] and fake.created == []
+    assert out == [f"#12: ai-found-no-errors added (every roadmap folder is settled at {H2[:7]}: the last reviews accepted, "
                    "or found P3 points only and their repairs are in)"]
     # Labelled already: kept, silently.
-    gh = ContentGH([node(12, H2, labels=["ai-approved"])], files=carried_file(done, record))
+    gh = ContentGH([node(12, H2, labels=["ai-found-no-errors"])], files=carried_file(done, record))
     assert sync(gh, [done], carry_minor=True)[0] == [] and gh.writes == []
     # Off by default: the repaired head gets its review.
     gh = ContentGH([node(12, H2)], files=carried_file(done, record))
@@ -3606,7 +3606,7 @@ def test_a_p3_only_review_ends_with_its_repair():
     same = {"from": H1, "head": H1, "findings": 1, "lines": 0, "folders": []}
     gh = ContentGH([node(12, H1)], files=carried_file(done, same))
     out, fake = sync(gh, [done], carry_minor=True)
-    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and fake.created == []
+    assert gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})] and fake.created == []
 
 
 @pytest.mark.parametrize("record,status,head", [
@@ -3631,7 +3631,7 @@ def test_a_p3_only_repair_of_one_folder_leaves_the_other_folders_settled():
     # Foo accepted at H1; Bar's P3-only repair moved the head to H2 and changed Bar alone: both are settled at H2.
     gh = ContentGH([two_folder_pr(H2)], files={**verdict_file(foo, "accepted", H1), **carried_file(bar, step)})
     out, fake = sync(gh, [foo, bar], carry_minor=True)
-    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and fake.created == []
+    assert gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})] and fake.created == []
     # The repair's push changed Foo too, or a file outside the roadmap folders (a merge of the base branch):
     # Foo is reviewed at the new head, Bar is not, and the label waits for Foo.
     for wider in ({**step, "folders": ["Bar", "Foo"]}, {**step, "outside": True}, {**step, "folders": None}):
@@ -3643,7 +3643,7 @@ def test_a_p3_only_repair_of_one_folder_leaves_the_other_folders_settled():
     second = {"from": H1, "onto": H2, "head": H3, "findings": 2, "lines": 6, "folders": ["Bar"]}
     gh = ContentGH([two_folder_pr(H3)], files={**carried_file(foo, first), **carried_file(bar, second)})
     out, fake = sync(gh, [foo, bar], carry_minor=True)
-    assert gh.writes == [("POST", labels, {"labels": ["ai-approved"]})] and fake.created == []
+    assert gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})] and fake.created == []
     # A folder whose review found more than P3 points is reviewed again at the head the other's repair left.
     gh = ContentGH([two_folder_pr(H2)], files={**verdict_file(foo, "needs_changes", H1), **carried_file(bar, step)})
     out, fake = sync(gh, [foo, bar], carry_minor=True)
@@ -3725,7 +3725,7 @@ def test_findings_or_the_setting_off_or_format_notes_alone_carry_nothing(
     if status == "needs_changes":
         assert "repaired at" in result.detail
     else:                                   # nothing pushed: an acceptance without corrections to apply
-        assert rh.head(905) == head and "repaired at" not in result.detail and "labelled ai-approved" in result.detail
+        assert rh.head(905) == head and "repaired at" not in result.detail and "labelled ai-found-no-errors" in result.detail
 
 
 OUTSIDE_LINE = ("## H01 (AI review PRREVIEW-Foo~2) — outside this folder: the Bar roadmap's README\n"

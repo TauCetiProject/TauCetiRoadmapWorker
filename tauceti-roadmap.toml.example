@@ -249,7 +249,7 @@ comment_reviewers = []
 # roadmap folders. A human still approves and merges. The operators' tokens need write access to the
 # content repository for the comment and the label.
 enabled = false
-label = "ai-approved"
+label = "ai-found-no-errors"
 # The label `roadmaps dependency-labels` keeps when it is given no `--label`: on an open roadmap pull
 # request exactly while it waits for another pull request (a supplier roadmap its README names that is
 # not on main, an open revision whose numbering it cites, a pull request its description names as a

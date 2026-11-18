@@ -561,7 +561,7 @@ read as an instruction.
 | fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build (its dependency check never reads a roadmap on the content repository's main as an upward supplier), head check |
-| prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-approved` label (on once every folder of the head accepts, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json`; on a pool author's PR, after a review asking changes, the repair pushed onto its branch and the reply | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
+| prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-found-no-errors` label (on once every folder of the head accepts, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json`; on a pool author's PR, after a review asking changes, the repair pushed onto its branch and the reply | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
 headline theorems the finished roadmap will prove, stated now against the pinned Mathlib and Tau
@@ -814,7 +814,7 @@ head). `per_run` counts jobs; a run files every folder of one pull request befor
 bundle is reviewed as a whole across runs. A review nobody has taken is closed as `superseded` (set
 done, with a comment `Superseded: #N is at <head7>` or `Closed: #N is closed`) when its pull request
 moves on or closes; a claimed or submitted one finishes. The log reads `#N: PRREVIEW-<Leaf>~1
-created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-approved added (...)`, `#N: ai-approved removed
+created`, `#N: PRREVIEW-<Leaf>~1 superseded`, `#N: ai-found-no-errors added (...)`, `#N: ai-found-no-errors removed
 (head moved)`. A head that moved without changing the roadmap folders is not such a move
 (`carry_unchanged`, below).
 
@@ -898,7 +898,7 @@ an operator files by hand at an accepted head (inputs `operator_check`) is not c
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `false` | file and retire review jobs and keep the label (nothing is read while off) |
-| `label` | `"ai-approved"` | the label an accepted head carries on the content repository |
+| `label` | `"ai-found-no-errors"` | the label an accepted head carries on the content repository |
 | `dependency_label` | `""` | the label `roadmaps dependency-labels` keeps when given no `--label` (below); `board sync` does not touch it |
 | `per_run` | `3` | new review jobs (one per roadmap folder) per `board sync` run, oldest pull request first |
 | `text_per_run` | `10` | of those, check rounds of an accepted head's title and description that its review did not read (above), filed last, least deep in the dependency graph first; `0` files none |
@@ -1048,7 +1048,7 @@ settled at `head`: it files no review of it there, and no dispute round when the
 nothing. A folder settled at an earlier head (accepted there, or brought there by such a repair)
 stays settled across the P3-only repairs of the pull request's other folders that list neither it
 nor `outside`. The pull request gets `label` once every folder is settled at its head; the log line
-reads `ai-approved added (every roadmap folder is settled at <sha7>: …)`. The repaired head is
+reads `ai-found-no-errors added (every roadmap folder is settled at <sha7>: …)`. The repaired head is
 checked by the repair's gate and not read again by a reviewer; a review with one P1 or P2 finding
 is followed by a re-review as before, and so is any later push.
 
@@ -1060,9 +1060,9 @@ with its tree at the earlier heads that could have been accepted (the last three
 folder has a finished review, the heads P3-only repairs left under `carry_minor`, and on a labelled
 pull request the heads its carried records name under `carry_accept`): one GraphQL query per pull
 request whose head has no accepting review of its own. When all trees agree with an earlier head
-that was accepted, the label stays (`ai-approved kept (the roadmap folders at <sha7> are those of
+that was accepted, the label stays (`ai-found-no-errors kept (the roadmap folders at <sha7> are those of
 <sha7>, whose acceptance stands: the head only moved, no review filed)`), or is put back when an
-earlier run took it off (`ai-approved added (the roadmap folders …)`), the reviews of the new head
+earlier run took it off (`ai-found-no-errors added (the roadmap folders …)`), the reviews of the new head
 that nobody took are closed as superseded, and none is filed. A finished review of the new head that
 asks for changes stands, and a review of it that is under way is left to finish and decides for its
 folder, while the other folders get no review. So does a folder's latest finished review when it read
@@ -1070,7 +1070,7 @@ these same files at another head and asked for changes: an acceptance is never c
 review of the same files. A folder that differs at all (the base branch changed
 a roadmap the pull request also edits, or the rebase resolved a conflict in it) is reviewed as any
 new head is. When GitHub does not give the trees, nothing is changed in that run: the log reads
-`ai-approved not checked (the roadmap folders at <sha7> could not be compared with those of an
+`ai-found-no-errors not checked (the roadmap folders at <sha7> could not be compared with those of an
 earlier head)`, the label is left as it is and no review is filed. The build of the unchanged
 folders on the new base is not read again by a reviewer: the content repository's own checks run on
 the new head.
@@ -1081,7 +1081,7 @@ finished review settled it (accepted it, or under `carry_minor` found P3 points 
 repair) is compared, by git tree, with what that review read or left: when the folder holds the same
 files at the new head, no review of it is filed there, and for the label it counts as accepted. Only
 the folders whose files changed since their last review are read again, so the label comes when the
-last of those is accepted (`ai-approved added (every roadmap folder at <sha7> holds the files its
+last of those is accepted (`ai-found-no-errors added (every roadmap folder at <sha7> holds the files its
 last review settled)`), and a review of an unchanged folder that was filed for the new head and
 not yet taken is closed as superseded. The review that counts for a folder is its latest finished one: a later
 review that asked for changes is never passed over for an earlier acceptance, and a folder with a
@@ -1101,7 +1101,7 @@ the lines moved. Any other difference in the folder, a word in a section, a new 
 where an acceptance would otherwise be lost: it is made when a folder's tree differs from that of an
 accepted (or settled) earlier head, with one GraphQL query for the folder entries and, when only the
 README differs, one for the two READMEs. When the acceptance carries this way the log reads
-`ai-approved kept (the roadmap folders at <sha7> are those of <sha7>, up to the order of the README
+`ai-found-no-errors kept (the roadmap folders at <sha7> are those of <sha7>, up to the order of the README
 sections of Foo, whose acceptance stands: …)`, and `board sync` posts one housekeeping note on the pull
 request (`Housekeeping at <sha7>: only the order of the README's sections changed in Foo/ since
 <sha7>. …`, with a `tauceti-roadmap-layout` record), unless a comment already records that head (the
@@ -1302,11 +1302,11 @@ workflow of the content repository that runs on every merged pull request and ho
 may label its pull requests (TauCetiRoadmap's `dependency-labels.yml`).
 
 The comment and the label are written with the operator's own token, which needs write access to
-the content repository (triage at least, for labels); a token without it reports `ai-approved not
+the content repository (triage at least, for labels); a token without it reports `ai-found-no-errors not
 changed (...)` in the round's summary and the review is still submitted to the board. The hosted
-board workflow's token can usually not write there, so its runs report `ai-approved on <repo> not
+board workflow's token can usually not write there, so its runs report `ai-found-no-errors on <repo> not
 added (...)` or `not removed (...)`; a maintainer's `board sync --yes` does it. GitHub creates a label the first time it
-is added; create `ai-approved` on the content repository, and `kind:prreview` and `superseded` on the
+is added; create `ai-found-no-errors` on the content repository, and `kind:prreview` and `superseded` on the
 jobs repository, beforehand to give them a colour and a description.
 
 ### Reordering the READMEs of open pull requests (`layout`)
@@ -1529,7 +1529,7 @@ tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; on
                                                    # held PRs back to draft;
                                                    # with [prreview] enabled: a PRREVIEW job per
                                                    # roadmap folder and new head of every open roadmap
-                                                   # PR, ai-approved upkeep;
+                                                   # PR, ai-found-no-errors upkeep;
                                                    # the errata register (submitted ERRATA jobs → done)
 tauceti-roadmap --conf $CONF board sync --prune-order --yes   # first remove from the merge order every
                                                    # roadmap on the content repository's main
@@ -1608,7 +1608,7 @@ per query: each with its draft flag, labels, head, reviews, inline review commen
 comments, handed to the label, gate and review code in the shapes the REST reads give. A pull request
 with more than a page of anything (50 reviews, 50 inline comments in one review, 60 issue comments,
 100 labels), and every one of a query that fails, is read by REST (four requests). The verdicts the
-`ai-approved` rule reads are read the same way, as blobs of the board's main, 60 per query, and the
+`ai-found-no-errors` rule reads are read the same way, as blobs of the board's main, 60 per query, and the
 pull requests of review jobs the listing no longer shows (closed ones) too. The `pull requests` step
 ends with `pull requests read: N by GraphQL in Q queries, M by REST`. GraphQL has its own hourly
 budget of 5,000 points; a query of 15 pull requests costs about eight. `graphql_batch = 0` reads
@@ -1713,7 +1713,7 @@ repository: `board intake` reads it to wait for a worker that holds a review (an
 for a `reviewing` comment), `board sync` to mirror live leases and release expired ones, and
 `board stale` to spare a claim whose lease is live; without access they see no leases (the claim is
 still made on the issue, and `board stale` falls back to the issue's inactivity). And the roadmap
-repository: `board sync` flips its pull requests' labels (the awaiting ones, and `ai-approved`, on
+repository: `board sync` flips its pull requests' labels (the awaiting ones, and `ai-found-no-errors`, on
 exactly while accepted AI reviews cover every roadmap folder of the head) and keeps held ones as drafts only with a token that can write there, so a maintainer's own runs (or a token with that access) cover those;
 the workflow notes what it skipped. Team membership for `[board] target_filers` comes from
 `board/filers.json`, which every run with a maintainer's token keeps current.

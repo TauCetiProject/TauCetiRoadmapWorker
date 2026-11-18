@@ -235,8 +235,8 @@ def test_the_label_rule_reads_the_verdicts_it_needs_in_one_query(monkeypatch):
     cfg.prreview.enabled = True
     out = intake.sync_pr_reviews(SimpleNamespace(cfg=cfg, gh=gh, board=FakeBoard(jobs=list(jobs)), operator="bot",
                                                  dry_run=False))
-    assert [line for line in out if "ai-approved added" in line] == [
-        f"#{10 + n}: ai-approved added (the AI review of {H1[:7]} accepts it)" for n in range(3)]
+    assert [line for line in out if "ai-found-no-errors added" in line] == [
+        f"#{10 + n}: ai-found-no-errors added (the AI review of {H1[:7]} accepts it)" for n in range(3)]
     assert (gh.blob_queries, gh.raw_reads) == (1, 0)
     cfg.board.graphql_batch = 0
     gh = VerdictGH(nodes, files=files)

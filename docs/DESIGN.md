@@ -155,7 +155,7 @@ checkout, submits a PR to the board, and the intake advances the state.
     adversarial pass, duplication, supplier order, shape, headline theorems), with the pull request's
     other roadmap folders named as its own, and the worker posts one comment per folder (`Verdict:
     APPROVE`, `CHANGES NEEDED` or `REJECT`) and records the verdict on the board. The pull request
-    carries the `ai-approved` label exactly while an accepted review of its current head covers every
+    carries the `ai-found-no-errors` label exactly while an accepted review of its current head covers every
     one of its roadmap folders (the lane adds it when the last folder accepts, `board sync` otherwise;
     a head that only moved, with every roadmap folder's git tree that of an accepted head, counts as
     that head: a rebase or a merge of the base branch costs neither the label nor a review; and on a

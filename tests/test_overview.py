@@ -188,7 +188,7 @@ def test_a_proposal_is_built_from_the_agents_opening_and_checked(tmp_path):
 
 # --- the intake: a chain of such pushes carries the acceptance ---------------------------------------------
 
-def chain_gh(head_readme, lean_changed=False, comments=None, labels=("ai-approved",)):
+def chain_gh(head_readme, lean_changed=False, comments=None, labels=("ai-found-no-errors",)):
     """#12: H1 accepted with the old README; H2 its reordering; H3 an overview pass on H2 (`head_readme`)."""
     job = review_job(40, 1, 12, H1, "done")
     readmes = {H1: OLD, H2: layout.reorder(OLD), H3: head_readme}
@@ -212,27 +212,27 @@ def test_a_chain_of_reordering_then_overview_carries_the_acceptance_with_the_com
     # The reordered head first: carried, as before.
     gh, job = chain_gh(None)
     out, fake = sync(gh, [job])
-    assert created(fake) == [] and out[-1].startswith("#12: ai-approved kept")
+    assert created(fake) == [] and out[-1].startswith("#12: ai-found-no-errors kept")
     # The overview head, with the record the command posts: carried from the accepted head.
     gh, job = chain_gh(new, comments=record())
     out, fake = sync(gh, [job], pool=["carol"])
     assert created(fake) == [] and gh.writes == []
-    assert out == [(f"#12: ai-approved kept (the roadmap folders at {H3[:7]} are those of {H1[:7]}, up to the opening "
+    assert out == [(f"#12: ai-found-no-errors kept (the roadmap folders at {H3[:7]} are those of {H1[:7]}, up to the opening "
                     "overview and the order of the README sections of Foo, whose acceptance stands: the head only "
                     "moved, no review filed)")]
     # Without the record, or with one by a login outside the pool, the rewritten opening is a change.
     for comments in (None, record(login="mallory"), record(head=H2)):
         gh, job = chain_gh(new, comments=comments)
         out, fake = sync(gh, [job], pool=["carol"])
-        assert out[0] == "#12: ai-approved removed (head moved)" and created(fake) == [("PRREVIEW-Foo~2", "Foo")]
+        assert out[0] == "#12: ai-found-no-errors removed (head moved)" and created(fake) == [("PRREVIEW-Foo~2", "Foo")]
     # A line of Suggested.lean changed in the same push: not carried, whatever the record says.
     gh, job = chain_gh(new, lean_changed=True, comments=record())
     out, fake = sync(gh, [job], pool=["carol"])
-    assert out[0] == "#12: ai-approved removed (head moved)"
+    assert out[0] == "#12: ai-found-no-errors removed (head moved)"
     # A changed hypothesis in a layer: not carried.
     gh, job = chain_gh(new.replace("for `G` finite", "for every `G`"), comments=record())
     out, fake = sync(gh, [job], pool=["carol"])
-    assert out[0] == "#12: ai-approved removed (head moved)"
+    assert out[0] == "#12: ai-found-no-errors removed (head moved)"
 
 
 def test_the_overview_note_reads_as_housekeeping_and_names_its_kind():
