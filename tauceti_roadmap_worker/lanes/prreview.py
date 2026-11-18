@@ -192,6 +192,10 @@ def pull_request_document(number: int, data: dict, owner: str, change: str = "")
         *([change.rstrip("\n"), ""] if change else [])])
 
 
+# The automatic checks an acceptance may not pass over in silence, each in the words the lane's refusal uses.
+HARD_CHECKS = {"build": "the roadmap's Lean files do not build",
+               "depcheck": "the merge-order check reports a cycle or a supplier that comes later"}
+
 GATE_PREAMBLE = """These are the results of automatic scanners, not findings. For each check below, look at what it \
 flagged and decide. A false positive is dropped; if you drop any, say so in one plain line of your report, \
 `Automatic checks set aside as false positives: …`, describing each in words. A real failure of a check about \
@@ -1227,6 +1231,14 @@ class PRReviewLane(Lane):
             if listed:
                 problems.append("report: an acceptance lists no finding (small corrections and format notes do not "
                                 "block, findings do), but it has " + "; ".join(listed[:5]))
+            # The two automatic checks whose real failure is always a finding: an acceptance does not pass
+            # over one in silence. The reviewer either reports it or says in words why it is a false positive.
+            gate = ws.extra.get("gate")
+            hard = [words for key, words in HARD_CHECKS.items() if gate is not None and gate.counts.get(key)]
+            if hard and not any(prreviews.FALSE_POSITIVES.match(line) for line in report.split("\n")):
+                problems.append("report: at this head " + " and ".join(hard) + ": an acceptance either reports that "
+                                "as a finding (and then asks for changes) or says why it is a false positive, in the "
+                                "line `Automatic checks set aside as false positives: …`")
         elif status in ("needs_changes", "rejected") and not findings:
             problems.append("report: a verdict that asks for changes writes each finding as `## R01 (P1) — <the claim>`; "
                             "small corrections and format notes alone do not ask for changes")

@@ -1931,6 +1931,23 @@ def test_an_acceptance_with_a_failing_check_set_aside_and_with_small_corrections
     assert prreviews.findings_with_bodies(body) == []           # nothing a tool counts as a finding
 
 
+def test_an_acceptance_does_not_pass_over_a_failing_build_or_merge_order_in_silence(review_env, monkeypatch):
+    """The build failing, or a cycle or an upward supplier, is always a finding when real: an acceptance
+    at such a head says why the check is a false positive, or the lane sends the report back."""
+    monkeypatch.setattr(lane_prreview.gitops, "git", lambda cwd, *args, **kw: H1 + "\n" if args[0] == "rev-parse" else "")
+    ctx = lane_ctx(review_env, gh=LabelGH())
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    lane, ws = finished_ws(review_env, ctx, job, "accepted", gate_ok=False)
+    silent = [p for p in lane.check(job, ctx, ws) if "merge-order check" in p]
+    assert len(silent) == 1 and "Automatic checks set aside as false positives" in silent[0]
+    ws.report.write_text(ws.report.read_text().replace(
+        "## Not verifiable\n\n- none\n", "## Not verifiable\n\n- none\n\nAutomatic checks set aside as false "
+        "positives: the merge-order check counts a consumer named in the scope as a supplier.\n"))
+    assert [p for p in lane.check(job, ctx, ws) if "merge-order check" in p] == []
+    passing, ws2 = finished_ws(review_env, ctx, job, "accepted")
+    assert [p for p in passing.check(job, ctx, ws2) if "merge-order check" in p] == []
+
+
 def test_a_verdict_must_name_the_pull_request_and_head_of_its_job():
     job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
     good = {"review": {"status": "accepted", "reviewer": "independent-review-PRREVIEW-Foo~1", "head": H1, "pr": 905}}
