@@ -253,14 +253,29 @@ Agents fetch what they need themselves, within rules:
   is in `[roadmap] pool`: then any pool member's worker may take the gate round, a pool
   member's reply counts as the author's, and the repair is pushed onto the PR's own branch in
   its head repository. Reviews and red-team passes run under any other operator.
+- What a README looks like (the owner's rule of 2026-11-18): it opens with an overview a
+  mathematician can read cold (what the roadmap builds, its two to four headline theorems with their
+  real hypotheses, the two to five neighbours that place it in Tau Ceti, a guide to the layers),
+  then the conventions and the layers, then scope and ownership and the exact supplier contracts,
+  and the references last (`prompts/sections/readme-shape.md`). Checks are sanity checks for key
+  definitions and theorems, with no quota. Tools find every section by its heading, wherever it
+  stands; roadmaps written in the older order are brought into this one by a pure reordering
+  (`layout`), with their openings rewritten by a checked pass (`overview`), and neither changes the
+  AI acceptance; a review never raises the older order.
+- What a review is (the owner's rule of 2026-11-18): a referee's report with three kinds of remark,
+  findings (P1, P2: they alone decide the verdict), small corrections and format notes (numbered
+  apart, never blocking), written in plain words (`prompts/sections/remarks.md`). The gate's
+  failures are evidence the reviewer weighs, each rule classified as substance or form; nothing is
+  relayed into a review automatically. The posted comment opens with a summary and folds what was
+  checked into one block; the evidence stays in the board's report.
 - What `Suggested.lean` holds (the maintainer's rule of 2026-10-22): it is the roadmap's
   acceptance test, not an API catalogue. It states the headline theorems, the deep results the
   finished roadmap will prove, against the pins with `sorry` (a roadmap toward Fermat's Last
   Theorem states FLT), plus the few simple definitions with real bodies they need; a headline not
   statable at the pins is named in the module docstring and nothing stands in for it. There is no
   minimum size. API lemmas, boundary cases, Lean counterparts of README Checks and value-computing
-  examples are padding: reviews report them as P3 deletions, and a statable headline that is absent
-  as P2. README API bullets and Checks state their facts in prose and carry a backticked Lean name
+  examples are padding: reviews of our own packages report them as small corrections asking for
+  their deletion, and a statable headline that is absent as a finding (P2). README API bullets and Checks state their facts in prose and carry a backticked Lean name
   only for a declaration of `Suggested.lean`, so a name is a claim and `readme-ids-missing` checks
   every one. No gate counts declarations or examples; the text gate still refuses an admitted
   `example`.

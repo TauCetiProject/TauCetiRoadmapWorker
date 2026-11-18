@@ -188,6 +188,35 @@ like a worker's when it comes from a login the project lists, and holds to the s
 acceptance with a P1 or P2 finding, the adversarial table, only declared gaps, each red-team pass by
 its family of models).
 
+A review is a referee's report to a colleague, with three kinds of remark numbered apart: findings
+(P1 or P2: a stated result false or unsupported, the plan unsound), which alone decide the verdict;
+small corrections (C01…: true, minor slips), and format notes (N01…: form only), which never block.
+Each remark says, in plain words, what is wrong, why it matters, how the reviewer knows and the
+smallest change; the worker's automatic checks are evidence the reviewer weighs, never findings by
+themselves, and a review names no check's label, worker file or job. The AI review of a pull request
+is posted with a short summary at the top, the remarks under their headings, and what was checked
+folded into one block; its evidence stays in the board's report.
+
+## Roadmap READMEs, and bringing open pull requests into line
+
+A roadmap README opens with an overview a mathematician can read cold (what it builds, its headline
+theorems with their hypotheses, the few neighbours that place it in Tau Ceti, a guide to the layers),
+then its conventions and layers, with scope and ownership and the exact supplier contracts at the end,
+before the references. Checks are sanity checks for key definitions and theorems, with no quota.
+Roadmaps written before have scope and suppliers near the top; that order is never raised by a
+review, and three commands bring open pull requests into line (dry runs unless `--yes`):
+
+```bash
+tauceti-roadmap --conf $CONF layout --pr 1201 --yes          # move scope and suppliers to the end, a pure reordering
+tauceti-roadmap --conf $CONF overview --pool --yes           # rewrite the openings as overviews, checked mechanically
+tauceti-roadmap --conf $CONF reformat-reviews --yes          # rebuild the latest AI reviews in the posted layout
+```
+
+`layout` and `overview` push one commit per pull request, never to one a human approved or one in
+the merge queue, and `board sync` carries the AI acceptance across such a push (the same check on
+the two heads' files). `reformat-reviews` edits our latest review of each folder in place without
+changing what the pipeline reads from it. See [docs/OPERATORS.md](docs/OPERATORS.md).
+
 ## Development
 
 ```bash
