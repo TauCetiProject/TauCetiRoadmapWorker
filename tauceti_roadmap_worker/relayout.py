@@ -5,8 +5,8 @@ For each pull request asked for (an explicit list, every open roadmap pull reque
 authors, or of named authors), the command reads the README of each roadmap folder the pull request
 adds or changes at its head, reorders its top-level sections, checks that the result is a permutation
 of them (`layout.reorder` refuses otherwise), and, with `--yes`, makes one commit on the pull
-request's branch that changes those READMEs and nothing else, then posts the housekeeping note the
-intake also writes (`intake.layout_note`). The intake recognises such a push from the two heads' files
+request's branch that changes those READMEs and nothing else, with the housekeeping note the intake
+also writes (`intake.layout_note`), posted just before the branch moves (`push_files`). The intake recognises such a push from the two heads' files
 (`intake.LayoutCheck`) and carries the AI acceptance of the old head to the new one: the label stays
 and no review is filed.
 
@@ -202,28 +202,52 @@ def commit_message(p: Plan) -> str:
             "section reads as before, word for word, and no other file changes.\n")
 
 
-def apply(ctx, p: Plan) -> str:
-    """The commit on the pull request's branch and the note; returns the new head. The branch is moved
-    without force, so a branch that moved since the head was read refuses the update (GHError)."""
-    gh, repo = ctx.gh, p.head_repo
-    base = gh.api(f"repos/{repo}/git/commits/{p.head}") or {}
+def push_files(ctx, number: int, head: str, head_repo: str, branch: str, files: dict[str, str], message: str,
+               note) -> str:
+    """One commit on a pull request's branch that sets `files` (path -> text) on the head's tree, and its
+    housekeeping note; returns the new head. The commit is made through the git data API on the
+    branch's repository; the pull request is read again (still at `head`, or nothing is pushed); the
+    note `note(new head)` is posted BEFORE the branch moves, so that the intake finds its record the
+    moment it sees the new head; then the branch is moved without force, so that a branch that moved
+    meanwhile refuses the update. A refused update deletes the note again. Raises GHError when nothing
+    was pushed."""
+    gh, content = ctx.gh, ctx.cfg.repositories.content
+    base = gh.api(f"repos/{head_repo}/git/commits/{head}") or {}
     tree_sha = (base.get("tree") or {}).get("sha")
     if not tree_sha:
-        raise GHError(f"the tree of {p.head[:7]} could not be read")
-    tree = gh.write("POST", f"repos/{repo}/git/trees", {
-        "base_tree": tree_sha,
-        "tree": [{"path": path, "mode": "100644", "type": "blob", "content": new}
-                 for path, _old, new in p.readmes.values()]})
-    commit = gh.write("POST", f"repos/{repo}/git/commits", {"message": commit_message(p), "tree": (tree or {}).get("sha"),
-                                                            "parents": [p.head]})
+        raise GHError(f"the tree of {head[:7]} could not be read")
+    tree = gh.write("POST", f"repos/{head_repo}/git/trees", {
+        "base_tree": tree_sha, "tree": [{"path": path, "mode": "100644", "type": "blob", "content": text}
+                                        for path, text in files.items()]})
+    commit = gh.write("POST", f"repos/{head_repo}/git/commits", {"message": message, "tree": (tree or {}).get("sha"),
+                                                                 "parents": [head]})
     sha = str((commit or {}).get("sha") or "")
     if not sha:
         raise GHError("the commit was not made")
-    live = ((gh.api(f"repos/{ctx.cfg.repositories.content}/pulls/{p.number}") or {}).get("head") or {}).get("sha", "")
-    if live != p.head:
+    live = ((gh.api(f"repos/{content}/pulls/{number}") or {}).get("head") or {}).get("sha", "")
+    if live != head:
         raise GHError(f"the pull request moved to {live[:7] or '?'} before the push; nothing pushed")
-    gh.write("PATCH", f"repos/{repo}/git/refs/heads/{quote(p.branch, safe='/')}", {"sha": sha, "force": False})
+    try:
+        posted = gh.write("POST", f"repos/{content}/issues/{number}/comments", {"body": note(sha)}) or {}
+    except GHError as exc:
+        raise GHError(f"the note could not be posted ({str(exc).splitlines()[0][:120]}); nothing pushed") from exc
+    try:
+        gh.write("PATCH", f"repos/{head_repo}/git/refs/heads/{quote(branch, safe='/')}", {"sha": sha, "force": False})
+    except GHError:
+        if posted.get("id"):
+            try:
+                gh.write("DELETE", f"repos/{content}/issues/comments/{posted['id']}")
+            except GHError:
+                pass
+        raise
     return sha
+
+
+def apply(ctx, p: Plan) -> str:
+    """The reordering's commit on the pull request's branch, with its note (`push_files`)."""
+    return push_files(ctx, p.number, p.head, p.head_repo, p.branch,
+                      {path: new for path, _old, new in p.readmes.values()}, commit_message(p),
+                      lambda sha: intake.layout_note(p.head, sha, p.folders))
 
 
 def run(ctx, *, numbers=(), authors=(), pool: bool = False, write: bool = False, pace: float = 2.0, limit: int = 0,
@@ -264,14 +288,7 @@ def run(ctx, *, numbers=(), authors=(), pool: bool = False, write: bool = False,
                 say(f"#{p.number}: not pushed: {str(exc).splitlines()[0][:200]}")
                 continue
             pushed += 1
-            line = f"#{p.number}: pushed {sha[:7]} on {p.head_repo}:{p.branch} (" + ", ".join(p.folders) + ")"
-            try:
-                ctx.gh.write("POST", f"repos/{repo}/issues/{p.number}/comments",
-                             {"body": intake.layout_note(p.head, sha, p.folders)})
-                line += "; note posted"
-            except GHError as exc:
-                line += f"; note not posted ({str(exc).splitlines()[0][:120]})"
-            say(line)
+            say(f"#{p.number}: pushed {sha[:7]} on {p.head_repo}:{p.branch} (" + ", ".join(p.folders) + "); note posted")
         except (GHRateLimited, GHHalt) as exc:
             say(f"stopped at #{entry['pr']}: {str(exc).splitlines()[0][:200]}; {pushed} pushed, run again later")
             break

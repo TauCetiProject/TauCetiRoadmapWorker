@@ -298,11 +298,12 @@ def test_the_command_pushes_one_commit_of_the_readmes_alone_and_posts_the_note()
     lines, slept = command(gh, numbers=[1, 2], write=True, pace=2.5)
     assert slept == [2.5]                       # one pause, between the two pushes
     writes = [(m, p) for m, p, _x in gh.writes]
+    # The note goes up just before the branch moves, so that the intake finds its record with the new head.
     assert writes == [("POST", "repos/carol/fork1/git/trees"), ("POST", "repos/carol/fork1/git/commits"),
-                      ("PATCH", "repos/carol/fork1/git/refs/heads/roadmap/1"), ("POST", f"repos/{REPO}/issues/1/comments"),
+                      ("POST", f"repos/{REPO}/issues/1/comments"), ("PATCH", "repos/carol/fork1/git/refs/heads/roadmap/1"),
                       ("POST", "repos/carol/fork2/git/trees"), ("POST", "repos/carol/fork2/git/commits"),
-                      ("PATCH", "repos/carol/fork2/git/refs/heads/roadmap/2"), ("POST", f"repos/{REPO}/issues/2/comments")]
-    tree, commit, ref, note = (x for _m, _p, x in gh.writes[:4])
+                      ("POST", f"repos/{REPO}/issues/2/comments"), ("PATCH", "repos/carol/fork2/git/refs/heads/roadmap/2")]
+    tree, commit, note, ref = (x for _m, _p, x in gh.writes[:4])
     assert tree == {"base_tree": "tree-1111", "tree": [{"path": "TauCetiRoadmap/Foo1/README.md", "mode": "100644",
                                                         "type": "blob", "content": layout.reorder(OLD)}]}
     assert commit["parents"] == ["1" * 40] and commit["tree"] == "new-tree" and "Layout only" in commit["message"]
@@ -331,8 +332,21 @@ def test_a_branch_that_moved_is_not_pushed_and_a_rate_limit_stops_the_run():
     gh.moved = {1: H2}
     lines, _slept = command(gh, numbers=[1, 2], write=True)
     assert lines[0] == f"#1: not pushed: the pull request moved to {H2[:7]} before the push; nothing pushed"
-    assert not any(p.endswith("refs/heads/roadmap/1") for _m, p, _x in gh.writes)
+    assert not any(p.endswith(("refs/heads/roadmap/1", "issues/1/comments")) for _m, p, _x in gh.writes)
     assert lines[1].startswith("#2: pushed")
+
+    # A branch update GitHub refuses (the branch moved after the last read) takes the note down again.
+    class Refusing(PullsGH):
+        def write(self, method, path, payload=None):
+            if method == "PATCH":
+                raise GHError("HTTP 422: Update is not a fast forward")
+            out = super().write(method, path, payload)
+            return {"id": 77} if path.endswith("/comments") else out
+    gh = Refusing(pulls(1).nodes, pulls(1).readmes)
+    lines, _slept = command(gh, numbers=[1], write=True)
+    assert lines[0] == "#1: not pushed: HTTP 422: Update is not a fast forward"
+    assert [(m, p) for m, p, _x in gh.writes][-2:] == [("POST", f"repos/{REPO}/issues/1/comments"),
+                                                       ("DELETE", f"repos/{REPO}/issues/comments/77")]
 
     class Limited(PullsGH):
         def write(self, method, path, payload=None):
