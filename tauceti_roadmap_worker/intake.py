@@ -1724,6 +1724,10 @@ def sync_pull_requests(ctx) -> list[str]:
                                           awaiting_review=r.awaiting_review, maintainers=set(r.maintainer_logins),
                                           maintainer_prefix=r.maintainer_review_prefix, owner=p["owner"])
         have = {label["name"] for label in data.get("labels", [])}
+        if want == r.awaiting_author and cfg.prreview.approval_label:
+            # a review its author has yet to answer: a human approval is no longer all it needs
+            # (`deplabels`, which keeps that label, would take it off only at its next run)
+            drop = [*drop, cfg.prreview.approval_label]
         try:   # a token of the board alone (its workflow's) cannot write to the roadmap repository
             if want and want not in have:
                 ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [want]})

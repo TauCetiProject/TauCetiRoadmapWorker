@@ -7,7 +7,7 @@
     tauceti-roadmap status [--all]                       the board's jobs by state, ages and claimants
     tauceti-roadmap roadmaps refresh | list | grep <regex> | show <Name> [--file F] | resolve <README.md>
     tauceti-roadmap roadmaps overlaps [<Name> | <README.md>] [--pr N]
-    tauceti-roadmap roadmaps dependency-labels [--label NAME] [--yes]
+    tauceti-roadmap roadmaps dependency-labels [--label NAME] [--approval-label NAME] [--yes]
     tauceti-roadmap usage [--worker-id ID] [--by lane|kind|job|agent|model|worker|day|label] [--since DATE]
     tauceti-roadmap gate <worktree> <Name> [--base origin/main] [--json] [--out FILE]
     tauceti-roadmap gate --depcheck <README.md> --name <Name> [--order FILE] [--movable]
@@ -911,7 +911,8 @@ def roadmaps_cmd(args) -> int:
         label = args.label or cfg.prreview.dependency_label
         if not label:
             raise SystemExit("roadmaps dependency-labels: give --label, or set [prreview] dependency_label")
-        for line in deplabels.run(_bot_context(args, cfg, dry=not args.yes), label):
+        approval = args.approval_label or cfg.prreview.approval_label
+        for line in deplabels.run(_bot_context(args, cfg, dry=not args.yes), label, approval):
             print(line)
         return 0
     if args.action == "refresh":
@@ -1369,6 +1370,9 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--out", default="", help="resolve, overlaps: also write the report here")
     r.add_argument("--yes", action="store_true", help="dependency-labels: write the labels (default: a dry run)")
     r.add_argument("--label", default="", help="dependency-labels: the label (default: [prreview] dependency_label)")
+    r.add_argument("--approval-label", default="",
+                   help="dependency-labels: the label of an accepted pull request that waits for nothing and "
+                        "needs only a human approval (default: [prreview] approval_label; none when empty)")
 
     u = sub.add_parser("usage", help="the agent runs' token usage on this host, summed by lane, job, agent, ...")
     u.add_argument("--worker-id", default="", help="only this worker's runs")

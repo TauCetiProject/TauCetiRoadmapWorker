@@ -50,9 +50,10 @@ class PullGH:
 def sync(tmp_path, monkeypatch):
     monkeypatch.setattr(intake, "open_roadmap_prs", lambda ctx: [PR])
 
-    def run(gh, board, maintainers=(OWNER,)):
+    def run(gh, board, maintainers=(OWNER,), approval=""):
         cfg = example_config()
         cfg.replies.maintainer_logins = list(maintainers)
+        cfg.prreview.approval_label = approval
         return intake.sync_pull_requests(SimpleNamespace(cfg=cfg, gh=gh, board=board, state=tmp_path))
     return run
 
@@ -73,6 +74,18 @@ def test_a_maintainer_review_from_the_owner_login_creates_one_gate_job(sync):
     board.jobs.append(job)
     sync(PullGH(reviews=[REVIEW], labels=("awaiting-author",)), board)
     assert len(board.created) == 1
+
+
+def test_a_review_awaiting_its_author_takes_the_approval_label_off(sync):
+    ready = "awaiting-human-approval"
+    gh = PullGH(reviews=[REVIEW], labels=("awaiting-review", "ai-found-no-errors", ready))
+    sync(gh, FakeBoard(), approval=ready)
+    assert gh.writes == [("POST", LABELS, {"labels": ["awaiting-author"]}), ("DELETE", f"{LABELS}/awaiting-review", {}),
+                         ("DELETE", f"{LABELS}/{ready}", {})]
+    # With no review to answer the step leaves the label alone: `roadmaps dependency-labels` keeps it.
+    gh = PullGH(labels=("awaiting-review", "ai-found-no-errors", ready))
+    sync(gh, FakeBoard(), approval=ready)
+    assert gh.writes == []
 
 
 def test_without_the_login_configured_the_owners_review_stays_a_reply(sync):
