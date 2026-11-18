@@ -913,6 +913,7 @@ an operator files by hand at an accepted head (inputs `operator_check`) is not c
 | `carry_minor` | `false` | a review whose every finding is P3 ends with its repair: no further review of that folder is filed for the repaired head, and the pull request is labelled once every folder is settled (below) |
 | `carry_unchanged` | `true` | a head that moved without changing the pull request's roadmap folders (a rebase, a merge of the base branch) keeps the acceptance of the head it came from: the label stays and no review of the new head is filed (below) |
 | `carry_unchanged_folders` | `true` | the same folder by folder, on a pull request with several roadmap folders: a folder whose latest review settled the files it still holds is not reviewed again when another folder's repair moves the head, and counts as accepted there (below) |
+| `carry_layout` | `true` | with the two above, a roadmap folder whose README only had its top-level sections reordered, every other file unchanged, holds the same files: the acceptance carries however many lines moved, and the pull request gets one housekeeping note (below) |
 | `defer_outside` | `false` | a repair may settle a finding as `outside this folder: <where>`; the review's verdict records it and later reviews of the folder do not raise it again (below) |
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
 | `repair_models` | `{}` | the model such a repair runs on, by the model that reviewed: `{ fable = "claude-opus-5-5" }` has a worker reviewing with `fable` run the repair with `claude-opus-5-5` (a model of the same agent; the usage record names the model that ran). A reviewing model that is not listed repairs with itself |
@@ -1036,6 +1037,63 @@ folder after a sibling folder changed: a citation from the accepted folder into 
 checked by the repaired folder's own review and by the gate, not by a new review of the accepted
 folder. Set `carry_unchanged_folders = false` to have every folder reviewed at every head again. The
 operator's own filing (`operator_prs`) should apply the same test: `intake.unchanged_folders`.
+
+With `carry_layout` (on by default), a folder whose README only had its top-level sections reordered
+counts as holding the same files, for both rules above. The test is made on the two heads' files and
+nothing else: the folder's entries at both heads agree except `README.md`, and the two READMEs hold the
+same opening and the same `##` sections, each byte for byte, in another order
+(`layout.section_permutation`; the blank lines between sections are not text). There is no limit on
+the lines moved. Any other difference in the folder, a word in a section, a new section, a change to
+`Suggested.lean`, is a change, and the folder is reviewed as before. The comparison costs reads only
+where an acceptance would otherwise be lost: it is made when a folder's tree differs from that of an
+accepted (or settled) earlier head, with one GraphQL query for the folder entries and, when only the
+README differs, one for the two READMEs. When the acceptance carries this way the log reads
+`ai-approved kept (the roadmap folders at <sha7> are those of <sha7>, up to the order of the README
+sections of Foo, whose acceptance stands: …)`, and `board sync` posts one housekeeping note on the pull
+request (`Housekeeping at <sha7>: only the order of the README's sections changed in Foo/ since
+<sha7>. …`, with a `tauceti-roadmap-layout` record), unless a comment already records that head (the
+`layout` command posts the same note after its push). The note opens with a housekeeping prefix and
+says that no further change is needed, so no reading of the timeline takes it for a review. A token
+that cannot write to the content repository leaves it unposted and says so. Only an acceptance is
+carried: the head of a pull request whose last review asked for changes is reviewed as any new head
+is, since the records that settle a disputed or answered review are kept per head.
+
+### Reordering the READMEs of open pull requests (`layout`)
+
+The README-shape brief puts `## Scope and ownership` and `## Exact supplier contracts` at the end,
+just before `## References`, and `## How to read the build` directly after the opening summary. Older
+roadmaps have them near the top. `tauceti-roadmap layout` moves them as a pure reordering: each
+section moves whole, no byte of any section changes, the blank lines between sections stay where they
+were, and the result is checked to be a permutation of the original's sections (the command refuses a
+README it cannot read as sections). Only those three headings move, matched exactly: a heading that
+mixes them with other matter (`## Scope and conventions`) stays where its author put it. It is
+idempotent: a README in order is left alone.
+
+    tauceti-roadmap layout TauCetiRoadmap/Foo/README.md [--write]
+    tauceti-roadmap layout --pr 1201 --pr 1187 [--yes] [--pace 2] [--limit N]
+    tauceti-roadmap layout --pool [--accepted-only] [--yes] [--pace 2] [--limit N]
+    tauceti-roadmap layout --author alice [--yes]
+
+Without `--yes` it is a dry run: one line per pull request, saying which READMEs it would reorder and
+which headings move, or why it leaves it alone, and whether the acceptance carries (the pull request
+carries the review label) or the next review reads the new head. With `--yes` it makes, per pull
+request, one commit on the branch through the git data API: a tree on the head's tree with the
+reordered READMEs, a commit whose only parent is the head, and the branch moved to it without force,
+after a last check that the pull request is still at the head read; then the housekeeping note. A
+branch that moved in between refuses the update and nothing is lost. Pushes are `--pace` seconds
+apart (2 by default); a rate-limit answer stops the run (`stopped at #N: …; K pushed, run again
+later`). `--pool` (alias `--all-mine`) takes every open roadmap pull request of the authors in
+`[roadmap] pool`, `--author` those of one author, deepest in the dependency graph of the open pull
+requests first; `--pr` names them in the order given. `--accepted-only` keeps those carrying the
+review label.
+
+It refuses, and never pushes to, a pull request a human has approved (any approval: a push would
+dismiss it) or one in the merge queue (a push would take it out): those merge as they are. It skips,
+and reports, one with a review or gate round claimed or submitted (`#N: skipped: PRREVIEW-Foo~3 is
+claimed (run again once it is over)`). Only the READMEs of the roadmap folders the pull request adds
+or changes are touched: a README it leaves alone is as on main and is left alone. Each push starts a
+build on the shared continuous integration, which also builds the merge queue: run it in small
+batches (`--limit`).
 
 With `defer_outside`, the repair brief offers one more disposition, `outside this folder: <where
 the change belongs>`, for a point that no edit of the files the repair may change can settle
