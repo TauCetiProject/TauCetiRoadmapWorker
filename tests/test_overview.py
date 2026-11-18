@@ -68,7 +68,7 @@ It builds on Mathlib's index of a subgroup. Layer 1 defines the order; Layer 2 p
 
 
 def reordered_and_fixed(text=OLD):
-    return overview.fix_directions(text, layout.reorder(text))
+    return overview.fix_directions(layout.reorder(text))
 
 
 # --- the direction words ---------------------------------------------------------------------------------
@@ -85,9 +85,21 @@ def test_direction_words_the_move_made_wrong_are_corrected_in_the_sections_that_
     assert "as fixed in the conventions above" in suppliers
     assert changes == [("how to read the build", "the conventions above", "the conventions below"),
                        ("scope and ownership", "the layer headings below", "the layer headings above")]
-    # A section that did not move keeps its words, and a README already in order is left alone.
-    assert overview.fix_directions(text, text) == (text, [])
+    # A section that did not move keeps its words, and a README whose words point the right way is left alone.
+    assert overview.fix_directions(text) == (text, [])
     assert not layout.rewrite_problems(OLD, overview.build(text, OPENING, fold=False))
+
+
+def test_a_readme_an_earlier_pass_reordered_has_its_direction_words_corrected_too():
+    """`layout` reorders without touching a word, so the sections it moved keep "below" for what is
+    now above: the overview pass corrects them, and the check passes against the reordered head."""
+    earlier = layout.reorder(OLD)                       # what the `layout` pass pushed
+    assert layout.moved(earlier) == []
+    text, changes = overview.fix_directions(earlier)
+    assert (text, changes) == reordered_and_fixed()
+    assert changes == [("how to read the build", "the conventions above", "the conventions below"),
+                       ("scope and ownership", "the layer headings below", "the layer headings above")]
+    assert not layout.rewrite_problems(earlier, overview.build(text, OPENING, fold=False))
 
 
 def test_the_agent_may_propose_only_direction_swaps_in_the_sections_that_moved():
