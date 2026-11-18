@@ -31,7 +31,7 @@ from . import agents, intake, layout, openroadmaps, prbatch, prompts, relayout
 from .gh import GHError, GHHalt, GHRateLimited
 
 OUT_NAME, PLAN_NAME = "opening.md", "overview.json"
-WORD_LIMIT = 600          # words of an opening the worker refuses beyond (the brief asks for 150 to 500)
+WORD_LIMIT = 850          # words of an opening the worker refuses beyond (the brief asks for 250 to 700)
 TIMEOUT = 30 * 60
 LEAN_NAME = re.compile(r"`([A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)+|[A-Za-z][\w']*_[\w'.]+)`")
 
@@ -48,7 +48,7 @@ def opening_problems(new: str, old: str) -> list[str]:
     if not new.strip().startswith("**Summary.**"):
         problems.append("it does not open with `**Summary.**`")
     if words(new) > WORD_LIMIT:
-        problems.append(f"it has {words(new)} words (at most about 500)")
+        problems.append(f"it has {words(new)} words (at most about 700)")
     if re.search(r"^\s{0,3}#", new, re.MULTILINE):
         problems.append("it has a heading line")
     for pattern, what in ((r"<!--|-->", "an HTML comment"), (r"/home/|/tmp/|/Users/", "a machine path"),

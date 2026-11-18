@@ -157,7 +157,7 @@ def test_the_opening_is_held_to_the_form_the_brief_asks():
     assert overview.opening_problems("**Summary.** It cites `Toy.order_dvd`.", old) == []      # the old one did
     assert overview.opening_problems("**Summary.** See §2.1 and #1234.", old) == [
         "it has a pull-request number", "it has a section-number locator"]
-    assert "it has 700 words (at most about 500)" in overview.opening_problems("**Summary.** " + "w " * 699, old)
+    assert "it has 900 words (at most about 700)" in overview.opening_problems("**Summary.** " + "w " * 899, old)
 
 
 # --- the agent's proposal -------------------------------------------------------------------------------------
