@@ -1058,43 +1058,6 @@ that cannot write to the content repository leaves it unposted and says so. Only
 carried: the head of a pull request whose last review asked for changes is reviewed as any new head
 is, since the records that settle a disputed or answered review are kept per head.
 
-### Reordering the READMEs of open pull requests (`layout`)
-
-The README-shape brief puts `## Scope and ownership` and `## Exact supplier contracts` at the end,
-just before `## References`, and `## How to read the build` directly after the opening summary. Older
-roadmaps have them near the top. `tauceti-roadmap layout` moves them as a pure reordering: each
-section moves whole, no byte of any section changes, the blank lines between sections stay where they
-were, and the result is checked to be a permutation of the original's sections (the command refuses a
-README it cannot read as sections). Only those three headings move, matched exactly: a heading that
-mixes them with other matter (`## Scope and conventions`) stays where its author put it. It is
-idempotent: a README in order is left alone.
-
-    tauceti-roadmap layout TauCetiRoadmap/Foo/README.md [--write]
-    tauceti-roadmap layout --pr 1201 --pr 1187 [--yes] [--pace 2] [--limit N]
-    tauceti-roadmap layout --pool [--accepted-only] [--yes] [--pace 2] [--limit N]
-    tauceti-roadmap layout --author alice [--yes]
-
-Without `--yes` it is a dry run: one line per pull request, saying which READMEs it would reorder and
-which headings move, or why it leaves it alone, and whether the acceptance carries (the pull request
-carries the review label) or the next review reads the new head. With `--yes` it makes, per pull
-request, one commit on the branch through the git data API: a tree on the head's tree with the
-reordered READMEs, a commit whose only parent is the head, and the branch moved to it without force,
-after a last check that the pull request is still at the head read; then the housekeeping note. A
-branch that moved in between refuses the update and nothing is lost. Pushes are `--pace` seconds
-apart (2 by default); a rate-limit answer stops the run (`stopped at #N: …; K pushed, run again
-later`). `--pool` (alias `--all-mine`) takes every open roadmap pull request of the authors in
-`[roadmap] pool`, `--author` those of one author, deepest in the dependency graph of the open pull
-requests first; `--pr` names them in the order given. `--accepted-only` keeps those carrying the
-review label.
-
-It refuses, and never pushes to, a pull request a human has approved (any approval: a push would
-dismiss it) or one in the merge queue (a push would take it out): those merge as they are. It skips,
-and reports, one with a review or gate round claimed or submitted (`#N: skipped: PRREVIEW-Foo~3 is
-claimed (run again once it is over)`). Only the READMEs of the roadmap folders the pull request adds
-or changes are touched: a README it leaves alone is as on main and is left alone. Each push starts a
-build on the shared continuous integration, which also builds the merge queue: run it in small
-batches (`--limit`).
-
 With `defer_outside`, the repair brief offers one more disposition, `outside this folder: <where
 the change belongs>`, for a point that no edit of the files the repair may change can settle
 (another roadmap's folder, another pull request, the library). The section begins with the
@@ -1292,6 +1255,87 @@ board workflow's token can usually not write there, so its runs report `ai-appro
 added (...)` or `not removed (...)`; a maintainer's `board sync --yes` does it. GitHub creates a label the first time it
 is added; create `ai-approved` on the content repository, and `kind:prreview` and `superseded` on the
 jobs repository, beforehand to give them a colour and a description.
+
+### Reordering the READMEs of open pull requests (`layout`)
+
+The README-shape brief puts `## Scope and ownership` and `## Exact supplier contracts` at the end,
+just before `## References`, and `## How to read the build` directly after the opening summary. Older
+roadmaps have them near the top. `tauceti-roadmap layout` moves them as a pure reordering: each
+section moves whole, no byte of any section changes, the blank lines between sections stay where they
+were, and the result is checked to be a permutation of the original's sections (the command refuses a
+README it cannot read as sections). Only those three headings move, matched exactly: a heading that
+mixes them with other matter (`## Scope and conventions`) stays where its author put it. It is
+idempotent: a README in order is left alone.
+
+    tauceti-roadmap layout TauCetiRoadmap/Foo/README.md [--write]
+    tauceti-roadmap layout --pr 1201 --pr 1187 [--yes] [--pace 2] [--limit N]
+    tauceti-roadmap layout --pool [--accepted-only] [--yes] [--pace 2] [--limit N]
+    tauceti-roadmap layout --author alice [--yes]
+
+Without `--yes` it is a dry run: one line per pull request, saying which READMEs it would reorder and
+which headings move, or why it leaves it alone, and whether the acceptance carries (the pull request
+carries the review label) or the next review reads the new head. With `--yes` it makes, per pull
+request, one commit on the branch through the git data API: a tree on the head's tree with the
+reordered READMEs, a commit whose only parent is the head, and the branch moved to it without force,
+after a last check that the pull request is still at the head read; then the housekeeping note. A
+branch that moved in between refuses the update and nothing is lost. Pushes are `--pace` seconds
+apart (2 by default); a rate-limit answer stops the run (`stopped at #N: …; K pushed, run again
+later`). `--pool` (alias `--all-mine`) takes every open roadmap pull request of the authors in
+`[roadmap] pool`, `--author` those of one author, deepest in the dependency graph of the open pull
+requests first; `--pr` names them in the order given. `--accepted-only` keeps those carrying the
+review label.
+
+It refuses, and never pushes to, a pull request a human has approved (any approval: a push would
+dismiss it) or one in the merge queue (a push would take it out): those merge as they are. It skips,
+and reports, one with a review or gate round claimed or submitted (`#N: skipped: PRREVIEW-Foo~3 is
+claimed (run again once it is over)`). Only the READMEs of the roadmap folders the pull request adds
+or changes are touched: a README it leaves alone is as on main and is left alone. Each push starts a
+build on the shared continuous integration, which also builds the merge queue: run it in small
+batches (`--limit`).
+
+### Rebuilding the posted reviews (`reformat-reviews`)
+
+A review comment is posted in this layout, top to bottom: the header lines the tools read (`🤖 AI
+review (<agent>, <model>) of <sha>`, `Verdict:`, `Reviewed head:`, `Roadmap folder:`), a
+`**Summary.**` of two to four sentences (the verdict in words, the main findings by their titles,
+the counts, and what is left for a human to decide), then `## Findings`, `## Small corrections
+(non-blocking)`, `## Format notes (non-blocking)`, `## Questions for the author`, `## For the human
+reviewers` and `## Source issues`, each only when it has something, then one collapsed block
+(`<details><summary>What was checked</summary>`: the sentence on the worker's gate, the state of the
+earlier findings, what could not be verified), then the marker. `## Verified sound` with its
+adversarial table, `Source independence:` and `Research link:` stay in the job's report on the board
+and are not posted.
+
+`tauceti-roadmap reformat-reviews` rebuilds the comments posted before this layout, in place and
+without a model: for every open roadmap pull request (or those named with `--pr`), the latest AI review
+of each roadmap folder, when it is ours (posted by the operator running it, or by a `--login` given;
+the token must be allowed to edit it). It keeps the header lines, the findings, the questions for the
+human reviewers and the source issues word for word, composes the summary from the verdict, the
+findings' own titles and their counts by severity, folds the gate's sentence, `## Previous findings`,
+`## Not verifiable`, `## Deferred findings` and any paragraph under no heading into the collapsed
+block, and leaves out `## Verified sound`, the two provenance statements, the status sentence and the
+notice of questions for the humans (the summary says it). Old reviews have no small corrections or
+format notes: their findings, P3 ones included, stay findings, and the summary counts them by
+severity.
+
+    tauceti-roadmap reformat-reviews [--pr N ...] [--login LOGIN ...]            # a dry run
+    tauceti-roadmap reformat-reviews --yes [--pace 1] [--limit N] [--pr N ...]
+
+Nothing the pipeline reads may change: the verdict, the reviewed head, the folder, the findings' ids,
+severities and titles, the marker, the questions for the human reviewers, the source issues and how
+the timeline reads the comment (a review to answer or not, an approving verdict) are compared before
+and after, and a comment for which any differs is left as it is (`#N Foo: comment C: rebuilding it
+would change what the pipeline reads from it`). A reply records the text version of the review it
+answered (`replies.text_version`, a digest of the text), so an edited review would read as a new one:
+the rebuilt comment carries `<!-- tauceti-roadmap-text-version {"version": "<v>"} -->` with the version
+of the text it replaces, and `text_version` returns that version for a comment that carries it and a
+pull-request review's marker. An answered review stays answered. (A hand edit of a rebuilt comment
+keeps the pin, so it does not read as a new version; delete the pin line in the same edit to make it
+one.) A pull request with a review or gate round claimed or submitted is skipped and reported for a
+later pass. A comment already in the layout is left alone, so the command can be run again; the dry
+run prints each comment's size before and after (`[dry run] #N Foo: comment C: 14,923 -> 6,063
+characters`) and the total; edits are `--pace` seconds apart (one a second by default), and a
+rate-limit answer stops the run.
 
 ## Claims and separation
 
