@@ -68,22 +68,27 @@ def sync_checkout(repo: str, dest: Path, ref: str = "main", scrub: tuple[str, ..
     return git(dest, "rev-parse", "HEAD").strip()
 
 
-def checkout_pr(repo: str, dest: Path, number: int) -> str:
-    """A read-only checkout of pull request #number at its head (refs/pull/N/head). GitHub sometimes
-    lists a pull request as open without that ref; its test merge (refs/pull/N/merge) then still has the
-    head as its second parent, and the checkout is made from there."""
-    if not (dest / ".git").exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        git(None, "clone", "-q", "--filter=blob:none", "--no-checkout", url(repo), str(dest))
-    head = "FETCH_HEAD"
+def fetch_pr_head(dest: Path, number: int) -> str:
+    """Fetch the head of pull request #number from `origin` into the repository at `dest` and return
+    its commit. GitHub sometimes lists a pull request as open without refs/pull/N/head; its test merge
+    (refs/pull/N/merge) then still has the head as its second parent, and the head is taken from there."""
     try:
-        git(dest, "fetch", "-q", "origin", f"pull/{number}/head", "main")
+        git(dest, "fetch", "-q", "origin", f"pull/{number}/head")
+        return git(dest, "rev-parse", "--verify", "FETCH_HEAD").strip()
     except GitError as exc:
         if f"couldn't find remote ref pull/{number}/head" not in str(exc):
             raise
-        git(dest, "fetch", "-q", "origin", "main")
-        git(dest, "fetch", "-q", "origin", f"pull/{number}/merge")
-        head = git(dest, "rev-parse", "--verify", "FETCH_HEAD^2").strip()
+    git(dest, "fetch", "-q", "origin", f"pull/{number}/merge")
+    return git(dest, "rev-parse", "--verify", "FETCH_HEAD^2").strip()
+
+
+def checkout_pr(repo: str, dest: Path, number: int) -> str:
+    """A read-only checkout of pull request #number at its head (`fetch_pr_head`)."""
+    if not (dest / ".git").exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        git(None, "clone", "-q", "--filter=blob:none", "--no-checkout", url(repo), str(dest))
+    git(dest, "fetch", "-q", "origin", "main")
+    head = fetch_pr_head(dest, number)
     git(dest, "checkout", "-q", "--force", "--detach", head)
     git(dest, "reset", "-q", "--hard", head)
     git(dest, "clean", "-qffd")
