@@ -289,6 +289,10 @@ small_change_lines = 150
 # as `outside this folder`, recorded once in the verdict and not raised again. Both off by default.
 # carry_minor = true
 # defer_outside = true
+# A roadmap folder whose README only had its top-level sections reordered (each section byte for byte,
+# every other file of the folder unchanged; the `layout` command) holds the same files as before: the
+# acceptance of the earlier head carries, however many lines moved. On by default.
+# carry_layout = true
 # Authors whose pull requests' reviews are taken after every other job, and their exceptions.
 # late_authors = []
 # late_except = []

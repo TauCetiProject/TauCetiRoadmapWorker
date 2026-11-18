@@ -669,6 +669,31 @@ def summary_cmd(args) -> int:
     return 1 if any("refused" in line or "failed" in line for line in lines) else 0
 
 
+def layout_cmd(args) -> int:
+    """Reorder a README's sections (`layout.reorder`): a local file, or the READMEs of open roadmap pull
+    requests (`relayout.run`; a dry run unless --yes)."""
+    from . import relayout
+    if args.readme:
+        if args.pr or args.author or args.pool:
+            print("layout: give a README or pull requests, not both", file=sys.stderr)
+            return 2
+        line, code = relayout.local(args.readme, write=args.write)
+        print(line)
+        return code
+    if not (args.pr or args.author or args.pool):
+        print("layout: name pull requests with --pr, authors with --author, or pass --pool", file=sys.stderr)
+        return 2
+    if args.pace < 0 or args.limit < 0:
+        print("layout: --pace and --limit are never negative", file=sys.stderr)
+        return 2
+    cfg = _load(args)
+    write = args.yes and not args.dry_run
+    ctx = _bot_context(args, cfg, not write)
+    lines = relayout.run(ctx, numbers=args.pr, authors=args.author, pool=args.pool, write=write, pace=args.pace,
+                         limit=args.limit, accepted_only=args.accepted_only, report=lambda line: print(line, flush=True))
+    return 1 if any(line.startswith("stopped") or ": not pushed:" in line for line in lines) else 0
+
+
 def sources_cmd(args) -> int:
     cfg = _load(args)
     s = cfg.sources
@@ -1211,6 +1236,22 @@ def parser() -> argparse.ArgumentParser:
     sm.add_argument("--agent", choices=["claude", "codex"], default="claude")
     sm.add_argument("--model", default="", help="default: the configured model of the agent")
 
+    lo = sub.add_parser("layout", help="move a roadmap README's scope and supplier contracts to the end, as a pure "
+                                       "reordering of its sections: a local README, or the READMEs of open pull "
+                                       "requests (a dry run unless --yes)")
+    lo.add_argument("readme", nargs="?", default="", help="a README.md to reorder (rewritten with --write)")
+    lo.add_argument("--write", action="store_true", help="with a README: rewrite the file")
+    lo.add_argument("--pr", type=int, action="append", default=[], help="a pull request (repeatable; in this order)")
+    lo.add_argument("--author", action="append", default=[], metavar="LOGIN",
+                    help="every open roadmap pull request of this author (repeatable)")
+    lo.add_argument("--pool", "--all-mine", dest="pool", action="store_true",
+                    help="every open roadmap pull request of the authors in [roadmap] pool")
+    lo.add_argument("--accepted-only", action="store_true",
+                    help="only the pull requests that carry the AI review label ([prreview] label)")
+    lo.add_argument("--pace", type=float, default=2.0, metavar="SECONDS", help="pause between two pushes (default 2)")
+    lo.add_argument("--limit", type=int, default=0, help="push to at most this many pull requests (0: all)")
+    lo.add_argument("--yes", action="store_true", help="push and post the notes (default: a dry run)")
+
     s = sub.add_parser("sources", help="fetch a legal source, check a manifest, classify a URL, cache a manifest's "
                                        "texts, OCR a scan, render a needs-references request")
     s.add_argument("action", choices=["fetch", "check", "classify", "cache", "ocr", "request"])
@@ -1295,7 +1336,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     handlers = {"doctor": doctor, "targets": targets, "work": work, "gate": gate, "merge-order": merge_order,
                 "summary": summary_cmd, "sources": sources_cmd, "board": board_cmd, "tail": tail_cmd, "status": status_cmd,
-                "usage": usage_cmd, "roadmaps": roadmaps_cmd, "throttle": throttle_cmd}
+                "usage": usage_cmd, "roadmaps": roadmaps_cmd, "throttle": throttle_cmd, "layout": layout_cmd}
     try:
         return handlers[args.command](args)
     except GHRateLimited as exc:

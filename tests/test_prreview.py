@@ -271,22 +271,45 @@ class ContentGH:
     REST, main's tree (`tree`: the folders under TauCetiRoadmap/ holding a README.md), the board's main
     (verdict records), and every write; label writes fail with `refuse`. `trees`: (commit, path) -> the
     git object id of that folder there (a folder not listed differs at every commit); "unread": the
-    query fails."""
+    query fails. `entries`: (commit, path) -> the folder's entries {name: id} (by default a README and
+    a Suggested.lean whose ids are the folder's own: two folders that differ differ in both); `blobs`:
+    (commit, path) -> a file's text at that commit (`prbatch.blob_texts`), "unread": the query fails."""
 
     def __init__(self, nodes=(), pulls=None, files=None, refuse=False, tree=(), comments=None, unreadable=False,
-                 compares=None, trees=None):
+                 compares=None, trees=None, entries=None, blobs=None):
         self.nodes, self.pulls, self.files, self.refuse = list(nodes), dict(pulls or {}), dict(files or {}), refuse
         self.comments, self.unreadable = dict(comments or {}), unreadable   # pull request -> its issue comments
         self.compares = dict(compares or {})                                  # (old, new) -> the comparison's files
         self.tree = [f"TauCetiRoadmap/{d}/README.md" for d in tree]
         self.writes, self.listings, self.dry_run, self.fence = [], 0, False, None
         self.trees, self.tree_queries = trees, 0
+        self.entries, self.layout_queries = dict(entries or {}), 0
+        self.blobs = blobs if blobs == "unread" else dict(blobs or {})
+
+    def tree_id(self, sha, path):
+        return (self.trees or {}).get((sha, path), f"{sha[:8]}:{path}") if self.trees != "unread" else None
 
     def graphql(self, query, **variables):
         if "{ title body }" in query:              # `prbatch.pull_texts`: the titles and descriptions asked for
             asked = [int(n) for n in re.findall(r"p(\d+): pullRequest", query)]
             return {"repository": {f"p{n}": {"title": self.pulls[n].get("title", ""),
                                              "body": self.pulls[n].get("body", "")} for n in asked if n in self.pulls}}
+        listed = re.findall(r'(e\d+): object\(expression: "([0-9a-f]+):([^"]+)"\) \{ \.\.\. on Tree', query)
+        if listed:                                 # `prbatch.tree_entries`
+            self.layout_queries += 1
+            if self.trees == "unread":
+                raise GHError("graphql: 502")
+            return {"repository": {alias: {"entries": [{"name": n, "oid": o} for n, o in self.entries.get(
+                (sha, path), {"README.md": f"readme-{self.tree_id(sha, path)}",
+                              "Suggested.lean": f"lean-{self.tree_id(sha, path)}"}).items()]}
+                for alias, sha, path in listed}}
+        texts = re.findall(r'(b\d+): object\(expression: "([0-9a-f]+):([^"]+)"\) \{ \.\.\. on Blob', query)
+        if texts:                                  # `prbatch.blob_texts`
+            self.layout_queries += 1
+            if self.blobs == "unread":
+                raise GHError("graphql: 502")
+            return {"repository": {alias: ({"text": self.blobs[(sha, path)], "isTruncated": False}
+                                           if (sha, path) in self.blobs else None) for alias, sha, path in texts}}
         asked = re.findall(r'(t\d+): object\(expression: "([0-9a-f]+):([^"]+)"\) \{ oid \}', query)
         if asked:
             self.tree_queries += 1
