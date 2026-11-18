@@ -854,6 +854,8 @@ def reformat_posted(body: str, version: str) -> str | None:
     p = read_posted(body)
     if p is None:
         return None
+    if not pinned_version(body) and render_posted(p).rstrip("\n") == (body or "").rstrip("\n"):
+        return body              # posted in this layout already (by a worker of this build): nothing to pin
     new = render_posted(p, pinned_version(body) or version)
     return new if posted_identity(new) == posted_identity(body) else None
 
