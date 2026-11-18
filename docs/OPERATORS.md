@@ -1305,7 +1305,8 @@ may label its pull requests (TauCetiRoadmap's `dependency-labels.yml`).
 **The approval label.** The same run keeps a second label when it is given one (`--approval-label`, else
 `[prreview] approval_label`; neither: none): on an open roadmap pull request exactly while a human
 approval is all that stands between it and a merge. That is: it carries the acceptance label
-(`[prreview] label`), it waits for nothing by the reading above (and every answer that reading needs
+(`[prreview] label`) and not the label of a review its author has yet to answer (`[replies]
+awaiting_author`), it waits for nothing by the reading above (and every answer that reading needs
 came), it is no draft, no approving review stands and no reviewer requests changes, it is not in the
 merge queue, and it does not conflict with its base branch. The first two are read from the run's own
 index and dependency records; the rest is read afresh for the pull requests those admit
@@ -1314,11 +1315,13 @@ only when asked, so an `UNKNOWN` is read again, three readings in all, five seco
 unknown, or a pull request GitHub gave no answer for, keeps the label as it is (`#N: <label> left as it
 is (GitHub has not said whether it merges)`). The log reads `#N: <label> added (ai-found-no-errors,
 waits for nothing, and no approving review yet)` and `#N: <label> removed (it is approved)`, `(it waits
-for another pull request)`, `(it does not carry ai-found-no-errors)`, `(it is a draft)`, `(a reviewer
+for another pull request)`, `(it does not carry ai-found-no-errors)`, `(it carries awaiting-author)`,
+`(it is a draft)`, `(a reviewer
 requests changes)`, `(it is in the merge queue)`, `(it conflicts with its base branch)` or `(merged)`.
 The label follows the acceptance label and the dependency label with the delay of one run: a head
-accepted or approved between two runs is relabelled at the next. Create the label on the content
-repository beforehand to give it a colour and a description.
+accepted or approved between two runs is relabelled at the next. One removal does not wait: `board
+sync` takes the label off in the write that puts `awaiting-author` on a pull request (it never adds
+it). Create the label on the content repository beforehand to give it a colour and a description.
 
 The comment and the label are written with the operator's own token, which needs write access to
 the content repository (triage at least, for labels); a token without it reports `ai-found-no-errors not

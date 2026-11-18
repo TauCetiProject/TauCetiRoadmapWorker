@@ -286,9 +286,10 @@ class PRReview:
     # descriptions and main on every run (`deplabels`). `board sync` does not touch it.
     dependency_label: str = ""
     # The label the same run keeps (when it is given no `--approval-label`) on an open roadmap pull
-    # request exactly while a human approval is all it still needs: it carries `label`, waits for
-    # nothing, is no draft, has no approving review and no requested changes, is not in the merge queue
-    # and does not conflict with its base branch. Empty: the run keeps no such label.
+    # request exactly while a human approval is all it still needs: it carries `label` and not
+    # `[replies] awaiting_author`, waits for nothing, is no draft, has no approving review and no
+    # requested changes, is not in the merge queue and does not conflict with its base branch.
+    # `board sync` takes it off when it puts `awaiting_author` on. Empty: the run keeps no such label.
     approval_label: str = ""
     per_run: int = 3                 # new jobs filed per `board sync` run, oldest pull request first
     # Of those, at most this many check rounds of an accepted head's title and description, when the

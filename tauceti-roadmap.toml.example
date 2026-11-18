@@ -257,9 +257,10 @@ label = "ai-found-no-errors"
 # run, and off merged pull requests. `board sync` does not touch it. Empty: no default label.
 dependency_label = ""
 # The label the same run keeps (when it is given no `--approval-label`) on an open roadmap pull request
-# exactly while a human approval is all it still needs: it carries `label`, waits for nothing, is no
-# draft, has no approving review and no requested changes, is not in the merge queue and does not
-# conflict with its base branch. Empty: the run keeps no such label.
+# exactly while a human approval is all it still needs: it carries `label` and not `[replies]
+# awaiting_author`, waits for nothing, is no draft, has no approving review and no requested changes,
+# is not in the merge queue and does not conflict with its base branch. `board sync` takes it off when
+# it puts `awaiting_author` on. Empty: the run keeps no such label.
 approval_label = ""
 per_run = 3
 # Each roadmap folder of an accepted pull request whose title and description are not what its review

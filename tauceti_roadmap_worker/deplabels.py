@@ -40,9 +40,10 @@ pull request that still carries the label loses it.
 The approval label (`--approval-label`, else `[prreview] approval_label`; none when both are empty) is
 kept by the same run, on an open roadmap pull request exactly while a human approval is all that stands
 between it and a merge: it carries the acceptance label (`[prreview] label`: the AI review accepted its
-current head), it waits for nothing (as above, and every answer came), it is no draft, no approving
-review stands, no reviewer requests changes, it is not in the merge queue, and it does not conflict
-with its base branch (`merge_states`, read afresh for the pull requests the rest admits). A pull
+current head) and not the label of a review its author has yet to answer (`[replies] awaiting_author`),
+it waits for nothing (as above, and every answer came), it is no draft, no approving review stands, no
+reviewer requests changes, it is not in the merge queue, and it does not conflict with its base branch
+(`merge_states`, read afresh for the pull requests the rest admits). A pull
 request GitHub gave no answer for, or whose mergeability it had not computed after `TRIES` readings,
 keeps the label as it is. Merged pull requests lose it.
 """
@@ -389,13 +390,15 @@ def run(ctx, label: str, approval: str = "") -> list[str]:
 def _approval(ctx, prs: list[dict], free: dict[int, bool | None], approval: str, write, out: list[str]) -> None:
     """Keep `approval` (module docstring) on the open pull requests of `prs`, given which of them wait
     for nothing (`free`), and take it off merged ones."""
-    repo, accept = ctx.cfg.repositories.content, ctx.cfg.prreview.label
+    repo, accept, author = ctx.cfg.repositories.content, ctx.cfg.prreview.label, ctx.cfg.replies.awaiting_author
     verdicts: dict[int, tuple[bool | None, str]] = {}
     ask = []
     for p in prs:
         number = p["pr"]
         if accept not in p.get("labels", []):
             verdicts[number] = (False, f"it does not carry {accept}")
+        elif author and author in p.get("labels", []):
+            verdicts[number] = (False, f"it carries {author}")
         elif free.get(number) is False:
             verdicts[number] = (False, "it waits for another pull request")
         elif free.get(number) is None:

@@ -545,8 +545,8 @@ def named_writes(gh, label):
 def test_the_approval_label_is_on_what_only_a_human_approval_holds_back(tmp_path, monkeypatch):
     def new(name):
         return {f"TauCetiRoadmap/{name}/README.md": f"# Roadmap: {name}\n"}
-    names = "Ready Waits Unreviewed Draft Approved Conflict Unknown Slow Changes Kept Queued Unanswered"
-    numbers = dict(zip(names.split(), range(60, 72)))
+    names = "Ready Waits Unreviewed Draft Approved Conflict Unknown Slow Changes Kept Queued Unanswered Asked"
+    numbers = dict(zip(names.split(), range(60, 73)))
     n = SimpleNamespace(**{k.lower(): v for k, v in numbers.items()})
     cfg, _index = build(tmp_path, monkeypatch, [MAIN], [(v, "amy", 0, new(k)) for k, v in numbers.items()],
                         bodies={n.waits: "Depends on #44.", n.unanswered: "Depends on #45."})
@@ -555,7 +555,8 @@ def test_the_approval_label_is_on_what_only_a_human_approval_holds_back(tmp_path
     for pr in gh.listed:
         got = pr["number"]
         pr["labels"]["nodes"] = ([] if got == n.unreviewed else [{"name": accept}]) + (
-            [] if got in (n.ready, n.unknown, n.slow) else [{"name": READY}])
+            [] if got in (n.ready, n.unknown, n.slow) else [{"name": READY}]) + (
+            [{"name": cfg.replies.awaiting_author}] if got == n.asked else [])
         pr["isDraft"] = got == n.draft
         pr["reviewDecision"] = "APPROVED" if got == n.approved else "REVIEW_REQUIRED"
     gh.states.update({44: {"state": "open"}})
@@ -568,13 +569,14 @@ def test_the_approval_label_is_on_what_only_a_human_approval_holds_back(tmp_path
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS, READY)
     assert named_writes(gh, READY) == [("DELETE", 12), ("DELETE", n.waits), ("DELETE", n.unreviewed),
                                        ("DELETE", n.draft), ("DELETE", n.approved), ("DELETE", n.conflict),
-                                       ("DELETE", n.changes), ("DELETE", n.queued), ("POST", n.ready),
-                                       ("POST", n.slow)]
+                                       ("DELETE", n.changes), ("DELETE", n.queued), ("DELETE", n.asked),
+                                       ("POST", n.ready), ("POST", n.slow)]
     assert named_writes(gh, DEPS) == [("POST", n.waits)]
     for number, why in ((n.waits, "it waits for another pull request"), (n.unreviewed, f"it does not carry {accept}"),
                         (n.draft, "it is a draft"), (n.approved, "it is approved"),
                         (n.conflict, "it conflicts with its base branch"), (n.changes, "a reviewer requests changes"),
-                        (n.queued, "it is in the merge queue"), (12, "merged")):
+                        (n.queued, "it is in the merge queue"),
+                        (n.asked, f"it carries {cfg.replies.awaiting_author}"), (12, "merged")):
         assert f"#{number}: {READY} removed ({why})" in out
     assert f"#{n.ready}: {READY} added ({accept}, waits for nothing, and no approving review yet)" in out
     assert f"#{n.unknown}: {READY} left as it is (GitHub has not said whether it merges)" in out
