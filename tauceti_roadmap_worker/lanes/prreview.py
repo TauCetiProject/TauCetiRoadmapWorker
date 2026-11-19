@@ -629,9 +629,13 @@ def board_edit_paths(job: Job, ctx: Context) -> tuple[str, str]:
     return f"{board.package_dir(pkgs, job.name)}/design/plan.json", board.manifest_path(pkgs, job.name)
 
 
-def plan_edit_problems(rel: str, before: str, after: str) -> list[str]:
-    """Why a repair's edit of the plan is not delivered: anything but its top-level `gaps`, an entry
-    added (a gap is declared at the package stage), or a gap a target still names."""
+def plan_edit_problems(rel: str, before: str, after: str, readme: str = "") -> list[str]:
+    """Why a repair's edit of the plan is not delivered: anything but its top-level `gaps` (and the
+    prerequisites that named a gap it retires), a gap a target still names, or an entry added that the
+    repaired README (`readme`) does not name as `gap:<slug>` or that does not say what is missing and
+    of whom. The plan's `gaps` mirror the README's supplier contracts: a repair that states a new
+    contract in the README declares it here too (2026-11-19: it could not, so every such repair left
+    the entry to the operator as a finding outside the folder)."""
     problems = board.plan_change_problems(rel, before, after)
     if problems:
         return problems
@@ -640,13 +644,27 @@ def plan_edit_problems(rel: str, before: str, after: str) -> list[str]:
     except ValueError:
         return [f"invalid JSON in {rel}"]
 
-    def slugs(plan) -> set[str]:
-        return {str(g.get("slug") or g.get("id")) for g in (plan.get("gaps") or []) if isinstance(g, dict)} \
-            if isinstance(plan, dict) else set()
-    added = sorted(slugs(new) - slugs(old))
-    if added:
-        return [f"{rel}: a review's repair retires gaps, it declares none ({', '.join(added)})"]
-    return []
+    def entries(plan) -> dict[str, dict]:
+        return {str(g.get("slug") or g.get("id")): g for g in (plan.get("gaps") or []) if isinstance(g, dict)} \
+            if isinstance(plan, dict) else {}
+    added = sorted(set(entries(new)) - set(entries(old)))
+    if not added:
+        return []
+    from .design import supplier_gap_problems
+    from .package import GAP_REF
+    named = {m.rstrip(".") for m in GAP_REF.findall(readme or "")}
+    unnamed = [slug for slug in added if slug not in named]
+    if unnamed:
+        return [f"{rel}: a review's repair declares only gaps the README names as `gap:<slug>` ({', '.join(unnamed)})"]
+    return [f"{rel}: gap {slug}: {problem}" for slug in added for problem in supplier_gap_problems(entries(new)[slug])][:1]
+
+
+def repaired_readme(ws: Workspace) -> str:
+    """The README of the folder reviewed as the worktree holds it (after the repair), '' when unread."""
+    try:
+        return Path(ws.extra["readme"]).read_text(encoding="utf-8", errors="replace")
+    except (KeyError, OSError, TypeError):
+        return ""
 
 
 def manifest_edit_problems(before: str, after: str) -> list[str]:
@@ -679,7 +697,8 @@ def board_edits(job: Job, ctx: Context, ws: Workspace) -> tuple[dict[str, bytes]
         text = after.decode("utf-8", errors="replace")
         if text == before:
             continue
-        problems = plan_edit_problems(rel, before, text) if rel == plan else manifest_edit_problems(before, text)
+        problems = plan_edit_problems(rel, before, text, repaired_readme(ws)) if rel == plan \
+            else manifest_edit_problems(before, text)
         if problems:
             notes.append(f"the repair's edit of {rel} is not delivered: {problems[0]}")
         else:
@@ -707,9 +726,12 @@ def board_edits_brief(job: Job, ctx: Context, ws: Workspace) -> str:
     """The sentence of the repair brief on the two board files it may edit, for board-side findings."""
     plan, manifest = board_edit_paths(job, ctx)
     return (f"Two files of the board checkout as well, for findings about the board's records only: "
-            f"`{ws.board / plan}` (retire an entry of its top-level `gaps` list when the README owns, or imports "
-            f"from the supplier named, what the entry requests: remove entries, add none, change nothing else in "
-            f"the file) and `{ws.board / manifest}` (add a record for a source the README cites and the manifest "
+            f"`{ws.board / plan}` (keep its top-level `gaps` list in step with the README's `gap:<slug>` contracts: "
+            f"retire an entry when the README owns, or imports from the supplier named, what the entry requests, and "
+            f"remove with it the `gap:<slug>` prerequisites of the targets that named it; declare an entry, with "
+            f"`slug`, `needs`, `supplier` and `section`, for a gap the README names and the list lacks; restate an "
+            f"entry's `needs` when the README's contract changed; change nothing else in the file and keep its "
+            f"formatting) and `{ws.board / manifest}` (add a record for a source the README cites and the manifest "
             f"lacks, fetched through the legal sources service; never change or remove an existing record). "
             f"The worker delivers these two edits with the review; every other change to the board checkout is "
             f"discarded. Do not commit in the board checkout.")
@@ -1269,7 +1291,8 @@ class PRReviewLane(Lane):
 
     def board_edit_problems(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         """The board files a repair may deliver, as the submission will carry them: the plan in its gaps
-        only and without additions, the manifest with the author's entries intact."""
+        only, a gap added only when the repaired README names it, the manifest with the author's
+        entries intact."""
         problems = []
         plan, manifest = board_edit_paths(job, ctx)
         for rel in gitops.changed_files(ws.board):
@@ -1277,7 +1300,8 @@ class PRReviewLane(Lane):
                 continue
             before = gitops.git(ws.board, "show", f"HEAD:{rel}", check=False) or ""
             after = (ws.board / rel).read_text(encoding="utf-8", errors="replace")
-            problems += plan_edit_problems(rel, before, after) if rel == plan else manifest_edit_problems(before, after)
+            problems += plan_edit_problems(rel, before, after, repaired_readme(ws)) if rel == plan \
+                else manifest_edit_problems(before, after)
         return problems
 
     def checkout_problems(self, ws: Workspace, repaired: str = "") -> list[str]:

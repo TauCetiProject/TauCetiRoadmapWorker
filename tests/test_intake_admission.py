@@ -212,3 +212,11 @@ def test_a_package_stage_plan_keeps_every_gap_its_targets_name():
         f"{path}: removes the gaps a, which targets of the plan still name"]
     # A reference that was already unresolved is not this change's doing.
     assert board.plan_change_problems(path, plan(["b"], ["gap:a"]), plan(["b", "c"], ["gap:a"])) == []
+    # A gap is retired together with the prerequisites that named it; nothing else of a target changes with it.
+    assert board.plan_change_problems(path, plan(["a", "b"], ["gap:a", "target:T0"]), plan(["b"], ["target:T0"])) == []
+    assert board.plan_change_problems(path, plan(["a", "b"], ["gap:a", "target:T0"]), plan(["b"], [])) == [
+        f"{path}: at the package stage only its top-level `gaps` list may change"]
+    assert board.plan_change_problems(path, plan(["a", "b"], ["gap:a"]), plan(["a", "b"], [])) == [
+        f"{path}: at the package stage only its top-level `gaps` list may change"]
+    assert board.plan_change_problems(path, plan(["a", "b"], ["gap:a"]), plan(["b", "c"], ["gap:c"])) == [
+        f"{path}: at the package stage only its top-level `gaps` list may change"]
