@@ -17,7 +17,7 @@
     tauceti-roadmap sources check <sources.toml> | classify <url> | request <needs-references.toml> --job ID
     tauceti-roadmap sources fetch <DOI | arXiv id | URL | "Authors, Title, Year"> [--manifest sources.toml] [--id KEY]
     tauceti-roadmap sources cache <sources.toml> | ocr <file.pdf>
-    tauceti-roadmap board intake [--pr N] | references | sync [--prune-order | --reviews-only] | stale [--release]   (board bot / maintainer; --yes to write)
+    tauceti-roadmap board intake [--pr N] | references | sync [--prune-order | --reviews-only [--wait-lock S]] | stale [--release]   (board bot / maintainer; --yes to write)
     tauceti-roadmap board errata seed [--limit N] [--yes]
     tauceti-roadmap board import-explorer --from <explorer checkout> [--kinds package,design,target] [--names A,B] [--yes]
     tauceti-roadmap targets file-many --from <targets.toml | targets.jsonl> [--yes]
@@ -1011,6 +1011,8 @@ def board_cmd(args) -> int:
         raise SystemExit("--prune-order goes with `board sync`")
     if args.reviews_only and (args.action != "sync" or args.prune_order):
         raise SystemExit("--reviews-only goes with `board sync`, without --prune-order")
+    if args.wait_lock and not args.reviews_only:
+        raise SystemExit("--wait-lock goes with `board sync --reviews-only`")
     cfg = _load(args)
     ctx = _bot_context(args, cfg, dry=args.dry_run or not args.yes)
     ctx.board.incremental = True        # one run reads the board many times: after the first, only what changed
@@ -1043,7 +1045,7 @@ def board_run(args, cfg, ctx) -> int:
     if not write or (args.action == "stale" and not args.release):
         return _board_steps(args, cfg, ctx, intake, write)
     if args.reviews_only:
-        return _reviews_only(cfg, ctx, intake, intake.board_lock(cfg, ctx))
+        return _reviews_only(cfg, ctx, intake, intake.board_lock(cfg, ctx), wait=max(0, args.wait_lock))
     lock, key = intake.board_lock(cfg, ctx), intake.lock_key(cfg.project.name)
     status, line = intake.take_lock(lock, cfg.project.name)
     if status == claims.HELD and args.action == "sync" and cfg.prreview.enabled:
@@ -1063,13 +1065,33 @@ def board_run(args, cfg, ctx) -> int:
         lock.release(key)
 
 
-def _reviews_only(cfg, ctx, intake, lock) -> int:
+REVIEWS_LOCK_POLL = 20.0      # seconds between two tries for a reviews lock another run holds (`--wait-lock`)
+
+
+def _reviews_only(cfg, ctx, intake, lock, wait: int = 0) -> int:
     """`board sync` while another run holds the board, or with `--reviews-only`: the pull-request
     reviews alone, under the reviews lock (`intake.take_reviews_lock`), which a full sync takes for
     the same step. That step reads the board and the content repository, sets the review label, and
-    closes or files PRREVIEW jobs, which no other board step creates."""
+    closes or files PRREVIEW jobs, which no other board step creates.
+
+    `wait` (`--wait-lock`): seconds to wait for a lock another run holds before leaving the step to
+    that run. The hosted workflow's token writes to the board repository only: its pass files and
+    closes the rounds but cannot set the review label on the content repository (it logs `... not
+    added (... HTTP 403)`). On a busy board hosted runs hold the lock one after another, so a run
+    that can label and yields every time leaves accepted pull requests unlabelled (2026-11-19: three
+    ticks in a row yielded to hosted passes, half an hour of the hour that four accepted pull
+    requests waited for their label). Such a run waits its turn."""
     key = intake.reviews_key(cfg.project.name)
-    status, line = intake.take_reviews_lock(lock, cfg.project.name)
+    deadline, told = time.monotonic() + wait, False
+    while True:
+        status, line = intake.take_reviews_lock(lock, cfg.project.name)
+        left = deadline - time.monotonic()
+        if status != claims.HELD or left <= 0:
+            break
+        if not told:
+            print(line.removesuffix("; left to that run") + f"; waiting up to {wait} s for it")
+            told = True
+        time.sleep(min(REVIEWS_LOCK_POLL, left))
     if line:
         print(line)
     if status != claims.ACQUIRED:
@@ -1395,6 +1417,10 @@ def parser() -> argparse.ArgumentParser:
     b.add_argument("--reviews-only", action="store_true",
                    help="sync: only the pull-request reviews (the review label, superseded and new rounds), "
                         "without the board lock; safe beside a running intake")
+    b.add_argument("--wait-lock", type=int, default=0, metavar="SECONDS",
+                   help="sync --reviews-only: wait up to this long for the reviews lock when another run holds it, "
+                        "instead of leaving the step to that run (for a run whose token can label the content "
+                        "repository, beside hosted runs whose token cannot)")
     b.add_argument("--prune-order", action="store_true",
                    help="sync: first remove from the merge order every roadmap on the content repository's main "
                         "(dry run unless --yes)")

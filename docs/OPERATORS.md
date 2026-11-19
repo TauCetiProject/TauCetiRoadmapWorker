@@ -1663,7 +1663,13 @@ That step has a lock of its own (`roadmap/<project>/board/reviews`), which a ful
 same step, so it runs once at a time: a run that finds it held prints `pull-request reviews already
 running (...); left to that run`. `board sync --reviews-only --yes` is that step and nothing else,
 and never takes the board lock: use it in a schedule that runs beside the hosted board run, where a
-plain sync landing between two hosted runs would take the board from the next one. A run that cannot
+plain sync landing between two hosted runs would take the board from the next one. Give that
+schedule's run `--wait-lock 600` as well: the hosted workflow's token writes to the board repository
+only, so its pass files and closes the review rounds but cannot set the review label on the content
+repository (its log says `ai-found-no-errors on <content repository> not added (... HTTP 403)`), and
+on a busy board hosted runs hold the reviews lock one after another; a run that can label and yields
+every time leaves accepted pull requests without their label. With the option it waits up to that
+many seconds for the lock and then does the step in full. A run that cannot
 take the board lock (no push access to the board repository, no network) prints `board lock not
 taken (the lock ref could not be written); nothing done` and exits 1. A run whose lock is lost (a
 renewal finds another owner, or every renewal fails until the 15 minutes run out) stops at its next

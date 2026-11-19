@@ -207,6 +207,48 @@ def test_a_reviews_only_sync_never_takes_the_board_lock(monkeypatch, capsys):
             cli.board_cmd(board_args(*extra))
 
 
+def test_a_reviews_only_sync_can_wait_for_the_reviews_lock(monkeypatch, capsys):
+    """A hosted run's token cannot label the content repository: a run that can waits for the lock that
+    run holds instead of leaving the step to it."""
+    cfg = example_config()
+    cfg.prreview.enabled = True
+    since = int(dt.datetime(2026, 11, 19, 5, 9, 6, tzinfo=dt.UTC).timestamp())
+
+    class Busy(Lock):
+        def __init__(self, held_for):
+            super().__init__(claims.HELD, {"owner": "intake:run-44462490654", "acquired_at": since, "expires_at": since + 900})
+            self.held_for = held_for
+
+        def acquire(self, key, ttl=claims.JOB_TTL, extra=None):
+            self.acquired.append((key, ttl))
+            return claims.HELD if len(self.acquired) <= self.held_for else claims.ACQUIRED
+    ran, slept, clock = [], [], [0.0]
+    monkeypatch.setattr(intake, "sync_pr_reviews", lambda ctx: ran.append("reviews") or ["#7: ai-found-no-errors added"])
+    monkeypatch.setattr(cli.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(cli.time, "sleep", lambda s: (slept.append(s), clock.__setitem__(0, clock[0] + s)))
+    held = "pull-request reviews already running (intake:run-44462490654, since 2026-11-19 05:09:06Z)"
+    # the other run finishes while this one waits: the step runs, once
+    lock = Busy(held_for=2)
+    monkeypatch.setattr(intake, "board_lock", lambda cfg, ctx: lock)
+    assert cli.board_run(board_args("sync", "--reviews-only", "--wait-lock", "600", "--yes"), cfg, run_context(cfg)) == 0
+    assert capsys.readouterr().out.splitlines() == [held + "; waiting up to 600 s for it", "#7: ai-found-no-errors added"]
+    assert ran == ["reviews"] and slept == [20.0, 20.0] and len(lock.acquired) == 3 and len(lock.released) == 1
+    # it is still held when the time is up: left to that run, as without the option
+    ran.clear(); slept.clear(); clock[0] = 0.0
+    lock = Busy(held_for=10 ** 6)
+    assert cli.board_run(board_args("sync", "--reviews-only", "--wait-lock", "50", "--yes"), cfg, run_context(cfg)) == 0
+    assert capsys.readouterr().out.splitlines() == [held + "; waiting up to 50 s for it", held + "; left to that run"]
+    assert ran == [] and slept == [20.0, 20.0, 10.0] and lock.released == []
+    # without the option nothing waits
+    slept.clear()
+    lock = Busy(held_for=10 ** 6)
+    assert cli.board_run(board_args("sync", "--reviews-only", "--yes"), cfg, run_context(cfg)) == 0
+    assert capsys.readouterr().out.splitlines() == [held + "; left to that run"] and slept == []
+    # the option belongs to the reviews-only sync
+    with pytest.raises(SystemExit):
+        cli.board_cmd(board_args("sync", "--wait-lock", "60"))
+
+
 def test_a_full_sync_reads_the_pull_request_reviews_under_the_reviews_lock(monkeypatch):
     cfg = example_config()
     ctx = run_context(cfg)
