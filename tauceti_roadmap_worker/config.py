@@ -308,6 +308,9 @@ class PRReview:
     authors: list[str] = field(default_factory=list)        # only these authors' pull requests (empty: all)
     skip_authors: list[str] = field(default_factory=list)   # never these authors' pull requests
     operator_prs: list[int] = field(default_factory=list)   # pull requests whose review rounds an operator files; `board sync` files none for them
+    # Title prefixes the project fixes (a series the maintainers find by its title, e.g. "Template update: "): a
+    # pull request whose title begins with one keeps its title through every review and repair.
+    fixed_title_prefixes: list[str] = field(default_factory=list)
     # Authors whose pull requests' reviews a worker takes after every other job it could take, and the
     # pull requests of theirs that keep their ordinary place (those other roadmaps wait for).
     late_authors: list[str] = field(default_factory=list)
@@ -625,6 +628,8 @@ def validate(cfg: Config) -> None:
         if any(not isinstance(a, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", a)
                for a in getattr(cfg.prreview, key)):
             problems.append(f"prreview.{key} must list GitHub logins")
+    if any(not isinstance(x, str) or not x.strip() for x in cfg.prreview.fixed_title_prefixes):
+        problems.append("prreview.fixed_title_prefixes must list non-empty title prefixes")
     for key in ("operator_prs", "late_except"):
         if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in getattr(cfg.prreview, key)):
             problems.append(f"prreview.{key} must list pull request numbers")
