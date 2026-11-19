@@ -103,6 +103,23 @@ restating, not proving or improving, and you never say more than the README does
   ("the least number of open sets contractible in M that cover M"); a name with two conventions in
   the literature is better replaced by its definition.
 
+The rule covers every sentence, not only the theorems. An independent reading of twenty openings
+against their READMEs found no false theorem and five sentences of these other kinds that the README
+did not support:
+
+- **Which layer needs which.** Take it from the layers' own dependency lines, layer by layer, or do
+  not say it. "Layers 6 and 7 need these" is a claim about two layers, and each half must be in the
+  README.
+- **What a neighbouring roadmap or the library contains.** Say of it only what this README says, with
+  the generality this README gives it. Do not describe the other roadmap's scope from memory, and do
+  not say the library proves something the README only uses a part of.
+- **Judgments the README does not make**: which step is the hardest, which result is the deepest,
+  what is new. Leave them out.
+- **Two objects with similar names** (a function and its regularised form, a group and its identity
+  component): say of each only what the README says of that one. "It equals the series for all
+  parameters" is false if the README proves it of the other.
+- **A sentence of the old opening** is kept only if the README's sections still support it.
+
 A bad headline: "Develops class field theory with the reciprocity theorems (Layer 4)." It names a
 topic. A good one: "For a finite abelian extension L/K of number fields, the Artin map induces an
 isomorphism from the idele class group of K modulo norms from L onto Gal(L/K)." It states the
