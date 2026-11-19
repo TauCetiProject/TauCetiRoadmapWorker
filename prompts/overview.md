@@ -111,7 +111,9 @@ theorem, with its hypotheses, as the README does.
 ## What the opening leaves out
 
 - Lean identifiers (backticked declaration names), unless the old opening used them; mathematics in
-  Unicode, with ASCII inside backtick code spans when it needs them (`Σ c_j t^j`), never LaTeX.
+  Unicode, with ASCII inside backtick code spans when it needs them (`Σ c_j t^j`), never LaTeX. A
+  subscript or superscript written with braces is TeX syntax and is refused in plain text: put the
+  whole formula in a code span (`H_{m}`, `Ω^{≥i}`, `M̄_{g,n}`) or write it without braces (`H_m`, `Kₙ`).
 - Locators and section numbers (`§4.2`, "(Layer 3)" after every item), lists of carriers with their
   APIs, and ownership bookkeeping ("owns", "defers to", "is already in the library as …" lists): the
   scope and the supplier contracts carry those.

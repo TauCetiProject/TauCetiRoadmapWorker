@@ -158,6 +158,10 @@ def test_the_opening_is_held_to_the_form_the_brief_asks():
     assert overview.opening_problems("**Summary.** See §2.1 and #1234.", old) == [
         "it has a pull-request number", "it has a section-number locator"]
     assert "it has 900 words (at most about 700)" in overview.opening_problems("**Summary.** " + "w " * 899, old)
+    # TeX-only syntax in plain text is the push gate's `tex` check: refused here, so the opening is rewritten
+    tex = overview.opening_problems("**Summary.** The subcomplexes Ω^{≥i} of H_{m} and \\mathbb Z.", old)
+    assert len(tex) == 1 and tex[0].startswith("it has TeX-only syntax outside code font (H_{m}, \\mathbb, Ω^{≥i})")
+    assert overview.opening_problems("**Summary.** The subcomplexes `Ω^{≥i}` of `H_{m}`, and K_n.", old) == []
 
 
 # --- the agent's proposal -------------------------------------------------------------------------------------

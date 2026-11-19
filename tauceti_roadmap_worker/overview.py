@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import agents, intake, layout, openroadmaps, prbatch, prompts, relayout
+from . import agents, gates, intake, layout, openroadmaps, prbatch, prompts, relayout
 from .gh import GHError, GHHalt, GHRateLimited
 
 OUT_NAME, PLAN_NAME = "opening.md", "overview.json"
@@ -59,6 +59,13 @@ def opening_problems(new: str, old: str) -> list[str]:
     names = set(LEAN_NAME.findall(new)) - set(LEAN_NAME.findall(old))
     if names:
         problems.append("it names Lean declarations the old opening did not: " + ", ".join(sorted(names)[:5]))
+    # the push gate's own check (`tex`), run here so that the opening is rewritten rather than pushed with it
+    # (2026-11-19: 22 accepted READMEs carried `H_{m}` or `Ω^{≥i}` in plain text in their new openings)
+    tex = gates.scan_tex_residue(new)
+    if tex:
+        found = sorted({m.group(0) for h in tex for m in re.finditer(r"\S*[_^]\{[^}\s]*\}?|\\[A-Za-z]+", h.text)})
+        problems.append("it has TeX-only syntax outside code font (" + ", ".join(found[:5]) + "): write the formula in "
+                        "Unicode or put it whole in a backtick code span")
     return problems
 
 
