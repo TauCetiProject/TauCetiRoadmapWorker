@@ -621,6 +621,12 @@ def delivered_text(ctx: Context, job: Job) -> str:
     return str(kept_commit(read_pending(ctx, job) or {}, "text").get("line") or "")
 
 
+def delivered_digest(ctx: Context, job: Job) -> str:
+    """The digest (`summary.text_digest`) of the title and description the job's repair left on the pull
+    request (`deliver_text`), from its record: '' when it wrote none, or before that step."""
+    return str(kept_commit(read_pending(ctx, job) or {}, "text").get("digest") or "")
+
+
 def text_rewritten(line: str) -> bool:
     """Whether a `deliver_text` line reports a title or description actually written."""
     return line.endswith(" rewritten")
@@ -1467,6 +1473,15 @@ class PRReviewLane(Lane):
         carried, added = record.get("carried"), deferred_entries(record.get("deferred"))
         if carried:
             review["carried"] = carried
+        # A check of the text that accepts it and applies its own small corrections to the description has
+        # read every sentence of the text it leaves but the ones it corrected itself. Its verdict records
+        # that text, so the intake files no check of the check's corrections (2026-11-19: three check
+        # rounds of one unchanged head in two hours, each answered by rewriting the description, which
+        # the next one was then filed to read). A text an author changes afterwards is checked as before.
+        left = (delivered_digest(ctx, job) if carried and status == "accepted" and job.inputs.get("text_check")
+                else "")
+        if left:
+            review["text"] = left
         if added:
             review["deferred"] = [d for d in deferred_entries(review.get("deferred")) if d["raised"] != job.id] + added
         if carried or added:
@@ -1475,6 +1490,8 @@ class PRReviewLane(Lane):
         if carried:
             words.append(("small corrections applied" if carried.get("corrections") else "P3 only")
                          + f": no further review of {carried['head'][:7]} for this folder")
+        if left:
+            words.append("the description as corrected here is the text this check read: no check of it is filed")
         if added:
             words.append(f"{len(added)} finding{'s' if len(added) != 1 else ''} deferred as outside the folder ("
                          + ", ".join(d["id"] for d in added) + ")")
@@ -1669,7 +1686,7 @@ class PRReviewLane(Lane):
         step reports them again, in its summary and in the reply's record."""
         if not owes(ctx, job, REPAIR_TEXT):
             return delivered_text(ctx, job)
-        record, line = ws.job_dir / REPAIR_DESCRIPTION, ""
+        record, line, left = ws.job_dir / REPAIR_DESCRIPTION, "", ""
         if record.is_file():
             want = json.loads(record.read_text(encoding="utf-8"))
             read, block = want.pop("read", None), want.pop("summary", "")
@@ -1695,6 +1712,8 @@ class PRReviewLane(Lane):
                     done.append("summary")
                 if fields:
                     ctx.gh.write("PATCH", path, fields)
+                    # the text as this write leaves it, for a check of the text that ends here (`close_round`)
+                    left = summary.text_digest(fields.get("title", now.get("title") or ""), fields.get("body", old))
                 listed = " and ".join(x for x in (", ".join(done[:-1]), *done[-1:]) if x)
                 line = "; ".join(x for x in (refused, listed and f"{listed} rewritten") if x)
             except GHError as exc:
@@ -1702,7 +1721,7 @@ class PRReviewLane(Lane):
                     (str(exc).strip().splitlines() or ["refused"])[0], ctx.state, Path.home())[:200]
             if line:
                 self.note(ws, f"pull request #{ws.extra['pr']}: {line}")
-        settle(ctx, job, REPAIR_TEXT, text={"line": line})
+        settle(ctx, job, REPAIR_TEXT, text={"line": line, **({"digest": left} if left else {})})
         return line
 
     def run_repair(self, job: Job, ctx: Context, ws: Workspace, report: Path) -> None:
