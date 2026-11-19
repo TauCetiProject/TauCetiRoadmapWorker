@@ -65,8 +65,10 @@ LIMIT_PATTERNS: tuple[tuple[str, str, bool], ...] = (
     # stderr, exit 1), "usage limit reached"
     ("usage limit", r"usage limit", False),
     # Claude CLI, a per-model or per-window limit: "You've reached your Fable limit. Switch to another
-    # model …", "You've hit your weekly limit"
-    ("claude: reached your <model|window> limit", r"(?:hit|reached) your [\w ]*limit", False),
+    # model …", "You've hit your weekly limit", "You've hit your 5-hour limit · resets 1:30pm (UTC)"
+    # (2026-11-19: the hyphen of "5-hour" was not allowed for, so a run that died on that limit in three
+    # seconds counted as an ordinary failure and the next job was started on the same exhausted account)
+    ("claude: reached your <model|window> limit", r"(?:hit|reached) your [\w -]*limit", False),
     # Claude CLI, "Your limit will reset at 3pm (Europe/Paris)"
     ("claude: limit will reset", r"limit will reset", False),
     # Claude API key with no credit: "Credit balance is too low"
