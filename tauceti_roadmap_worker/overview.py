@@ -42,13 +42,8 @@ def lean_names(text: str) -> set[str]:
     (the brief asks for it there); a declaration name has two underscores or more (`le_of_lt`) or at least three
     characters on each side of its one underscore (`map_add`). (2026-11-19: two openings were refused twice
     each for `K_f` and `N𝔡_u`.)"""
-    out = set()
-    for name in LEAN_NAME.findall(text):
-        if "." in name or name.count("_") >= 2:
-            out.add(name)
-        elif name.count("_") == 1 and min(len(part) for part in name.split("_")) >= 3:
-            out.add(name)
-    return out
+    return {name for name in LEAN_NAME.findall(text)
+            if "." in name or name.count("_") >= 2 or min(len(part) for part in name.split("_")) >= 3}
 
 
 # --- the opening -------------------------------------------------------------------------------------
