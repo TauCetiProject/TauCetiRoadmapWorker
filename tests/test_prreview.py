@@ -3537,6 +3537,24 @@ def test_a_repair_that_declares_a_gap_or_rewrites_an_author_entry_delivers_neith
     assert "the repair's edit of packages/Foo/sources.toml is not delivered: sources.toml: a repair keeps the author's entries: AUTH: year changed" in notes
 
 
+def test_a_title_the_project_fixes_survives_a_repair():
+    from tauceti_roadmap_worker.lanes import prreview as lp
+    cfg = example_config()
+    cfg.prreview.fixed_title_prefixes = ["Template update: "]
+    assert lp.fixed_title_prefix(cfg, "Template update: Foo") == "Template update: "
+    assert lp.fixed_title_prefix(cfg, "Foo: roadmap") == "" and lp.fixed_title_prefix(cfg, "") == ""
+    want = {"title": "Template update and new targets: Foo", "body": "What it changes."}
+    assert lp.kept_title(cfg, want, "Template update: Foo") == {"body": "What it changes."}
+    assert lp.kept_title(cfg, want, "Foo: roadmap") == want
+    doc = lp.pull_request_document(7, {"title": "Template update: Foo", "body": "x"}, "someone", fixed="Template update: ")
+    assert "The project fixes this title" in doc and "`Template update: <Name>`" in doc
+    assert "The project fixes this title" not in lp.pull_request_document(7, {"title": "Foo: roadmap", "body": "x"}, "someone")
+    cfg.prreview.fixed_title_prefixes = [""]
+    from tauceti_roadmap_worker import config as config_module
+    with pytest.raises(config_module.ConfigError, match="fixed_title_prefixes must list non-empty title prefixes"):
+        config_module.validate(cfg)
+
+
 def test_plan_and_manifest_edit_guards():
     from tauceti_roadmap_worker.lanes import prreview as lp
     before = json.dumps({"gaps": [{"slug": "a"}, {"slug": "b"}], "layers": []})
