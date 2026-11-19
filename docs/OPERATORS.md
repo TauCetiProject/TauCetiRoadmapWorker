@@ -1288,12 +1288,14 @@ when no folder of that name held a README.md at its merge base, wherever main ke
 roadmap main has since moved to Completed/ was there all along); a closed one, when it added such a
 README.md and removed none.
 
-A roadmap on main never waits for one that is not. The dependency check rejects a supplier edge from a
-roadmap on main to an open one as UPWARD (`depgraph.check_order`), and the remedy is to drop the edge,
-the newer roadmap consuming the one on main if the two overlap, never to hold the roadmap on main back.
-So a supplier not on main that the README or Lean of a folder on main newly names is not waited for:
-the run logs it (`#N: UPWARD, not waited for: Name (on main) -> Supplier (#M); …`) for the author, and
-only a dependency the description alone declares puts the label on such a pull request.
+The dependency check rejects a supplier edge from a roadmap on main to an open one as UPWARD
+(`depgraph.check_order`), and the remedy it asks of the author is to drop the edge, the newer roadmap
+consuming the one on main if the two overlap. Until the edge is dropped, merging the pull request first
+would leave main citing a roadmap it lacks, so a supplier not on main that the README or Lean of a
+folder on main newly names is waited for like any other. The run also logs it for the author
+(`#N: UPWARD: Name (on main) -> Supplier (#M); waited for until Supplier is on main or the edge is
+dropped`). A citation main's README already makes is still not this pull request's to wait for, unless
+its description declares it.
 
 The label is added while one of those is outstanding and removed when none is. A pull request whose description, or the state of a
 pull request its description names, GitHub did not give keeps its label (only GitHub's `HTTP 404` says

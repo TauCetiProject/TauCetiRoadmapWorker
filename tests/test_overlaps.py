@@ -467,8 +467,8 @@ READY = "awaiting-human-approval"
 
 
 def upward(number, on, supplier, prs):
-    return (f"#{number}: UPWARD, not waited for: {on} (on main) -> {supplier} ({prs}); a roadmap on main does not "
-            "wait for one that is not, so the edge goes")
+    return (f"#{number}: UPWARD: {on} (on main) -> {supplier} ({prs}); waited for until {supplier} is on main or "
+            "the edge is dropped")
 
 
 def label_writes(gh):
@@ -673,11 +673,12 @@ def test_every_lean_file_of_a_roadmap_counts_and_a_pull_request_that_changes_onl
     gh = build.gh
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS)
     assert f"#80: {DEPS} added (waits for Ghost (in no open pull request))" in out
-    assert upward(81, "Lattices", "Ghost", "in no open pull request") in out   # Lattices is on main
+    assert upward(81, "Lattices", "Ghost", "in no open pull request") in out   # Lattices is on main: it waits too
+    assert f"#81: {DEPS} added (waits for Ghost (in no open pull request))" in out
     pr82 = next(p for p in openroadmaps.load(cfg.state_dir())["prs"] if p["pr"] == 82)
     assert deplabels.roadmap_folders(cfg.state_dir(), index, pr82) == {
         "TauCetiRoadmap/Fam": ["TauCetiRoadmap/Fam/README.md"]}
-    assert label_writes(gh) == [("POST", 80)] and not any(line.startswith("#82") for line in out)
+    assert label_writes(gh) == [("POST", 80), ("POST", 81)] and not any(line.startswith("#82") for line in out)
     # (Sub's import is Sub's, not the family's.)
 
 
@@ -711,13 +712,43 @@ def test_a_pull_request_waits_only_for_what_it_brings_not_for_what_main_already_
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
     # Old is on main and already names Ghost. A progress report touches no roadmap file; an edit that keeps
     # Ghost brings nothing. What an edit newly names (Phantom, or Ghost through an import or beside its own
-    # declaration) is an UPWARD edge of a roadmap on main: logged for the author, not waited for. Only a
-    # dependency the description alone declares (#105) puts the label on.
-    assert label_writes(build.gh) == [("POST", 105)]
+    # declaration) is an UPWARD edge of a roadmap on main: logged for the author to drop, and waited for
+    # until then, as is a dependency the description alone declares (#105).
+    assert label_writes(build.gh) == [("POST", 102), ("POST", 103), ("POST", 104), ("POST", 105)]
+    assert f"#102: {DEPS} added (waits for Phantom (#111))" in out
+    assert f"#103: {DEPS} added (waits for Ghost (#110))" in out
+    assert f"#104: {DEPS} added (waits for Ghost (#110))" in out
     assert f"#105: {DEPS} added (waits for Ghost (#110))" in out
     assert upward(102, "Old", "Phantom", "#111") in out and not any("#102: UPWARD" in x and "Ghost" in x for x in out)
     assert upward(103, "Old", "Ghost", "#110") in out and upward(104, "Old", "Ghost", "#110") in out
     assert not any(line.startswith(("#100", "#101")) for line in out)
+
+
+def test_a_revision_of_a_roadmap_on_main_waits_for_the_open_supplier_it_declares(tmp_path, monkeypatch):
+    # TauCetiRoadmap #2012 (2026-11): CountableModelCounting is on main and its README already cites
+    # CountableStructureSpaces, which only the open #1316 adds. #2012 revises CountableModelCounting, keeps the
+    # citation, and declares #1316 in its depends-on block. Logged as UPWARD and not waited for, the label its
+    # block asks for was taken off by every run that saw it put back (eight times, 2026-11-09 to 11-17).
+    spaces = "CountableStructureSpaces"
+    counting = roadmap("CountableModelCounting", f"*Needs:* {spaces} §1.1.")
+    revised = roadmap("CountableModelCounting", f"*Needs:* {spaces} §1.1, for the counting theorem.")
+    mains = [{**MAIN, **counting}, {**MAIN, **counting, **roadmap(spaces, "### 1.1 Spaces")}]
+    cfg, _index = build(tmp_path, monkeypatch, mains[:1],
+                        [(1316, "ann", 0, roadmap(spaces, "### 1.1 Spaces")), (2012, "bo", 0, revised),
+                         (2013, "cy", 0, revised)],
+                        labels={2012: [DEPS]}, bodies={2012: block(f"#1316 {spaces}"), 2013: block(f"#1316 {spaces}")})
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
+    assert label_writes(build.gh) == [("POST", 2013)]                      # #2012's label stays
+    assert upward(2012, "CountableModelCounting", spaces, "#1316") in out
+    assert f"#2013: {DEPS} added (waits for {spaces} (#1316))" in out
+    # Once #1316 has merged, the wait is met and the label comes off.
+    after = tmp_path / "after"
+    after.mkdir()
+    cfg, _index = build(after, monkeypatch, mains, [(2012, "bo", 0, revised)],
+                        labels={2012: [DEPS]}, bodies={2012: block(f"#1316 {spaces}")})
+    build.gh.states[1316] = {"state": "merged"}
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
+    assert label_writes(build.gh) == [("DELETE", 2012)] and not any("UPWARD" in line for line in out)
 
 
 def test_a_pin_bump_waits_for_nothing_its_folders_already_cited(tmp_path, monkeypatch):
@@ -789,10 +820,12 @@ def test_a_folder_is_compared_with_its_own_readme_not_another_of_the_same_name(t
                          (124, "jo", 0, {"Completed/Drift2/README.md":
                                          "# Roadmap: Drift2\n\n*Needs:* Ghost §1.1.\n"})])
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
-    # Both Twins are on main, so what they newly name is UPWARD; each is compared with its own README, so
-    # #121's Ghost is new although Completed/Twin names Ghost, and #122's Phantom although TauCetiRoadmap/Twin
-    # names Phantom. The new Completed/Drift2 waits; the move of Drift brings nothing.
-    assert label_writes(build.gh) == [("POST", 124)]
+    # Both Twins are on main, so what they newly name is UPWARD, and waited for; each is compared with its own
+    # README, so #121's Ghost is new although Completed/Twin names Ghost, and #122's Phantom although
+    # TauCetiRoadmap/Twin names Phantom. The new Completed/Drift2 waits; the move of Drift brings nothing.
+    assert label_writes(build.gh) == [("POST", 121), ("POST", 122), ("POST", 124)]
+    assert f"#121: {DEPS} added (waits for Ghost (#110))" in out
+    assert f"#122: {DEPS} added (waits for Phantom (#111))" in out
     assert upward(121, "Twin", "Ghost", "#110") in out and upward(122, "Twin", "Phantom", "#111") in out
     assert not any("#121: UPWARD" in x and "Phantom" in x for x in out)
     assert not any("#122: UPWARD" in x and "Ghost" in x for x in out)
@@ -820,7 +853,7 @@ def test_one_pull_request_changing_two_folders_of_the_same_name_reads_both(tmp_p
     pr = next(p for p in index["prs"] if p["pr"] == 170)
     assert sorted(deplabels.roadmap_folders(cfg.state_dir(), index, pr)) == ["Completed/Twin", "TauCetiRoadmap/Twin"]
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
-    assert upward(170, "Twin", "Ghost", "#110") in out
+    assert upward(170, "Twin", "Ghost", "#110") in out and label_writes(build.gh) == [("POST", 170)]
 
 
 def test_a_rename_is_compared_with_its_true_source_not_a_folder_of_the_same_name(tmp_path, monkeypatch):
@@ -840,8 +873,9 @@ def test_a_rename_is_compared_with_its_true_source_not_a_folder_of_the_same_name
     assert overlaps.rename_source(state, base, openroadmaps.pr_ref(180), "Completed/Twin", pr["files"],
                                   index["main_folders"], tuple(index["dirs"])) == "TauCetiRoadmap/Other"
     out = deplabels.run(SimpleNamespace(cfg=cfg, gh=build.gh), DEPS)
-    # Compared with Other's README, the Ghost citation is new: an UPWARD edge of a roadmap on main.
+    # Compared with Other's README, the Ghost citation is new: an UPWARD edge of a roadmap on main, waited for.
     assert upward(180, "Twin", "Ghost", "#110") in out and not any("#181" in line for line in out)
+    assert label_writes(build.gh) == [("POST", 180)]
 
 
 THETA_README = "TauCetiRoadmap/ThetaSeries/README.md"
