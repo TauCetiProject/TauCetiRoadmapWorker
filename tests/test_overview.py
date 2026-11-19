@@ -155,6 +155,9 @@ def test_the_opening_is_held_to_the_form_the_brief_asks():
     assert "it names Lean declarations the old opening did not: Toy.order_one" in \
         overview.opening_problems("**Summary.** It proves `Toy.order_one`.", old)
     assert overview.opening_problems("**Summary.** It cites `Toy.order_dvd`.", old) == []      # the old one did
+    # a subscript in code font is mathematics, not a declaration name
+    assert overview.opening_problems("**Summary.** For a level `K_f`, the norm `N𝔡_u`, `ord_p` and `H_m` of `zeta_K`.", old) == []
+    assert overview.lean_names("`K_f` `map_add` `le_of_lt` `Foo.bar` `x_i` `H_dR`") == {"map_add", "le_of_lt", "Foo.bar"}
     assert overview.opening_problems("**Summary.** See §2.1 and #1234.", old) == [
         "it has a pull-request number", "it has a section-number locator"]
     assert "it has 900 words (at most about 700)" in overview.opening_problems("**Summary.** " + "w " * 899, old)

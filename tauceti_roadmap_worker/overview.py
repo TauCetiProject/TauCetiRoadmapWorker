@@ -36,6 +36,16 @@ TIMEOUT = 30 * 60
 LEAN_NAME = re.compile(r"`([A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)+|[A-Za-z][\w']*_[\w'.]+)`")
 
 
+def lean_names(text: str) -> set[str]:
+    """The backticked tokens of an opening that read as Lean declaration names: a dotted name, or a name with
+    underscores that is not a subscript. `K_f`, `H_m`, `N𝔡_u`, `ord_p` and `zeta_K` are mathematics in code font
+    (the brief asks for it there); a declaration name has two underscores or more (`le_of_lt`) or at least three
+    characters on each side of its one underscore (`map_add`). (2026-11-19: two openings were refused twice
+    each for `K_f` and `N𝔡_u`.)"""
+    return {name for name in LEAN_NAME.findall(text)
+            if "." in name or name.count("_") >= 2 or min(len(part) for part in name.split("_")) >= 3}
+
+
 # --- the opening -------------------------------------------------------------------------------------
 
 def words(text: str) -> int:
@@ -56,7 +66,7 @@ def opening_problems(new: str, old: str) -> list[str]:
                           (r"\\\(|\\\[|\$[^$\s]", "LaTeX"), (r"§", "a section-number locator")):
         if re.search(pattern, new) and not re.search(pattern, old):
             problems.append(f"it has {what}")
-    names = set(LEAN_NAME.findall(new)) - set(LEAN_NAME.findall(old))
+    names = lean_names(new) - lean_names(old)
     if names:
         problems.append("it names Lean declarations the old opening did not: " + ", ".join(sorted(names)[:5]))
     # the push gate's own check (`tex`), run here so that the opening is rewritten rather than pushed with it
