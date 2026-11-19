@@ -721,7 +721,10 @@ def gaps_only(job: Job) -> bool:
 
 def plan_change_problems(path: str, before: str, after: str) -> list[str]:
     """At the package stage a plan.json may change only in its top-level `gaps` list (a supplier gap
-    declared once the package shows it): everything else stays as the accepted design has it."""
+    declared once the package shows it) and, with a gap it retires, in the `gap:<slug>` prerequisites
+    that named that gap: everything else stays as the accepted design has it. (2026-11-19: a retired
+    gap that two targets named could be removed by no job, so the review that asked for it deferred
+    the change to the operator.)"""
     def load(text: str) -> dict | None:
         try:
             data = json.loads(text) if (text or "").strip() else {}
@@ -733,19 +736,29 @@ def plan_change_problems(path: str, before: str, after: str) -> list[str]:
         return [f"invalid JSON in {path}"]
     if old is None:
         old = {}
-    if {k: v for k, v in old.items() if k != "gaps"} != {k: v for k, v in new.items() if k != "gaps"}:
-        return [f"{path}: at the package stage only its top-level `gaps` list may change"]
-    gaps = new.get("gaps", [])
-    if not isinstance(gaps, list) or not all(isinstance(g, dict) and (g.get("slug") or g.get("id")) for g in gaps):
-        return [f"{path}: `gaps` is a list of entries with a `slug`"]
 
     def slugs(plan: dict) -> set[str]:
         return {str(g.get("slug") or g.get("id")) for g in plan.get("gaps", []) if isinstance(g, dict)} \
             if isinstance(plan.get("gaps"), list) else set()
-    named = {str(p)[4:] for layer in new.get("layers", []) if isinstance(layer, dict)
+    retired = {f"gap:{s}" for s in slugs(old) - slugs(new)}
+
+    def rest(plan: dict) -> dict:
+        """The plan without its `gaps` list and without the prerequisites that name a retired gap."""
+        out = json.loads(json.dumps({k: v for k, v in plan.items() if k != "gaps"}))
+        for layer in out.get("layers", []) if isinstance(out.get("layers"), list) else []:
+            for t in layer.get("targets", []) if isinstance(layer, dict) and isinstance(layer.get("targets"), list) else []:
+                if isinstance(t, dict) and isinstance(t.get("prerequisites"), list):
+                    t["prerequisites"] = [p for p in t["prerequisites"] if str(p) not in retired]
+        return out
+    if rest(old) != rest(new):
+        return [f"{path}: at the package stage only its top-level `gaps` list may change"]
+    gaps = new.get("gaps", [])
+    if not isinstance(gaps, list) or not all(isinstance(g, dict) and (g.get("slug") or g.get("id")) for g in gaps):
+        return [f"{path}: `gaps` is a list of entries with a `slug`"]
+    named = {str(p) for layer in new.get("layers", []) if isinstance(layer, dict)
              for t in layer.get("targets", []) if isinstance(t, dict)
              for p in t.get("prerequisites", []) if str(p).startswith("gap:")} if isinstance(new.get("layers"), list) else set()
-    dropped = sorted(named & (slugs(old) - slugs(new)))
+    dropped = sorted(p[4:] for p in named & retired)
     if dropped:
         return [f"{path}: removes the gaps {', '.join(dropped)}, which targets of the plan still name"]
     return []

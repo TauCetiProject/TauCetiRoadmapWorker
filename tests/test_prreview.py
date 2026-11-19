@@ -3533,7 +3533,7 @@ def test_a_repair_that_declares_a_gap_or_rewrites_an_author_entry_delivers_neith
     assert "Files: `packages/Foo/reports/PRREVIEW-Foo~2.json`, `packages/Foo/reports/PRREVIEW-Foo~2.md`" in opened["body"]
     notes = "\n".join(ws.extra["notes"])
     assert ("the repair's edit of packages/Foo/design/plan.json is not delivered: packages/Foo/design/plan.json: "
-            "a review's repair retires gaps, it declares none (new-gap)") in notes
+            "a review's repair declares only gaps the README names as `gap:<slug>` (new-gap)") in notes
     assert "the repair's edit of packages/Foo/sources.toml is not delivered: sources.toml: a repair keeps the author's entries: AUTH: year changed" in notes
 
 
@@ -3541,8 +3541,18 @@ def test_plan_and_manifest_edit_guards():
     from tauceti_roadmap_worker.lanes import prreview as lp
     before = json.dumps({"gaps": [{"slug": "a"}, {"slug": "b"}], "layers": []})
     assert lp.plan_edit_problems("p/plan.json", before, json.dumps({"gaps": [{"slug": "b"}], "layers": []})) == []
-    assert lp.plan_edit_problems("p/plan.json", before, json.dumps({"gaps": [{"slug": "b"}, {"slug": "c"}], "layers": []})) == [
-        "p/plan.json: a review's repair retires gaps, it declares none (c)"]
+    declared = json.dumps({"gaps": [{"slug": "b"}, {"slug": "c"}], "layers": []})
+    assert lp.plan_edit_problems("p/plan.json", before, declared) == [
+        "p/plan.json: a review's repair declares only gaps the README names as `gap:<slug>` (c)"]
+    # A gap the repaired README names is declared with the review, once the entry says what is missing and of whom.
+    readme = "- What Bar must provide (gap:c): the comparison map.\n"
+    assert lp.plan_edit_problems("p/plan.json", before, declared, readme) == [
+        "p/plan.json: gap c: `needs` (one sentence: what is missing) is required"]
+    full = json.dumps({"gaps": [{"slug": "b"}, {"slug": "c", "needs": "the comparison map", "supplier": "Bar",
+                                                 "section": "§1.8"}], "layers": []})
+    assert lp.plan_edit_problems("p/plan.json", before, full, readme) == []
+    assert lp.plan_edit_problems("p/plan.json", before, full, "The README names no gap.") == [
+        "p/plan.json: a review's repair declares only gaps the README names as `gap:<slug>` (c)"]
     assert lp.plan_edit_problems("p/plan.json", before, json.dumps({"gaps": [], "layers": [1]})) == [
         "p/plan.json: at the package stage only its top-level `gaps` list may change"]
     assert lp.plan_edit_problems("p/plan.json", before, "{") == ["invalid JSON in p/plan.json"]
