@@ -3303,7 +3303,9 @@ def test_a_description_delivered_before_a_crash_is_reported_the_same_by_the_next
     lane = lane_for(job)
     with pytest.raises(KeyboardInterrupt):
         lane.deliver(job, ctx, reviewed(lane, job, ctx, head))
-    assert lane_base.read_pending(ctx, job)["text"] == {"line": "description rewritten"}
+    # what was done to the text, and the digest of the text that write left (a check of the text records it)
+    assert lane_base.read_pending(ctx, job)["text"] == {
+        "line": "description rewritten", "digest": summary.text_digest("Foo: first layers", rh.patches[0][0]["body"])}
     assert lane_prreview.text_rewritten(lane_prreview.delivered_text(ctx, job))
     assert not lane_prreview.text_rewritten("title and description not written: the description was changed while the repair ran")
 
@@ -3741,6 +3743,36 @@ def test_an_acceptance_applies_its_small_corrections_in_one_small_commit_and_the
     # The intake reads the record, and settles the folder at the new head.
     assert intake.carried_record(review, 150) == review["carried"]
     assert intake.carried_record({**review, "carried": {**review["carried"], "corrections": False}}, 150) is None
+
+
+@needs_git
+@pytest.mark.parametrize("check", [True, False])
+def test_a_check_of_the_text_that_corrects_the_description_records_the_text_it_leaves(
+        hub, monkeypatch, tmp_path, check):  # noqa: F811
+    """(2026-11-19) A check of an accepted head's text that accepts it and applies a small correction to the
+    description left a text no review had read, so the intake filed the next check, which corrected a
+    sentence in turn: three checks of one unchanged head in two hours. The check's verdict now records the
+    text it leaves, and the intake files nothing for it. A review that is not a check of the text keeps the
+    digest of the text it read, so its rewritten description still gets its one check."""
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    if check:
+        job.inputs.update(text_check=True, text_digest="0" * 16)
+    repair_agent(monkeypatch, [], report="## H01 (AI review PRREVIEW-Foo~2) — applied\nThe description says it.\n",
+                 edit=False, description=["Title: Foo: first layers\n\nStates Layer 1 for every odd prime p.\n"])
+    ctx = pool_ctx(rh)
+    ctx.cfg.prreview.carry_minor = True
+    lane = lane_for(job)
+    ws = reviewed_with(lane, job, ctx, head, CORRECTION, 0, status="accepted")
+    read = json.loads(lane.verdict_file(job, ctx, ws).read_text())["review"].get("text")
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted" and rh.head(905) == head, result.detail
+    assert "description rewritten" in result.detail and "small corrections applied" in result.detail
+    [(payload, _n)] = rh.patches
+    left = summary.text_digest(payload.get("title", "Foo: first layers"), payload["body"])
+    review = submitted_verdict(lane, job, ctx, ws)
+    assert read and read != left                                     # the review read the text before the rewrite
+    assert review["text"] == (left if check else read)
+    assert ("the description as corrected here is the text this check read" in result.detail) is check
 
 
 @needs_git
