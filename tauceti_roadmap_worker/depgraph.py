@@ -48,7 +48,29 @@ DEPCONS = re.compile(
     r"consum|consumes?\b|used by|asks? for|not a prerequisite|re-?export|export|downstream|outbound|belongs? to|owned by|"
     r"kept as a hypothesis|are [A-Z][A-Za-z0-9]+ [A-Z0-9.–-]+'s", re.I)
 NAME = re.compile(r"\b([A-Z][A-Za-z0-9]+(?:PartII|PartIII|PartIV)?)\b")
+# The roots of the pinned libraries' file paths and module names: a CamelCase component of
+# `TauCeti/Algebra/AlgebraicGroup/FunctorOfPoints.lean` or of `TauCeti.CategoryTheory.Sites.Foo` names a
+# file or a namespace, not the roadmap of the same name (2026-11-19: a supplier table that located a
+# declaration in `.../FunctorOfPoints.lean` made its pull request wait for the FunctorOfPoints roadmap).
+LIBRARY_ROOTS = frozenset({"TauCeti", "Mathlib", "Batteries", "Std", "Lean", "Aesop", "Qq", "Plausible"})
+PATH_BEFORE = re.compile(r"[\w./]+$")
 HEADING = re.compile(r"(#{1,6})(?:\s|$)")
+
+
+def cited_names(unit: str) -> set[str]:
+    """The CamelCase names of a supplier unit that can name a roadmap: every `NAME` match that is not
+    a component of a library file path or module name (the path or dotted name it stands in starts
+    with one of `LIBRARY_ROOTS`, or the name is that of a `.lean` file). `TauCetiRoadmap/Foo` and
+    `TauCetiRoadmap.Foo` do name the roadmap `Foo`."""
+    out = set()
+    for m in NAME.finditer(unit):
+        if unit.startswith(".lean", m.end()):
+            continue
+        before = PATH_BEFORE.search(unit[:m.start()])
+        if before and re.split(r"[./]", before.group(0).lstrip("./"), maxsplit=1)[0] in LIBRARY_ROOTS:
+            continue
+        out.add(m.group(1))
+    return out
 CONSUMER_HEADING = re.compile(r"consum|export|outbound|downstream", re.I)
 # The section that lists a roadmap's consumers (`## Downstream consumers`, by convention), whose
 # nested headings belong to it too. Other headings that say "consume" or "export" ("What this roadmap
@@ -206,7 +228,7 @@ def supplier_edges(readmes: dict[str, str], known: set[str] | None = None,
         for line_no, unit, prose in _units(text, consumer):
             if EXCL.search(unit):
                 continue
-            for supplier in set(NAME.findall(unit)):
+            for supplier in cited_names(unit):
                 if supplier in names and supplier != consumer and not (prose and supplier in declared):
                     graph[consumer][supplier].add(line_no)
     return graph

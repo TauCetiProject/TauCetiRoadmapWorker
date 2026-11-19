@@ -70,6 +70,23 @@ def test_supplier_table_and_contract_bullets():
     assert found == {"Alpha", "Beta", "Gamma"}
 
 
+def test_a_library_file_or_module_named_like_a_roadmap_is_not_a_supplier():
+    from tauceti_roadmap_worker import depgraph
+    readme = ("# Roadmap: Foo\n\n## Exact supplier contracts\n\n### From Tau Ceti\n\n"
+              "| Declaration | File | Role |\n|---|---|---|\n"
+              "| `AlgHom.mapValue` | TauCeti/Algebra/AlgebraicGroup/FunctorOfPoints.lean:143 | points |\n"
+              "| `TauCeti.FunctorOfPoints.map` | Mathlib/Foo/Bar.lean | supplier of points |\n\n"
+              "*Needs:* TauCeti.Sites.FunctorOfPoints.foo; Bar §1.2.\n")
+    known = {"Foo", "Bar", "FunctorOfPoints"}
+    assert set(depgraph.supplier_edges({"Foo": readme}, known)["Foo"]) == {"Bar"}
+    assert depgraph.cited_names("TauCeti/Algebra/FunctorOfPoints.lean and FunctorOfPoints.lean") == {"TauCeti"}
+    # The roadmap itself is still cited by name, by its folder and under the roadmap namespace.
+    for cite in ("*Needs:* FunctorOfPoints §2.", "*Needs:* TauCetiRoadmap/FunctorOfPoints §2.",
+                 "### From TauCetiRoadmap.FunctorOfPoints", "*Needs:* Bar/FunctorOfPoints §2."):
+        text = "# Roadmap: Foo\n\n## Layer 1\n\n" + cite + "\n"
+        assert "FunctorOfPoints" in depgraph.supplier_edges({"Foo": text}, known)["Foo"], cite
+
+
 def test_not_in_order_and_only_filter():
     readmes = {"Delta": "*Needs:* Alpha §1.\n", "Alpha": "", "Beta": "*Needs:* Gamma §1.\n", "Gamma": ""}
     edges = supplier_edges(readmes, set(ORDER))
