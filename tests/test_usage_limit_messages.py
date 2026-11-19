@@ -46,6 +46,16 @@ MESSAGES = {
 }
 
 
+def test_the_five_hour_window_limit_is_a_usage_limit():
+    """The window's name has a hyphen: `You've hit your 5-hour limit · resets 1:30pm (UTC)`, on stdout, exit 1."""
+    message = "You've hit your 5-hour limit · resets 1:30pm (UTC)"
+    out = f"START 2026-11-19T10:29:01Z claude claude-opus-5-5 /w\n{message}\n{message}\nEXIT 1 2026-11-19T10:29:04Z\n"
+    result = agents.classify(1, out, "", seconds=3.0)
+    assert result.limited and not result.ok and result.message == message
+    assert agents.classify(0, out, "").limited          # whatever the exit code, as for the other window limits
+    assert not agents.classify(1, "the proof hit your intended bound, no limit of the series was used\n", "").limited
+
+
 def test_every_pattern_has_a_message_and_vice_versa():
     assert [name for name, _, _ in agents.LIMIT_PATTERNS] == list(MESSAGES)
 
