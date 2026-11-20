@@ -175,14 +175,33 @@ NEEDS = ("overview", "sections", "order")
 CONVENTIONS = "conventions"
 SECTION_NAMES = {CONVENTIONS: "## Conventions", SCOPE: "## Scope and ownership", SUPPLIERS: "## Exact supplier contracts",
                  REFERENCES: "## References"}
+#: The sections the project's README puts before the scope, besides the layers.
+SPECIFICATION = (CONVENTIONS, "worked examples", "downstream consumers")
+
+
+def follows_layout(titles: list[str]) -> bool:
+    """Whether sections with these titles (`title_key` form, the opening left out) stand in an order
+    the project's README allows: `## How to read the build`, when there is one, first (after a summary
+    or overview section), and `## Scope and ownership`, then `## Exact supplier contracts`, after the
+    conventions, every layer, the worked examples and the downstream consumers. The README places no
+    other section. One it does not name (`## Beyond this roadmap`, `## Prior formalization`) may stand
+    before the scope, where `reorder` leaves it, or after the supplier contracts, where an author who
+    reads "then the scope and the supplier contracts" puts it: both have the layout, and a request
+    that held out for the first asked an author who had done the second to reorder again."""
+    if HOW_TO_READ in titles and titles.index(HOW_TO_READ) != (1 if titles[0] in OVERVIEW else 0):
+        return False
+    body = [k for k, title in enumerate(titles) if title in SPECIFICATION or title.startswith("layer")]
+    tail = [titles.index(title) for title in AT_THE_END if title in titles]
+    return tail == sorted(tail) and not (body and tail and tail[0] < body[-1])
 
 
 def lacks(text: str) -> dict[str, str]:
     """What a README lacks of the README layout, by kind ({} when nothing): "overview", the text between
     the title and the first `##` heading does not begin with `**Summary.**`; "sections", which of
     `## Conventions`, a `## Layer ...` section, `## Scope and ownership`, `## Exact supplier contracts`
-    and `## References` it has none of; "order", its sections are not in the layout's order (`in_order`)
-    or `## References` is not the last. A README that does not read as sections lacks all three."""
+    and `## References` it has none of; "order", its sections are not in an order the layout allows
+    (`follows_layout`) or `## References` is not the last. A README that does not read as sections lacks
+    all three."""
     try:
         titles = [p.title for p in parts(text)[1:]]
         opening = split_opening(text)[1]
@@ -200,7 +219,7 @@ def lacks(text: str) -> dict[str, str]:
         out["sections"] = ("the section" + ("s " if len(missing) > 1 else " ")
                            + ", ".join(f"`{m}`" for m in missing[:-1]) + (" and " if len(missing) > 1 else "")
                            + f"`{missing[-1]}`")
-    if not in_order(text) or (REFERENCES in titles and titles[-1] != REFERENCES):
+    if not follows_layout(titles) or (REFERENCES in titles and titles[-1] != REFERENCES):
         out["order"] = ("the order of the sections (the conventions and the layers first; the scope, the supplier "
                         "contracts and the references at the end)")
     return out
