@@ -56,8 +56,10 @@ def test_the_request_is_one_comment_and_is_asked_once(tmp_path):
     [(method, path, payload)] = gh.writes
     assert (method, path) == ("POST", f"repos/{REPO}/issues/12/comments")
     body = payload["body"]
-    assert body.startswith("**The README layout.**") and "`TauCetiRoadmap/Foo/README.md`: an overview that begins" in body
-    assert "`ai-found-no-errors` label stays off" in body and "nothing here questions the mathematics" in body
+    assert body.startswith("**A suggestion on the README layout.**")
+    assert "`TauCetiRoadmap/Foo/README.md`: an overview that begins" in body
+    assert "`ai-found-no-errors` label is off this pull request for now" in body
+    assert "nothing here questions the mathematics" in body and "reply here saying so, and the label is put back" in body
     record = json.loads(body.split(layoutask.REQUEST_MARK, 1)[1].split("-->")[0])
     assert record == {"head": H1, "needs": {"Foo": ["order", "overview", "sections"]}}
     assert layoutask.load(tmp_path)["12"]["needs"] == {"Foo": ["order", "overview", "sections"]}
@@ -66,6 +68,26 @@ def test_the_request_is_one_comment_and_is_asked_once(tmp_path):
     assert len(gh.writes) == 1
     only = layoutask.run(context(tmp_path / "x", gh), numbers=[12], kinds=["order"], report=lambda _line: None)
     assert only == ["[dry run] #12 (outsider): would ask: Foo lacks order"]
+
+
+def test_a_suggestion_the_author_declines_is_withdrawn_and_the_label_follows_the_reviews(tmp_path):
+    labels = f"repos/{REPO}/issues/12/labels"
+    done = review_job(41, 1, 12, H1, "done")
+    layoutask.save(tmp_path, {"12": {"head": H1, "needs": {"Foo": ["order", "overview", "sections"]}}})
+    gh = ContentGH([node(12, H1, author="outsider")], files=verdict_file(done, "accepted", H1), blobs={(H1, README): OLD})
+    ctx = context(tmp_path, gh, [done])
+    assert layoutask.withdraw(ctx, [12, 13], report=lambda _line: None) == [
+        f"[dry run] #12: would withdraw the suggestion of {H1[:7]}", "#13: no suggestion stands"]
+    assert gh.writes == [] and "12" in layoutask.load(tmp_path)
+    assert layoutask.withdraw(ctx, [12], write=True, report=lambda _line: None) == [
+        "#12: suggestion withdrawn; the label follows the reviews again"]
+    [(method, path, payload)] = gh.writes
+    assert (method, path) == ("POST", f"repos/{REPO}/issues/12/comments") and payload["body"].startswith("Understood:")
+    assert layoutask.load(tmp_path) == {}
+    # The README is as it was, and the accepted head gets its label back at the next sync.
+    gh = ContentGH([node(12, H1, author="outsider")], files=verdict_file(done, "accepted", H1), blobs={(H1, README): OLD})
+    assert intake.sync_pr_reviews(context(tmp_path, gh, [done])) == [f"#12: {LABEL} added (the AI review of {H1[:7]} accepts it)"]
+    assert gh.writes == [("POST", labels, {"labels": [LABEL]})]
 
 
 def test_nothing_is_asked_of_the_pool_nor_of_an_author_the_reviews_leave_out(tmp_path):

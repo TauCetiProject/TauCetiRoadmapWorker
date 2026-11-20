@@ -1383,7 +1383,7 @@ or changes are touched: a README it leaves alone is as on main and is left alone
 build on the shared continuous integration, which also builds the merge queue: run it in small
 batches (`--limit`).
 
-### Asking another author for the layout (`layout --ask`)
+### Suggesting the layout to another author (`layout --ask`)
 
 A pull request of an author outside the pool is theirs to change, so the pool does not push to it:
 it asks. `layout --ask` posts one comment on the pull request that lists, for each roadmap folder it
@@ -1410,6 +1410,14 @@ it asked for of the kinds `[prreview] layout_hold` names (all three by default; 
 request only), and the label then follows the reviews again (`#N: layout request settled …`). A push
 that only reorders the sections keeps an earlier acceptance, so an author asked for the order alone
 gets the label back without a new review. A request leaves the file when its pull request closes.
+
+The comment is a suggestion, and says so: an author who replies that the README stays as it is gets
+the label back. Reading the reply is the operator's part, never the worker's:
+
+    tauceti-roadmap layout --ask --withdraw --pr 2516 [--yes]
+
+takes the suggestion out of the file, posts one line saying so, and the label follows the reviews
+again at the next `board sync`. Without such a reply the suggestion stands.
 
 ### Rewriting the opening overview (`overview`)
 

@@ -692,6 +692,12 @@ def layout_cmd(args) -> int:
     ctx = _bot_context(args, cfg, not write)
     if args.ask:
         from . import layout, layoutask
+        if args.withdraw:
+            if not args.pr or args.author or args.others:
+                print("layout --ask --withdraw: name the pull requests with --pr", file=sys.stderr)
+                return 2
+            layoutask.withdraw(ctx, args.pr, write=write, report=lambda line: print(line, flush=True))
+            return 0
         kinds = [k.strip() for k in args.needs.split(",") if k.strip()] if args.needs else list(layout.NEEDS)
         if args.pool or any(k not in layout.NEEDS for k in kinds):
             print(f"layout --ask: not with --pool; --needs takes {', '.join(layout.NEEDS)}", file=sys.stderr)
@@ -1322,13 +1328,16 @@ def parser() -> argparse.ArgumentParser:
     lo.add_argument("--limit", type=int, default=0, help="push to at most this many pull requests (0: all)")
     lo.add_argument("--yes", action="store_true", help="push and post the notes (default: a dry run)")
     lo.add_argument("--ask", action="store_true",
-                    help="do not push: ask the author, in one comment, to bring the READMEs into the README layout, and "
-                         "keep the AI review's label off until they are (for pull requests outside the pool)")
+                    help="do not push: suggest to the author, in one comment, to bring the READMEs into the README "
+                         "layout, with the AI review's label off meanwhile (for pull requests outside the pool)")
     lo.add_argument("--others", action="store_true",
                     help="with --ask: every open roadmap pull request of an author outside the pool")
     lo.add_argument("--needs", default="", metavar="KINDS",
                     help="with --ask: what to ask for, of overview,sections,order (default: all three)")
     lo.add_argument("--again", action="store_true", help="with --ask: also a pull request already asked")
+    lo.add_argument("--withdraw", action="store_true",
+                    help="with --ask and --pr: take the suggestion back (the author replied that the README stays as "
+                         "it is); the label then follows the reviews again")
 
     ov = sub.add_parser("overview", help="rewrite the opening of the READMEs of open roadmap pull requests as a "
                                          "readable overview, with the sections in the new order; checked "
