@@ -268,7 +268,9 @@ brief, never a failed round):
   now (`overlaps.mapped`: a row of a table whose header names the earlier numbering, "| Former label
   | … | Now |", or a sentence such as "The earlier separate Layer 1.5 is now §1.3"), which keeps a
   citation by the old id valid and asks nothing of the roadmaps that cite it (a heading anchor does
-  not follow a mapping: a link to it lands at the top of the README); the ids it cites that only an open revision
+  not follow a mapping: a link to it lands at the top of the README, unless the head keeps the anchor
+  as a line `<a id="old-anchor"></a>` before the renamed heading, which the gate allows when another
+  roadmap links to that anchor and no heading has it as its own id: `gates.kept_anchor_lines`); the ids it cites that only an open revision
   defines, which make that revision a dependency; when the job is on a pull request of the content
   repository (never a board pull request), the ids it drops from a roadmap on main that other
   roadmaps cite, on main or at an open head; and the closest roadmaps, where a second owner of the
