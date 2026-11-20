@@ -43,6 +43,30 @@ def test_lacks_names_what_a_readme_is_short_of():
     assert set(layout.lacks("no title, no sections")) == {"overview", "sections"}
 
 
+def test_the_order_asked_for_is_the_readmes_not_one_arrangement_of_it():
+    # 2026-11-20: an author put the scope and the supplier contracts after the downstream consumers, as the
+    # project's README says, with `## Beyond this roadmap` and `## Prior formalization` after them; the request
+    # stood, because `reorder` would have left those two before the scope. The README places neither.
+    more = "## Beyond this roadmap\n\nLater.\n\n## Prior formalization\n\nNone.\n\n"
+    consumers = "## Downstream consumers\n\nBar.\n\n"
+    after = GOOD.replace("## Scope and ownership", consumers + "## Scope and ownership").replace("## References", more + "## References")
+    before = GOOD.replace("## Scope and ownership", consumers + more + "## Scope and ownership")
+    assert layout.lacks(after) == {} and layout.lacks(before) == {}
+    assert layout.in_order(before) and not layout.in_order(after)       # `reorder` has one arrangement of the two
+    # What the README does place still counts: the consumers before the scope, the scope before the contracts,
+    # the guide to the layers first, the references last.
+    for moved in (GOOD.replace("## References", consumers + "## References"),
+                  GOOD.replace("## Scope and ownership\n\nOwns the order.\n\n", "").replace(
+                      "## References", "## Scope and ownership\n\nOwns the order.\n\n## References"),
+                  GOOD.replace("## Scope and ownership", "## How to read the build\n\nLayer 0 first.\n\n## Scope and ownership"),
+                  GOOD.replace("## References\n\nLang.\n", "").replace("## Conventions", "## References\n\nLang.\n\n## Conventions")):
+        assert set(layout.lacks(moved)) == {"order"}, moved
+    guide = GOOD.replace("## Conventions", "## How to read the build\n\nLayer 0 first.\n\n## Conventions")
+    assert layout.lacks(guide) == {}
+    assert layout.lacks(guide.replace("**Summary.** Builds the order of an element.\n\n",
+                                      "**Summary.** Builds the order of an element.\n\n## Overview\n\nMore.\n\n")) == {}
+
+
 def test_the_request_is_one_comment_and_is_asked_once(tmp_path):
     gh = ContentGH([node(12, H1, author="outsider"), node(13, H1, author="outsider", paths=("TauCetiRoadmap/Bar/README.md",))],
                    blobs={(H1, README): OLD, (H1, "TauCetiRoadmap/Bar/README.md"): GOOD})
