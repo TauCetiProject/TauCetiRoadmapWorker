@@ -1,22 +1,26 @@
-"""`tauceti-roadmap layout --ask`: ask the author of a pull request to bring its READMEs into the README
-layout, and keep the AI review's label off the pull request until they are.
+"""`tauceti-roadmap layout --ask`: suggest to the author of a pull request to bring its READMEs into the
+README layout, with the AI review's label off the pull request meanwhile.
 
 The pool reorders its own pull requests (`relayout`) and rewrites their openings (`overview`). A pull
-request of another author is theirs to change, so the command asks: one comment on the pull request
-that lists, for each roadmap folder it adds or changes, what the README lacks (`layout.lacks`: the
-overview, sections, the order), with a record (`REQUEST_MARK`). The requests are kept in
+request of another author is theirs to change, so the command suggests: one comment on the pull
+request that lists, for each roadmap folder it adds or changes, what the README lacks (`layout.lacks`:
+the overview, sections, the order), with a record (`REQUEST_MARK`). The suggestions are kept in
 `<state>/layout-requests.json`.
 
-While a request stands, `intake.sync_pr_reviews` takes `[prreview] label` off the pull request and does
-not put it back (`holds`): the reviews go on as usual, and the label follows them again once the READMEs
-at the head lack nothing the request asked for, of the kinds `[prreview] layout_hold` names. The request
-is then settled and leaves the file. A push that only reorders the sections keeps an earlier acceptance
-(`intake.LayoutCheck`), so an author who was asked for the order alone gets the label back with no new
-review.
+While a suggestion stands, `intake.sync_pr_reviews` takes `[prreview] label` off the pull request and
+does not put it back (`holds`): the reviews go on as usual, and the label follows them again once the
+READMEs at the head lack nothing the suggestion named, of the kinds `[prreview] layout_hold` names. The
+suggestion is then settled and leaves the file. A push that only reorders the sections keeps an earlier
+acceptance (`intake.LayoutCheck`), so an author who took up a suggestion about the order alone gets the
+label back with no new review.
 
-Nothing is asked of a pull request of the pool, of one the pull-request reviews do not cover
-(`[prreview] authors`, `skip_authors`), of one this host reviews no pull requests of
-(`[worker] no_review_authors`), nor twice of the same pull request.
+It is a suggestion: an author who replies that the README stays as it is gets the label back. That is
+the operator's reading of the reply, never the worker's: `layout --ask --withdraw --pr N` takes the
+suggestion out of the file (`withdraw`), and the label follows the reviews again.
+
+Nothing is suggested on a pull request of the pool, on one the pull-request reviews do not cover
+(`[prreview] authors`, `skip_authors`), on one this host reviews no pull requests of
+(`[worker] no_review_authors`), nor twice on the same pull request.
 """
 
 from __future__ import annotations
@@ -74,20 +78,21 @@ def note(cfg, found: dict[str, dict[str, str]], head: str) -> str:
     active = cfg.roadmap.active_dir.strip("/")
     label = cfg.prreview.label
     rules = RULES.format(repo=cfg.repositories.content, branch=cfg.project.branch)
-    ask = (f"**The README layout.** The roadmaps of this project follow one layout ([Laying out the README]({rules})): "
-           "under the title an overview that begins `**Summary.**`, then `## Conventions` and the `## Layer k: …` "
-           "sections in build order, then `## Scope and ownership`, `## Exact supplier contracts` and "
-           f"`## References` last. Could you bring the README{'s' if len(found) != 1 else ''} of this pull request "
-           "into it? What is missing today:")
+    ask = (f"**A suggestion on the README layout.** The roadmaps of this project are moving to one layout "
+           f"([Laying out the README]({rules})): under the title an overview that begins `**Summary.**`, then "
+           "`## Conventions` and the `## Layer k: …` sections in build order, then `## Scope and ownership`, "
+           "`## Exact supplier contracts` and `## References` last. We suggest bringing the "
+           f"README{'s' if len(found) != 1 else ''} of this pull request into it. What that would take today:")
     lines = [ask, ""]
     for folder, kinds in found.items():
         lines.append(f"- `{active}/{folder}/README.md`: " + "; ".join(kinds[k] for k in layout.NEEDS if k in kinds) + ".")
     record = {"head": head, "needs": {folder: sorted(kinds) for folder, kinds in found.items()}}
-    held = (f"Until the README is in the layout the `{label}` label stays off this pull request; it comes back by "
-            "itself once the README is in the layout and the AI review accepts that head. " if label else "")
+    held = (f"The `{label}` label is off this pull request for now: it comes back by itself once the README is in "
+            "the layout and the AI review accepts that head (a push that only reorders the sections keeps an "
+            "earlier acceptance). " if label else "")
     form = ("This is about form only: nothing here questions the mathematics. " + held
-            + "A push that only reorders the sections keeps an earlier acceptance, and nothing else is reviewed again "
-            "because of it.")
+            + "If you would rather leave the README as it is, reply here saying so"
+            + (", and the label is put back as it was." if label else "."))
     lines += ["", form, "", f"<!-- {REQUEST_MARK} {json.dumps(record, sort_keys=True)} -->", ""]
     return "\n".join(lines)
 
@@ -127,6 +132,34 @@ def holds(ctx, repo: str, listed: list[dict], batch: int) -> tuple[dict[int, str
     if changed:
         save(state, requests)
     return held, lines
+
+
+def withdraw(ctx, numbers, *, write: bool = False, report=print) -> list[str]:
+    """Take back the suggestions made on these pull requests (an author replied that the README stays as
+    it is): each leaves the requests file, so that the label follows the reviews again at the next
+    `board sync`, and with `write` a short note says so on the pull request."""
+    cfg, repo, out = ctx.cfg, ctx.cfg.repositories.content, []
+    requests = load(ctx.state)
+    for number in dict.fromkeys(int(n) for n in numbers):
+        if str(number) not in requests:
+            out.append(f"#{number}: no suggestion stands")
+        elif not write:
+            out.append(f"[dry run] #{number}: would withdraw the suggestion of {str(requests[str(number)].get('head', ''))[:7]}")
+        else:
+            label = cfg.prreview.label
+            text = ("Understood: the README stays as it is. The layout suggestion above is withdrawn"
+                    + (f", and the `{label}` label follows the AI review again." if label else "."))
+            try:
+                ctx.gh.write("POST", f"repos/{repo}/issues/{number}/comments", {"body": text + "\n"})
+            except GHError as exc:
+                out.append(f"#{number}: not withdrawn: {str(exc).splitlines()[0][:200]}")
+                continue
+            del requests[str(number)]
+            save(ctx.state, requests)
+            out.append(f"#{number}: suggestion withdrawn; the label follows the reviews again")
+    for line in out:
+        report(line)
+    return out
 
 
 def selected(ctx, listed: list[dict], numbers: list[int], authors: list[str], others: bool) -> list[dict]:
