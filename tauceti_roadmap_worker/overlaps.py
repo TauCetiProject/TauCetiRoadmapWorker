@@ -64,6 +64,8 @@ SUBJECT_TERMS = 400     # the heaviest names, and heading terms, kept for a READ
 
 # A link to a heading of another roadmap's README: `[...](../Name/README.md#anchor)`, at any depth.
 LINK = re.compile(r"\]\((?:[^)\s#]*/)?(?P<name>[A-Za-z][A-Za-z0-9]*)/README\.md#(?P<anchor>[^)\s]+)\)")
+# The same link as the definition of a reference-style link, on a line of its own: `[name]: ../Name/README.md#id`.
+REF_LINK = re.compile(r"^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<?(?:[^\s#<>]*/)?(?P<name>[A-Za-z][A-Za-z0-9]*)/README\.md#(?P<anchor>[^\s<>]+)")
 HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
 HTML_ANCHOR = re.compile(r"<a\s+(?:id|name)=\"([^\"]+)\"")
 FENCE = re.compile(r"^\s*(```|~~~)")
@@ -223,7 +225,7 @@ def citations(text: str, names, *, where: str = "", citer: str = "") -> list[Cit
             token, layer = o.cited_id(m)
             out.append(Citation(where, citer, number, m.group(1), token, "layer" if layer else "section",
                                 m.group(0).strip()))
-        for m in LINK.finditer(line):
+        for m in (*LINK.finditer(line), *REF_LINK.finditer(line)):
             if m.group("name") in names and m.group("name") != citer:
                 out.append(Citation(where, citer, number, m.group("name"), unquote(m.group("anchor")).lower(),
                                     "anchor", m.group(0)))

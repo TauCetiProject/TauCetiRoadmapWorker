@@ -191,6 +191,10 @@ def test_citations_read_ids_and_heading_links_but_not_the_roadmap_itself():
                                " and Groups §2.\n", {"Lattices", "Groups"}, citer="Groups")
     assert [(c.cited, c.kind, c.id, c.line) for c in found] == [
         ("Lattices", "section", "1.3", 1), ("Lattices", "layer", "1", 1), ("Lattices", "anchor", "layer-1-basics", 1)]
+    # A reference-style link names the heading on the line of its definition.
+    by_reference = overlaps.citations("See [the lattices][lat].\n\n[lat]: ../Lattices/README.md#L1-Basics\n",
+                                      {"Lattices"}, citer="Groups")
+    assert [(c.cited, c.kind, c.id, c.line) for c in by_reference] == [("Lattices", "anchor", "l1-basics", 3)]
 
 
 def test_removals_are_the_cited_ids_a_revision_drops(world):
