@@ -191,7 +191,28 @@ def readmes(state: Path, index: dict) -> list[tuple[str, str, str]]:
     places += [(f"#{p['pr']}", o.pr_ref(p["pr"]), name, folder)
                for p in index.get("prs", []) for name, folder in sorted((p.get("folders") or {}).items())]
     texts = _batch(state, [f"{ref}:{folder}/README.md" for _w, ref, _n, folder in places])
-    return [(where, name, text) for (where, _r, name, _f), text in zip(places, texts, strict=True) if text]
+    folders = {folder for _w, _r, _n, folder in places}
+    return [(where, name, named_links(text, folder, folders))
+            for (where, _r, name, folder), text in zip(places, texts, strict=True) if text]
+
+
+# A nested roadmap's link to the README of the roadmap it sits in names no folder: `](../README.md#id)`, or
+# the same target in a reference definition.
+PARENT_LINK = re.compile(r"(?P<open>\]\(\s*<?|^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<?)(?:\./)?\.\./README\.md#", re.MULTILINE)
+
+
+def named_links(text: str, folder: str, folders) -> str:
+    """`text`, the README of the roadmap in `folder`, with every link to the README one folder up
+    (`../README.md#id`) written through the name of that folder (`../../Parent/README.md#id`, the same
+    file), when that folder is a roadmap's (`folders`). `LINK`, `REF_LINK` and the gate's `README_LINK`
+    read a link's roadmap from the folder name before `/README.md`, so the link a nested roadmap makes
+    to its parent was read by none of them: a revision of the parent could drop the heading and no
+    check said so. The text is for reading links only; nothing writes it back."""
+    parent = folder.rsplit("/", 1)[0] if "/" in folder else ""
+    if not parent or parent not in folders or "../README.md#" not in text:
+        return text
+    name = parent.rsplit("/", 1)[-1]
+    return PARENT_LINK.sub(lambda m: f"{m.group('open')}../../{name}/README.md#", text)
 
 
 # --- citations and anchors ------------------------------------------------------------------------

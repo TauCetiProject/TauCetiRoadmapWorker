@@ -1,7 +1,7 @@
 import re
 import textwrap
 
-from tauceti_roadmap_worker import gates
+from tauceti_roadmap_worker import gates, overlaps
 from tauceti_roadmap_worker.gates import GateOptions, scan_folder
 
 from .fakes import example_config
@@ -547,3 +547,22 @@ def test_a_stacked_pull_request_changes_only_its_own_folder_against_its_base(tmp
     problems, result = lane_gate.gate_problems(ctx, ws, "Child", "Child", opts())    # fetches the base first
     assert result.counts["outside-folder"] == 0 and not any(p.startswith("outside-folder") for p in problems)
     assert lane_base.pr_base(ctx, Workspace(**{**ws.__dict__, "extra": {}})) == "origin/main"
+
+
+def test_a_nested_roadmaps_link_to_its_parent_readme_is_read_as_a_link_to_the_parent():
+    # A roadmap below another linked `../README.md#m01-assets`; a revision of the parent renamed that heading, and
+    # neither the removals check nor the gate's kept anchors saw the link, because it names no folder.
+    child = ("See [M0.1](../README.md#m01-assets) and [the scope](./../README.md#scope).\n"
+             "[ref]: ../README.md#by-reference\n"
+             "[sib](../Sibling/README.md#s1) [self](README.md#x) [up](../../README.md#top)\n")
+    folders = {"TauCetiRoadmap/Alpha", "TauCetiRoadmap/Alpha/Child", "TauCetiRoadmap/Alpha/Sibling"}
+    named = overlaps.named_links(child, "TauCetiRoadmap/Alpha/Child", folders)
+    assert "](../../Alpha/README.md#m01-assets)" in named and "](../../Alpha/README.md#scope)" in named
+    assert "[ref]: ../../Alpha/README.md#by-reference" in named
+    assert "(../Sibling/README.md#s1)" in named and "(README.md#x)" in named and "(../../README.md#top)" in named
+    want = {"m01-assets", "scope", "by-reference"}
+    assert gates.linked_anchors("Alpha", [("main", "Child", named)]) == want
+    assert gates.linked_anchors("Alpha", [("main", "Child", child)]) == set()           # what was read before
+    assert {c.id for c in overlaps.citations(named, {"Alpha"}, citer="Child") if c.kind == "anchor"} == want
+    # a top-level roadmap's `../README.md` is the index of the roadmap directory, not a roadmap: left as it is
+    assert overlaps.named_links(child, "TauCetiRoadmap/Alpha", folders) == child
