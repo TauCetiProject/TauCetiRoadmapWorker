@@ -246,6 +246,15 @@ MAP_SENTENCE = re.compile(r"\b(?:is|are)\s+now\b|\breads?\s+as\b|\bresolves?\s+(
                           r"|\brenumbered\b|\bwas\s+(?:numbered|called|labell?ed)\b", re.IGNORECASE)
 
 
+# How a revision keeps what it renames citable, as the report tells the agent that repairs it.
+KEEP_IDS = ("Each of these is repaired in this folder, and the roadmaps that cite it need no change. An id "
+            "(`§1.2`, `A1.2`, `Layer 3`) stays citable when the README says where it went: a row of a table whose "
+            "header names the earlier numbering (`| Former label | Now |`), or a sentence such as \"A1.2 is now "
+            "§1.2\". A heading anchor (`#old-heading-slug`) stays linkable when the line "
+            "`<a id=\"old-heading-slug\"></a>` stands before the renamed heading, with a blank line between; "
+            "the gate allows an anchor tag whose id another roadmap links to.")
+
+
 def _label(c: Citation) -> re.Pattern:
     if c.kind == "layer":
         return re.compile(r"\bLayers?\s+" + re.escape(c.id) + r"(?!\w|\.\d)")
@@ -812,6 +821,7 @@ def report(state: Path, index: dict, name: str, readme: str, *, pr: int = 0,
                 groups.setdefault(r.citation.label(), []).append(r)
             facts += len(groups)
             lines += [f"- {label}: cited by {_citers(rs)}" for label, rs in sorted(groups.items())]
+            lines += ["", KEEP_IDS]
         else:
             lines.append("None.")
         lines.append("")

@@ -395,6 +395,28 @@ def test_strip_anchors_leaves_a_readme_without_tags_alone():
     assert wrapped.text == "A Theorem named.\n" and wrapped.removed == 1
 
 
+def test_an_anchor_tag_another_roadmap_links_to_is_kept():
+    # A revision renames `## A2. Schemes` to `## Layer 2: Schemes`; Beta, on main, links to the old id.
+    readme = ("# Alpha\n\n<a id=\"a2-schemes\"></a>\n\n## Layer 2: Schemes\n\nText.\n\n"
+              "<a id=\"nobody-links-here\"></a>\n\n### 2.1 Points\n\n<a id=\"layer-3-maps\"></a>\n\n## Layer 3: Maps\n\n"
+              "An inline <a id=\"a2-schemes\"></a> tag.\n\n```\n<a id=\"a2-schemes\"></a>\n```\n")
+    others = [("main", "Beta", "See [Alpha A2](../Alpha/README.md#a2-schemes) and [maps](../Alpha/README.md#layer-3-maps)."),
+              ("#7", "Gamma", "[points](../Alpha/README.md#Nobody-Links-Here-Either), [x](../Delta/README.md#nobody-links-here)"),
+              ("main", "Alpha", "[self](../Alpha/README.md#nobody-links-here)")]
+    linked = gates.linked_anchors("Alpha", others)
+    assert linked == {"a2-schemes", "layer-3-maps", "nobody-links-here-either"}       # its own links do not count
+    assert gates.kept_anchor_lines(readme, linked) == {2}
+    # Residue still: the tag nobody links to, the tag whose id the heading has anyway, the inline tag, the fenced one.
+    assert [h.line for h in gates.scan_process_residue(readme, linked)] == [9, 13, 17, 20]
+    assert len(gates.scan_process_residue(readme)) == 5                               # without the links: every tag
+    fixed = gates.strip_anchors(readme, linked)
+    assert fixed.removed == 4 and "<a id=\"a2-schemes\"></a>\n\n## Layer 2: Schemes" in fixed.text
+    assert "nobody-links-here" not in fixed.text and "<a id=\"layer-3-maps\">" not in fixed.text
+    assert gates.strip_anchors(readme).removed == 5                                    # without the links: every tag
+    opts = gates.GateOptions(open_readmes=others)
+    assert [h.line for h in gates.scan_folder("Alpha", readme, "import Mathlib\n", opts).details["residue"]] == [9, 13, 17, 20]
+
+
 def test_target_ids():
     # Prefixed subsection ids (`### PA.0.12`, `### NR0.1`) make the target reader see nothing: each heading is reported.
     bad = ("# Roadmap\n\n## Layer PA.0: Foundations\n\n### PA.0.1 Resolvability\n\nText.\n\n### PA.0.2 Covers\n\n"

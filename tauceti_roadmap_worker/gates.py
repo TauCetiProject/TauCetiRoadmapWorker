@@ -576,11 +576,15 @@ def scan_pr_numbers(readme: str) -> list[Hit]:
 # tempered packets and wave-packets are mathematics (2026-10-29: 29 false hits on one automorphic README).
 PROCESS_WORDS = (r"\(removed\)|\b(?:explorer'?s?|sources?|handoff|hand-off|review|fix|repair|context) packets?\b|"
                  r"\bpackets?/|packet\.json|\bcheckpoint\b|\bhandoff\b|lean-check|\bcatalogue\b|\bstand-in\b|\bso far\b|"
-                 r"to be checked|<a id=|\bTODO\b|\bXXX\b|\*\*T\d{3,4}\*\*|\bjob id\b|\breview round\b")
+                 r"to be checked|\bTODO\b|\bXXX\b|\*\*T\d{3,4}\*\*|\bjob id\b|\breview round\b")
 
 
-def scan_process_residue(readme: str) -> list[Hit]:
-    return _hits(PROCESS_WORDS, readme, re.I)
+def scan_process_residue(readme: str, linked: frozenset[str] = frozenset()) -> list[Hit]:
+    """Process words, and `<a id=` anchor tags other than the ones that keep a link working
+    (`kept_anchor_lines`; `linked`: the fragments by which other roadmaps link to this README)."""
+    kept = kept_anchor_lines(readme, linked)
+    tags = [h for h in _hits(r"<a id=", readme, re.IGNORECASE) if h.line - 1 not in kept]
+    return sorted(_hits(PROCESS_WORDS, readme, re.I) + tags, key=lambda h: h.line)
 
 
 # --- the one residue repaired mechanically: HTML anchor tags ----------------------------------------
@@ -589,6 +593,11 @@ def scan_process_residue(readme: str) -> list[Hit]:
 # id (its slug), so the tags go; an internal link `](#id)` to a tag is pointed at the slug of the
 # heading the tag precedes (or, for a tag before a paragraph, of the section that holds it). Nothing
 # else of the text changes.
+#
+# One kind of tag stays (`kept_anchor_lines`): the old id of a renamed heading that another roadmap
+# links to. Without it the link opens the README at its top; with it the revision that renames the
+# heading breaks no link and asks nothing of the roadmap that links (`overlaps.anchors` counts the tag,
+# so the overlap check no longer reports the anchor as dropped).
 
 ANCHOR_TAG = re.compile(r"""<a\s+(?:id|name)\s*=\s*(["'])(?P<id>[^"'<>]*)\1\s*>(?P<body>[^<]*)</a>""", re.IGNORECASE)
 ATX_HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+(?P<text>.*?))?(?:[ \t]+#+)?[ \t]*$")
@@ -625,6 +634,54 @@ def github_slug(raw: str) -> str:
     return "".join(out)
 
 
+README_LINK = re.compile(r"\]\(\s*<?(?:[^)\s#<>]*/)?(?P<name>[A-Za-z][A-Za-z0-9]*)/README\.md#(?P<anchor>[^)\s<>]+)")
+KEPT_ANCHOR = re.compile(r'<a id="(?P<id>[^"<>\s]+)"></a>')
+
+
+def linked_anchors(name: str, readmes) -> frozenset[str]:
+    """The fragments by which the READMEs of other roadmaps link to the README of `name`
+    (`[text](../Name/README.md#fragment)`), lower case as GitHub reads them. `readmes`: `(where, roadmap,
+    README)` of every roadmap on main and at the head of every open pull request (`overlaps.readmes`)."""
+    out = set()
+    for _where, citer, text in readmes or ():
+        if citer == name or f"{name}/README.md#" not in text:
+            continue
+        out |= {unquote(m.group("anchor")).lower() for m in README_LINK.finditer(text) if m.group("name") == name}
+    return frozenset(out)
+
+
+def kept_anchor_lines(readme: str, linked: frozenset[str]) -> set[int]:
+    """The (0-based) lines of the anchor tags that keep a link working. A heading that is renamed loses
+    its GitHub id, and a link another roadmap makes to that id then opens the README at its top. A line
+    that is exactly `<a id="old-id"></a>`, outside fenced code, keeps the link: it stays when another
+    roadmap links to that id (`linked`) and no heading of this README has the id as its own slug. Every
+    other anchor tag is residue (`strip_anchors` removes it)."""
+    if not linked or "<a " not in readme:
+        return set()
+    lines, fenced, found = readme.split("\n"), "", []
+    slugs: set[str] = set()
+    seen: dict[str, int] = {}
+    for i, line in enumerate(lines):
+        fence = FENCE_LINE.match(line)
+        if fenced:
+            fenced = "" if fence and fence.group(1)[0] == fenced[0] and len(fence.group(1)) >= len(fenced) else fenced
+            continue
+        if fence:
+            fenced = fence.group(1)
+            continue
+        heading = ATX_HEADING.match(line)
+        if heading:
+            base = github_slug(heading.group("text") or "")
+            n = seen.get(base, 0)
+            seen[base] = n + 1
+            slugs.add(base if n == 0 else f"{base}-{n}")
+            continue
+        m = KEPT_ANCHOR.fullmatch(line.strip())
+        if m and m.group("id") in linked:
+            found.append((i, m.group("id")))
+    return {i for i, anchor in found if anchor not in slugs}
+
+
 def drop_anchor_tags(line: str) -> str:
     """The line without its anchor tags: a tag wrapping text leaves the text; an empty tag goes, with
     the space after it when a space (or the line's start) precedes it, so that `a <tag> b` reads
@@ -659,8 +716,9 @@ class AnchorRepair:
         return ", ".join(parts)
 
 
-def strip_anchors(readme: str) -> AnchorRepair:
-    """Remove every `<a id="..."></a>` tag (an anchor wrapping text keeps its text) and point the
+def strip_anchors(readme: str, linked: frozenset[str] = frozenset()) -> AnchorRepair:
+    """Remove every `<a id="..."></a>` tag but the ones that keep a link from another roadmap working
+    (`kept_anchor_lines`, with `linked`) (an anchor wrapping text keeps its text) and point the
     internal links `](#id)` and `[ref]: #id` at the slug of the heading each tag marked: the heading
     on the tag's line, else the next heading when only blank lines or other tags come between, else
     the heading of the section the tag stands in. Headings are ATX headings outside fenced code;
@@ -672,6 +730,7 @@ def strip_anchors(readme: str) -> AnchorRepair:
     target: dict[str, int | None] = {}      # anchor id -> index of its heading in `slugs`
     waiting: list[str] = []                 # tags on lines of their own, before the next line of text
     removed, drop_blank = 0, False
+    kept = kept_anchor_lines(readme or "", linked)
 
     def heading_slug(text: str) -> int:
         base = github_slug(text)
@@ -680,7 +739,11 @@ def strip_anchors(readme: str) -> AnchorRepair:
         slugs.append(base if n == 0 else f"{base}-{n}")
         return len(slugs) - 1
 
-    for line in lines:
+    for number, line in enumerate(lines):
+        if number in kept:                  # a tag another roadmap links to: it stays where it is
+            out.append(line)
+            drop_blank = False
+            continue
         fence = FENCE_LINE.match(line)
         if fenced:
             fenced = "" if fence and fence.group(1)[0] == fenced[0] and len(fence.group(1)) >= len(fenced) else fenced
@@ -1073,7 +1136,7 @@ def scan_folder(name: str, readme: str, lean: str, opts: GateOptions) -> GateRes
     r.add("prnum", scan_pr_numbers(readme))
     r.add("sorry-data", scan_sorry_data(lean))
     r.add("sorry-examples", scan_sorry_examples(lean))
-    r.add("residue", scan_process_residue(readme) + scan_lean_residue(lean))
+    r.add("residue", scan_process_residue(readme, linked_anchors(name, opts.open_readmes)) + scan_lean_residue(lean))
     r.add("private-paths", scan_private_paths(readme) + scan_private_paths(lean))
     r.add("imports", scan_lean_imports(lean, opts.tauceti_sources))
     r.add("mathlib-subimports", scan_mathlib_subimports(lean) if opts.forbid_mathlib_subimports else [])
@@ -1119,7 +1182,8 @@ GATE_RULES = {
     "sorry-data": "no `sorry` in the body of a `def`, `abbrev`, `instance` or `opaque`",
     "sorry-examples": "every `example` is proved: an admitted example tests nothing",
     "residue": "no process residue: in the README none of `(removed)`, packet, checkpoint, handoff, lean-check, "
-               "catalogue, stand-in, so far, to be checked, `<a id=` anchor tags, TODO, XXX, bold job numbers like "
+               "catalogue, stand-in, so far, to be checked, `<a id=` anchor tags (except a line `<a id=\"old-id\"></a>` "
+               "before a renamed heading whose old id another roadmap links to), TODO, XXX, bold job numbers like "
                "`**T123**`, job id, review round; in Suggested.lean no `#print axioms`, `#eval`, `#synth`, `lemma`, "
                "`: True :=` or `: Prop := sorry`",
     "private-paths": "no machine paths (home directories, temporary folders) in the README or Suggested.lean",
