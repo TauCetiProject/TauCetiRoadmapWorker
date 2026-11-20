@@ -54,8 +54,9 @@ the merge order __ORDER__ (suppliers before consumers, one roadmap per line).
    re-planned roadmap, an upward or cyclic supply, copied passages, a computational algorithm,
    sorry'd data or a `set_option` is a blocking finding.
 2. **Sources.** You hold no sources: sample the locators against legal copies you can open
-   yourself (arXiv, HAL, Numdam, GDZ, EuDML, the Stacks project, publisher open pages, author
-   pages), never a pirate mirror and never past a paywall. Check the theorem number, the page, the
+   yourself (arXiv, HAL, Numdam, GDZ, EuDML, the Stacks project, publisher open pages, the pages
+   of a work's own authors), never a shadow library or pirate mirror, never a document-sharing
+   site, never a third party's copy of someone else's paper or book, and never past a paywall. Check the theorem number, the page, the
    hypotheses, and that the source supports the statement as written. Mark every locator you could
    not open as not verifiable, with the reason; never guess what a source says.
 3. **Adversarial pass** over every statement (below).

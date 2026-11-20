@@ -31,7 +31,7 @@ def test_without_ghostscript_the_service_says_so(tmp_path, monkeypatch):
     monkeypatch.setattr(sources, "ghostscript", lambda: None)
     url = "https://www.math.example.edu/~besser/reg.ps.gz"
     fet = make_fetcher(tmp_path, FakeTransport().add(url, gzip.compress(PS)))
-    out = fet.fetch(fetcher.parse_citation(url), licence_class="author-page")
+    out = fet.fetch(fetcher.parse_citation(url, authors="Amnon Besser"), licence_class="author-page")
     assert out.status == "failed" and any("needs Ghostscript (gs)" in t for t in out.tried)
     assert not any("unrecognised file" in t for t in out.tried)
     assert sources.extract(tmp_path / "x.ps", "ps").note.startswith("needs Ghostscript")
@@ -45,7 +45,7 @@ def test_postscript_is_read_through_ghostscript(tmp_path):
         pytest.skip("this Ghostscript has no standard fonts (a dvips file embeds its own)")
     url = "https://www.math.example.edu/~besser/reg.ps.gz"
     fet = make_fetcher(tmp_path, FakeTransport().add(url, gzip.compress(PS)))
-    out = fet.fetch(fetcher.parse_citation(url), licence_class="author-page")
+    out = fet.fetch(fetcher.parse_citation(url, authors="Amnon Besser"), licence_class="author-page")
     assert out.status == "fetched", out.tried
     assert out.file.suffix == ".ps" and out.entry["sha256"] == sources.sha256_bytes(PS)
     text = out.text.read_text()

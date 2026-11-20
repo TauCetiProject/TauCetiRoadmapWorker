@@ -111,6 +111,62 @@ class UrllibTransport:
             raise FetchError(f"{url!r}: {exc}") from exc
 
 
+# Shadow libraries move from one domain to the next and keep their names, so a list of domains is
+# never complete: a host is refused when a label of it starts with one of these names, or when it is
+# (a subdomain of) one of these domains. With them the sites where anyone uploads other people's books
+# and papers: what they host is not checkable to be legal, so nothing is read from them.
+SHADOW_LABELS = ("sci-hub", "scihub", "libgen", "z-lib", "z-library", "zlibrary", "singlelogin", "1lib", "3lib",
+                 "u1lib", "b-ok", "bookfi", "booksc", "bookzz", "annas-archive", "pdfdrive", "dokumen", "vdocument",
+                 "kupdf", "pdfcoffee", "pdfroom", "docplayer", "studylib", "scribd", "researchgate")
+SHADOW_DOMAINS = ("gen.lib.rus.ec", "library.lol", "zlib.pub", "vdoc.pub", "epdf.pub", "epdf.tips", "ebin.pub",
+                  "doku.pub", "silo.pub", "idoc.pub", "academia.edu", "dl.icdst.org", "usermanual.wiki")
+
+
+def shadow_host(host: str) -> bool:
+    """Whether `host` is a shadow library, one of its mirrors, or a site of uploaded copies."""
+    host = host.lower().rstrip(".")
+    labels = host.split(".")
+    return (any(label.startswith(name) for label in labels[:-1] for name in SHADOW_LABELS)
+            or any(host == d or host.endswith("." + d) for d in SHADOW_DOMAINS))
+
+
+def author_in_url(url: str, authors: str) -> bool:
+    """Whether the URL names one of the work's authors as the owner of the page (`~zagier/`,
+    `people/jane-doe/`, `terrytao.…`): the test that a page a job calls an author's page is the page of
+    an author of THIS work. Only the host and the directories count, never the file's name: an archive
+    of other people's papers names their authors in its file names (`~someone/papers/thomcob.pdf`). A
+    surname of fewer than three letters is not enough to tell."""
+    def letters(text: str) -> str:
+        folded = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+        return re.sub(r"[^a-z]", "", folded.lower())
+    parsed = urlparse(url)
+    path = unquote(parsed.path)
+    text = letters((parsed.hostname or "") + "/" + (path if path.endswith("/") else path.rsplit("/", 1)[0]))
+    for name in sources._surnames(authors or ""):
+        whole, last = letters(name), letters(name.split()[-1]) if name.split() else ""
+        if any(len(x) >= 3 and x in text for x in (whole, last)):
+            return True
+    return False
+
+
+def vouch_problem(named: str, url: str, authors: str) -> str:
+    """Why a job may not name the licence class `named` for `url` ('' when it may). A job vouches for one
+    thing only: that a page is the page of one of the work's own authors, which the URL has to show. A
+    paper or book of X on the page of Y (a personal page, a seminar or course page, an archive of scans)
+    is a third party's copy, and an institutional repository is one the board's lists name; neither is
+    for a job to wave through. What cannot be read this way is requested, not searched for."""
+    ask = "request the text instead (needs-references): the operator supplies it"
+    if named != "author-page":
+        return (f"a job cannot name the class {named}: the hosts of that class are the ones the board lists "
+                f"([sources.allow]); {ask}")
+    if not (authors or "").strip():
+        return "name the work's authors (--authors): an author's page is checked against them"
+    if not author_in_url(url, authors):
+        return ("this URL names no author of the work, so it is not shown to be an author's own page; a copy on "
+                f"someone else's page is a third party's copy and never a legal place; {ask}")
+    return ""
+
+
 class Client:
     """GETs under the sources policy: deny list, paywalls, redirects checked hop by hop, pacing."""
 
@@ -132,6 +188,9 @@ class Client:
             raise FetchError(f"refusing {url!r}: only http(s) URLs are fetched", refused=True)
         if any(host_matches(host, r) for r in self.deny):
             raise FetchError(f"{host} is on the deny list", refused=True)
+        if shadow_host(host):
+            raise FetchError(f"{host} is on the deny list (a shadow library or a site of uploaded copies: no "
+                             "source is read from one)", refused=True)
         if any(host_matches(host, r) for r in self.paywalled):
             raise FetchError(f"{host} is paywalled (never fetched)", paywalled=True)
 
@@ -645,8 +704,11 @@ class Fetcher:
         return (title_matches(title, query, free) and surnames_match(authors, meta.get("authors", ""))
                 and year_compatible(year, str(meta.get("year", ""))))
 
-    def _try(self, cand: Candidate, licence_class: str, tried: list[str], paywall: list[str], meta: dict):
-        """(data, kind, final URL, licence class) of a candidate, or None with the reason recorded."""
+    def _try(self, cand: Candidate, licence_class: str, tried: list[str], paywall: list[str], meta: dict,
+             authors: str = "", trusted: bool = False):
+        """(data, kind, final URL, licence class) of a candidate, or None with the reason recorded.
+        `authors`: the work's, for the check of a class a job names (`vouch_problem`); `trusted`: the
+        class was named by an operator's answer, which is not checked."""
         if cand.local:
             try:
                 data = sources.unwrap(cand.local.read_bytes())
@@ -661,6 +723,12 @@ class Fetcher:
         # A class named by the caller vouches for the URL the caller named, on that URL's host only:
         # never for discovered URLs, a redirect to another host, or a link to another host.
         named = licence_class if cand.via == "the given URL" else ""
+        if (named and not trusted and not named.startswith("answered-by:") and self.client.classify(cand.url) == "unknown"
+                and not shadow_host(host_of(cand.url))):      # a shadow library is refused as such, below
+            why = vouch_problem(named, cand.url, authors or str(meta.get("authors") or ""))
+            if why:
+                tried.append(f"{cand.via} {cand.url}: {why}")
+                return None
 
         def vouched(url: str) -> str:
             return cand.licence_class or (named if host_of(url) == host_of(cand.url) else "")
@@ -714,7 +782,7 @@ class Fetcher:
             return None
         return r.body, kind, r.url, cls
 
-    def fetch(self, cit: Citation, *, licence_class: str = "") -> Outcome:
+    def fetch(self, cit: Citation, *, licence_class: str = "", trusted: bool = False) -> Outcome:
         meta: dict = {}
         notes: list[str] = []
         tried: list[str] = []
@@ -724,7 +792,7 @@ class Fetcher:
             if cand.url and cand.url in seen:
                 continue
             seen.add(cand.url)
-            got = self._try(cand, licence_class, tried, paywall, meta)
+            got = self._try(cand, licence_class, tried, paywall, meta, authors=cit.authors, trusted=trusted)
             if not got:
                 continue
             data, kind, final, cls = got
