@@ -2705,6 +2705,10 @@ def sync_pr_reviews(ctx) -> list[str]:
       every roadmap folder it adds or edits (`folders_accepted`, from the verdicts on the board's
       main): added when the last folder's verdict lands, removed otherwise; while a review of that
       head is being finished (claimed or submitted) it is left as it is.
+      A layout request that stands on this host (`layoutask.holds`: an author was asked to bring the
+      READMEs into the README layout, and a README at the head still lacks what was asked) keeps the
+      label off whatever the reviews say; the reviews go on, and the label follows them again when the
+      request is settled.
       With `[prreview] carry_unchanged`, a head that only moved (a rebase, a merge of the base
       branch: every roadmap folder's git tree is that of an accepted earlier head) counts as that
       head does (`unchanged_acceptance`): the label stays or is put back, the reviews of the new head
@@ -2851,6 +2855,10 @@ def sync_pr_reviews(ctx) -> list[str]:
             pr_texts.update(prbatch.pull_texts(ctx.gh, repo, [int(e["pr"]) for e in listed], batch))
         return pr_texts.get(number)
 
+    from . import layoutask
+    layout_held, lines = layoutask.holds(ctx, repo, listed, batch) if p.label else ({}, [])
+    out += lines
+
     for entry in listed:
         number, head = int(entry["pr"]), entry.get("head", "")
         labelled = p.label in entry.get("labels", [])
@@ -2858,6 +2866,19 @@ def sync_pr_reviews(ctx) -> list[str]:
         chore = bool(why) and not folders and p.chore_review
         if not head or not (labelled or folders or chore):
             continue
+        asked = layout_held.get(number, "")
+        if asked and labelled:
+            # A layout request stands (`layoutask`): the label is off until the README is in the layout,
+            # whatever the reviews say; they go on as usual below.
+            try:
+                ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
+                out.append(f"#{number}: {p.label} removed ({asked})")
+                labelled = False
+                if p.approval_label and p.approval_label in entry.get("labels", []):
+                    ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.approval_label, safe='')}")
+                    out.append(f"#{number}: {p.approval_label} removed ({p.label} is off)")
+            except GHError as exc:
+                out.append(f"#{number}: {p.label} on {repo} not removed ({str(exc).splitlines()[0][:160]})")
         mine = [j for j in reviews if pr_of(j) == number]
         if any(j.under_way(("claimed", "submitted")) and j.inputs.get("head") == head for j in mine):
             # being finished: its lane labels, or a later run does. Its other folders get no review of a
@@ -2941,7 +2962,9 @@ def sync_pr_reviews(ctx) -> list[str]:
         if accepted:
             accepted_prs.add(number)
         try:
-            if accepted and not labelled:
+            if accepted and asked:
+                pass                                      # accepted, and waiting for the layout: no label yet
+            elif accepted and not labelled:
                 ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [p.label]})
                 out.append(f"#{number}: {p.label} added ("
                            + (f"the roadmap folders at {head[:7]} are those of {unchanged[number][:7]}"

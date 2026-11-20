@@ -680,8 +680,9 @@ def layout_cmd(args) -> int:
         line, code = relayout.local(args.readme, write=args.write)
         print(line)
         return code
-    if not (args.pr or args.author or args.pool):
-        print("layout: name pull requests with --pr, authors with --author, or pass --pool", file=sys.stderr)
+    if not (args.pr or args.author or args.pool or (args.ask and args.others)):
+        print("layout: name pull requests with --pr, authors with --author, or pass --pool (with --ask: --others)",
+              file=sys.stderr)
         return 2
     if args.pace < 0 or args.limit < 0:
         print("layout: --pace and --limit are never negative", file=sys.stderr)
@@ -689,6 +690,16 @@ def layout_cmd(args) -> int:
     cfg = _load(args)
     write = args.yes and not args.dry_run
     ctx = _bot_context(args, cfg, not write)
+    if args.ask:
+        from . import layout, layoutask
+        kinds = [k.strip() for k in args.needs.split(",") if k.strip()] if args.needs else list(layout.NEEDS)
+        if args.pool or any(k not in layout.NEEDS for k in kinds):
+            print(f"layout --ask: not with --pool; --needs takes {', '.join(layout.NEEDS)}", file=sys.stderr)
+            return 2
+        lines = layoutask.run(ctx, numbers=args.pr, authors=args.author, others=args.others, kinds=kinds, write=write,
+                              pace=args.pace, limit=args.limit, again=args.again,
+                              report=lambda line: print(line, flush=True))
+        return 1 if any(line.startswith("stopped") or ": not asked:" in line for line in lines) else 0
     lines = relayout.run(ctx, numbers=args.pr, authors=args.author, pool=args.pool, write=write, pace=args.pace,
                          limit=args.limit, accepted_only=args.accepted_only, report=lambda line: print(line, flush=True))
     return 1 if any(line.startswith("stopped") or ": not pushed:" in line for line in lines) else 0
@@ -1310,6 +1321,14 @@ def parser() -> argparse.ArgumentParser:
     lo.add_argument("--pace", type=float, default=2.0, metavar="SECONDS", help="pause between two pushes (default 2)")
     lo.add_argument("--limit", type=int, default=0, help="push to at most this many pull requests (0: all)")
     lo.add_argument("--yes", action="store_true", help="push and post the notes (default: a dry run)")
+    lo.add_argument("--ask", action="store_true",
+                    help="do not push: ask the author, in one comment, to bring the READMEs into the README layout, and "
+                         "keep the AI review's label off until they are (for pull requests outside the pool)")
+    lo.add_argument("--others", action="store_true",
+                    help="with --ask: every open roadmap pull request of an author outside the pool")
+    lo.add_argument("--needs", default="", metavar="KINDS",
+                    help="with --ask: what to ask for, of overview,sections,order (default: all three)")
+    lo.add_argument("--again", action="store_true", help="with --ask: also a pull request already asked")
 
     ov = sub.add_parser("overview", help="rewrite the opening of the READMEs of open roadmap pull requests as a "
                                          "readable overview, with the sections in the new order; checked "

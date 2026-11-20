@@ -380,6 +380,12 @@ class PRReview:
     # settlement of the earlier head stands, no review is filed, and the pull request gets one
     # housekeeping note saying that only the order of the sections changed.
     carry_layout: bool = True
+    # A layout request (`layout --ask`: a comment asking an author outside the pool to bring the READMEs
+    # of a pull request into the README layout) keeps `label` off the pull request while a README at its
+    # head lacks one of these kinds of what was asked: "overview" (the opening begins `**Summary.**`),
+    # "sections" (Conventions, a Layer, Scope and ownership, Exact supplier contracts, References),
+    # "order" (the sections stand in the layout's order). [] = a request is a request only.
+    layout_hold: list[str] = field(default_factory=lambda: ["overview", "sections", "order"])
     # A repair may settle a finding as `outside this folder: <where>` when no edit of the files it may
     # change can act on it. The review's verdict records it (`deferred`), each later review of the folder
     # is told of it, does not raise it again and does not count it against acceptance, and it leaves the
