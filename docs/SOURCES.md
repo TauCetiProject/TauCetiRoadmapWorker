@@ -62,8 +62,8 @@ hand-written file are not.
 | --- | --- | --- |
 | `open-repository` | arXiv, HAL, Numdam, GDZ, EuDML, Project Euclid open content, the Stacks project, zbMATH | `[sources.allow] open-repository` |
 | `publisher-open` | publishers' open archives | `[sources.allow] publisher-open` |
-| `author-page` | an author's own page | `[sources.allow] author-page`, or named with `--licence-class` |
-| `institutional` | institutional repositories | `[sources.allow] institutional`, or named with `--licence-class` |
+| `author-page` | a page of one of the work's own authors | `[sources.allow] author-page`, or named by a job with `--licence-class author-page` when the URL's host or directories name an author given with `--authors` |
+| `institutional` | institutional repositories | `[sources.allow] institutional`, or named in an operator's answer (never by a job) |
 | `operator-local` | texts operators hold in `[sources] local_dirs`, named by a `local:` answer; never uploaded | no host |
 
 An allow-list entry is a host (`arxiv.org`; a leading dot covers its subdomains) or, for a site that
@@ -108,8 +108,16 @@ after the cited year (a 2024 lecture course of the same title is not the 1986 bo
 services (the arXiv API, Crossref, the HAL API, doi.org) are read but never recorded as where a text
 came from. A text is kept only when it comes from a host of a licence class, or from a
 URL the caller named together with `--licence-class` (which vouches for that URL only, never for a
-URL the service discovered, nor for a redirect or a link to another host). Every request and
-redirect hop is checked against the deny list and the paywalled hosts; arXiv gets one request every
+URL the service discovered, nor for a redirect or a link to another host). A job vouches for one
+thing only, that a page is the page of one of the work's own authors (`author-page`), and the
+service checks it: the URL's host or directories must name an author the job gave (`--authors`); the
+file's name does not count, since an archive of other people's papers names their authors in its
+file names (`fetcher.vouch_problem`). A paper or book by one person on another person's page (a
+personal page, a seminar or course page, an archive of scans) is a third party's copy: it is refused
+and the text is requested instead (`needs-references`). Every other class is named only by the
+board's lists or by an operator's answer. Shadow libraries, their mirrors and the sites of uploaded
+copies are refused by name under any domain (`fetcher.shadow_host`), besides the deny list. Every
+request and redirect hop is checked against the deny list and the paywalled hosts; arXiv gets one request every
 three seconds from all the processes sharing the state directory (agents' fetches and the workers'
 are paced together through a lock file in the cache); nothing is sent but a plain GET with the
 declared User-Agent (`[sources] user_agent`).

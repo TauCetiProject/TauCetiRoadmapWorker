@@ -615,7 +615,7 @@ def resolve(answer: Answer, item: MissingReference, existing: dict | None, fet: 
         # The answerer vouches for the source they name: on its host, a class the project does not
         # list is theirs to give (a denied host is still refused).
         vouch = answer.licence or (f"answered-by:{answer.login}" if answer.login else "")
-        out = fet.fetch(fetcher.parse_citation(answer.value), licence_class=vouch)
+        out = fet.fetch(fetcher.parse_citation(answer.value), licence_class=vouch, trusted=True)
         if out.status == "fetched":
             entry = {**base, **{k: v for k, v in out.entry.items() if k not in ("authors", "title", "year") or not base.get(k)}}
             entry.update(resolution=answer.url)

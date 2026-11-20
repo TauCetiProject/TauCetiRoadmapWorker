@@ -265,8 +265,52 @@ def test_unknown_hosts_need_a_named_licence_class(tmp_path):
     t = FakeTransport().add(url, PDF)
     out = make_fetcher(tmp_path, t).fetch(parse_citation(url))
     assert out.status == "failed" and "in no licence class" in " ".join(out.tried)
-    out = make_fetcher(tmp_path, t).fetch(parse_citation(url), licence_class="author-page")
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(url, authors="Ann Someone"), licence_class="author-page")
     assert out.status == "fetched" and out.entry["licence_class"] == "author-page" and out.entry["url"] == url
+
+
+def test_a_job_vouches_only_for_a_page_of_one_of_the_works_authors(tmp_path):
+    # A scan of Jones's book on Smith's page, on a university host: a third party's copy.
+    url = "https://www.maths.example.ac.uk/~smith/papers/jonesbook.pdf"
+    t = FakeTransport().add(url, PDF)
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(url, authors="Vaughan Jones"), licence_class="author-page")
+    assert out.status == "failed" and t.requests == [] and "third party's copy" in " ".join(out.tried)
+    assert "needs-references" in " ".join(out.tried)
+    # Without the authors there is nothing to check the page against.
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(url), licence_class="author-page")
+    assert out.status == "failed" and t.requests == [] and "--authors" in " ".join(out.tried)
+    # A job names no other class: the board lists institutional repositories.
+    for named in ("institutional", "open-repository", "publisher-open"):
+        out = make_fetcher(tmp_path, t).fetch(parse_citation(url, authors="John Smith"), licence_class=named)
+        assert out.status == "failed" and t.requests == [] and f"cannot name the class {named}" in " ".join(out.tried)
+    # Smith's own paper on Smith's page, and an operator's answer (trusted), are read.
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(url, authors="Jones, V.; Smith, J."), licence_class="author-page")
+    assert out.status == "fetched"
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(url, authors="Vaughan Jones"), licence_class="institutional", trusted=True)
+    assert out.status == "fetched" and out.entry["licence_class"] == "institutional"
+
+
+def test_author_in_url():
+    assert fetcher.author_in_url("https://people.mpim-bonn.mpg.de/zagier/files/x.pdf", "Benedict H. Gross; Don B. Zagier")
+    assert fetcher.author_in_url("https://terrytao.wordpress.com/2010/a.pdf", "Terence Tao")
+    assert fetcher.author_in_url("https://webusers.imj-prg.fr/~pierre.colmez/x.pdf", "P. Colmez")
+    assert fetcher.author_in_url("https://www.math.example.edu/~dejong/x.pdf", "A. J. de Jong")
+    assert fetcher.author_in_url("https://example.edu/~berthelot/crys.pdf", "Berthelot, P. and Ogus, A.")
+    assert not fetcher.author_in_url("https://webhomes.maths.example.ac.uk/~v1ranick/papers/thomcob.pdf", "René Thom")
+    assert not fetcher.author_in_url("https://example.edu/papers/thom-cobordism.pdf", "René Thom")   # a file name names its author anywhere
+    assert not fetcher.author_in_url("https://example.edu/~li/x.pdf", "Chao Li")          # two letters do not tell
+    assert not fetcher.author_in_url("https://example.edu/x.pdf", "")
+
+
+def test_shadow_libraries_are_refused_by_name_under_any_domain(tmp_path):
+    for host in ("sci-hub.zz", "www.sci-hub.example", "libgen.new", "libgen-mirror.xyz", "z-library.aa", "annas-archive.qq",
+                 "www.researchgate.net", "www.academia.edu", "library.lol", "de.scribd.com", "dokumen.pub"):
+        assert fetcher.shadow_host(host), host
+        t = FakeTransport()
+        out = make_fetcher(tmp_path, t).fetch(parse_citation(f"https://{host}/x.pdf", authors="A. Scribd"), licence_class="author-page")
+        assert out.status == "failed" and t.requests == [] and "deny list" in " ".join(out.tried), host
+    for host in ("arxiv.org", "zlib.net", "academia.sinica.edu.tw", "www.math.example.edu", "www.libraries.example.edu"):
+        assert not fetcher.shadow_host(host), host
 
 
 def test_a_named_class_never_vouches_for_discovered_urls(tmp_path):
@@ -284,11 +328,11 @@ def test_a_named_class_covers_the_named_page_and_its_own_host_only(tmp_path):
     page = "https://www.math.example.edu/~someone/papers.html"
     t = FakeTransport().add(page, b'<html><a href="/~someone/widgets.pdf">PDF</a></html>') \
         .add("https://www.math.example.edu/~someone/widgets.pdf", PDF)
-    out = make_fetcher(tmp_path, t).fetch(parse_citation(page), licence_class="author-page")
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(page, authors="Ann Someone"), licence_class="author-page")
     assert out.status == "fetched" and out.entry["fetched_from"].endswith("/widgets.pdf")
     elsewhere = FakeTransport().add(page, b'<html><a href="https://files.example.net/widgets.pdf">PDF</a></html>') \
         .add("https://files.example.net/widgets.pdf", PDF)
-    out = make_fetcher(tmp_path, elsewhere).fetch(parse_citation(page), licence_class="author-page")
+    out = make_fetcher(tmp_path, elsewhere).fetch(parse_citation(page, authors="Ann Someone"), licence_class="author-page")
     assert out.status == "failed" and "files.example.net is in no licence class" in " ".join(out.tried)
 
 
@@ -296,10 +340,10 @@ def test_a_named_class_does_not_follow_a_redirect_to_another_host(tmp_path):
     url = "https://author.example.edu/paper.pdf"
     t = FakeTransport().redirect(url, "https://mirror.unknown-host.net/paper.pdf") \
         .add("https://mirror.unknown-host.net/paper.pdf", PDF)
-    out = make_fetcher(tmp_path, t).fetch(parse_citation(url), licence_class="author-page")
+    out = make_fetcher(tmp_path, t).fetch(parse_citation(url, authors="Jane Author"), licence_class="author-page")
     assert out.status == "failed" and "mirror.unknown-host.net is in no licence class" in " ".join(out.tried)
     same = FakeTransport().redirect(url, "https://author.example.edu/v2/paper.pdf").add("https://author.example.edu/v2/paper.pdf", PDF)
-    assert make_fetcher(tmp_path, same).fetch(parse_citation(url), licence_class="author-page").status == "fetched"
+    assert make_fetcher(tmp_path, same).fetch(parse_citation(url, authors="Jane Author"), licence_class="author-page").status == "fetched"
 
 
 def test_malformed_metadata_answers_do_not_crash(tmp_path):

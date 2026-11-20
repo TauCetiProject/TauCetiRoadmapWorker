@@ -4,11 +4,18 @@
   copy a passage of a source into any file, and never summarise a source section by section. A
   standard fact may cite a standard textbook.
 - Read sources only from legal places: open repositories (arXiv, HAL, Numdam, GDZ, EuDML, Project
-  Euclid open content, the Stacks project), publisher open archives, author pages, institutional
-  repositories, and texts the operator holds locally. Never use a pirate mirror (Library Genesis,
-  Sci-Hub, Z-Library, Anna's Archive and their copies) and never get past a paywall. A published
-  theorem behind a paywall may be cited by its locator without the text: it is then recorded as
-  `uncertified`.
+  Euclid open content, the Stacks project), publisher open archives, the page of one of the work's
+  own authors, the repositories the board lists, and texts the operator holds locally. Never use a
+  shadow library or pirate mirror (Library Genesis, Sci-Hub, Z-Library, Anna's Archive and their
+  copies), never a site where anyone uploads documents (ResearchGate, Academia.edu, Scribd and the
+  like), and never a third party's copy: a paper or a book by one person on another person's page
+  (a personal page, a seminar, course or reading-group page, an archive of scans) is not a legal
+  place, even on a university's host and even when a search engine finds it first. Never get past a
+  paywall. A published theorem behind a paywall may be cited by its locator without the text: it is
+  then recorded as `uncertified`.
+- When you find no legal copy, stop looking. Do not search the web for another copy and do not try
+  other hosts: ask for the text (the `needs-references.toml` request below). The operator supplies
+  it, and it stays on the operator's machine.
 - The texts the roadmap's `sources.toml` already records are in the worker's sources cache, each
   as a line-numbered extraction (page markers `=== page N ===`): __SOURCE_TEXTS__
   Quote locators against these files and cite a passage as `<source id> line N`.
@@ -24,10 +31,13 @@
   line-numbered text, and (where your job edits the manifest) records the entry in `sources.toml`:
   `url`, `fetched_from`, `fetched_at`, `sha256`, `licence_class` and `status`. A citation that
   resolves only to a paywalled page is recorded as `uncertified` with its DOI and your locator.
-  For a URL on a host the service does not know (an author's page, an institutional repository),
-  check that it is a legal copy and add `--licence-class author-page` or `--licence-class
-  institutional`. When you read a preprint, check that its numbering agrees with the published
-  version you cite, or cite the version you read.
+  For a URL on a host the service does not know there is one thing you may vouch for: that the
+  page is the page of one of the work's own authors. Then add `--licence-class author-page` and give
+  the authors (`--authors "Given Surname; Given Surname"`); the service checks that the URL names
+  one of them and refuses otherwise. You cannot name any other class: an institutional repository
+  the service does not know is asked for like any missing text, with the host named in the request.
+  When you read a preprint, check that its numbering agrees with the published version you cite, or
+  cite the version you read.
 - Record every cited work in the roadmap's `sources.toml` (schema `tauceti-roadmap-sources/v1`):
   `id`, `authors`, `title`, `year`, `locator_scheme` (theorem, page, section, tag, chapter or
   equation), `locator`, `cited_for`, and what the service recorded. Never put a local path in it.
