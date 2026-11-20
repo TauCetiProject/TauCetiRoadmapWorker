@@ -66,6 +66,9 @@ SUBJECT_TERMS = 400     # the heaviest names, and heading terms, kept for a READ
 LINK = re.compile(r"\]\((?:[^)\s#]*/)?(?P<name>[A-Za-z][A-Za-z0-9]*)/README\.md#(?P<anchor>[^)\s]+)\)")
 # The same link as the definition of a reference-style link, on a line of its own: `[name]: ../Name/README.md#id`.
 REF_LINK = re.compile(r"^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<?(?:[^\s#<>]*/)?(?P<name>[A-Za-z][A-Za-z0-9]*)/README\.md#(?P<anchor>[^\s<>]+)")
+# A link pinned to a commit (`…/blob/<sha>/…/README.md#id`, in this repository or a fork): it shows the file as
+# it was there, so a revision of the roadmap drops nothing it points at.
+PINNED = re.compile(r"/(?:blob|tree|raw)/[0-9a-f]{7,40}/")
 HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*#*\s*$")
 HTML_ANCHOR = re.compile(r"<a\s+(?:id|name)=\"([^\"]+)\"")
 FENCE = re.compile(r"^\s*(```|~~~)")
@@ -226,6 +229,8 @@ def citations(text: str, names, *, where: str = "", citer: str = "") -> list[Cit
             out.append(Citation(where, citer, number, m.group(1), token, "layer" if layer else "section",
                                 m.group(0).strip()))
         for m in (*LINK.finditer(line), *REF_LINK.finditer(line)):
+            if PINNED.search(m.group(0)):
+                continue                  # a link to the file at one commit: no later revision moves its target
             if m.group("name") in names and m.group("name") != citer:
                 out.append(Citation(where, citer, number, m.group("name"), unquote(m.group("anchor")).lower(),
                                     "anchor", m.group(0)))

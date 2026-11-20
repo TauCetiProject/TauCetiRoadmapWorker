@@ -638,6 +638,7 @@ def github_slug(raw: str) -> str:
 # a reference-style link (`[name]: ../Name/README.md#id`, on a line of its own).
 README_LINK = re.compile(r"(?:\]\(\s*<?|^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<?)"
                          r"(?:[^)\s#<>]*/)?(?P<name>[A-Za-z][A-Za-z0-9]*)/README\.md#(?P<anchor>[^)\s<>]+)", re.MULTILINE)
+PINNED_LINK = re.compile(r"/(?:blob|tree|raw)/[0-9a-f]{7,40}/")     # the file at one commit: no revision moves its target
 KEPT_ANCHOR = re.compile(r'<a id="(?P<id>[^"<>\s]+)"></a>')
 
 
@@ -650,7 +651,8 @@ def linked_anchors(name: str, readmes) -> frozenset[str]:
     for _where, citer, text in readmes or ():
         if citer == name or f"{name}/README.md#" not in text:
             continue
-        out |= {unquote(m.group("anchor")).lower() for m in README_LINK.finditer(text) if m.group("name") == name}
+        out |= {unquote(m.group("anchor")).lower() for m in README_LINK.finditer(text)
+                if m.group("name") == name and not PINNED_LINK.search(m.group(0))}
     return frozenset(out)
 
 
