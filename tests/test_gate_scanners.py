@@ -409,6 +409,8 @@ def test_an_anchor_tag_another_roadmap_links_to_is_kept():
     by_reference = [("main", "Beta", "See [Alpha A2][alpha].\n\n[alpha]: ../Alpha/README.md#a2-schemes\n[x]: <../Alpha/README.md#In-Angles>\n")]
     assert gates.linked_anchors("Alpha", by_reference) == {"a2-schemes", "in-angles"}
     assert gates.kept_anchor_lines(readme, gates.linked_anchors("Alpha", by_reference)) == {2}
+    pinned = [("main", "Beta", "[x]: https://github.com/someone/Fork/blob/5164eb00764fb2e/TauCetiRoadmap/Alpha/README.md#a2-schemes\n")]
+    assert gates.linked_anchors("Alpha", pinned) == set()                 # the file at one commit: nothing to keep
     assert gates.kept_anchor_lines(readme, linked) == {2}
     # Residue still: the tag nobody links to, the tag whose id the heading has anyway, the inline tag, the fenced one.
     assert [h.line for h in gates.scan_process_residue(readme, linked)] == [9, 13, 17, 20]

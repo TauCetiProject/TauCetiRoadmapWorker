@@ -195,6 +195,10 @@ def test_citations_read_ids_and_heading_links_but_not_the_roadmap_itself():
     by_reference = overlaps.citations("See [the lattices][lat].\n\n[lat]: ../Lattices/README.md#L1-Basics\n",
                                       {"Lattices"}, citer="Groups")
     assert [(c.cited, c.kind, c.id, c.line) for c in by_reference] == [("Lattices", "anchor", "l1-basics", 3)]
+    # A link pinned to a commit shows the file as it was there: no revision drops what it points at.
+    pinned = ("[a](https://github.com/someone/Fork/blob/5164eb00764fb2ead6baadcc5cb69ff73507c8b5/TauCetiRoadmap/Lattices/README.md#l1-basics)\n"
+              "[b]: https://github.com/someone/Fork/blob/5164eb0/TauCetiRoadmap/Lattices/README.md#l1-basics\n")
+    assert overlaps.citations(pinned, {"Lattices"}, citer="Groups") == []
 
 
 def test_removals_are_the_cited_ids_a_revision_drops(world):
