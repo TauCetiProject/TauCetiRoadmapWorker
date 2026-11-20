@@ -634,13 +634,17 @@ def github_slug(raw: str) -> str:
     return "".join(out)
 
 
-README_LINK = re.compile(r"\]\(\s*<?(?:[^)\s#<>]*/)?(?P<name>[A-Za-z][A-Za-z0-9]*)/README\.md#(?P<anchor>[^)\s<>]+)")
+# A link to a heading of another roadmap's README: inline (`](../Name/README.md#id)`), or the definition of
+# a reference-style link (`[name]: ../Name/README.md#id`, on a line of its own).
+README_LINK = re.compile(r"(?:\]\(\s*<?|^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*<?)"
+                         r"(?:[^)\s#<>]*/)?(?P<name>[A-Za-z][A-Za-z0-9]*)/README\.md#(?P<anchor>[^)\s<>]+)", re.MULTILINE)
 KEPT_ANCHOR = re.compile(r'<a id="(?P<id>[^"<>\s]+)"></a>')
 
 
 def linked_anchors(name: str, readmes) -> frozenset[str]:
     """The fragments by which the READMEs of other roadmaps link to the README of `name`
-    (`[text](../Name/README.md#fragment)`), lower case as GitHub reads them. `readmes`: `(where, roadmap,
+    (`[text](../Name/README.md#fragment)`, or a reference definition `[ref]: ../Name/README.md#fragment`),
+    lower case as GitHub reads them. `readmes`: `(where, roadmap,
     README)` of every roadmap on main and at the head of every open pull request (`overlaps.readmes`)."""
     out = set()
     for _where, citer, text in readmes or ():

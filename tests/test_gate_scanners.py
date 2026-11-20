@@ -405,6 +405,10 @@ def test_an_anchor_tag_another_roadmap_links_to_is_kept():
               ("main", "Alpha", "[self](../Alpha/README.md#nobody-links-here)")]
     linked = gates.linked_anchors("Alpha", others)
     assert linked == {"a2-schemes", "layer-3-maps", "nobody-links-here-either"}       # its own links do not count
+    # A reference-style link names its target on a line of its own: it counts as the inline form does.
+    by_reference = [("main", "Beta", "See [Alpha A2][alpha].\n\n[alpha]: ../Alpha/README.md#a2-schemes\n[x]: <../Alpha/README.md#In-Angles>\n")]
+    assert gates.linked_anchors("Alpha", by_reference) == {"a2-schemes", "in-angles"}
+    assert gates.kept_anchor_lines(readme, gates.linked_anchors("Alpha", by_reference)) == {2}
     assert gates.kept_anchor_lines(readme, linked) == {2}
     # Residue still: the tag nobody links to, the tag whose id the heading has anyway, the inline tag, the fenced one.
     assert [h.line for h in gates.scan_process_residue(readme, linked)] == [9, 13, 17, 20]
