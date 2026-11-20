@@ -164,6 +164,48 @@ def in_order(text: str) -> bool:
     except LayoutError:
         return False
 
+# --- what a README lacks of the layout ------------------------------------------------------------------
+#
+# The project's README ("Laying out the README") asks for an overview that begins `**Summary.**` under
+# the title, then `## Conventions`, the `## Layer k: ...` sections, then `## Scope and ownership`,
+# `## Exact supplier contracts` and `## References` last. `lacks` says which of the three a README is
+# short of, in words an author can act on; `layoutask` asks for them.
+
+NEEDS = ("overview", "sections", "order")
+CONVENTIONS = "conventions"
+SECTION_NAMES = {CONVENTIONS: "## Conventions", SCOPE: "## Scope and ownership", SUPPLIERS: "## Exact supplier contracts",
+                 REFERENCES: "## References"}
+
+
+def lacks(text: str) -> dict[str, str]:
+    """What a README lacks of the README layout, by kind ({} when nothing): "overview", the text between
+    the title and the first `##` heading does not begin with `**Summary.**`; "sections", which of
+    `## Conventions`, a `## Layer ...` section, `## Scope and ownership`, `## Exact supplier contracts`
+    and `## References` it has none of; "order", its sections are not in the layout's order (`in_order`)
+    or `## References` is not the last. A README that does not read as sections lacks all three."""
+    try:
+        titles = [p.title for p in parts(text)[1:]]
+        opening = split_opening(text)[1]
+    except LayoutError:
+        return {"overview": "an overview that begins `**Summary.**` under the title",
+                "sections": "its `##` sections (the README does not read as a title followed by sections)",
+                "order": "the order of the sections"}
+    out = {}
+    if not opening.lstrip().startswith("**Summary.**"):
+        out["overview"] = "an overview that begins `**Summary.**`, between the title and the first `##` heading"
+    missing = [SECTION_NAMES[key] for key in (CONVENTIONS, SCOPE, SUPPLIERS, REFERENCES) if key not in titles]
+    if not any(t.startswith("layer") for t in titles):
+        missing.insert(1 if CONVENTIONS not in titles else 0, "## Layer k: …")
+    if missing:
+        out["sections"] = ("the section" + ("s " if len(missing) > 1 else " ")
+                           + ", ".join(f"`{m}`" for m in missing[:-1]) + (" and " if len(missing) > 1 else "")
+                           + f"`{missing[-1]}`")
+    if not in_order(text) or (REFERENCES in titles and titles[-1] != REFERENCES):
+        out["order"] = ("the order of the sections (the conventions and the layers first; the scope, the supplier "
+                        "contracts and the references at the end)")
+    return out
+
+
 # --- an overview pass: the opening rewritten, the sections reordered ------------------------------------
 #
 # `overview` rewrites a README's opening and reorders its sections in one pass, correcting inside the

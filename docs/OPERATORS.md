@@ -1383,6 +1383,34 @@ or changes are touched: a README it leaves alone is as on main and is left alone
 build on the shared continuous integration, which also builds the merge queue: run it in small
 batches (`--limit`).
 
+### Asking another author for the layout (`layout --ask`)
+
+A pull request of an author outside the pool is theirs to change, so the pool does not push to it:
+it asks. `layout --ask` posts one comment on the pull request that lists, for each roadmap folder it
+adds or changes, what the README lacks of the project's README layout (`layout.lacks`): the overview
+(the text under the title does not begin with `**Summary.**`), sections (`## Conventions`, a
+`## Layer k: …`, `## Scope and ownership`, `## Exact supplier contracts`, `## References`), the order
+of the sections.
+
+    tauceti-roadmap layout --ask --others [--yes] [--needs overview,sections,order] [--limit N]
+    tauceti-roadmap layout --ask --pr 2516 --pr 2525 [--yes]
+    tauceti-roadmap layout --ask --author alice [--yes] [--again]
+
+Without `--yes` it says what it would ask. `--others` takes every open roadmap pull request of an
+author outside the pool that the pull-request reviews cover (`[prreview] authors`, `skip_authors`),
+except those of the authors this host reviews no pull requests of (`[worker] no_review_authors`,
+unless `no_review_except` names the pull request). A pull request is asked once (`--again` asks
+again); a pull request of the pool is refused, since `layout` and `overview` do the work there.
+
+The requests are kept in `<state>/layout-requests.json` on the host that asked. While one stands,
+`board sync` on that host takes the review label off the pull request, with the approval label, and
+does not put it back (`#N: ai-found-no-errors removed (a layout request stands: Foo lacks overview,
+order)`); the reviews go on as usual. A request is settled when the READMEs at the head lack nothing
+it asked for of the kinds `[prreview] layout_hold` names (all three by default; `[]` makes a request a
+request only), and the label then follows the reviews again (`#N: layout request settled …`). A push
+that only reorders the sections keeps an earlier acceptance, so an author asked for the order alone
+gets the label back without a new review. A request leaves the file when its pull request closes.
+
 ### Rewriting the opening overview (`overview`)
 
 The README-shape brief opens a roadmap with an overview a mathematician can read cold: what it builds,
