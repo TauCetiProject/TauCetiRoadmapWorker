@@ -1,14 +1,19 @@
 """`board sync` reads the open roadmap pull requests by GraphQL, `[board] graphql_batch` at a time, in
 the shapes the REST reads give (`prbatch.PullReader`), and the verdicts of finished reviews as blobs
-(`prbatch.verdict_texts`); REST reads what a page does not hold and what a failed query left."""
+(`prbatch.verdict_texts`); REST reads what a page does not hold and what a failed query left. The git
+objects at full commit shas (`tree_ids`, `tree_entries`, `blob_texts`) are read once into the object
+cache of a board run (`prbatch.use_cache`)."""
 
 import copy
+import hashlib
+import json
 import re
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
 
-from tauceti_roadmap_worker import config, intake, prbatch, replies
+from tauceti_roadmap_worker import cli, config, intake, prbatch, replies
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes.pr import events_from_api
 
@@ -291,3 +296,282 @@ def test_titles_and_descriptions_are_read_in_batches_and_what_a_query_leaves_out
     assert got == {1: {"title": "T1", "body": "B1"}, 2: {"title": "rest 2", "body": ""},
                    3: {"title": "rest 3", "body": ""}, 4: None}
     assert gh.rest == [f"repos/{REPO}/pulls/{n}" for n in (2, 3, 4)]
+
+
+# --- the object cache of the git objects at full commit shas ---------------------------------------------
+
+H1, H2 = "a1" * 20, "b2" * 20
+FOLDER, README = "TauCetiRoadmap/Foo", "TauCetiRoadmap/Foo/README.md"
+FOLDERS, READMES = [(H1, FOLDER), (H2, FOLDER)], [(H1, README), (H2, README)]
+
+
+def git_objects():
+    """(commit, path) -> a folder's entries {name: id}, or a file's text."""
+    return {(H1, FOLDER): {"README.md": "c" * 40, "Suggested.lean": "d" * 40},
+            (H2, FOLDER): {"README.md": "e" * 40, "Suggested.lean": "d" * 40},
+            (H1, README): "# Foo\n\n## Statement\n\nThe theorem.\n",
+            (H2, README): "# Foo\n\n## Proof\n\nThe proof.\n\n## Statement\n\nThe theorem.\n"}
+
+
+def oid(obj):
+    return hashlib.sha1(json.dumps(obj, sort_keys=True).encode()).hexdigest()
+
+
+def asked(query):
+    """The (commit, path) pairs a query asks for."""
+    return {tuple(json.loads(e).split(":", 1)) for e in re.findall(r'\w+: object\(expression: ("[^"]*")\)', query)}
+
+
+class ObjectGH:
+    """GitHub's git objects (`objects`: see `git_objects`), by GraphQL (`object(expression:)` fields:
+    `t` an id, `e` a folder's entries, `b` a file's text, cut short past `cut` characters) and by REST
+    (`raw_file`); `failing`: queries that fail. Every query and REST read is recorded."""
+
+    def __init__(self, objects, failing=0, cut=10 ** 6):
+        self.objects, self.failing, self.cut = dict(objects), failing, cut
+        self.queries, self.raw = [], []
+
+    def graphql(self, query, **variables):
+        self.queries.append(query)
+        if self.failing:
+            self.failing -= 1
+            raise GHError("graphql: [{'message': 'Something went wrong'}]")
+        out = {}
+        for alias, expression in re.findall(r'(\w+): object\(expression: ("[^"]*")\)', query):
+            obj = self.objects.get(tuple(json.loads(expression).split(":", 1)))
+            if obj is None:
+                out[alias] = None
+            elif alias[0] == "t":
+                out[alias] = {"oid": oid(obj)}
+            elif alias[0] == "e":
+                out[alias] = {"entries": [{"name": n, "oid": o} for n, o in obj.items()]} if isinstance(obj, dict) else {}
+            else:
+                out[alias] = {"text": obj[:self.cut], "isTruncated": len(obj) > self.cut} if isinstance(obj, str) else {}
+        return {"repository": out}
+
+    def raw_file(self, repo, path, ref=""):
+        self.raw.append((ref, path))
+        if not isinstance(self.objects.get((ref, path)), str):
+            raise GHError(f"gh api: repos/{repo}/contents/{path}: Not Found (HTTP 404)")
+        return self.objects[(ref, path)]
+
+
+def read_all(gh, repo=REPO):
+    """The three reads: the ids and the entries of the folder, and its README, at both commits."""
+    return (prbatch.tree_ids(gh, repo, FOLDERS, 15),
+            prbatch.tree_entries(gh, repo, [(H2, FOLDER), (H1, FOLDER), (H2, FOLDER)], 15),
+            prbatch.blob_texts(gh, repo, READMES, 15))
+
+
+def read_all_answers():
+    objects = git_objects()
+    return ({pair: oid(objects[pair]) for pair in FOLDERS}, {pair: objects[pair] for pair in FOLDERS},
+            {pair: objects[pair] for pair in READMES})
+
+
+@pytest.fixture
+def cache_off():
+    """Whatever object cache the test sets is switched off when it ends: none leaks into another test."""
+    yield
+    prbatch.use_cache(None)
+
+
+@pytest.fixture
+def cache(tmp_path, cache_off):
+    """The object cache in the test's own state directory."""
+    found = prbatch.use_cache(tmp_path / "state" / "git-objects.sqlite")
+    assert found is not None
+    return found
+
+
+def test_a_second_read_of_the_same_git_objects_asks_github_nothing(cache):
+    gh = ObjectGH(git_objects())
+    assert read_all(gh) == read_all_answers() and len(gh.queries) == 3
+    again = read_all(gh)
+    assert again == read_all_answers() and len(gh.queries) == 3 and gh.raw == []
+    assert {type(v) for v in again[0].values()} == {type(v) for v in again[2].values()} == {str}
+    assert prbatch.cache_lines() == ["git objects: 6 cached, 6 read"]
+
+
+def test_only_the_pairs_the_cache_lacks_are_asked_for(cache):
+    objects = git_objects()
+    new = [(H1, f"TauCetiRoadmap/Bar{n}") for n in range(8)]
+    objects.update({pair: {"README.md": f"{n:040x}"} for n, pair in enumerate(new)})
+    gh = ObjectGH(objects)
+    assert prbatch.tree_ids(gh, REPO, FOLDERS, 1) == read_all_answers()[0] and len(gh.queries) == 1
+    got = prbatch.tree_ids(gh, REPO, [(H2, FOLDER)] + new + [(H1, FOLDER)], 1)
+    assert got == {pair: oid(objects[pair]) for pair in FOLDERS + new}
+    assert [asked(q) for q in gh.queries[1:]] == [set(new[:4]), set(new[4:])]      # four pairs a query (batch 1)
+    # what the cache holds of one kind answers nothing of another, nor of another repository
+    assert prbatch.tree_entries(gh, REPO, FOLDERS, 1) == read_all_answers()[1] and asked(gh.queries[-1]) == set(FOLDERS)
+    assert prbatch.tree_ids(gh, "someone/TauCetiRoadmap", FOLDERS, 1) == read_all_answers()[0]
+    assert asked(gh.queries[-1]) == set(FOLDERS) and len(gh.queries) == 5
+
+
+def test_what_may_still_change_is_never_cached(cache):
+    """A commit not named by its full sha (an abbreviation, a branch, capitals, one digit too many),
+    and an answer None (a commit or a path not there, a file read as a folder or the other way round),
+    are asked for again every time."""
+    objects = git_objects()
+    names = ["a1a1a1a", "main", H1.upper(), H1 + "0"]
+    for name in names:
+        objects.update({(name, FOLDER): objects[(H1, FOLDER)], (name, README): objects[(H1, README)]})
+    gone = "9" * 40
+    for read, path, other in ((prbatch.tree_ids, FOLDER, README), (prbatch.tree_entries, FOLDER, README),
+                              (prbatch.blob_texts, README, FOLDER)):
+        gh = ObjectGH(objects)
+        wanted = [(name, path) for name in names] + [(gone, path), (H1, "TauCetiRoadmap/Gone")]
+        if read is not prbatch.tree_ids:
+            wanted.append((H1, other))
+        first = read(gh, REPO, wanted, 15)
+        assert first[(names[0], path)] is not None and first[(gone, path)] is None
+        assert sum(v is None for v in first.values()) == len(wanted) - len(names)
+        assert read(gh, REPO, wanted, 15) == first
+        assert len(gh.queries) == 2 and asked(gh.queries[0]) == asked(gh.queries[1]) == set(wanted), read.__name__
+
+
+def test_a_pair_of_a_failed_query_is_not_cached(cache):
+    """Not even a text REST then read whole."""
+    for read, wanted in ((prbatch.tree_ids, FOLDERS), (prbatch.tree_entries, FOLDERS), (prbatch.blob_texts, READMES)):
+        gh = ObjectGH(git_objects(), failing=1)
+        answers = {pair: (oid(git_objects()[pair]) if read is prbatch.tree_ids else git_objects()[pair])
+                   for pair in wanted}
+        assert read(gh, REPO, wanted, 15) == ({} if read is not prbatch.blob_texts else answers)
+        assert read(gh, REPO, wanted, 15) == answers and len(gh.queries) == 2            # asked for again
+        assert read(gh, REPO, wanted, 15) == answers and len(gh.queries) == 2            # now from the cache
+        assert len(gh.raw) == (2 if read is prbatch.blob_texts else 0)
+
+
+def test_a_text_graphql_cuts_short_is_cached_whole_once_rest_read_it(cache):
+    gh = ObjectGH(git_objects(), cut=12)
+    whole = read_all_answers()[2]
+    assert prbatch.blob_texts(gh, REPO, READMES, 15) == whole and sorted(gh.raw) == READMES
+    assert prbatch.blob_texts(gh, REPO, READMES, 15) == whole and len(gh.raw) == 2 and len(gh.queries) == 1
+    # one REST could not read is left out, and asked for again
+    other = "c3" * 20
+    gh = ObjectGH({(other, README): git_objects()[(H2, README)]}, cut=12)
+    gh.raw_file = lambda repo, path, ref="": (_ for _ in ()).throw(GHError("gh api: HTTP 502: Bad Gateway"))
+    assert prbatch.blob_texts(gh, REPO, [(other, README)], 15) == {}
+    assert prbatch.blob_texts(gh, REPO, [(other, README)], 15) == {} and len(gh.queries) == 2
+
+
+def test_folder_entries_come_back_from_the_file_as_they_were_read(tmp_path, cache_off):
+    path = tmp_path / "state" / "git-objects.sqlite"
+    gh = ObjectGH(git_objects())
+    prbatch.use_cache(path)
+    first = read_all(gh)
+    prbatch.use_cache(None)
+    prbatch.use_cache(path)                  # another run: the file is all it has of the first
+    again = read_all(gh)
+    assert again == first == read_all_answers() and len(gh.queries) == 3
+    assert prbatch.cache_lines() == ["git objects: 6 cached, 0 read"]
+    entries = again[1]
+    assert {type(v) for v in entries.values()} == {dict}
+    assert {type(x) for v in entries.values() for item in v.items() for x in item} == {str}
+    assert list(entries[(H1, FOLDER)].items()) == [("README.md", "c" * 40), ("Suggested.lean", "d" * 40)]
+
+
+def test_a_cache_file_that_cannot_be_used_changes_nothing(tmp_path, cache_off):
+    corrupt = tmp_path / "corrupt.sqlite"
+    corrupt.write_bytes(b"not a database at all " * 200)
+    blocker = tmp_path / "a-file"
+    blocker.write_text("not a folder\n")
+    for path in (corrupt, blocker / "git-objects.sqlite", tmp_path):        # (the last: a folder)
+        assert prbatch.use_cache(path) is None and prbatch.cache_lines() == []
+        gh = ObjectGH(git_objects())
+        assert read_all(gh) == read_all(gh) == read_all_answers() and len(gh.queries) == 6
+    assert corrupt.read_bytes() == b"not a database at all " * 200
+
+
+def test_a_cache_that_fails_in_use_changes_nothing(cache):
+    """A file locked, corrupt or on a full disk once the run has opened it."""
+    gh = ObjectGH(git_objects())
+    assert read_all(gh) == read_all_answers() and len(gh.queries) == 3
+
+    class Broken:
+        def execute(self, *args):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def executemany(self, *args):
+            raise sqlite3.OperationalError("database or disk is full")
+
+        def commit(self):
+            raise sqlite3.OperationalError("database is locked")
+
+        def rollback(self):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        def close(self):
+            pass
+    cache.db.close()
+    cache.db = Broken()
+    assert read_all(gh) == read_all(gh) == read_all_answers() and len(gh.queries) == 9
+
+
+def test_a_cache_another_process_holds_is_done_without(tmp_path, cache_off, monkeypatch):
+    monkeypatch.setattr(prbatch, "CACHE_TIMEOUT", 0.05)
+    path = tmp_path / "git-objects.sqlite"
+    assert prbatch.use_cache(path) is not None
+    other = sqlite3.connect(path, isolation_level=None)
+    other.execute("BEGIN EXCLUSIVE")
+    gh = ObjectGH(git_objects())
+    assert read_all(gh) == read_all(gh) == read_all_answers() and len(gh.queries) == 6     # nothing kept
+    other.execute("ROLLBACK")
+    other.close()
+    assert read_all(gh) == read_all(gh) == read_all_answers() and len(gh.queries) == 9     # kept, then read
+
+
+def test_rows_unused_for_three_weeks_are_dropped_when_the_cache_is_opened(tmp_path):
+    path, day, start = tmp_path / "git-objects.sqlite", 86400, 1_000_000_000.0
+    assert prbatch.CACHE_DAYS == 21
+    first = prbatch.ObjectCache(path, now=start)
+    first.put("tree_id", REPO, {(H1, FOLDER): "1" * 40, (H2, FOLDER): "2" * 40})
+    first.close()
+    later = prbatch.ObjectCache(path, now=start + 10 * day)
+    assert later.get("tree_id", REPO, [(H1, FOLDER)]) == {(H1, FOLDER): "1" * 40}         # used again
+    later.close()
+    last = prbatch.ObjectCache(path, now=start + 22 * day)
+    db = sqlite3.connect(path)
+    assert db.execute("SELECT sha, used FROM objects").fetchall() == [(H1, start + 10 * day)]
+    db.close()
+    assert last.get("tree_id", REPO, FOLDERS) == {(H1, FOLDER): "1" * 40}
+    last.close()
+
+
+def test_without_use_cache_nothing_is_cached_or_written(tmp_path, monkeypatch):
+    monkeypatch.setattr(prbatch.sqlite3, "connect", lambda *a, **k: pytest.fail("an object cache was opened"))
+    for name in ("HOME", "XDG_STATE_HOME", "TAUCETI_PROJECT_STATE"):
+        monkeypatch.setenv(name, str(tmp_path / name.lower()))
+    monkeypatch.chdir(tmp_path)
+    assert prbatch.cache_lines() == []
+    gh = ObjectGH(git_objects())
+    assert read_all(gh) == read_all(gh) == read_all_answers() and len(gh.queries) == 6
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_board_run_reads_git_objects_through_the_cache_in_its_state_directory(tmp_path, monkeypatch, capsys,
+                                                                              cache_off):
+    cfg = example_config()
+    gh = ObjectGH(git_objects())
+
+    def board_run(args, cfg, ctx):           # two steps that read the same trees
+        for _ in range(2):
+            assert prbatch.tree_ids(ctx.gh, REPO, FOLDERS, 15) == read_all_answers()[0]
+        return 0
+    monkeypatch.setattr(cli, "_load", lambda args: cfg)
+    monkeypatch.setattr(cli, "_bot_context", lambda args, cfg, dry: SimpleNamespace(gh=gh, board=SimpleNamespace()))
+    monkeypatch.setattr(cli, "api_budget", lambda gh, repo: ["GitHub API calls this run: 1 (rate limit not readable)"])
+    monkeypatch.setattr(cli, "board_run", board_run)
+    args = cli.parser().parse_args(["board", "sync"])
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    for lines in (["git objects: 2 cached, 2 read"], ["git objects: 4 cached, 0 read"]):
+        assert cli.board_cmd(args) == 0
+        assert capsys.readouterr().out.splitlines() == ["GitHub API calls this run: 1 (rate limit not readable)"] + lines
+        assert prbatch.cache_lines() == []                              # off again once the run ends
+    assert (tmp_path / "state" / "git-objects.sqlite").is_file() and len(gh.queries) == 1
+    # a state directory the cache cannot be kept in: the run reads as it would without one
+    (tmp_path / "elsewhere").write_text("not a folder\n")
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "elsewhere"))
+    assert cli.board_cmd(args) == 0
+    assert capsys.readouterr().out.splitlines() == ["GitHub API calls this run: 1 (rate limit not readable)"]
+    assert len(gh.queries) == 3
