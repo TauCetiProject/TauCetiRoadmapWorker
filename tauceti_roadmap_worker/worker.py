@@ -459,6 +459,10 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
                                                        if waiting else ""))
 
 
+class NotAvailable(Exception):
+    """The job's issue was not `state:available` any more when this worker went to claim it."""
+
+
 # Outcomes after which the job goes back to `state:available`: the lane stopped before it submitted
 # or parked the job (a submission holds it as `submitted`, a request as `needs-references`).
 # `setup-failed` is an exception before any agent ran (a brief that does not render, a checkout):
@@ -477,16 +481,23 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print, held: bool = True
     try:
         if not ctx.dry_run:
             try:
-                ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by worker `{ctx.worker_id}` "
-                                                    f"(`{ctx.operator}`, {ctx.agent}).")
+                # The listing a job is picked from lags the board by seconds: the claim is written only
+                # while the issue is still `state:available`, so a job the board has since closed
+                # (`done`) or another worker has claimed is never put back into circulation.
+                claimed = ctx.board.set_state(job, "claimed", f"Claimed for `{job.id}` by worker `{ctx.worker_id}` "
+                                                              f"(`{ctx.operator}`, {ctx.agent}).", expect="available")
             except GHError:
-                pass  # no write access to the board: the lease is the claim; `board sync` mirrors it
+                claimed = True  # no write access to the board: the lease is the claim; `board sync` mirrors it
+            if not claimed:
+                raise NotAvailable(f"{job.id} is no longer `state:available`")
         log(f"start {job.id} ({lane.__class__.__name__}, {ctx.agent} {ctx.model})")
         prune_job_dirs(ctx, log, keep=(job.id,))
         ttl, every = ctx.cfg.claims.job_ttl_seconds, ctx.cfg.claims.renew_seconds
         with claims.Heartbeat(None if ctx.dry_run else ctx.claims, key, ttl, every, held=held, gh=ctx.gh, log=log):
             result = lane.run(job, ctx)
         result.agent = result.agent or ctx.agent
+    except NotAvailable as exc:
+        result = LaneResult(job.id, "taken", str(exc))
     except LaneBlocked as exc:
         result = LaneResult(job.id, "blocked", str(exc))
     except GHHalt as exc:
@@ -506,6 +517,9 @@ def run_job(ctx: Context, job: Job, lane, key: str, log=print, held: bool = True
     if result.status in ("halted", "github-limited"):
         # Nothing more is sent: `board sync` puts the job back once its lease is gone.
         return result
+    if result.status == "taken":
+        log(f"skip {job.id}: no longer available (closed or claimed since it was listed)")
+        return result   # the issue is as the board or the other worker left it: nothing is written
     release(ctx, job, result, log)
     request_board_run(ctx, result, log)
     if interrupt is not None:

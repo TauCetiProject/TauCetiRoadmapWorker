@@ -181,9 +181,10 @@ def test_an_interrupt_during_the_claim_still_releases(round_ctx, monkeypatch):
     assert gh.states(1) == ["available"] and ctx.claims.released
 
 
-def test_a_stale_listing_still_ends_with_one_state(round_ctx, monkeypatch):
-    """The issue gained a second state label after the worker listed it: claim and release both
-    leave exactly one."""
+def test_a_stale_listing_is_not_claimed(round_ctx, monkeypatch):
+    """The issue gained a second state label after the worker listed it: it is no longer
+    `state:available` alone, so the claim is not written, nothing is released, and the two labels are
+    left to `board sync`, which repairs them."""
     ctx, gh = round_ctx
     listing = ctx.board.list_jobs
 
@@ -193,5 +194,5 @@ def test_a_stale_listing_still_ends_with_one_state(round_ctx, monkeypatch):
         return jobs
     monkeypatch.setattr(ctx.board, "list_jobs", stale_listing)
     monkeypatch.setattr(worker, "lane_for", lambda job: Lane(CHECKOUT))
-    worker.work_once(ctx, None, log=lambda line: None)
-    assert gh.states(1) == ["available"]
+    assert worker.work_once(ctx, None, log=lambda line: None).status == "taken"
+    assert sorted(gh.states(1)) == ["available", "needs-references"] and ctx.claims.released
