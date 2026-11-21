@@ -260,7 +260,8 @@ def run(ctx, *, numbers=(), authors=(), pool: bool = False, write: bool = False,
     def say(line: str) -> None:
         out.append(line)
         report(line)
-    listed = openroadmaps.inventory(ctx.gh, repo, (cfg.roadmap.active_dir,), any_file=True)
+    listed = openroadmaps.inventory(ctx.gh, repo, (cfg.roadmap.active_dir,), any_file=True,
+                                    skip=cfg.prreview.aggregate_prs)
     entries = selected(ctx, listed, list(numbers), list(authors), pool)
     if accepted_only:
         entries = [e for e in entries if cfg.prreview.label in (e.get("labels") or [])]

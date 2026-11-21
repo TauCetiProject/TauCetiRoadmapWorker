@@ -139,11 +139,13 @@ def changed_files(gh, repo: str, pr: dict) -> list[dict]:
     return out
 
 
-def inventory(gh, repo: str, dirs: tuple[str, ...], any_file: bool = False) -> list[dict]:
+def inventory(gh, repo: str, dirs: tuple[str, ...], any_file: bool = False, skip=()) -> list[dict]:
     """The repository's open pull requests that touch a roadmap folder: number, title, author, head,
     draft, labels, the roadmap folders they touch (`roadmap_folders`), and every changed file with
     how it changes (`changed_files`). With `any_file`, also those whose only changes under `dirs` are
     other files (an extra Lean file of a roadmap).
+    `skip`: pull request numbers that are left out (`[prreview] aggregate_prs`: an aggregate
+    carries folders its members are reviewed in, and is nobody's roadmap pull request).
 
     One GraphQL request per 50 open pull requests, each with its labels and first 100 changed files.
     The change of a file is a field of the file nodes the request lists anyway, so it costs nothing:
@@ -151,11 +153,13 @@ def inventory(gh, repo: str, dirs: tuple[str, ...], any_file: bool = False) -> l
     point of the 5,000 an hour per page). A pull request with more than 100 changed files costs one
     REST read more."""
     owner, name = repo.split("/", 1)
-    out, after = [], None
+    out, after, skipped = [], None, {int(n) for n in skip}
     while True:
         data = gh.graphql(QUERY, owner=owner, name=name, after=after)
         page = ((data.get("repository") or {}).get("pullRequests") or {})
         for pr in page.get("nodes") or []:
+            if pr.get("number") in skipped:
+                continue
             files = changed_files(gh, repo, pr)
             paths = [f["path"] for f in files]
             folders = roadmap_folders(paths, dirs)
@@ -248,7 +252,8 @@ def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any
         current = load(state)
         if not force and current.get("repo") == repo and age(current, now) < max_age:
             return current
-        prs = inventory(gh, repo, dirs, any_file=any_file)    # GitHub first: nothing is cloned when it cannot be read
+        # GitHub first: nothing is cloned when it cannot be read
+        prs = inventory(gh, repo, dirs, any_file=any_file, skip=cfg.prreview.aggregate_prs)
         if not (mirror(state) / "HEAD").exists():
             mirror(state).parent.mkdir(parents=True, exist_ok=True)
             git(None, "clone", "-q", "--bare", "--no-tags", gitops.url(repo), str(mirror(state)))

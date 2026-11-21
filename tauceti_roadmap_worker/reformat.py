@@ -97,7 +97,8 @@ def run(ctx, *, numbers=(), logins=(), write: bool = False, pace: float = 1.0, l
     def say(line: str) -> None:
         out.append(line)
         report(line)
-    listed = openroadmaps.inventory(ctx.gh, repo, (cfg.roadmap.active_dir,), any_file=True)
+    listed = openroadmaps.inventory(ctx.gh, repo, (cfg.roadmap.active_dir,), any_file=True,
+                                    skip=cfg.prreview.aggregate_prs)
     if numbers:
         have = {int(e["pr"]) for e in listed}
         for n in numbers:

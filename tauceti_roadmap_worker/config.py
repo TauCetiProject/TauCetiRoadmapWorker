@@ -318,6 +318,11 @@ class PRReview:
     authors: list[str] = field(default_factory=list)        # only these authors' pull requests (empty: all)
     skip_authors: list[str] = field(default_factory=list)   # never these authors' pull requests
     operator_prs: list[int] = field(default_factory=list)   # pull requests whose review rounds an operator files; `board sync` files none for them
+    # Aggregate pull requests: each carries, to merge in one piece, roadmap folders that other open pull requests
+    # (its members) add and are reviewed in. An aggregate is left out of everything done roadmap by roadmap (no
+    # review round, no overlap fact, no merge-order link, no layout request). It carries `label` exactly when every
+    # roadmap folder it adds holds, at its head, the files a member holds at a head the AI review accepts.
+    aggregate_prs: list[int] = field(default_factory=list)
     # Title prefixes the project fixes (a series the maintainers find by its title, e.g. "Template update: "): a
     # pull request whose title begins with one keeps its title through every review and repair.
     fixed_title_prefixes: list[str] = field(default_factory=list)
@@ -648,7 +653,7 @@ def validate(cfg: Config) -> None:
         problems.append("prreview.fixed_title_prefixes must list non-empty title prefixes")
     if any(not isinstance(x, str) or not re.fullmatch(r"\w[\w' -]*", x.strip()) for x in cfg.replies.error_cues):
         problems.append("replies.error_cues must list words or phrases")
-    for key in ("operator_prs", "late_except"):
+    for key in ("operator_prs", "late_except", "aggregate_prs"):
         if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in getattr(cfg.prreview, key)):
             problems.append(f"prreview.{key} must list pull request numbers")
     login = r"[A-Za-z0-9][A-Za-z0-9-]*"
