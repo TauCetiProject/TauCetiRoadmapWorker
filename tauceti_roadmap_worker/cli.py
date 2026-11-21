@@ -479,7 +479,7 @@ def work(args) -> int:
 # The exit status of a one-shot `work` round, by outcome; anything else (failed, setup-failed) is 1. A
 # supervisor that starts one round at a time tells waiting from failing without reading the log.
 # 75-78 are TauCetiWorker's codes for no progress, an admission wait, a GitHub wait and a halt.
-ROUND_EXIT = {"submitted": 0, "needs-references": 0, "blocked": 0, "dry-run": 0, "idle": 75, "skipped": 75,
+ROUND_EXIT = {"submitted": 0, "needs-references": 0, "blocked": 0, "dry-run": 0, "idle": 75, "skipped": 75, "taken": 75,
               "limited": 76, "github-limited": 77, "halted": 78, "interrupted": 130}
 
 
