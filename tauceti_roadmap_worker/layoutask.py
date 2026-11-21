@@ -15,12 +15,14 @@ acceptance (`intake.LayoutCheck`), so an author who took up a suggestion about t
 label back with no new review.
 
 It is a suggestion: an author who replies that the README stays as it is gets the label back. That is
-the operator's reading of the reply, never the worker's: `layout --ask --withdraw --pr N` takes the
-suggestion out of the file (`withdraw`), and the label follows the reviews again.
+the operator's reading of the reply, never the worker's: `layout --ask --withdraw --pr N` marks the
+suggestion withdrawn in the file (`withdraw`), and the label follows the reviews again. The record stays
+while the pull request is open (`declined`), so that a later `layout --ask --others` does not make the
+suggestion a second time to an author who said no.
 
 Nothing is suggested on a pull request of the pool, on one the pull-request reviews do not cover
 (`[prreview] authors`, `skip_authors`), on one this host reviews no pull requests of
-(`[worker] no_review_authors`), nor twice on the same pull request.
+(`[worker] no_review_authors`), nor twice on the same pull request, nor on one whose author declined.
 """
 
 from __future__ import annotations
@@ -50,6 +52,11 @@ def save(state: Path, requests: dict[str, dict]) -> None:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(requests, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def declined(request: dict) -> bool:
+    """The suggestion was withdrawn (`withdraw`): its author replied that the README stays as it is."""
+    return bool(request.get("withdrawn"))
 
 
 def readme_paths(cfg, folders) -> dict[str, str]:
@@ -101,7 +108,7 @@ def holds(ctx, repo: str, listed: list[dict], batch: int) -> tuple[dict[int, str
     """(pull request -> why the label is held, log lines): the requests that stand. One is dropped when
     its pull request is no longer open, and settled when the READMEs at the head lack nothing it asked
     for of the kinds `[prreview] layout_hold` names. A README GitHub did not give leaves the request
-    standing."""
+    standing. A suggestion its author declined holds nothing; its record goes when the pull request does."""
     state = getattr(ctx, "state", None)          # a board run with no state directory holds nothing
     requests = load(state) if state else {}
     if not requests:
@@ -115,7 +122,10 @@ def holds(ctx, repo: str, listed: list[dict], batch: int) -> tuple[dict[int, str
         if entry is None:
             del requests[key]
             changed = True
-            lines.append(f"#{number}: layout request dropped (the pull request is no longer open)")
+            if not declined(request):
+                lines.append(f"#{number}: layout request dropped (the pull request is no longer open)")
+            continue
+        if declined(request):
             continue
         asked = request.get("needs") or {}
         want = {k for ks in asked.values() for k in ks} & kinds
@@ -134,14 +144,15 @@ def holds(ctx, repo: str, listed: list[dict], batch: int) -> tuple[dict[int, str
     return held, lines
 
 
-def withdraw(ctx, numbers, *, write: bool = False, report=print) -> list[str]:
+def withdraw(ctx, numbers, *, write: bool = False, report=print, now=None) -> list[str]:
     """Take back the suggestions made on these pull requests (an author replied that the README stays as
-    it is): each leaves the requests file, so that the label follows the reviews again at the next
-    `board sync`, and with `write` a short note says so on the pull request."""
+    it is): each is marked withdrawn in the requests file, so that the label follows the reviews again at
+    the next `board sync` and the suggestion is not made again, and with `write` a short note says so on
+    the pull request."""
     cfg, repo, out = ctx.cfg, ctx.cfg.repositories.content, []
     requests = load(ctx.state)
     for number in dict.fromkeys(int(n) for n in numbers):
-        if str(number) not in requests:
+        if str(number) not in requests or declined(requests[str(number)]):
             out.append(f"#{number}: no suggestion stands")
         elif not write:
             out.append(f"[dry run] #{number}: would withdraw the suggestion of {str(requests[str(number)].get('head', ''))[:7]}")
@@ -154,7 +165,8 @@ def withdraw(ctx, numbers, *, write: bool = False, report=print) -> list[str]:
             except GHError as exc:
                 out.append(f"#{number}: not withdrawn: {str(exc).splitlines()[0][:200]}")
                 continue
-            del requests[str(number)]
+            requests[str(number)] = {"head": requests[str(number)].get("head", ""),
+                                     "withdrawn": now() if now else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             save(ctx.state, requests)
             out.append(f"#{number}: suggestion withdrawn; the label follows the reviews again")
     for line in out:
@@ -186,7 +198,8 @@ def run(ctx, *, numbers=(), authors=(), others: bool = False, kinds=layout.NEEDS
         pace: float = 2.0, limit: int = 0, again: bool = False, report=print, sleep=time.sleep, now=None) -> list[str]:
     """The command: for every pull request asked for, say what its READMEs lack of `kinds`, and with
     `write` post the request and record it, `pace` seconds apart, at most `limit` (0: all). A pull
-    request already asked is left alone unless `again`. A rate-limit answer stops the run."""
+    request already asked, or whose author declined the suggestion, is left alone unless `again`. A
+    rate-limit answer stops the run."""
     cfg, repo, out = ctx.cfg, ctx.cfg.repositories.content, []
     batch = cfg.board.graphql_batch
 
@@ -213,7 +226,10 @@ def run(ctx, *, numbers=(), authors=(), others: bool = False, kinds=layout.NEEDS
                 say(f"{who}: refused: a pull request of the pool is reordered, not asked (`layout`, `overview`)")
                 continue
             if str(number) in requests and not again:
-                say(f"{who}: already asked at {str(requests[str(number)].get('head', ''))[:7]}")
+                if declined(requests[str(number)]):
+                    say(f"{who}: not asked: the author declined the suggestion ({requests[str(number)]['withdrawn']})")
+                else:
+                    say(f"{who}: already asked at {str(requests[str(number)].get('head', ''))[:7]}")
                 continue
             folders, why = intake.review_plan(entry, cfg, on_main)
             changed = [f for f, change in folders.items() if change]

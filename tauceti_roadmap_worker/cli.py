@@ -1334,10 +1334,11 @@ def parser() -> argparse.ArgumentParser:
                     help="with --ask: every open roadmap pull request of an author outside the pool")
     lo.add_argument("--needs", default="", metavar="KINDS",
                     help="with --ask: what to ask for, of overview,sections,order (default: all three)")
-    lo.add_argument("--again", action="store_true", help="with --ask: also a pull request already asked")
+    lo.add_argument("--again", action="store_true",
+                    help="with --ask: also a pull request already asked, or one whose author declined")
     lo.add_argument("--withdraw", action="store_true",
                     help="with --ask and --pr: take the suggestion back (the author replied that the README stays as "
-                         "it is); the label then follows the reviews again")
+                         "it is); the label then follows the reviews again, and the suggestion is not made again")
 
     ov = sub.add_parser("overview", help="rewrite the opening of the READMEs of open roadmap pull requests as a "
                                          "readable overview, with the sections in the new order; checked "
