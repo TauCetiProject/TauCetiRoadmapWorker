@@ -51,7 +51,7 @@ import tomllib
 from pathlib import Path
 from urllib.parse import quote
 
-from .. import board, depgraph, gates, gitops, prompts, prreviews, references, replies, sources, summary
+from .. import board, depgraph, gates, gitops, prbatch, prompts, prreviews, references, replies, sources, summary
 from ..board import Job
 from ..depgraph import read_order
 from ..gh import GHError, transient
@@ -94,7 +94,7 @@ from .base import (
 )
 from .gate import ANSWERED, answer_problems, answer_values, gate_problems, push_and_reply, reviews_document
 from .lake import PIN_FILES, LakeSetup
-from .pr import pr_branch_worktree, wire_worktree
+from .pr import events_from_api, pr_branch_worktree, wire_worktree
 from .review import SAMPLE_SIZE, review_summary, sample_items, seeded_sample, verdict_problems
 
 GATE_RECORD = "gate.json"                 # in the job folder: the gate's result at the head reviewed
@@ -1910,8 +1910,11 @@ class PRReviewLane(Lane):
         latest reviews of its other roadmap folders at that head (their verdicts on the board's main)
         accept too, off it when the review asks for changes; the awaiting-author and awaiting-review
         labels are never touched. When another folder's review has not accepted yet, the board's sync
-        adds the label once the last one does. A label the operator's token cannot change, or a verdict
-        GitHub did not answer for, is reported, not raised: the board's sync keeps the label honest."""
+        adds the label once the last one does. Nor is the label put on while a review by someone other
+        than the author's side that points out errors waits for an answer (`intake.errors_hold`, which the
+        board's sync reads too: it would take the label off again); one on already comes off. A label the
+        operator's token cannot change, or a verdict or a review GitHub did not answer for, is reported,
+        not raised: the board's sync keeps the label honest."""
         repo, label = ctx.cfg.repositories.content, ctx.cfg.prreview.label
         try:
             have = {x.get("name") for x in ctx.gh.api(f"repos/{repo}/issues/{pr}/labels") or [] if isinstance(x, dict)}
@@ -1924,6 +1927,16 @@ class PRReviewLane(Lane):
                 pending = self.folders_not_accepted(job, ctx, pr, head)
                 if pending:
                     return f"labelled later: {pending} folder{'s' if pending != 1 else ''} not yet accepted"
+                from ..intake import errors_hold  # here: the intake imports the lanes
+
+                got = prbatch.PullReader(ctx.gh, repo, [pr], ctx.cfg.board.graphql_batch).get(pr)
+                held = errors_hold(ctx.cfg, str(job.inputs.get("owner") or ""),
+                                   events_from_api(got.reviews, got.comments, got.inline))
+                if held and label in have:
+                    ctx.gh.write("DELETE", f"repos/{repo}/issues/{pr}/labels/{quote(label, safe='')}")
+                    return f"{label} removed ({held})"
+                if held:
+                    return f"not labelled {label}: {held}"
                 if label in have:
                     return f"{label} kept"
                 ctx.gh.write("POST", f"repos/{repo}/issues/{pr}/labels", {"labels": [label]})

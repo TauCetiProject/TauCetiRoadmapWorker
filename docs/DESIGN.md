@@ -282,6 +282,17 @@ Agents fetch what they need themselves, within rules:
   failures are evidence the reviewer weighs, each rule classified as substance or form; nothing is
   relayed into a review automatically. The posted comment opens with a summary and folds what was
   checked into one block; the evidence stays in the board's report.
+- What the acceptance label says (the owner's rule of 2026-11-21): "if a pull request that says the
+  AI found no errors gets a new review pointing out errors, it loses the label until fixed, whoever
+  wrote the review". `ai-found-no-errors` is on exactly when the AI reviews accept the current head (or
+  an acceptance carries to it) and no review by someone other than the author's side that points out
+  errors waits for an answer (`replies.unanswered_errors`: a review in state CHANGES_REQUESTED, an
+  inline comment its thread has not answered, or words that state an error or ask for a correction,
+  `[replies] error_cues`, negated forms aside). One function decides it (`intake.errors_hold`), read by
+  both steps of `board sync` and by the review lane, so none undoes another. An answer brings the label
+  back at the next sync with no new review when the head did not move. A review that says it found no
+  errors and asks a question, or lists gaps against its source, is not one: a gap against a source is
+  not an error of the text.
 - What `Suggested.lean` holds (the maintainer's rule of 2026-10-22): it is the roadmap's
   acceptance test, not an API catalogue. It states the headline theorems, the deep results the
   finished roadmap will prove, against the pins with `sorry` (a roadmap toward Fermat's Last

@@ -1689,13 +1689,47 @@ def repairing_review(cfg, jobs: list[Job], number: int, owner: str) -> Job | Non
                  and str(j.inputs.get("pr")) == str(number)), None)
 
 
+def errors_hold(cfg, owner: str, events: list[replies.Event]) -> str:
+    """Why `[prreview] label` must be off a pull request whatever its AI reviews say, or '': a review by
+    someone other than the author's side that points out errors waits for an answer
+    (`replies.unanswered_errors`, read with the logins, markers and ignore list the awaiting labels are
+    read with: `[replies]`, `pr_answerers`, `ignored_logins`). The owner's rule of 2026-11-21: a pull
+    request that says the AI found no errors loses that label when a new review points out errors, until
+    the review is answered, whoever wrote it. Every writer of the label asks this one function, with the
+    same events: `sync_pull_requests` takes the label off, `sync_pr_reviews` takes it off and does not
+    put it back, and the review lane does not add it (`PRReviewLane.update_label`), so no two of them
+    undo each other. Once the review is answered (a reply in reply form, or a fix and its reply), the
+    label follows the AI reviews again: an accepted head that did not move gets it back at the next
+    sync, with no new review."""
+    r = cfg.replies
+    found = replies.unanswered_errors(events, pr_answerers(cfg, owner), r.review_markers, r.housekeeping_prefixes,
+                                      r.error_cues, ignore=ignored_logins(cfg), maintainers=set(r.maintainer_logins),
+                                      maintainer_prefix=r.maintainer_review_prefix, owner=owner)
+    if not found:
+        return ""
+    first, why = found[0]
+    more = f", and {len(found) - 1} more" if len(found) > 1 else ""
+    return f"a review that points out errors waits for an answer: {first.ref or 'a comment'} by {first.user}, {why}{more}"
+
+
+def errors_reviewed(cfg, owner: str, events: list[replies.Event]) -> bool:
+    """`replies.errors_reviewed` with the settings `errors_hold` reads: whether a review that points out
+    errors, answered or not, may have taken the label off the pull request."""
+    r = cfg.replies
+    return replies.errors_reviewed(events, pr_answerers(cfg, owner), r.review_markers, r.housekeeping_prefixes,
+                                   r.error_cues, ignore=ignored_logins(cfg), maintainers=set(r.maintainer_logins),
+                                   maintainer_prefix=r.maintainer_review_prefix, owner=owner)
+
+
 def sync_pull_requests(ctx) -> list[str]:
     """The awaiting-author / awaiting-review labels of every open roadmap pull request the workers
     manage (`open_roadmap_prs`), a GATE job when a review waits for a reply (none while a pool
     review repairs it: `repairing_review`; none for a completed roadmap revised in place:
-    `revises_completed`), and held pull requests back to draft. Each pull request,
-    its reviews, issue comments and inline comments are read `[board] graphql_batch` at a time by
-    GraphQL (`prbatch.PullReader`; REST for the rest)."""
+    `revises_completed`), and held pull requests back to draft. With `[prreview] enabled`, the
+    acceptance label (`[prreview] label`) and the approval label come off a pull request on which a
+    review that points out errors waits for an answer (`errors_hold`); this step never adds them. Each
+    pull request, its reviews, issue comments and inline comments are read `[board] graphql_batch` at a
+    time by GraphQL (`prbatch.PullReader`; REST for the rest)."""
     cfg, out = ctx.cfg, []
     repo = cfg.repositories.content
     r = cfg.replies
@@ -1728,12 +1762,20 @@ def sync_pull_requests(ctx) -> list[str]:
             # a review its author has yet to answer: a human approval is no longer all it needs
             # (`deplabels`, which keeps that label, would take it off only at its next run)
             drop = [*drop, cfg.prreview.approval_label]
+        accept = cfg.prreview.label if cfg.prreview.enabled else ""
+        held = errors_hold(cfg, p["owner"], events) if accept and accept in have else ""
+        if held:
+            # a review points out errors: the acceptance label is off until it is answered
+            # (`sync_pr_reviews` puts it back then), and with it the approval label
+            drop = [*drop, *(x for x in (accept, cfg.prreview.approval_label) if x and x not in drop)]
         try:   # a token of the board alone (its workflow's) cannot write to the roadmap repository
             if want and want not in have:
                 ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [want]})
             for label in drop:
                 if label in have:
-                    ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{label}")
+                    ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(label, safe='')}")
+            if held:
+                out.append(f"#{number}: {accept} removed ({held})")
         except GHError as exc:
             out.append(f"#{number}: labels on {repo} not changed ({exc})")
         if want == r.awaiting_author:
@@ -2709,6 +2751,15 @@ def sync_pr_reviews(ctx) -> list[str]:
       READMEs into the README layout, and a README at the head still lacks what was asked) keeps the
       label off whatever the reviews say; the reviews go on, and the label follows them again when the
       request is settled.
+      So does a review by someone other than the author's side that points out errors and waits for an
+      answer (`errors_hold`, the decision `sync_pull_requests` takes the label off by): the label comes
+      off, even while a review of the head is being finished, and is not put back until the review is
+      answered; the reviews and the rounds go on as if the label were there (an accepted head stays
+      accepted, a carried acceptance stays carried: with `carry_accept` a carried record counts on a pull
+      request such a review may have taken the label off, `errors_reviewed`). The reviews, issue comments
+      and inline comments are read for the pull requests the rule may need them for, in one batch the first
+      time one is (`prbatch.PullReader`); a pull request GitHub did not give them for keeps its label as
+      it is, and does not get it.
       With `[prreview] carry_unchanged`, a head that only moved (a rebase, a merge of the base
       branch: every roadmap folder's git tree is that of an accepted earlier head) counts as that
       head does (`unchanged_acceptance`): the label stays or is put back, the reviews of the new head
@@ -2859,20 +2910,60 @@ def sync_pr_reviews(ctx) -> list[str]:
     layout_held, lines = layoutask.holds(ctx, repo, listed, batch) if p.label else ({}, [])
     out += lines
 
+    # The reviews and comments of the pull requests the label rule may read them for (`errors_hold`).
+    wanting = [int(e["pr"]) for e in listed if e.get("head") and (
+        p.label in e.get("labels", []) or plans[int(e["pr"])][0] or (plans[int(e["pr"])][1] and p.chore_review))]
+    timelines: dict[int, list[replies.Event] | None] = {}
+    pulls: list[prbatch.PullReader] = []
+
+    def events_of(number: int) -> list[replies.Event] | None:
+        """The reviews, issue comments and inline comments of #number as events (`events_from_api`), None
+        when GitHub did not give them; those of every pull request in `wanting` are read in one batch the
+        first time one is asked for."""
+        if number not in timelines:
+            if not pulls:
+                pulls.append(prbatch.PullReader(ctx.gh, repo, wanting, batch))
+            try:
+                got = pulls[0].get(number)
+                timelines[number] = events_from_api(got.reviews, got.comments, got.inline)
+            except GHError as exc:
+                timelines[number] = None
+                out.append(f"#{number}: reviews and comments not read ({str(exc).splitlines()[0][:160]})")
+        return timelines[number]
+
+    def errors_at(number: int, author: str) -> str | None:
+        """`errors_hold` of #number: '' or why a review keeps the label off; None when it is not known."""
+        events = events_of(number)
+        return None if events is None else errors_hold(cfg, author, events)
+
+    def standing(number: int, author: str, labelled: bool) -> bool:
+        """Whether the carried records of #number count (`carry_accept`): its label is on, or a review that
+        points out errors may have taken it off (`errors_reviewed`), so that the acceptance it carried
+        comes back with the answer, and no review of the carried head is filed meanwhile."""
+        if labelled or not p.carry_accept:
+            return labelled
+        events = events_of(number)
+        return bool(events) and errors_reviewed(cfg, author, events)
+
     for entry in listed:
-        number, head = int(entry["pr"]), entry.get("head", "")
+        number, head, author = int(entry["pr"]), entry.get("head", ""), entry.get("author", "")
         labelled = p.label in entry.get("labels", [])
         folders, why = plans[number]
         chore = bool(why) and not folders and p.chore_review
         if not head or not (labelled or folders or chore):
             continue
         asked = layout_held.get(number, "")
-        if asked and labelled:
+        # A review that points out errors and waits for an answer (`errors_hold`): read here for a labelled
+        # pull request, and below, before the label is added, for the others.
+        checked = labelled and not asked
+        errors = errors_at(number, author) if checked else ""
+        if (asked or errors) and labelled:
             # A layout request stands (`layoutask`): the label is off until the README is in the layout,
-            # whatever the reviews say; they go on as usual below.
+            # whatever the reviews say; they go on as usual below. A review that points out errors keeps
+            # it off until the review is answered, in the same way.
             try:
                 ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
-                out.append(f"#{number}: {p.label} removed ({asked})")
+                out.append(f"#{number}: {p.label} removed ({asked or errors})")
                 labelled = False
                 if p.approval_label and p.approval_label in entry.get("labels", []):
                     ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.approval_label, safe='')}")
@@ -2885,7 +2976,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             # head that only moved (`unchanged_acceptance`): the review under way decides for its own.
             if folders and p.carry_unchanged:
                 source, known = unchanged_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads,
-                                                     batch, labelled)
+                                                     batch, standing(number, author, labelled))
                 if source or not known:
                     carried_prs.add(number)
             still, known = kept_folders(number, folders, mine, head)
@@ -2897,14 +2988,17 @@ def sync_pr_reviews(ctx) -> list[str]:
                             else (False, f"not reviewed: {why}" if why else "no roadmap folder to review"))
         if accepted and folders:
             accepted_at[number] = dict.fromkeys(folders, head)
-        if not accepted and labelled and folders and p.carry_accept:
+        carried_note = ""
+        if not accepted and folders and p.carry_accept and standing(number, author, labelled):
             source, lines = carried_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads, batch)
             if source:
                 accepted, reason = True, f"carried from {source[:7]}"
                 accepted_at[number] = reviewed_heads_at(ctx, folders, mine, source, texts)
                 carried_prs.add(number)
-                out.append(f"#{number}: {p.label} kept (the acceptance of {source[:7]} carries to {head[:7]}: "
-                           f"{lines} lines of repairs inside the roadmap folders, no review filed)")
+                carried_note = (f"the acceptance of {source[:7]} carries to {head[:7]}: {lines} lines of repairs "
+                                "inside the roadmap folders")
+                if labelled:
+                    out.append(f"#{number}: {p.label} kept ({carried_note}, no review filed)")
         carried = False
         if not accepted and folders and set(folders) <= minor_settled(number, folders, mine, head):
             accepted, carried = True, True
@@ -2912,7 +3006,7 @@ def sync_pr_reviews(ctx) -> list[str]:
         how: dict = {}
         if not accepted and folders and p.carry_unchanged:
             source, known = unchanged_acceptance(ctx, repo, number, head, folders, mine, texts, p, threads, batch,
-                                                 labelled, how=how)
+                                                 standing(number, author, labelled), how=how)
             if not known:
                 carried_prs.add(number)         # nothing is known this run: the label stays as it is, no review is filed
                 out.append(f"#{number}: {p.label} not checked (the roadmap folders at {head[:7]} could not be "
@@ -2921,7 +3015,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             if source:
                 accepted, unchanged[number] = True, source
                 accepted_at[number] = acceptance_sources(ctx, repo, number, source, folders, mine, texts, p, threads,
-                                                         batch, labelled)
+                                                         batch, standing(number, author, labelled))
                 carried_prs.add(number)
                 for job in mine:
                     if (job.state == "available" and job.inputs.get("head") == head
@@ -2961,13 +3055,21 @@ def sync_pr_reviews(ctx) -> list[str]:
                                "its last review settled: no review filed)")
         if accepted:
             accepted_prs.add(number)
+        if accepted and not labelled and not asked and not checked:
+            errors = errors_at(number, author)        # before the label goes on: a review may keep it off
         try:
             if accepted and asked:
                 pass                                      # accepted, and waiting for the layout: no label yet
+            elif accepted and errors != "":
+                # accepted, and a review points out errors (or the reviews could not be read): no label yet
+                if not checked:
+                    out.append(f"#{number}: {p.label} not added ("
+                               + (errors or "its reviews and comments could not be read") + ")")
             elif accepted and not labelled:
                 ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [p.label]})
                 out.append(f"#{number}: {p.label} added ("
-                           + (f"the roadmap folders at {head[:7]} are those of {unchanged[number][:7]}"
+                           + (carried_note if carried_note
+                              else f"the roadmap folders at {head[:7]} are those of {unchanged[number][:7]}"
                               + (layout_words(reordered[number][2], reordered[number][1])
                                  if number in reordered else "")
                               + ", whose acceptance stands: the head only moved" if number in unchanged

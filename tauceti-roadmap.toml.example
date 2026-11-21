@@ -431,6 +431,11 @@ housekeeping_prefixes = ["Red-team repairs at", "Scope change at", "Supplier cha
 # answers; everything else it posts on its own pull requests stays a reply.
 maintainer_logins = []
 maintainer_review_prefix = "Maintainer review"
+# `error_cues`: the words of a review that state an error or ask for a correction. While such a review
+# (or one in state CHANGES_REQUESTED, or one with an inline comment its thread has not answered) by
+# someone other than the author's side waits for an answer, `[prreview] label` is off the pull request.
+# Left unset here: the worker's default list applies (docs/OPERATORS.md, "A review that points out
+# errors takes the label off"); `error_cues = []` leaves the state and the threads alone.
 
 [prompts]
 # Optional file (in the packages repository) of project-specific rules appended to every brief.

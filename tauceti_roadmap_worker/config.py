@@ -249,6 +249,16 @@ class Replies:
     # on a pull request that login owns.
     maintainer_logins: list[str] = field(default_factory=list)
     maintainer_review_prefix: str = "Maintainer review"
+    # The words of an unanswered review (or comment) that state an error or ask for a correction
+    # (`replies.states_errors`): while such a review by someone other than the author's side waits for an
+    # answer, `[prreview] label` is off the pull request (`intake.errors_hold`). Whole words, any case, a
+    # plural or -ly ending allowed; read in the reviewer's prose (code, quoted lines and HTML comments
+    # aside) once the negated forms ("no errors", "did not find any errors", "without error", ...) are
+    # removed. A review in state CHANGES_REQUESTED, or one with an inline comment its thread has not
+    # answered, points out errors whatever its words. [] = the words alone never do.
+    error_cues: list[str] = field(default_factory=lambda: [
+        "incorrect", "wrong", "false", "counterexample", "does not hold", "fails", "missing hypothesis",
+        "missing hypotheses", "please correct", "please fix", "please replace", "reversed", "typo", "error"])
 
 
 @dataclass
@@ -636,6 +646,8 @@ def validate(cfg: Config) -> None:
             problems.append(f"prreview.{key} must list GitHub logins")
     if any(not isinstance(x, str) or not x.strip() for x in cfg.prreview.fixed_title_prefixes):
         problems.append("prreview.fixed_title_prefixes must list non-empty title prefixes")
+    if any(not isinstance(x, str) or not re.fullmatch(r"\w[\w' -]*", x.strip()) for x in cfg.replies.error_cues):
+        problems.append("replies.error_cues must list words or phrases")
     for key in ("operator_prs", "late_except"):
         if any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in getattr(cfg.prreview, key)):
             problems.append(f"prreview.{key} must list pull request numbers")

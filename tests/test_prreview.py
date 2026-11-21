@@ -269,6 +269,32 @@ def node(number, head, author="carol", paths=("TauCetiRoadmap/Foo/README.md",), 
             "files": {"totalCount": len(files), "nodes": [{"path": p, "changeType": c} for p, c in files]}}
 
 
+def pull_node(listed, reviews, comments, inline):
+    """The batch query's node (`prbatch.query`) for a listed pull request (`node`), with its reviews,
+    issue comments and inline comments given as REST gives them."""
+    def page(nodes):
+        return {"pageInfo": {"hasNextPage": False}, "nodes": nodes}
+
+    def author(item):
+        return {"__typename": "User", "login": (item.get("user") or {}).get("login", "")}
+    return {
+        "number": listed["number"], "isDraft": listed["isDraft"], "state": "OPEN", "headRefOid": listed["headRefOid"],
+        "headRefName": f"roadmap/{listed['number']}", "baseRefName": "main", "headRepository": None,
+        "author": listed["author"], "labels": page(listed["labels"]["nodes"]),
+        "reviews": page([{"databaseId": r["id"], "state": r["state"], "submittedAt": r["submitted_at"],
+                          "body": r.get("body") or "", "author": author(r),
+                          "commit": {"oid": r["commit_id"]} if r.get("commit_id") else None,
+                          "comments": page([{"databaseId": c["id"], "createdAt": c["created_at"], "path": c.get("path"),
+                                             "line": c.get("line"), "originalLine": c.get("original_line"),
+                                             "body": c.get("body") or "", "author": author(c),
+                                             "replyTo": {"databaseId": c["in_reply_to_id"]}
+                                             if c.get("in_reply_to_id") else None}
+                                            for c in inline if c.get("pull_request_review_id") == r["id"]])}
+                         for r in reviews]),
+        "comments": page([{"databaseId": c.get("id"), "createdAt": c.get("created_at") or "", "body": c.get("body") or "",
+                           "author": author(c)} for c in comments])}
+
+
 class ContentGH:
     """The content repository's open pull requests (one GraphQL listing), single pull requests by
     REST, main's tree (`tree`: the folders under TauCetiRoadmap/ holding a README.md), the board's main
@@ -276,12 +302,15 @@ class ContentGH:
     git object id of that folder there (a folder not listed differs at every commit); "unread": the
     query fails. `entries`: (commit, path) -> the folder's entries {name: id} (by default a README and
     a Suggested.lean whose ids are the folder's own: two folders that differ differ in both); `blobs`:
-    (commit, path) -> a file's text at that commit (`prbatch.blob_texts`), "unread": the query fails."""
+    (commit, path) -> a file's text at that commit (`prbatch.blob_texts`), "unread": the query fails.
+    `reviews` and `inline`: pull request -> its reviews and inline comments as REST gives them; a listed
+    pull request's reviews and comments are read by the batch query (`prbatch.PullReader`) too."""
 
     def __init__(self, nodes=(), pulls=None, files=None, refuse=False, tree=(), comments=None, unreadable=False,
-                 compares=None, trees=None, entries=None, blobs=None):
+                 compares=None, trees=None, entries=None, blobs=None, reviews=None, inline=None):
         self.nodes, self.pulls, self.files, self.refuse = list(nodes), dict(pulls or {}), dict(files or {}), refuse
         self.comments, self.unreadable = dict(comments or {}), unreadable   # pull request -> its issue comments
+        self.reviews, self.inline, self.pull_queries = dict(reviews or {}), dict(inline or {}), 0
         self.compares = dict(compares or {})                                  # (old, new) -> the comparison's files
         self.tree = [f"TauCetiRoadmap/{d}/README.md" for d in tree]
         self.writes, self.listings, self.dry_run, self.fence = [], 0, False, None
@@ -293,6 +322,15 @@ class ContentGH:
         return (self.trees or {}).get((sha, path), f"{sha[:8]}:{path}") if self.trees != "unread" else None
 
     def graphql(self, query, **variables):
+        if "fragment PullFields" in query:         # `prbatch.PullReader`: the listed pull requests asked for
+            self.pull_queries += 1
+            if self.unreadable:
+                raise GHError("graphql: 502")
+            asked = {int(n) for n in re.findall(r"p(\d+): pullRequest", query)}
+            return {"repository": {f"p{n['number']}": pull_node(n, self.reviews.get(n["number"], []),
+                                                                self.comments.get(n["number"], []),
+                                                                self.inline.get(n["number"], []))
+                                   for n in self.nodes if n["number"] in asked}}
         if "{ title body }" in query:              # `prbatch.pull_texts`: the titles and descriptions asked for
             asked = [int(n) for n in re.findall(r"p(\d+): pullRequest", query)]
             return {"repository": {f"p{n}": {"title": self.pulls[n].get("title", ""),
@@ -330,6 +368,9 @@ class ContentGH:
         m = re.fullmatch(r"repos/[^/]+/[^/]+/issues/(\d+)/comments\?per_page=100", path)
         if m and not self.unreadable:
             return list(self.comments.get(int(m.group(1)), []))
+        m = re.fullmatch(r"repos/[^/]+/[^/]+/pulls/(\d+)/(reviews|comments)\?per_page=100", path)
+        if m and not self.unreadable:
+            return list((self.reviews if m.group(2) == "reviews" else self.inline).get(int(m.group(1)), []))
         m = re.fullmatch(r"repos/[^/]+/[^/]+/compare/([0-9a-f]+)\.\.\.([0-9a-f]+)", path)
         if m and (m.group(1), m.group(2)) in self.compares:
             return {"files": self.compares[(m.group(1), m.group(2))]}
@@ -2160,7 +2201,7 @@ def test_a_pass_before_the_final_review_says_so_and_leaves_the_label_alone(revie
 # --- a run that stops after its comment is finished without a second one -----------------------------------
 
 class ReviewHub(Hub):
-    """The submission hub, with the content pull request's labels."""
+    """The submission hub, with the content pull request's labels (and no inline comments)."""
 
     def __init__(self, tmp_path):
         super().__init__(tmp_path)
@@ -2169,6 +2210,8 @@ class ReviewHub(Hub):
     def api(self, path, paginate=False):
         if path == f"repos/{CONTENT}/issues/905/labels":
             return [{"name": x} for x in self.labels]
+        if path == f"repos/{CONTENT}/pulls/905/comments?per_page=100":
+            return []
         return super().api(path, paginate)
 
     def write(self, method, path, payload=None):

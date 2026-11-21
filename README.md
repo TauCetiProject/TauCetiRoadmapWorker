@@ -152,7 +152,7 @@ available again once every key is answered.
 | `redteam` | independent passes on the draft pull request by different agents, each round followed by a fix |
 | `gate` | answer the human reviewers of the draft pull request: fix, push, reply finding by finding |
 | `errata` | read a roadmap's sources at the locators it cites and register their misprints, errors and gaps |
-| `prreview` | the AI review of one roadmap folder (nested ones included) of a pull request by any author: one comment with a verdict; the `ai-found-no-errors` label once every roadmap folder of the head is accepted; a human approves and merges |
+| `prreview` | the AI review of one roadmap folder (nested ones included) of a pull request by any author: one comment with a verdict; the `ai-found-no-errors` label once every roadmap folder of the head is accepted, and off while a review that points out errors waits for an answer; a human approves and merges |
 
 ## Filing targets
 

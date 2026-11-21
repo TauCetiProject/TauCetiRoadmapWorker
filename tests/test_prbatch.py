@@ -72,7 +72,8 @@ def graphql_node(pull, reviews, comments, inline, more=()):
              "author": actor(r["user"]["login"]), "commit": {"oid": r["commit_id"]} if r["commit_id"] else None,
              "comments": {"pageInfo": page(f"review-{r['id']}"), "nodes": [
                  {"databaseId": c["id"], "createdAt": c["created_at"], "path": c["path"], "line": c["line"],
-                  "originalLine": c["original_line"], "body": c["body"], "author": actor(c["user"]["login"])}
+                  "originalLine": c["original_line"], "body": c["body"], "author": actor(c["user"]["login"]),
+                  "replyTo": {"databaseId": c["in_reply_to_id"]} if c.get("in_reply_to_id") else None}
                  for c in inline if c["pull_request_review_id"] == r["id"]]}}
             for r in reviews]},
         "comments": {"pageInfo": page("comments"), "nodes": [
@@ -135,6 +136,20 @@ def test_a_pull_request_read_by_graphql_has_the_shapes_of_its_rest_reads():
     assert events_from_api(got.reviews, got.comments, got.inline) == events_from_api(reviews, comments, inline)
     # A review's text keeps its line ends: the answered records' versions are digests of it.
     assert replies.text_version(got.reviews[0]["body"]) == replies.text_version(reviews[0]["body"])
+
+
+def test_a_review_state_and_an_inline_thread_read_by_graphql_are_those_rest_gives():
+    """What tells a review that points out errors (`replies.unanswered_errors`): its state, and which
+    inline comment a reply in a thread answers (`in_reply_to_id`, GraphQL's `replyTo`)."""
+    pull, reviews, comments, inline = rest_sample()
+    inline = inline + [{"id": 503, "pull_request_review_id": 72, "in_reply_to_id": 500, "user": {"login": "alice"},
+                        "created_at": "2026-10-24T11:01:00Z", "path": "TauCetiRoadmap/Foo/Suggested.lean",
+                        "line": None, "original_line": 4, "body": "Added."}]
+    got = prbatch.PullReader(BatchGH({905: (pull, reviews, comments, inline)}), REPO, [905], 15).get(905)
+    assert [c.get("in_reply_to_id") for c in got.inline] == [None, None, 500]
+    mine, theirs = events_from_api(got.reviews, got.comments, got.inline), events_from_api(reviews, comments, inline)
+    assert mine == theirs and [e.reply_to for e in mine if e.ref.startswith("inline-")] == [0, 0, 500]
+    assert [e.ref for e in mine if e.changes_requested] == ["review-71"]
 
 
 @pytest.mark.parametrize("more", [("reviews",), ("comments",), ("labels",), ("review-71",)])

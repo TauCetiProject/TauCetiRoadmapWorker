@@ -20,6 +20,10 @@ Ported from the maintainer's label-sync.sh, review-batch.sh and mk-reply.py:
   agent works stays unanswered. A reply without the record (posted before it existed) acknowledges
   everything older than itself, as every reply used to; once a pull request has a recorded reply,
   later replies without one acknowledge nothing.
+* `unanswered_errors` is the part of `unanswered` that points out errors (a review in state
+  CHANGES_REQUESTED, an inline comment its thread has not answered, or words that state an error or
+  ask for a correction: `states_errors`). While one stands, the AI review's acceptance label is off
+  the pull request (`intake.errors_hold`), whoever wrote the review (the owner's rule of 2026-11-21).
 * `guard_reply` keeps the first 40 characters of our reply free of review-tool names: otherwise
   `classify` would read our reply as a review and flip the pull request back to awaiting-author.
 * `build_reply` turns a fix report into one bullet per finding. The closing validation sentence
@@ -29,6 +33,7 @@ Ported from the maintainer's label-sync.sh, review-batch.sh and mk-reply.py:
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
@@ -76,6 +81,8 @@ class Event:
     review_id: int = 0       # the PR review this is (a review) or belongs to (an inline comment)
     ref: str = ""            # the record on GitHub: review-<id>, comment-<id> or inline-<id>
     version: str = ""        # `text_version` of its text as GitHub holds it
+    changes_requested: bool = False   # a PR review in state CHANGES_REQUESTED
+    reply_to: int = 0        # an inline comment: the inline comment of its thread it answers (in_reply_to_id)
 
 
 def text_version(body: str) -> str:
@@ -297,18 +304,29 @@ def acknowledged(events: list[Event], ours: set[str], markers: list[str], housek
     return seen, before
 
 
+def feedback(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
+             ignore: set[str] = frozenset(), maintainers: set[str] = frozenset(),
+             maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX, owner: str = "") -> list[Event]:
+    """Every review and comment that asks the author for an answer, answered or not, oldest first: a
+    review (`is_review`), and an inline comment that is one on its own terms or belongs to one."""
+    ours_l = {o.lower() for o in ours}
+
+    def review(e: Event) -> bool:
+        return is_review(e, ours_l, markers, ignore, maintainers, maintainer_prefix, owner, housekeeping)
+    reviewing = {e.review_id for e in events if e.ref.startswith("review-") and review(e)}
+    return [e for e in sorted(events, key=lambda e: e.t)
+            if review(e) or (e.ref.startswith("inline-") and e.review_id in reviewing)]
+
+
 def unanswered(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
                ignore: set[str] = frozenset(), maintainers: set[str] = frozenset(),
                maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX, owner: str = "") -> list[Event]:
     """Every review and comment no reply acknowledges, oldest first (not only the latest), a
     maintainer's review under the owner's login included. An inline comment counts when the review
-    it belongs to does, or on its own terms. An acknowledged review edited since is unanswered again."""
+    it belongs to does, or on its own terms (`feedback`). An acknowledged review edited since is
+    unanswered again."""
     ours_l = {o.lower() for o in ours}
     seen, before = acknowledged(events, ours_l, markers, housekeeping, maintainers, maintainer_prefix, owner)
-
-    def review(e: Event) -> bool:
-        return is_review(e, ours_l, markers, ignore, maintainers, maintainer_prefix, owner, housekeeping)
-    reviewing = {e.review_id for e in events if e.ref.startswith("review-") and review(e)}
     # The board's own AI reviews supersede one another: only the latest one (whatever its verdict) can
     # still wait for an answer; an earlier one, of an older head or of a disputed head reviewed again,
     # is settled by the review that followed it (2026-11-04: five accepted pull requests sat
@@ -320,9 +338,147 @@ def unanswered(events: list[Event], ours: set[str], markers: list[str], housekee
     carried = [e for e in ai if CARRIED_REVIEW.match(undecorated(e.body or ""))]
     of_heads = [e for e in ai if not CARRIED_REVIEW.match(undecorated(e.body or ""))]
     superseded = {e.ref for e in of_heads[:-1]} | {e.ref for e in carried[:-1]}
-    return [e for e in sorted(events, key=lambda e: e.t)
-            if (review(e) or (e.ref.startswith("inline-") and e.review_id in reviewing))
-            and (e.ref, e.version) not in seen and e.t > before and e.ref not in superseded]
+    return [e for e in feedback(events, ours_l, markers, housekeeping, ignore, maintainers, maintainer_prefix, owner)
+            if (e.ref, e.version) not in seen and e.t > before and e.ref not in superseded]
+
+
+# --- reviews that point out errors (the owner's rule of 2026-11-21) ------------------------------------
+#
+# "If a pull request that says the AI found no error gets a new review pointing out errors, it loses the
+# label until fixed, whoever wrote the review." `unanswered_errors` is that review; `intake.errors_hold`
+# turns it into the label's state.
+
+# The prose of a review: HTML comments (records, markers), fenced code blocks, code spans and quoted
+# lines are someone else's words or code, not the reviewer's claims.
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?^[ \t]*\1[ \t]*$", re.DOTALL | re.MULTILINE)
+_CODE_SPAN = re.compile(r"``.+?``|`[^`\n]+`", re.DOTALL)
+_QUOTED = re.compile(r"^[ \t]*>.*$", re.MULTILINE)
+# Removed before the cues are looked for: the negated forms of an error claim ("no errors", "found no
+# error", "did not find any errors", "did not see anything wrong", "no issues", "without error", "nothing
+# wrong", "error-free", "is not wrong", "Errors: none") and the mathematical terms that only sound like
+# one ("error term", "error bound", "error estimate", "error function").
+_ERROR_NOUN = r"(?:errors?|mistakes?|issues?|problems?|typos?|counterexamples?)"
+NEGATED = re.compile(
+    r"\bno\s+(?:[\w-]+\s+){0,2}?" + _ERROR_NOUN + r"\b"
+    r"|\b(?:did|do|does|could|can|ca|have|has|had)(?:\s+not|n[’']t|not)\s+(?:[\w-]+\s+){0,2}?"
+    r"(?:find|found|see|seen|spot|spotted|notice|noticed)\s+"
+    r"(?:(?:[\w-]+\s+){0,4}?" + _ERROR_NOUN + r"|anything\s+(?:[\w-]+\s+)?(?:wrong|incorrect|false))\b"
+    r"|\bwithout\s+(?:any\s+)?" + _ERROR_NOUN + r"\b"
+    r"|\b(?:error|mistake|typo)[- ]free\b"
+    r"|\bnothing\s+(?:[\w-]+\s+)?(?:wrong|incorrect|false)\b"
+    r"|\b(?:is|are|was|were)(?:\s+not|n[’']t)\s+(?:[\w-]+\s+)?(?:wrong|incorrect|false)\b"
+    r"|\b" + _ERROR_NOUN + r"(?:\s+found)?\s*:\s*(?:none|no)\b"
+    r"|\berror[- ](?:terms?|bounds?|estimates?|functions?)\b",
+    re.IGNORECASE)
+
+
+def prose(text: str) -> str:
+    """A review's text in the reviewer's own words: without HTML comments, fenced code blocks, code spans
+    and quoted lines (`> ...`)."""
+    for pattern in (_HTML_COMMENT, _FENCE, _CODE_SPAN, _QUOTED):
+        text = pattern.sub(" ", text)
+    return text
+
+
+@functools.lru_cache(maxsize=16)
+def _cues_re(cues: tuple[str, ...]) -> re.Pattern:
+    phrases = [r"\s+".join(re.escape(word) for word in cue.split()) for cue in cues if cue.split()]
+    if not phrases:
+        return re.compile(r"(?!)")
+    return re.compile(r"\b(?:" + "|".join(phrases) + r")(?:s|es|ly)?\b", re.IGNORECASE)
+
+
+def states_errors(text: str, cues: list[str] | tuple[str, ...]) -> bool:
+    """Whether a review's own words state an error or ask for a correction: one of `cues` (`[replies]
+    error_cues`) in its `prose`, once the negated forms are removed (`NEGATED`). A cue matches as whole
+    words, in any case, with any spacing inside a phrase, and with a plural or `-ly` ending (`error`
+    matches `errors`, `incorrect` matches `incorrectly`). Conservative: a review that says it found no
+    errors and asks a question does not match, nor one that lists gaps against its source and asks
+    whether an assumption can go; a gap is not an error of the text."""
+    return bool(_cues_re(tuple(cues)).search(NEGATED.sub(" ", prose(text or ""))))
+
+
+def _inline_id(e: Event) -> int:
+    try:
+        return int(e.ref.split("-", 1)[1]) if e.ref.startswith("inline-") else 0
+    except ValueError:
+        return 0
+
+
+def answered_in_thread(c: Event, events: list[Event], ours: set[str], owner: str = "") -> bool:
+    """Whether the thread of an inline comment answers it: a later inline comment of the same thread
+    (GitHub's `in_reply_to_id` leads a reply to the comment it answers) by someone who speaks for the
+    author (`speaks_for_author`: the author, or another answerer in reply form)."""
+    by_id = {_inline_id(e): e for e in events if _inline_id(e)}
+    ours_l = {o.lower() for o in ours}
+
+    def root(e: Event) -> int:
+        seen = {_inline_id(e)}
+        while e.reply_to and e.reply_to not in seen:
+            seen.add(e.reply_to)
+            if e.reply_to not in by_id:
+                return e.reply_to
+            e = by_id[e.reply_to]
+        return _inline_id(e)
+    thread = root(c)
+    return any(e.t > c.t and root(e) == thread and speaks_for_author(e, ours_l, owner)
+               for e in by_id.values())
+
+
+def _pointing(candidates: list[Event], events: list[Event], ours: set[str], cues,
+              owner: str) -> list[tuple[Event, str]]:
+    """(event, why) for each of `candidates` (reviews and comments asking for an answer) that points out
+    errors. An inline comment of an approving review belongs to the approval and counts for nothing."""
+    approvals = {e.review_id for e in events if e.approved and e.ref.startswith("review-") and e.review_id}
+    open_inline = {c.ref for c in candidates if c.ref.startswith("inline-")
+                   and c.review_id not in approvals and not answered_in_thread(c, events, ours, owner)}
+    open_reviews = {c.review_id for c in candidates if c.ref in open_inline and c.review_id}
+    out = []
+    for e in candidates:
+        if e.ref.startswith("inline-") and e.review_id in approvals:
+            continue
+        why = ("changes requested" if e.changes_requested
+               else "an inline comment its thread has not answered"
+               if e.ref in open_inline or (e.ref.startswith("review-") and e.review_id in open_reviews)
+               else "its words state an error" if states_errors(e.body, cues) else "")
+        if why:
+            out.append((e, why))
+    return out
+
+
+def unanswered_errors(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
+                      cues: list[str] | tuple[str, ...], ignore: set[str] = frozenset(),
+                      maintainers: set[str] = frozenset(), maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX,
+                      owner: str = "") -> list[tuple[Event, str]]:
+    """The unanswered reviews that point out errors, oldest first, each with why: of the reviews and
+    comments `unanswered` returns (with its filters: a login of the ignore list, an answerer's
+    housekeeping note, a reply, an approval and the author's side never count), those that
+    (a) are a pull-request review in state CHANGES_REQUESTED ("changes requested"),
+    (b) are, or are a review that has, an inline comment no later comment of its thread by the author's
+        side answers (`answered_in_thread`; "an inline comment its thread has not answered"), or
+    (c) state an error or ask for a correction in their own words (`states_errors` with `cues`, `[replies]
+        error_cues`; "its words state an error").
+    An inline comment of an approving review counts for nothing. Empty when there is none: the
+    predicate holds exactly when the list is not empty. Every review it returns is one `unanswered`
+    returns, so on a pull request the workers manage it comes with `awaiting-author` (unless a configured
+    approver approved the head, which clears both awaiting labels)."""
+    pending = unanswered(events, ours, markers, housekeeping, ignore, maintainers, maintainer_prefix, owner)
+    return _pointing(pending, events, {o.lower() for o in ours}, cues, owner)
+
+
+def errors_reviewed(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],
+                    cues: list[str] | tuple[str, ...], ignore: set[str] = frozenset(),
+                    maintainers: set[str] = frozenset(), maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX,
+                    owner: str = "") -> bool:
+    """Whether a review that points out errors (as `unanswered_errors` reads one) is on the pull request,
+    answered or not, the board's own AI reviews aside (their verdicts take the label off and put it back).
+    The worker keeps nothing between runs: this is how it tells that such a review may have taken the
+    acceptance label off (`intake.sync_pr_reviews`, for `[prreview] carry_accept`)."""
+    ours_l = {o.lower() for o in ours}
+    asked = [e for e in feedback(events, ours_l, markers, housekeeping, ignore, maintainers, maintainer_prefix, owner)
+             if not AI_REVIEW.match(undecorated(e.body or ""))]
+    return bool(_pointing(asked, events, ours_l, cues, owner))
 
 
 REPLY_PREFIX = "Reply to the review comments above, finding by finding:\n\n"

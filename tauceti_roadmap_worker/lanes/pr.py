@@ -144,7 +144,8 @@ def inline_events(items: list[dict]) -> list[replies.Event]:
     return [replies.Event(c.get("created_at", ""), (c.get("user") or {}).get("login", ""),
                           f"(on `{c.get('path')}` line {c.get('line') or c.get('original_line')}) "
                           f"{c.get('body') or ''}", review_id=c.get("pull_request_review_id") or 0,
-                          ref=_ref("inline", c), version=replies.text_version(c.get("body") or ""))
+                          ref=_ref("inline", c), version=replies.text_version(c.get("body") or ""),
+                          reply_to=c.get("in_reply_to_id") or 0)
             for c in items]
 
 
@@ -160,7 +161,8 @@ def events_from_api(reviews: list[dict], comments: list[dict], inline: list[dict
     out = [replies.Event(r.get("submitted_at") or "", (r.get("user") or {}).get("login", ""), r.get("body") or "",
                          approved=r.get("state") == "APPROVED", commit=r.get("commit_id") or "",
                          review_id=r.get("id") or 0, ref=_ref("review", r),
-                         version=replies.text_version(r.get("body") or ""))
+                         version=replies.text_version(r.get("body") or ""),
+                         changes_requested=r.get("state") == "CHANGES_REQUESTED")
            for r in reviews if r.get("submitted_at") and not dismissed_or_empty(r)]
     out += [replies.Event(c.get("created_at", ""), (c.get("user") or {}).get("login", ""), c.get("body") or "",
                           ref=_ref("comment", c), version=replies.text_version(c.get("body") or ""))
