@@ -55,6 +55,7 @@ from . import (
     openroadmaps,
     overlaps,
     paths,
+    prbatch,
     prompts,
     references,
     sources,
@@ -1021,7 +1022,10 @@ def api_budget(gh, repo: str) -> list[str]:
 
 
 def board_cmd(args) -> int:
-    """A board maintenance run, ending with the REST requests it made and the token's budget."""
+    """A board maintenance run, ending with the REST requests it made and the token's budget. Its
+    reads of git objects at full commit shas go through the object cache in the state directory
+    (`prbatch.use_cache`; it stays off when the file cannot be opened), and it ends with what that
+    cache answered."""
     if args.step and args.action != "errata":
         raise SystemExit(f"board {args.action}: unexpected argument {args.step!r}")
     if args.prune_order and args.action != "sync":
@@ -1033,11 +1037,13 @@ def board_cmd(args) -> int:
     cfg = _load(args)
     ctx = _bot_context(args, cfg, dry=args.dry_run or not args.yes)
     ctx.board.incremental = True        # one run reads the board many times: after the first, only what changed
+    prbatch.use_cache(cfg.state_dir() / "git-objects.sqlite")
     try:
         return board_run(args, cfg, ctx)
     finally:
-        for line in api_budget(ctx.gh, cfg.repositories.board_repo()):
+        for line in api_budget(ctx.gh, cfg.repositories.board_repo()) + prbatch.cache_lines():
             print(line)
+        prbatch.use_cache(None)
 
 
 def board_run(args, cfg, ctx) -> int:
