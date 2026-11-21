@@ -102,6 +102,8 @@ README; the supplier replacements and duplication removals; and anything unresol
 
 <!-- include: sections/readme-shape.md -->
 
+<!-- include: sections/record.md -->
+
 <!-- include: sections/lean-form.md -->
 
 <!-- include: sections/dependencies.md -->

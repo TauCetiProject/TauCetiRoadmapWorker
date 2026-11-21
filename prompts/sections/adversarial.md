@@ -56,8 +56,10 @@ For EVERY theorem, identity, definition and convention:
    a stated theorem, open the source there and check the step at the generality restated here: a
    source proves its lemmas in its own setting.
 9. **Duplication by object.** Grep the pinned Mathlib and Tau Ceti for the objects (structure
-   fields, operators, hypotheses), not only for our declaration names. What exists at the pins is
-   deleted and cited in the supplier contracts with its exact name and file. When you rely on what a
+   fields, operators, hypotheses), not only for our declaration names. What Mathlib has, and what
+   Tau Ceti has of a new roadmap's statements, is deleted and cited in the supplier contracts with
+   its exact name and file; an item of a roadmap on main that the pinned Tau Ceti now proves stays
+   and names the declaration (the section on the roadmap as a record). When you rely on what a
    native definition says, quote it at the pin and note what it does not include (a separation
    axiom, nonemptiness, measurability). Every claim that a library "has", "lacks" or "proves"
    something, or that a statement can be ported from an existing formalization, is checked at the

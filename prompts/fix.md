@@ -120,6 +120,8 @@ other roadmaps cite that changed).
 
 <!-- include: sections/readme-shape.md -->
 
+<!-- include: sections/record.md -->
+
 <!-- include: sections/dependencies.md -->
 
 <!-- include: sections/adversarial.md -->

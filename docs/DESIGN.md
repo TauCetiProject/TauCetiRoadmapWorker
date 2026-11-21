@@ -262,6 +262,20 @@ Agents fetch what they need themselves, within rules:
   stands; roadmaps written in the older order are brought into this one by a pure reordering
   (`layout`), with their openings rewritten by a checked pass (`overview`), and neither changes the
   AI acceptance; a review never raises the older order.
+- What a revision keeps (the owner's rule of 2026-11-21): a roadmap on main is also the record of
+  what the library contains (the project site's structure page and each roadmap's generated
+  `STATUS.md`, whose coverage block is keyed by the layer ids, read its layers). Completed layers,
+  definitions, theorems, Checks and worked examples stay in the README with their readable
+  statements, under stable layer ids (no id renumbered to another subject, none reused), and a
+  completed item names the Tau Ceti declarations that realise it on an `*In Tau Ceti:*` line.
+  "Cite, do not restate" applies to what Mathlib has, to what another roadmap owns, and to a new
+  roadmap's intended statements that Tau Ceti already has, never to an existing roadmap's own
+  items; `Suggested.lean` still does not restate with `sorry` what the pins prove
+  (`prompts/sections/record.md`). A revision that removes a layer or item the README on main has,
+  changes the subject of a layer id, or reduces a completed item to a declaration name is a finding
+  (P1) whose repair is to restore it under its id with its statement; the pull-request review reads
+  the layers at the merge base beside the head's (`lanes.prreview.layers_section`), and the
+  `readme-ids-missing` count skips the names on an `*In Tau Ceti:*` line.
 - What a review is (the owner's rule of 2026-11-18): a referee's report with three kinds of remark,
   findings (P1, P2: they alone decide the verdict), small corrections and format notes (numbered
   apart, never blocking), written in plain words (`prompts/sections/remarks.md`). The gate's
@@ -277,7 +291,8 @@ Agents fetch what they need themselves, within rules:
   examples are padding: reviews of our own packages report them as small corrections asking for
   their deletion, and a statable headline that is absent as a finding (P2). README API bullets and Checks state their facts in prose and carry a backticked Lean name
   only for a declaration of `Suggested.lean`, so a name is a claim and `readme-ids-missing` checks
-  every one. No gate counts declarations or examples; the text gate still refuses an admitted
+  every one (a name on a completed item's `*In Tau Ceti:*` line is a library declaration, not a
+  claim). No gate counts declarations or examples; the text gate still refuses an admitted
   `example`.
 - Lean imports in `Suggested.lean`: the single line `import Mathlib` followed only by the
   individual `TauCeti.*` modules actually used; never `Mathlib.<submodule>` lines (the maintainer's

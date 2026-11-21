@@ -275,12 +275,13 @@ MAP_SENTENCE = re.compile(r"\b(?:is|are)\s+now\b|\breads?\s+as\b|\bresolves?\s+(
 
 
 # How a revision keeps what it renames citable, as the report tells the agent that repairs it.
-KEEP_IDS = ("Each of these is repaired in this folder, and the roadmaps that cite it need no change. An id "
-            "(`§1.2`, `A1.2`, `Layer 3`) stays citable when the README says where it went: a row of a table whose "
-            "header names the earlier numbering (`| Former label | Now |`), or a sentence such as \"A1.2 is now "
-            "§1.2\". A heading anchor (`#old-heading-slug`) stays linkable when the line "
-            "`<a id=\"old-heading-slug\"></a>` stands before the renamed heading, with a blank line between; "
-            "the gate allows an anchor tag whose id another roadmap links to.")
+KEEP_IDS = ("Each of these is repaired in this folder, and the roadmaps that cite it need no change. A layer, "
+            "section or item the README on main has (`§1.2`, `A1.2`, `Layer 3`) keeps its id and its subject: "
+            "restore it under that id with its statement (the section on the roadmap as a record); a note such as "
+            "\"A1.2 is now §1.2\" does not replace it. A heading anchor (`#old-heading-slug`) of a heading whose "
+            "words changed while its id stayed stays linkable when the line `<a id=\"old-heading-slug\"></a>` "
+            "stands before the heading, with a blank line between; the gate allows an anchor tag whose id another "
+            "roadmap links to.")
 
 
 def _label(c: Citation) -> re.Pattern:
@@ -775,7 +776,7 @@ def _copy_text(copy: Copy, texts: list[tuple[str, str, str]]) -> list[str]:
               "so another pull request merged it since. The README has "
               f"{len(copy.main.splitlines())} lines on main and {len(copy.head.splitlines())} at this head, which "
               f"has {kept}% of main's lines. The two texts cannot both merge: this one becomes a revision of "
-              "main's (main merged into the branch, every id main defines kept or mapped), or is closed in its "
+              "main's (main merged into the branch, every id main defines kept with its subject), or is closed in its "
               "favour. A head that has nearly all of main's lines was stacked on the pull request that merged, "
               "and merging main into it is the whole repair.")]
     missing: dict[str, list[Removal]] = {}

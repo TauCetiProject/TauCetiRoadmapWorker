@@ -56,8 +56,9 @@ libraries (__LIBRARY__). If it is right, repair it (or repair it correctly and s
 suggested repair would be wrong); if it is wrong, gather the evidence. Repair the pattern, not
 only the line: search the roadmap for other occurrences of the defect, and run the adversarial pass
 on every statement your repair adds or changes. Keep README and Lean in agreement, and do not widen
-the scope. Make the smallest change that repairs the point: correct the passage or delete it, and
-add a statement, a Check or a paragraph only when the point asks for one. Every sentence a repair
+the scope. Make the smallest change that repairs the point: correct the passage or delete it (never
+a layer or item of the README on main: the section on the roadmap as a record), and add a
+statement, a Check or a paragraph only when the point asks for one. Every sentence a repair
 adds is reviewed again, and a repair that adds more than it mends starts another round. Then build
 and gate:
 
@@ -78,6 +79,8 @@ or models in the first line of any section. Then the exact build outcome and the
 <!-- include: sections/lean-form.md -->
 
 <!-- include: sections/readme-shape.md -->
+
+<!-- include: sections/record.md -->
 
 <!-- include: sections/dependencies.md -->
 

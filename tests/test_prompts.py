@@ -170,6 +170,49 @@ def test_reviewing_briefs_check_copyright_arrangement_and_scope(lane):
     assert text.count("**Copyright, licences and scope**") == 1                # one step asks for it
 
 
+# A roadmap on main is also the record of what the library contains: its completed layers and items stay,
+# under stable ids, and "cite, do not restate" never removes the roadmap's own items (the owner's rule; revisions
+# had cut a roadmap from ten layers to three, and replaced a completed part by a list of declaration names).
+RECORD_BRIEFS = ["design", "package", "port", "fix", "gate", "review", "review-web", "redteam", "redteam-section",
+                 "prreview"]
+RECORD_RULES = ("**Completed material stays.**", "**Layer ids are stable.**",
+                "**A completed item names what realises it.**", "*In Tau Ceti:*",
+                "It never applies to the Tau Ceti declarations that realise this roadmap's own items",
+                "\"The pinned Tau Ceti already proves this target\" is not a duplication finding",
+                "\"restore it under its id with its statement\"")
+DELETION_RULES = ("What exists at the pins is deleted", "a target that exists elsewhere is deleted",
+                  "a standard theorem restated instead of cited", "with no old → new numbering, is a small correction",
+                  "kept or mapped", "or give the old → new numbering", "Mathlib, Tau Ceti, a roadmap on main",
+                  "what they already state must be cited, not restated")
+
+
+@pytest.mark.parametrize("lane", RECORD_BRIEFS)
+def test_briefs_that_write_or_review_a_readme_keep_the_roadmaps_record(lane):
+    text = " ".join(prompts.render(lane, all_values()).split())
+    assert text.count("## The roadmap as a record") == 1
+    for phrase in RECORD_RULES:
+        assert phrase in text, f"{lane}: {phrase}"
+
+
+@pytest.mark.parametrize("lane", prompts.BRIEFS)
+def test_no_brief_deletes_what_the_pinned_libraries_have_without_distinction(lane):
+    text = " ".join(prompts.render(lane, all_values()).split())
+    for phrase in DELETION_RULES:
+        assert phrase not in text, f"{lane}: {phrase}"
+
+
+def test_the_pull_request_review_compares_a_revision_with_the_readme_at_its_merge_base():
+    text = " ".join(prompts.render("prreview", all_values()).split())
+    assert "the layers of its README at the merge base that the head lacks or gives another title" in text
+    assert ("When the pull request revises a roadmap on the base, first compare the README at the merge base with "
+            "the head, layer by layer and item by item") in text
+    assert ("a layer or item the head removes, a layer id whose subject it changes, and a completed item reduced "
+            "to a declaration name are each a finding (P1)") in text
+    # The repair of a pull request (the gate brief) deletes no layer or item of the README on main.
+    gate = " ".join(prompts.render("gate", all_values()).split())
+    assert "correct the passage or delete it (never a layer or item of the README on main" in gate
+
+
 def test_the_fix_brief_leaves_the_human_reviewers_section_to_the_humans():
     text = " ".join(prompts.render("fix", all_values()).split())
     assert "`## For the human reviewers` section is written for the humans who approve" in text

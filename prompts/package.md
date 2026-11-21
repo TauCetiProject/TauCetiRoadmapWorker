@@ -94,6 +94,8 @@ write "the congruence kernel is closed under inverses", not a new declaration.
 
 <!-- include: sections/readme-shape.md -->
 
+<!-- include: sections/record.md -->
+
 <!-- include: sections/lean-form.md -->
 
 <!-- include: sections/dependencies.md -->

@@ -1006,8 +1006,11 @@ class Lane:
                     f"- **Library near-matches**: `{found[0]}` lists, for each of the {found[2]} declarations of "
                     "`Suggested.lean`, what Loogle returns for the constants of its conclusion and what LeanSearch returns "
                     f"for its docstring ({found[1]} with a same-name hit). Leads, not verdicts: open each candidate at the "
-                    "pinned Mathlib or Tau Ceti commit and compare statements. A target the pin already proves is a finding "
-                    "(the roadmap cites it and drops the target); a weaker or more special library statement is not.")
+                    "pinned Mathlib or Tau Ceti commit and compare statements. A target of a new roadmap that the pin "
+                    "already proves is a finding (the roadmap cites it and drops the target); an item the README on main "
+                    "already has stays in the README and names the declaration, and only its restatement leaves "
+                    "`Suggested.lean` (a small correction: the section on the roadmap as a record). A weaker or more "
+                    "special library statement is not a match.")
         sigs = ws.extra.get("signatures")
         if sigs:
             path, total, flagged, reason = sigs

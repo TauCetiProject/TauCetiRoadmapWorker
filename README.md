@@ -203,6 +203,12 @@ A roadmap README opens with an overview a mathematician can read cold (what it b
 theorems with their hypotheses, the few neighbours that place it in Tau Ceti, a guide to the layers),
 then its conventions and layers, with scope and ownership and the exact supplier contracts at the end,
 before the references. Checks are sanity checks for key definitions and theorems, with no quota.
+A roadmap on main is also the record of what the library contains: a revision keeps its completed
+layers and items with their readable statements under stable layer ids, each completed item naming
+the Tau Ceti declarations that realise it (`*In Tau Ceti:* …`), and "cite, do not restate" applies
+to what Mathlib has, to what another roadmap owns and to a new roadmap's statements that Tau Ceti
+already has, never to an existing roadmap's own items (`prompts/sections/record.md`); a review
+raises a removed or renumbered layer, or a completed item reduced to a declaration name, as a finding.
 Roadmaps written before have scope and suppliers near the top; that order is never raised by a
 review, and three commands bring open pull requests into line (dry runs unless `--yes`):
 

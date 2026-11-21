@@ -31,14 +31,18 @@ Shape (headings as upstream uses them), in this order:
    hypotheses and conclusion. An API bullet carries a backticked Lean name only when that
    declaration exists in `Suggested.lean` (a headline statement or one of the few definitions it
    needs): a backticked name of this roadmap's own is a claim that `Suggested.lean` declares it,
-   and the gate checks every such claim. A proposed name that is not declared is written in prose
-   ("a map we call the transfer"), so a reader can tell a proposal from a declaration. Every layer
-   ends with `### Examples` and `### Dependencies`.
+   and the gate checks every such claim. A name on a completed item's `*In Tau Ceti:*` line is a
+   library declaration, not such a claim (the section on the roadmap as a record). A proposed name
+   that is not declared is written in prose ("a map we call the transfer"), so a reader can tell a
+   proposal from a declaration. Every layer ends with `### Examples` and `### Dependencies`.
 5. Optionally `## Worked examples` and `## Downstream consumers`.
 6. `## Scope and ownership`: what this roadmap owns and what it leaves to named roadmaps, by section.
-   This is the only place that says "already in the library" or "stated by roadmap X"; a target that
-   exists elsewhere is deleted, not left as a "(removed)" stub, and listed here as a deferral. A kept
-   variant says in one clause how it differs.
+   This is the only place that says "stated by roadmap X", and the only place that says "already in
+   the library" of a target this roadmap does not own: one Mathlib has, one another roadmap owns, or,
+   for a new roadmap, one Tau Ceti already has. Such a target is deleted, not left as a "(removed)"
+   stub, and listed here as a deferral. A completed item of this roadmap is never deleted: it stays
+   in its layer and names the declarations that realise it (the section on the roadmap as a
+   record). A kept variant says in one clause how it differs.
 7. `## Exact supplier contracts`: per supplier a `### From …` subsection (`From Mathlib`, `From Tau
    Ceti`, `From TauCetiRoadmap.<X>`), the declarations or sections consumed, by name, and what is
    assumed of them.

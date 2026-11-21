@@ -127,6 +127,8 @@ one bullet for each question a human decides, or `- none`.
 
 <!-- include: sections/adversarial.md -->
 
+<!-- include: sections/record.md -->
+
 <!-- include: sections/dependencies.md -->
 
 <!-- include: sections/lean-form.md -->
