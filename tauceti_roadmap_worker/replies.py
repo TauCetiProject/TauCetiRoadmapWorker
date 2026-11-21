@@ -462,9 +462,30 @@ def unanswered_errors(events: list[Event], ours: set[str], markers: list[str], h
     An inline comment of an approving review counts for nothing. Empty when there is none: the
     predicate holds exactly when the list is not empty. Every review it returns is one `unanswered`
     returns, so on a pull request the workers manage it comes with `awaiting-author` (unless a configured
-    approver approved the head, which clears both awaiting labels)."""
+    approver approved the head, which clears both awaiting labels).
+
+    On a pull request whose author is the only answerer (an author outside the pool), the author's own later
+    comment answers a review, whatever its first words (`spoke_since`): such an author writes in their own
+    form, never in the reply form the pool uses, and may open every comment with one of the review markers
+    (2026-11-21: an accepted pull request was held over a self-review, posted from a second account
+    seventeen days earlier, that its author had answered nine minutes later under ":robot: AI-assisted
+    reply"). An inline comment still waits for an answer in its thread."""
+    ours_l = {o.lower() for o in ours}
     pending = unanswered(events, ours, markers, housekeeping, ignore, maintainers, maintainer_prefix, owner)
-    return _pointing(pending, events, {o.lower() for o in ours}, cues, owner)
+    if owner and ours_l == {owner.lower()}:
+        last = spoke_since(events, owner, maintainers, maintainer_prefix)
+        pending = [e for e in pending if e.ref.startswith("inline-") or e.user.lower() == owner.lower() or e.t >= last]
+    return _pointing(pending, events, ours_l, cues, owner)
+
+
+def spoke_since(events: list[Event], owner: str, maintainers: set[str] = frozenset(),
+                maintainer_prefix: str = MAINTAINER_REVIEW_PREFIX) -> str:
+    """The time of the author's last word on the pull request: the latest comment or review under the
+    author's login that is not an inline comment, not one of the board's AI reviews and not a maintainer's
+    review written under that login; '' when there is none."""
+    return max((e.t for e in events if e.user.lower() == owner.lower() and not e.ref.startswith("inline-")
+                and not AI_REVIEW.match(undecorated(e.body or ""))
+                and not is_maintainer_review(e, maintainers, maintainer_prefix)), default="")
 
 
 def errors_reviewed(events: list[Event], ours: set[str], markers: list[str], housekeeping: list[str],

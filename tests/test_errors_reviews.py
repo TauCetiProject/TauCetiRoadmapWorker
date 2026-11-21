@@ -171,6 +171,39 @@ def test_the_filters_of_unanswered_hold_for_errors_too():
         assert pending(events([review(78, "2026-11-21T09:00:00Z", text)])) == []
 
 
+def test_an_outside_authors_own_later_comment_answers_a_review_whatever_its_first_words():
+    """An author outside the pool answers in their own words, often under a robot marker; a comment by a
+    second account seventeen days old, answered nine minutes later, held an accepted pull request."""
+    said = comment(805, "2026-11-04T13:34:32Z", ":robot: AI-assisted self-review. " + LISTING, user=OTHER)
+    answer = comment(806, "2026-11-04T13:43:23Z", ":robot: AI-assisted reply; I have read it. 3.4 now assumes p odd.")
+    assert pending(events(comments=[said])) == [("comment-805", "its words state an error")]
+    assert pending(events(comments=[said, answer])) == []
+    assert replies.spoke_since(events(comments=[said, answer]), AUTHOR) == "2026-11-04T13:43:23Z"
+    # A review that comes after the author's last word waits for an answer.
+    later = comment(807, "2026-11-05T09:00:00Z", LISTING, user=REVIEWER)
+    assert pending(events(comments=[said, answer, later])) == [("comment-807", "its words state an error")]
+    # A review in state CHANGES_REQUESTED is answered the same way.
+    assert pending(events([CHANGES], [comment(809, "2026-11-21T10:00:00Z", "🤖 Written with a model. Fixed both.")])) == []
+    # One of the board's AI reviews under the author's login is not the author's word.
+    ai = comment(810, "2026-11-04T14:00:00Z", "🤖 AI review (claude, fable) of abc\n\nVerdict: APPROVE")
+    assert replies.spoke_since(events(comments=[said, ai]), AUTHOR) == ""
+    assert pending(events(comments=[said, ai])) == [("comment-805", "its words state an error")]
+    # An inline comment still waits for an answer in its thread.
+    assert pending(events([CHANGES], [answer.copy() | {"created_at": "2026-11-21T10:00:00Z"}], THREADS)) == [
+        ("inline-501", "an inline comment its thread has not answered"),
+        ("inline-502", "an inline comment its thread has not answered")]
+
+
+def test_on_a_pool_pull_request_only_a_reply_in_reply_form_answers():
+    """Where other answerers speak for the author and the author's login also posts reviews, a marked
+    comment under that login stays what it was: no answer."""
+    said = comment(805, "2026-11-04T13:34:32Z", LISTING, user=OTHER)
+    marked = comment(806, "2026-11-04T13:43:23Z", ":robot: AI-assisted note on the layout of the README.")
+    pool = (AUTHOR, "bob")
+    assert pending(events(comments=[said, marked]), ours=pool) == [("comment-805", "its words state an error")]
+    assert pending(events(comments=[said, REPLY]), ours=pool) == []
+
+
 # --- board sync: both steps, twice in each state ----------------------------------------------------------
 
 class LiveGH(ContentGH):
