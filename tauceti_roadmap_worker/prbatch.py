@@ -8,8 +8,9 @@ graphql_batch` pull requests at a time (aliased `pullRequest(number:)` fields of
 has its own hourly budget, and such a query costs a few points of it), and hands each back in the
 shapes the REST reads give (`PullData`): the dicts `lanes.pr.events_from_api` and the label and
 draft code read, field for field (`id`, `user.login`, `submitted_at`, `commit_id`, `created_at`,
-`body`, `state`, `pull_request_review_id`, `path`, `line`, `original_line`; `draft`, `labels[].name`,
-`head.sha`, `head.ref`, `head.repo.full_name`, `base.ref`), so nothing downstream changes.
+`body`, `state`, `pull_request_review_id`, `in_reply_to_id`, `path`, `line`, `original_line`; `draft`,
+`labels[].name`, `head.sha`, `head.ref`, `head.repo.full_name`, `base.ref`), so nothing downstream
+changes.
 
 A pull request with more than a page of anything (`REVIEWS` reviews, `REVIEW_COMMENTS` inline
 comments in one review, `COMMENTS` issue comments, `LABELS` labels) is read by REST, as is every pull
@@ -45,7 +46,7 @@ fragment PullFields on PullRequest {{
       commit {{ oid }}
       comments(first: {REVIEW_COMMENTS}) {{
         pageInfo {{ hasNextPage }}
-        nodes {{ databaseId createdAt path line originalLine body author {{ __typename login }} }}
+        nodes {{ databaseId createdAt path line originalLine body author {{ __typename login }} replyTo {{ databaseId }} }}
       }}
     }}
   }}
@@ -110,7 +111,8 @@ def from_node(node: dict) -> PullData:
                         "body": r.get("body") or ""})
         inline += [{"id": c.get("databaseId"), "pull_request_review_id": r.get("databaseId"),
                     "user": login(c.get("author")), "created_at": c.get("createdAt"), "path": c.get("path"),
-                    "line": c.get("line"), "original_line": c.get("originalLine"), "body": c.get("body") or ""}
+                    "line": c.get("line"), "original_line": c.get("originalLine"), "body": c.get("body") or "",
+                    "in_reply_to_id": (c.get("replyTo") or {}).get("databaseId")}
                    for c in (r.get("comments") or {}).get("nodes") or []]
     comments = [{"id": c.get("databaseId"), "user": login(c.get("author")), "created_at": c.get("createdAt"),
                  "body": c.get("body") or ""} for c in (node.get("comments") or {}).get("nodes") or []]

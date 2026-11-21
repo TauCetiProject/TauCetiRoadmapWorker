@@ -343,21 +343,28 @@ def test_a_reply_records_the_worker_that_wrote_it_and_the_head_it_answers_at(wor
 
 
 def test_a_held_logins_review_files_no_gate_round_and_moves_no_label(tmp_path, worker):
-    """`[worker] held_logins`: the host answers those logins by hand. Its sync leaves the label and
-    files no round, a gate round does not count their reviews, and the login's case does not matter."""
-    gh = PullGH(reviews=[REVIEW_A])
+    """`[worker] held_logins`: the host answers those logins by hand. Its sync leaves the labels (the
+    AI review's acceptance label too, even for a review in state CHANGES_REQUESTED) and files no round,
+    a gate round does not count their reviews, and the login's case does not matter."""
+    gh = PullGH(reviews=[dict(REVIEW_A, state="CHANGES_REQUESTED")])
+    gh.labels = ["awaiting-review", "ai-found-no-errors"]
     board = FakeBoard()
     cfg = example_config()
+    cfg.prreview.enabled = True
     cfg.worker.held_logins = [REVIEWER.upper()]
     out = intake.sync_pull_requests(SimpleNamespace(cfg=cfg, gh=gh, board=board, state=tmp_path))
     assert "#905 Foo: awaiting-review" in out and not any("GATE-" in line for line in out)
-    assert gh.labels == ["awaiting-review"] and not board.jobs
+    assert gh.labels == ["awaiting-review", "ai-found-no-errors"] and not board.jobs
     ctx = dataclasses.replace(worker(gh), cfg=cfg)
     with pytest.raises(lane_base.LaneError, match="no unanswered review"):
         prepare(ctx, gate_job())
-    # Without the setting the same review flips the label and files the round.
-    out, board = sync(tmp_path, gh)
+    # Without the setting the same review flips the label, takes the acceptance label off and files the round.
+    cfg = example_config()
+    cfg.prreview.enabled = True
+    board = FakeBoard()
+    out = intake.sync_pull_requests(SimpleNamespace(cfg=cfg, gh=gh, board=board, state=tmp_path))
     assert "#905 Foo: awaiting-author" in out and any("GATE-Foo~1 created" in line for line in out)
+    assert gh.labels == ["awaiting-author"]
 
 
 def test_no_gate_round_is_filed_while_a_review_of_a_pool_authors_pull_request_repairs_it(tmp_path):

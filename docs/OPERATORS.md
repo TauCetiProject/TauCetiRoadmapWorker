@@ -566,7 +566,7 @@ read as an instruction.
 | fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build (its dependency check never reads a roadmap on the content repository's main as an upward supplier), head check |
-| prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-found-no-errors` label (on once every folder of the head accepts, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json`; on a pool author's PR, after a review asking changes, the repair pushed onto its branch and the reply | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
+| prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-found-no-errors` label (on once every folder of the head accepts and no review that points out errors waits for an answer, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json`; on a pool author's PR, after a review asking changes, the repair pushed onto its branch and the reply | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
 headline theorems the finished roadmap will prove, stated now against the pinned Mathlib and Tau
@@ -1246,6 +1246,63 @@ of the current head is being finished. Verdicts are read only for a pull request
 has a finished review of its head, the most recent first, stopping at the first that does not
 accept. A human still approves and merges; the AI never does, and the awaiting-author and
 awaiting-review labels are left to the gate lane and `board sync`.
+
+**A review that points out errors takes the label off** (the owner's rule of 2026-11-21: a pull request
+that says the AI found no errors loses that label when a new review points out errors, until it is
+fixed, whoever wrote the review). While a review or comment by someone other than the author's side
+waits for an answer and points out errors, the label is off the pull request, whatever the AI reviews
+say (`intake.errors_hold`). Such a review is one that waits for an answer by the reading that puts
+`awaiting-author` on the pull requests the workers manage (`replies.unanswered`: a login of `[replies]
+ignore_logins` or of this host's `[worker] held_logins`, an answerer's housekeeping note, a reply, an
+approval and the author's own words never count), on any roadmap pull request the AI reviews cover, and
+that
+
+- is a GitHub review in state CHANGES_REQUESTED;
+- is, or has, an inline comment that no later comment in its thread by the author's side answers; or
+- states an error or asks for a correction in its own words: one of `[replies] error_cues` (default
+  `incorrect`, `wrong`, `false`, `counterexample`, `does not hold`, `fails`, `missing hypothesis`,
+  `missing hypotheses`, `please correct`, `please fix`, `please replace`, `reversed`, `typo`, `error`;
+  whole words in any case, a plural or `-ly` ending allowed) in its prose (code spans, code blocks,
+  quoted lines and HTML comments aside), once the negated forms are removed ("no errors", "found no
+  error", "did not find any errors", "did not see anything wrong", "no issues", "without error",
+  "nothing wrong", "is not wrong", "error-free", "Errors: none") and the mathematical terms "error term", "error bound", "error estimate" and "error
+  function". `error_cues = []` leaves the state and the threads alone.
+
+The text test is meant to be conservative. A review that says it found no errors and asks the author a
+question keeps the label, and so does one that says it found no errors and lists gaps against the source
+(what the source's definition mentions and the roadmap's does not) and asks whether an assumption could
+go: a gap against a source is not an error of the text. Such a review still waits for an answer
+(`awaiting-author`), as before. An inline comment of an approving review belongs to the approval.
+
+Both steps of `board sync` and the review lane ask the same function with the same reviews, so none
+undoes another: the pull-request step takes the acceptance label (and the approval label) off
+(`#N: ai-found-no-errors removed (a review that points out errors waits for an answer: review-71 by
+<login>, changes requested, and 2 more)`), the review step takes it off too (also while a review of the
+head is being finished) and does not put it back (`#N: ai-found-no-errors not added (...)`, every run
+while the head is accepted and the review waits), and the lane does not label an accepted head
+(`not labelled ai-found-no-errors: ...` in its summary; one already on comes off). The reviews and the
+rounds go on as if the label were there: an accepted head stays accepted and gets no new review, and on
+a pull request the workers manage a gate round is filed for the review as for any other (on another
+author's pull request, the author's own comment answers it, as it would `awaiting-author`).
+
+The label comes back once the review is answered (a reply in reply form, or a fix and its reply, as
+for `awaiting-author`) and the AI reviews accept the current head again, at the next `board sync`:
+
+- answered without a push, the accepted head is still the head, and the label is back with no new
+  review (`#N: ai-found-no-errors added (the AI review of <sha7> accepts it)`);
+- answered by a push, the label waits for the new head's acceptance: its review (filed as for any new
+  head), or an acceptance carried to it (a head that only moved, `carry_unchanged`; P3-only repairs,
+  `carry_minor`; a carried record, `carry_accept`). With `carry_accept` a carried record counts on a
+  pull request such a review may have taken the label off as on a labelled one (the worker keeps
+  nothing between runs; it reads "may have" as "a review that points out errors, answered or not, is
+  on the pull request, the board's own AI reviews aside"), so the acceptance of the repaired head
+  comes back with the reply.
+
+The review step reads the reviews, issue comments and inline comments of the open roadmap pull
+requests for this in batches (`prbatch.PullReader`, GraphQL), the first time in a run that a pull
+request needs them (one that carries the label, or one about to get it); a pull request GitHub did not
+give them for keeps its label as it is and does not get it (`#N: reviews and comments not read (...)`).
+The lane reads those of its own pull request when its review accepts.
 
 **The dependency label.** `tauceti-roadmap roadmaps dependency-labels [--label NAME] [--approval-label NAME] [--yes]` (module
 `deplabels`; the label defaults to `[prreview] dependency_label`; a dry run without `--yes`) keeps the
@@ -2009,6 +2066,9 @@ reach) is not built yet.
   `targets import-intentions`; there is nothing else to do.
 * **A draft pull request**: review it on GitHub. Your comments feed the gate lane; the reply answers
   every point, and the labels flip between awaiting-author and awaiting-review. Merging is yours.
+  A review that points out errors (requested changes, an inline comment, or words such as "false" or
+  "please fix") takes `ai-found-no-errors` off until it is answered; one that found no errors and asks a
+  question leaves it (see the AI review section).
   The reply records the exact reviews and comments it answers (an HTML comment at its end), so a
   review posted or edited while the gate works stays awaiting-author and gets its own round; a
   comment of the branch owner's acknowledges nothing once the pull request has such a reply, unless
