@@ -914,6 +914,7 @@ an operator files by hand at an accepted head (inputs `operator_check`) is not c
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
 | `skip_authors` | `[]` | never these authors' pull requests |
 | `operator_prs` | `[]` | pull request numbers whose review rounds an operator files by hand (a serial chain over a many-folder pull request); `board sync` files none for them |
+| `aggregate_prs` | `[]` | aggregate pull requests: each carries, to merge in one piece, roadmap folders that other open pull requests (its members) add and are reviewed in. An aggregate is left out of everything done roadmap by roadmap (no review round, no overlap fact, no merge-order link, no layout request), and carries `label` exactly when every roadmap folder it adds holds, at its head, the files a member holds at a head the AI review accepts; while a member's review is being finished the aggregate's label is left as it is |
 | `late_authors` | `[]` | authors whose pull requests' reviews a worker takes only after every other job it could take |
 | `late_except` | `[]` | pull request numbers of those authors that keep their ordinary place (the ones other roadmaps wait for) |
 | `parent_roadmaps` | `[]` | roadmap folders that carry sub-roadmaps below them yet are roadmaps in their own right: their README stays under review instead of being read as a family index |

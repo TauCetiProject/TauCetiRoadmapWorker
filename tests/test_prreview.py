@@ -3992,3 +3992,98 @@ def test_no_round_is_filed_for_a_head_a_human_has_approved():
     # the same head without the approval is reviewed as any other
     out, fake = sync(ContentGH([{**node(12, H1), "reviewDecision": "REVIEW_REQUIRED"}]))
     assert [j.id for j, _s, _p in fake.created] == ["PRREVIEW-Foo~1"]
+
+
+# --- aggregate pull requests: folders reviewed in their members ------------------------------------
+
+def aggregate_nodes(foo_labels=("ai-found-no-errors",), bar_labels=("ai-found-no-errors",), labels=()):
+    """Two members (#12 adds Foo at H1, #13 adds Bar at H2) and the aggregate #99, which adds both at H3."""
+    foo, bar = ("TauCetiRoadmap/Foo/README.md", "ADDED"), ("TauCetiRoadmap/Bar/README.md", "ADDED")
+    return [node(12, H1, paths=[foo], labels=foo_labels), node(13, H2, paths=[bar], labels=bar_labels),
+            node(99, H3, paths=[foo, bar], labels=labels)]
+
+
+SAME_TREES = {(H1, "TauCetiRoadmap/Foo"): "foo", (H3, "TauCetiRoadmap/Foo"): "foo",
+              (H2, "TauCetiRoadmap/Bar"): "bar", (H3, "TauCetiRoadmap/Bar"): "bar"}
+
+
+def test_an_aggregate_is_not_reviewed_and_is_labelled_when_its_members_are_accepted_with_the_same_files():
+    foo, bar = review_job(41, 1, 12, H1, "done"), review_job(42, 1, 13, H2, "done", name="Bar")
+    files = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H2)}
+    labels = f"repos/{REPO}/issues/99/labels"
+    gh = ContentGH(aggregate_nodes(), files=files, trees=SAME_TREES)
+    out, fake = sync(gh, [foo, bar], aggregate_prs=[99])
+    assert fake.created == []                                   # no review round of the aggregate
+    assert gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})]
+    assert out == ["#99: ai-found-no-errors added (aggregate: all 2 roadmap folders hold the files of accepted members)"]
+    # Labelled, and nothing changed: kept without a write.
+    gh = ContentGH(aggregate_nodes(labels=["ai-found-no-errors"]), files=files, trees=SAME_TREES)
+    assert sync(gh, [foo, bar], aggregate_prs=[99])[0] == [] and gh.writes == []
+    # Without the setting it is a pull request like any other: both its folders get a review.
+    gh = ContentGH(aggregate_nodes(), files=files, trees=SAME_TREES)
+    _out, fake = sync(gh, [foo, bar], per_run=20)
+    assert sorted(job.inputs["pr"] for job, _s, _p in fake.created) == [99, 99]
+
+
+def test_an_aggregate_loses_the_label_when_a_folder_differs_or_its_member_is_not_accepted():
+    foo, bar = review_job(41, 1, 12, H1, "done"), review_job(42, 1, 13, H2, "done", name="Bar")
+    files = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H2)}
+    gone = ("DELETE", f"repos/{REPO}/issues/99/labels/ai-found-no-errors", {})
+    # The aggregate's Bar is not the member's Bar.
+    trees = {**SAME_TREES, (H3, "TauCetiRoadmap/Bar"): "other"}
+    gh = ContentGH(aggregate_nodes(labels=["ai-found-no-errors"]), files=files, trees=trees)
+    out, _fake = sync(gh, [foo, bar], aggregate_prs=[99])
+    assert gh.writes == [gone] and out == ["#99: ai-found-no-errors removed (aggregate: Bar: differs from #13)"]
+    # Same files, but the member's review does not accept them: its own label goes, and the aggregate's.
+    blocked = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "needs_changes", H2)}
+    gh = ContentGH(aggregate_nodes(labels=["ai-found-no-errors"]), files=blocked, trees=SAME_TREES)
+    out, _fake = sync(gh, [foo, bar], aggregate_prs=[99])
+    assert gone in gh.writes and "#99: ai-found-no-errors removed (aggregate: Bar: #13 holds these files and is not accepted)" in out
+    # Not labelled and not accepted: nothing is written for the aggregate.
+    gh = ContentGH(aggregate_nodes(bar_labels=()), files=blocked, trees=SAME_TREES)
+    out, _fake = sync(gh, [foo, bar], aggregate_prs=[99])
+    assert not [w for w in gh.writes if "/issues/99/" in w[1]] and not [line for line in out if line.startswith("#99")]
+
+
+def test_an_aggregate_keeps_its_label_as_it_is_while_a_member_is_undecided():
+    foo, bar = review_job(41, 1, 12, H1, "done"), review_job(42, 1, 13, H2, "claimed", name="Bar")
+    files = verdict_file(foo, "accepted", H1)
+    for labels in ((), ("ai-found-no-errors",)):
+        gh = ContentGH(aggregate_nodes(labels=labels), files=files, trees=SAME_TREES)
+        out, _fake = sync(gh, [foo, bar], aggregate_prs=[99])
+        assert not [w for w in gh.writes if "/issues/99/" in w[1]]
+        assert out == [("#99: ai-found-no-errors not checked (aggregate: 1 of 2 roadmap folders could not be "
+                        "compared with their members)")]
+    # A folder GitHub did not answer for is not told either.
+    gh = ContentGH(aggregate_nodes(labels=["ai-found-no-errors"]), files={
+        **files, **verdict_file(review_job(42, 1, 13, H2, "done", name="Bar"), "accepted", H2)}, trees="unread")
+    out, _fake = sync(gh, [foo, review_job(42, 1, 13, H2, "done", name="Bar")], aggregate_prs=[99])
+    assert not [w for w in gh.writes if "/issues/99/" in w[1]] and any("#99: ai-found-no-errors not checked" in x for x in out)
+
+
+def test_aggregate_state_reads_the_members():
+    path_of = {"Foo": "R/Foo", "Bar": "R/Bar"}
+    members = {"Foo": [(12, H1)], "Bar": [(13, H2), (14, H1)]}
+    ids = {(H3, "R/Foo"): "foo", (H1, "R/Foo"): "foo", (H3, "R/Bar"): "bar", (H2, "R/Bar"): "old", (H1, "R/Bar"): "bar"}
+    state = lambda settled, undecided=(), ids=ids, members=members: intake.aggregate_state(
+        H3, ["Foo", "Bar"], path_of, members, ids, set(settled), set(undecided))
+    assert state({12, 14}) == (True, "all 2 roadmap folders hold the files of accepted members")
+    assert state({12, 13}) == (False, "Bar: #14 holds these files and is not accepted")       # #13 holds other files
+    assert state({12}, {14}) == (None, "1 of 2 roadmap folders could not be compared with their members")
+    assert state(set()) == (False, "Bar: #14 holds these files and is not accepted (and 1 more)")
+    assert state({12, 14}, members={"Foo": [(12, H1)], "Bar": []}) == (False, "Bar: no other open pull request carries it")
+    missing = {k: v for k, v in ids.items() if k != (H3, "R/Foo")}
+    assert state({12, 14}, ids=missing)[0] is None
+    # A folder that is not at the aggregate's head matches no member.
+    assert state({12, 14}, ids={**ids, (H3, "R/Foo"): None}) == (False, "Foo: differs from #12")
+
+
+def test_aggregate_prs_parse_are_checked_and_leave_the_listing():
+    parsed = config.parse('[project]\nname = "P"\n[prreview]\naggregate_prs = [2950]\n', "x.toml").prreview
+    assert parsed.aggregate_prs == [2950]
+    with pytest.raises(config.ConfigError, match=re.escape("prreview.aggregate_prs")):
+        config.parse('[project]\nname = "P"\n[prreview]\naggregate_prs = ["2950"]\n', "x.toml")
+    from tauceti_roadmap_worker import openroadmaps
+    gh = ContentGH(aggregate_nodes())
+    assert [x["pr"] for x in openroadmaps.inventory(gh, REPO, ("TauCetiRoadmap",))] == [12, 13, 99]
+    assert [x["pr"] for x in openroadmaps.inventory(gh, REPO, ("TauCetiRoadmap",), skip=[99])] == [12, 13]

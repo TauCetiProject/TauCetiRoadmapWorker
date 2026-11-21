@@ -206,7 +206,8 @@ def run(ctx, *, numbers=(), authors=(), others: bool = False, kinds=layout.NEEDS
     def say(line: str) -> None:
         out.append(line)
         report(line)
-    listed = openroadmaps.inventory(ctx.gh, repo, (cfg.roadmap.active_dir,), any_file=True)
+    listed = openroadmaps.inventory(ctx.gh, repo, (cfg.roadmap.active_dir,), any_file=True,
+                                    skip=cfg.prreview.aggregate_prs)
     entries = selected(ctx, listed, list(numbers), list(authors), others)
     if not entries:
         say("no pull request selected")

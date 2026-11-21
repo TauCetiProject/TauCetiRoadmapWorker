@@ -1885,6 +1885,52 @@ def review_plan(entry: dict, cfg, on_main: set[str]) -> tuple[dict[str, str], st
     return folders, ""
 
 
+def aggregate_state(head: str, folders, path_of: dict[str, str], members: dict[str, list[tuple[int, str]]],
+                    ids: dict[tuple[str, str], str | None], settled: set[int],
+                    undecided: set[int]) -> tuple[bool | None, str]:
+    """What its members say of an aggregate pull request (`[prreview] aggregate_prs`) at `head`:
+    (True, how many folders) when every roadmap folder in `folders` holds there the files a settled
+    member holds at its own head; (False, why) when a folder does not; (None, why) when that cannot be
+    told this run. `members`: folder -> the (number, head) of the other open pull requests that add or
+    edit it; `ids`: (commit, path) -> the git object id of the folder there (`prbatch.tree_ids`: None
+    for a folder that is not there, no entry for one GitHub did not answer for); `settled`: the
+    members the AI review accepts at their current heads and that carry the label after this run;
+    `undecided`: the members whose label this run leaves as it is (a review of the head is being
+    finished, or GitHub did not answer). A folder whose files a member holds only at a head that is
+    not accepted counts against the aggregate; one whose member is undecided, or was not read, is
+    not told."""
+    waiting, unknown = [], []
+    for folder in sorted(folders):
+        path = path_of[folder]
+        if (head, path) not in ids:
+            unknown.append(folder)
+            continue
+        mine = ids[(head, path)]
+        same, unread = [], False
+        for number, their_head in members.get(folder, []):
+            if (their_head, path) not in ids:
+                unread = True
+            elif mine is not None and ids[(their_head, path)] == mine:
+                same.append(number)
+        if any(n in settled for n in same):
+            continue
+        if unread or any(n in undecided for n in same):
+            unknown.append(folder)
+        elif same:
+            waiting.append(f"{folder}: #{same[0]} holds these files and is not accepted")
+        elif members.get(folder):
+            numbers = ", ".join(f"#{n}" for n, _h in members[folder])
+            waiting.append(f"{folder}: differs from {numbers}")
+        else:
+            waiting.append(f"{folder}: no other open pull request carries it")
+    if waiting:
+        more = f" (and {len(waiting) - 1} more)" if len(waiting) > 1 else ""
+        return False, waiting[0] + more
+    if unknown:
+        return None, f"{len(unknown)} of {len(list(folders))} roadmap folders could not be compared with their members"
+    return True, f"all {len(list(folders))} roadmap folders hold the files of accepted members"
+
+
 def author_reviewed(p, author: str) -> bool:
     """Whether `[prreview] authors` and `skip_authors` let a pull request by `author` be reviewed."""
     who = (author or "").lower()
@@ -2793,6 +2839,10 @@ def sync_pr_reviews(ctx) -> list[str]:
     repo = cfg.repositories.content
     listed = sorted(openroadmaps.inventory(ctx.gh, repo, (cfg.roadmap.active_dir,), any_file=True),
                     key=lambda x: int(x["pr"]))
+    # Aggregate pull requests carry folders their members are reviewed in: no review is filed for them, and
+    # their label follows the members (below, once this run has decided the members' labels).
+    aggregates = [x for x in listed if int(x["pr"]) in set(p.aggregate_prs)]
+    listed = [x for x in listed if int(x["pr"]) not in set(p.aggregate_prs)]
     live = {int(x["pr"]): x for x in listed}
     on_main = openroadmaps.readme_folders(ctx.gh, repo, cfg.project.branch, cfg.roadmap.active_dir) if listed else set()
     plans = {int(x["pr"]): review_plan(x, cfg, on_main) for x in listed}
@@ -2914,6 +2964,7 @@ def sync_pr_reviews(ctx) -> list[str]:
     # The reviews and comments of the pull requests the label rule may read them for (`errors_hold`).
     wanting = [int(e["pr"]) for e in listed if e.get("head") and (
         p.label in e.get("labels", []) or plans[int(e["pr"])][0] or (plans[int(e["pr"])][1] and p.chore_review))]
+    wanting += [int(e["pr"]) for e in aggregates if e.get("head")]
     timelines: dict[int, list[replies.Event] | None] = {}
     pulls: list[prbatch.PullReader] = []
 
@@ -2946,9 +2997,12 @@ def sync_pr_reviews(ctx) -> list[str]:
         events = events_of(number)
         return bool(events) and errors_reviewed(cfg, author, events)
 
+    label_on: dict[int, bool] = {}          # the label of each pull request as this run leaves it
+    undecided: set[int] = set()             # ... left as it was: a review is being finished, or GitHub did not answer
     for entry in listed:
         number, head, author = int(entry["pr"]), entry.get("head", ""), entry.get("author", "")
         labelled = p.label in entry.get("labels", [])
+        label_on[number] = labelled
         folders, why = plans[number]
         chore = bool(why) and not folders and p.chore_review
         if not head or not (labelled or folders or chore):
@@ -2965,7 +3019,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             try:
                 ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
                 out.append(f"#{number}: {p.label} removed ({asked or errors})")
-                labelled = False
+                labelled = label_on[number] = False
                 if p.approval_label and p.approval_label in entry.get("labels", []):
                     ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.approval_label, safe='')}")
                     out.append(f"#{number}: {p.approval_label} removed ({p.label} is off)")
@@ -2983,6 +3037,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             still, known = kept_folders(number, folders, mine, head)
             if known:
                 close_untaken(number, mine, head, still)
+            undecided.add(number)
             continue
         accepted, reason = (folders_accepted(ctx, folders, mine, head, texts) if folders
                             else chore_accepted(ctx, repo, number, head, why, p, threads, batch) if chore
@@ -3010,6 +3065,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                                                  standing(number, author, labelled), how=how)
             if not known:
                 carried_prs.add(number)         # nothing is known this run: the label stays as it is, no review is filed
+                undecided.add(number)
                 out.append(f"#{number}: {p.label} not checked (the roadmap folders at {head[:7]} could not be "
                            "compared with those of an earlier head)")
                 continue
@@ -3042,6 +3098,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             still, known = kept_folders(number, folders, mine, head)
             if not known:
                 carried_prs.add(number)         # as above: nothing is known this run
+                undecided.add(number)
                 out.append(f"#{number}: {p.label} not checked (the roadmap folders at {head[:7]} could not be "
                            "compared with those their last reviews read)")
                 continue
@@ -3080,8 +3137,10 @@ def sync_pr_reviews(ctx) -> list[str]:
                               "P3 points only and their repairs are in" if carried
                               else f"the AI review of {head[:7]} accepts "
                               + (f"all {len(folders)} roadmap folders" if len(folders) > 1 else "it")) + ")")
+                label_on[number] = True
             elif labelled and not accepted:
                 ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
+                label_on[number] = False
                 out.append(f"#{number}: {p.label} removed ({reason})")
                 if p.approval_label and p.approval_label in entry.get("labels", []):
                     # no accepted head, so a human approval is not all it needs: `roadmaps
@@ -3089,7 +3148,45 @@ def sync_pr_reviews(ctx) -> list[str]:
                     ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.approval_label, safe='')}")
                     out.append(f"#{number}: {p.approval_label} removed ({p.label} is off)")
         except GHError as exc:
+            undecided.add(number)
             out.append(f"#{number}: {p.label} on {repo} not {'added' if accepted else 'removed'} "
+                       f"({str(exc).splitlines()[0][:160]})")
+
+    # Aggregate pull requests (`[prreview] aggregate_prs`): the label is on exactly when every roadmap folder
+    # the aggregate adds holds the files a member holds at a head the AI review accepts (`aggregate_state`);
+    # a review that points out errors on the aggregate itself keeps it off, as on any pull request.
+    base = cfg.roadmap.active_dir.strip("/")
+    settled = {n for n in accepted_prs if label_on.get(n)}
+    for entry in aggregates if p.label else []:
+        number, head, author = int(entry["pr"]), entry.get("head", ""), entry.get("author", "")
+        folders = review_plan(entry, cfg, on_main)[0]
+        if not head or not folders:
+            continue
+        labelled = p.label in entry.get("labels", [])
+        path_of = {folder: f"{base}/{str(folder).strip('/')}" for folder in folders}
+        members = {folder: [(int(e["pr"]), e.get("head", "")) for e in listed
+                            if e.get("head") and folder in plans[int(e["pr"])][0]] for folder in folders}
+        ids = prbatch.tree_ids(ctx.gh, repo, [(head, path_of[f]) for f in folders]
+                               + [(h, path_of[f]) for f in folders for _n, h in members[f]], batch)
+        state, note = aggregate_state(head, folders, path_of, members, ids, settled, undecided)
+        errors = errors_at(number, author) if state else ""
+        try:
+            if state is None or (state and errors is None):
+                out.append(f"#{number}: {p.label} not checked (aggregate: "
+                           + (note if state is None else "its reviews and comments could not be read") + ")")
+            elif state and not errors and not labelled:
+                ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [p.label]})
+                out.append(f"#{number}: {p.label} added (aggregate: {note})")
+            elif labelled and (not state or errors):
+                ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
+                out.append(f"#{number}: {p.label} removed (aggregate: {errors or note})")
+                if p.approval_label and p.approval_label in entry.get("labels", []):
+                    ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.approval_label, safe='')}")
+                    out.append(f"#{number}: {p.approval_label} removed ({p.label} is off)")
+            elif state and errors:
+                out.append(f"#{number}: {p.label} not added (aggregate: {errors})")
+        except GHError as exc:
+            out.append(f"#{number}: {p.label} on {repo} not {'added' if state else 'removed'} "
                        f"({str(exc).splitlines()[0][:160]})")
 
     made, waiting = 0, 0
