@@ -103,15 +103,26 @@ def test_a_suggestion_the_author_declines_is_withdrawn_and_the_label_follows_the
     assert layoutask.withdraw(ctx, [12, 13], report=lambda _line: None) == [
         f"[dry run] #12: would withdraw the suggestion of {H1[:7]}", "#13: no suggestion stands"]
     assert gh.writes == [] and "12" in layoutask.load(tmp_path)
-    assert layoutask.withdraw(ctx, [12], write=True, report=lambda _line: None) == [
+    assert layoutask.withdraw(ctx, [12], write=True, report=lambda _line: None, now=lambda: "2026-11-20T12:00:00Z") == [
         "#12: suggestion withdrawn; the label follows the reviews again"]
     [(method, path, payload)] = gh.writes
     assert (method, path) == ("POST", f"repos/{REPO}/issues/12/comments") and payload["body"].startswith("Understood:")
-    assert layoutask.load(tmp_path) == {}
-    # The README is as it was, and the accepted head gets its label back at the next sync.
+    assert layoutask.load(tmp_path) == {"12": {"head": H1, "withdrawn": "2026-11-20T12:00:00Z"}}
+    # It is withdrawn once, and the author who declined is not asked again: not by a later run over every
+    # author's pull requests, whose README is as it was; `--again` is the operator's word to ask all the same.
+    assert layoutask.withdraw(ctx, [12], write=True, report=lambda _line: None) == ["#12: no suggestion stands"]
+    assert layoutask.run(ctx, others=True, write=True, report=lambda _line: None) == [
+        "#12 (outsider): not asked: the author declined the suggestion (2026-11-20T12:00:00Z)", "0 pull requests asked"]
+    assert len(gh.writes) == 1
+    assert layoutask.run(ctx, others=True, again=True, report=lambda _line: None) == [
+        "[dry run] #12 (outsider): would ask: Foo lacks overview, sections, order"]
+    # The README is as it was, and the accepted head gets its label back at the next sync; the record stays
+    # until the pull request closes, and goes then without a word.
     gh = ContentGH([node(12, H1, author="outsider")], files=verdict_file(done, "accepted", H1), blobs={(H1, README): OLD})
     assert intake.sync_pr_reviews(context(tmp_path, gh, [done])) == [f"#12: {LABEL} added (the AI review of {H1[:7]} accepts it)"]
-    assert gh.writes == [("POST", labels, {"labels": [LABEL]})]
+    assert gh.writes == [("POST", labels, {"labels": [LABEL]})] and set(layoutask.load(tmp_path)) == {"12"}
+    assert layoutask.holds(context(tmp_path, ContentGH([]), [done]), REPO, [], 20) == ({}, [])
+    assert layoutask.load(tmp_path) == {}
 
 
 def test_nothing_is_asked_of_the_pool_nor_of_an_author_the_reviews_leave_out(tmp_path):

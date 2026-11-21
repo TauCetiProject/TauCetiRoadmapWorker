@@ -1416,8 +1416,10 @@ the label back. Reading the reply is the operator's part, never the worker's:
 
     tauceti-roadmap layout --ask --withdraw --pr 2516 [--yes]
 
-takes the suggestion out of the file, posts one line saying so, and the label follows the reviews
-again at the next `board sync`. Without such a reply the suggestion stands.
+marks the suggestion withdrawn in the file, posts one line saying so, and the label follows the reviews
+again at the next `board sync`. The record stays while the pull request is open, so a later
+`layout --ask --others` leaves that pull request alone (`#N (author): not asked: the author declined
+the suggestion (…)`; `--again` asks all the same). Without such a reply the suggestion stands.
 
 ### Rewriting the opening overview (`overview`)
 
