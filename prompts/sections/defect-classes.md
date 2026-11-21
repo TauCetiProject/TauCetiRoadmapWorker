@@ -16,7 +16,9 @@ hit is a finding, a small correction or a format note is decided by what it does
 4. **Sign and normalisation**: residue versus period factors of 2πi, Chern-class signs, modulus
    characters in adjunctions, duals of Tate modules, the direction of a comparison map.
 5. **Unowned prerequisites**: a proof plan uses a result that no layer, no named supplier section
-   and no pinned declaration provides; a standard theorem restated instead of cited.
+   and no pinned declaration provides; a standard theorem that Mathlib has, or another roadmap owns,
+   restated instead of cited. An item of a roadmap on main that the pinned Tau Ceti now proves is
+   neither: it stays and names the declaration (the section on the roadmap as a record).
 6. **Supplier drift**: a cited supplier declaration or section that does not exist where it is
    cited (a roadmap's section on main or at its open head, a library declaration at the pin), a
    supplier cited for a statement it does not make, two owners for one object (including

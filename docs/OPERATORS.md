@@ -273,7 +273,10 @@ brief, never a failed round):
   roadmap links to that anchor and no heading has it as its own id: `gates.kept_anchor_lines`); the ids it cites that only an open revision
   defines, which make that revision a dependency; when the job is on a pull request of the content
   repository (never a board pull request), the ids it drops from a roadmap on main that other
-  roadmaps cite, on main or at an open head; and the closest roadmaps, where a second owner of the
+  roadmaps cite, on main or at an open head (a mapping keeps their citations valid, but not the
+  revision: a layer, section or item of the README on main keeps its id and subject, so its review
+  raises the drop as a finding and the report's advice is to restore it, `overlaps.KEEP_IDS`); and
+  the closest roadmaps, where a second owner of the
   same objects is likeliest: the five open ones and the three on main closest in vocabulary (tf-idf
   cosine over the README words), and the five, open or on main, closest in the results they name
   and in their headings (`overlaps.subject_neighbours`: capitalised names and heading words, the
@@ -576,7 +579,8 @@ asks only for the smallest repair (mark it as a sanity check, or state the compa
 and never deletes a statement the author kept as a sanity check. README API bullets and Checks state their facts in prose and carry a
 backticked Lean name only for a declaration of `Suggested.lean`. The text gates check form only
 (imports, `set_option`, sorry'd data, an admitted `example`, and `readme-ids-missing`: every name of
-the roadmap's own the README claims exists in the file); none counts declarations or examples, and
+the roadmap's own the README claims exists in the file, a name on a completed item's `*In Tau Ceti:*`
+line being a library declaration and not such a claim); none counts declarations or examples, and
 there is no minimum size.
 
 Before the agent of a package fix (or of a red-team fix on a board pull request) runs, the lane runs
@@ -945,8 +949,16 @@ The lane reviews one roadmap folder. It checks the head the job names out read-o
 gate on that folder with the targeted build of its Suggested module (`TauCetiRoadmap.<folder,
 dotted>.Suggested`; a nested roadmap may share its family's `metadata.toml`), and gives the agent the
 gate's result and the pull request's title and description as data, followed by the folder's change
-against the pull request's base (whether the roadmap is on the base, the diffstat, and the headings
-and Lean declarations the change removes and adds). The agent reviews the folder's
+against the pull request's base (whether the roadmap is on the base, the diffstat, the headings
+and Lean declarations the change removes and adds, and, for a roadmap on the base, the layers of its
+README at the merge base that the head lacks or retitles, read by id as the progress tools read them,
+with the command that prints that README: `layers_section`). A roadmap on main is also the record of
+what the library contains (`prompts/sections/record.md`): the reviewer compares the README at the
+merge base with the head layer by layer and item by item, and a layer or item the head removes, a
+layer id given another subject, or a completed item reduced to a declaration name is a finding (P1)
+whose repair is to restore it under its id with its statement; "the pinned Tau Ceti already proves
+this target" is no duplication finding for the roadmap's own item, whose repair is to name the
+declaration in it (`*In Tau Ceti:* …`). The agent reviews the folder's
 README and every Lean file in it (Suggested.lean and any `*Targets.lean`) as a package review does;
 the pull request's other roadmap folders, a nested roadmap's family index files, and the index files
 of a family that another of its folders is nested in, are named as its own, not as changes outside

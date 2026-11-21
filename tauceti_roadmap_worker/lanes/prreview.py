@@ -328,6 +328,43 @@ def signed_list(groups: list[tuple[str, list[str]]]) -> str:
     return "\n".join(out) or "(none)"
 
 
+def layer_changes(before: str, after: str) -> tuple[list[str], list[tuple[str, str]], list[str]]:
+    """What a revision does to a README's layers, by id as the progress tools read them
+    (`gates.readme_layers`): (the titles of the layers of `before` whose id `after` lacks, the
+    (before, after) titles of the ids whose title changed, the titles of the ids `after` adds). A
+    layer with the same id and the same title, whatever its spacing or case, is in none of them."""
+    def key(title: str) -> str:
+        return " ".join(title.split()).casefold()
+    old = {lid: title for lid, title, _line in gates.readme_layers(before)}
+    new = {lid: title for lid, title, _line in gates.readme_layers(after)}
+    return ([old[k] for k in old if k not in new],
+            [(old[k], new[k]) for k in old if k in new and key(old[k]) != key(new[k])],
+            [new[k] for k in new if k not in old])
+
+
+def layers_section(wt: Path, base: str, folder: str) -> list[str]:
+    """The lines of `base_change` on the README's layers, for a roadmap on `base`: its layers at the
+    merge base of `base` and the head (the record the revision keeps: prompts/sections/record.md)
+    against the head's, with the command that prints that README. [] when the merge base has no README
+    in the folder (main gained the roadmap after the branch: the overlap check's second copy)."""
+    mb = gitops.git(wt, "merge-base", base, "HEAD").strip()
+    path = f"{folder}/README.md"
+    if not mb or not gitops.git(wt, "ls-tree", "--name-only", mb, "--", path).strip():
+        return []
+    before = gitops.git(wt, "show", f"{mb}:{path}")
+    after = gitops.git(wt, "show", f"HEAD:{path}", check=False)
+    gone, retitled, added = layer_changes(before, after)
+    count = len(gates.readme_layers(before))
+    listing = ([f"- {t}" for t in gone[:LISTED]] + [f"~ {a} → {b}" for a, b in retitled[:LISTED]]
+               + [f"+ {t}" for t in added[:LISTED]])
+    return [f"### Layers of the README at the merge base (`{mb[:7]}`) and at this head", "",
+            (f"The README at the merge base has {count} layer{'' if count == 1 else 's'} as the progress tools read "
+             f"its headings; this head lacks {len(gone)} of those ids (-) and gives {len(retitled)} another title "
+             f"(~); it adds {len(added)} (+). `git -C {wt} show {mb}:{path}` prints the README at the merge "
+             "base, the record this revision keeps."), "",
+            fenced("\n".join(listing) or "(no layer removed, retitled or added)"), ""]
+
+
 def base_change(wt: Path, base: str, folder: str) -> str:
     """The section of `pull-request.md` the review reads the title and description against: the pull
     request's change to the roadmap folder `folder` (relative to the worktree `wt`) from its merge base
@@ -335,7 +372,8 @@ def base_change(wt: Path, base: str, folder: str) -> str:
     not (it adds it), then gives `git diff --stat`, the headings of the folder's Markdown files that the
     change removes and adds (a heading on both sides, moved or unchanged, is left out), and the Lean
     declarations it removes, adds and restates (a declaration whose first line changed is on both
-    sides). When `base` cannot be compared with the head, it says so."""
+    sides); for a roadmap on `base`, also the README's layers at the merge base that the head lacks or
+    retitles (`layers_section`). When `base` cannot be compared with the head, it says so."""
     span, title = f"{base}...HEAD", f"## The change to `{folder}/` against `{base}` (computed by the worker)"
     try:
         added, removed = numstat_lines(gitops.git(wt, "diff", "--numstat", span, "--", folder))
@@ -345,6 +383,7 @@ def base_change(wt: Path, base: str, folder: str) -> str:
         gone_d, new_d = signed_entries(gitops.git(wt, "diff", "-U0", "--no-color", span, "--", f"{folder}/*.lean"),
                                        DECLARATION_LINE)
         on_base = bool(gitops.git(wt, "ls-tree", "--name-only", base, "--", f"{folder}/README.md").strip())
+        layers = layers_section(wt, base, folder) if on_base else []
     except gitops.GitError:
         return f"{title}\n\n`{base}` cannot be compared with this head in this checkout: there is no change to show.\n"
     removed_h, added_h = [h for h in gone_h if h not in new_h], [h for h in new_h if h not in gone_h]
@@ -361,7 +400,7 @@ def base_change(wt: Path, base: str, folder: str) -> str:
              "### Headings removed (-) and added (+)", "",
              fenced(signed_list([("-", removed_h), ("+", added_h)])), "",
              "### Lean declarations removed (-), added (+) and restated (~, their first line changed)", "",
-             fenced(signed_list([("-", removed_d), ("+", added_d), ("~", restated)])), ""]
+             fenced(signed_list([("-", removed_d), ("+", added_d), ("~", restated)])), "", *layers]
     return "\n".join(lines)
 
 

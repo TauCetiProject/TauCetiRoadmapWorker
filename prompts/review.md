@@ -73,15 +73,17 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
    written. Record what you could not read and why.
 3. **Adversarial pass** over every statement (below), with the table: each row gives the values you
    computed on each side. An accepted verdict without such rows is refused.
-4. **Duplication audit** against the current library and roadmaps, by object: what Mathlib, Tau
-   Ceti, a roadmap on main or an open roadmap pull request already states must be cited, not
-   restated.
+4. **Duplication audit** against the current library and roadmaps, by object: what Mathlib, a
+   roadmap on main or an open roadmap pull request already states must be cited, not restated, and
+   so must what Tau Ceti already has of a new roadmap's statements. An item of a roadmap on main
+   stays, naming the Tau Ceti declaration that realises it (the section on the roadmap as a record).
    Then the overlap facts of `scratch/overlaps.md` (the rules are under "Overlap with open pull
    requests" below): an id this roadmap cites that an open pull request drops, with no citation of
    the id as it is at its head, is a finding (P2) for a supplier citation and a small correction
    otherwise; an id it cites that only an open revision defines, when neither the description nor
    its merge-order paragraph names that revision, is a small correction; an id this package drops
-   that other roadmaps cite, with no old → new numbering, is a small correction; a conflicting head
+   that other roadmaps cite is a removed layer or item of a roadmap on main (the section on the
+   roadmap as a record), with the citing roadmaps in its witness; a conflicting head
    of another open pull request changing this roadmap, with no stated order, is a small correction;
    an object this roadmap and another roadmap, open or on main, both own, or hand to each other, is
    a finding (P2). Name the other pull request and the cited file and line in the witness. A second copy of a
@@ -186,6 +188,8 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
 <!-- include: sections/dependencies.md -->
 
 <!-- include: sections/readme-shape.md -->
+
+<!-- include: sections/record.md -->
 
 <!-- include: sections/lean-form.md -->
 

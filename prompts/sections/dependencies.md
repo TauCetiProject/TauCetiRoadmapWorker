@@ -34,7 +34,7 @@ act on it):
   merged main since, so that its text is main's with changes, is a revision and no copy). While it holds,
   nothing else about this text matters, because it cannot merge: the pull request becomes a revision
   of main's text (main merged into the branch, the README main's with this pull request's changes
-  made in it, every id main defines kept or mapped) or is closed in its favour, and which is the
+  made in it, every id main defines kept with its subject) or is closed in its favour, and which is the
   author's decision. Repairing the statements of the copy is wasted work: a reviewer reports the
   second copy and what this text has that main lacks, and stops there; nobody else edits the copy;
 - an id this roadmap cites that an open pull request drops (a revision renumbers or deletes the
@@ -46,11 +46,12 @@ act on it):
   revision's numbering makes it a dependency: the report lists it under "only an open revision
   defines", and the worker names it in the merge-order paragraph of the pull requests it opens. A
   pull request opened any other way names it in its description;
-- an id this roadmap's pull request drops that other roadmaps cite: keep the id, or give the old →
-  new numbering in the README (a table whose header names the former numbering, one row per moved
-  id, or a sentence "Layer 1.5 is now §1.3") so that the citing roadmaps can follow; the overlap
-  check reads such a mapping and no longer lists the id. A roadmap on main that cites it breaks at
-  the merge otherwise;
+- an id this roadmap's pull request drops that other roadmaps cite: keep the id. A layer, section
+  or item of the README on main keeps its id and its subject whether or not another roadmap cites
+  it (the section on the roadmap as a record), so an old → new numbering ("Layer 1.5 is now §1.3")
+  never replaces it. A heading whose words change while its id and subject stay keeps its old
+  anchor as a line `<a id="old-anchor"></a>` before it, for the roadmaps that link to it. A roadmap
+  on main that cites a dropped id breaks at the merge;
 - another open pull request that changes this roadmap: when the heads conflict, or the two change
   the same targets differently, one is rebased on the other before either merges; say which, and do
   not restate what the other already changes;

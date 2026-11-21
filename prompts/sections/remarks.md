@@ -66,7 +66,9 @@ two small corrections and one format note, none blocking").
 7. **No template enforcement and no quotas.** The README's shape, its headings, the order of its
    sections (scope and supplier contracts at the top or at the end), the title or layout of the Lean
    file, and how many Checks a definition has, are never findings and never small corrections. A
-   roadmap that is readable in another shape gets no remark about its shape.
+   roadmap that is readable in another shape gets no remark about its shape. A layer or item that a
+   revision of a roadmap on main removes or renumbers is not shape (the section on the roadmap as a
+   record).
 
 ### Examples (invented)
 

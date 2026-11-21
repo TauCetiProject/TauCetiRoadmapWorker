@@ -836,9 +836,10 @@ _LAYER_ID = re.compile(rf"^((?:{_LAYER_WORD}|{_LAYER_SHORT})[^:—–,(]*?)\s*(?
 _BARE_LAYER_ID = re.compile(r"\A(?:(?:Layer|Lane|Part|Stage|Milestone) [A-Za-z0-9][A-Za-z0-9.\-]*|[A-Z]\d+[A-Za-z]?)\Z")
 
 
-def scan_layer_ids(readme: str) -> list[Hit]:
-    """Layer headings whose id is more than a label. `## Layer 2 Rings` names its layer `Layer 2 Rings`,
-    and every progress report on the roadmap then fails its check; `## Layer 2: Rings` names it `Layer 2`."""
+def readme_layers(readme: str) -> list[tuple[str, str, int]]:
+    """(id, title, line) of each layer of a README as the progress tools read them (`_LAYER_FORMS`),
+    in order, the first heading of each id only: `## Layer 2: Rings (p odd)` is ("Layer 2", "Layer 2:
+    Rings", its line). The coverage block of a roadmap's STATUS.md is keyed by these ids."""
     found = next((ms for ms in (list(rx.finditer(readme)) for rx in _LAYER_FORMS) if ms), [])
     out, seen = [], set()
     for m in found:
@@ -848,9 +849,15 @@ def scan_layer_ids(readme: str) -> list[Hit]:
         if not title or lid in seen:
             continue
         seen.add(lid)
-        if not _BARE_LAYER_ID.match(lid):
-            out.append(Hit(readme.count("\n", 0, m.start()) + 1, f"layer id {lid[:80]!r}; write `Layer N: title`"))
+        out.append((lid, title, readme.count("\n", 0, m.start()) + 1))
     return out
+
+
+def scan_layer_ids(readme: str) -> list[Hit]:
+    """Layer headings whose id is more than a label. `## Layer 2 Rings` names its layer `Layer 2 Rings`,
+    and every progress report on the roadmap then fails its check; `## Layer 2: Rings` names it `Layer 2`."""
+    return [Hit(line, f"layer id {lid[:80]!r}; write `Layer N: title`")
+            for lid, _title, line in readme_layers(readme) if not _BARE_LAYER_ID.match(lid)]
 
 
 # --- mechanical README/Lean agreement (mech_check.py) ----------------------------------------------
@@ -923,10 +930,17 @@ def lean_names(lean: str) -> set[str]:
     return set(LEAN_DECL_NAME.findall(strip_lean_comments(lean)))
 
 
+# A completed item's realisation line, `*In Tau Ceti:* `Foo.bar`, `Foo.baz`.`, from its label to the end of
+# the line: the names on it are the pinned Tau Ceti's declarations that realise the item, not claims that
+# Suggested.lean declares them (prompts/sections/record.md).
+REALISATION = re.compile(r"(?P<em>\*\*|__|\*|_)In Tau Ceti:?(?P=em):?[^\n]*", re.IGNORECASE)
+
+
 def readme_identifiers_missing(readme: str, lean: str) -> list[str]:
     """Backticked README identifiers that this roadmap would have to declare itself (a dotted name
     under one of its namespaces, or `foo_bar` whose stem is one of its declarations) but that the
-    Lean file never mentions."""
+    Lean file never mentions. A name on a completed item's `*In Tau Ceti:*` line (`REALISATION`) is a
+    library declaration and is not counted there."""
     names = lean_names(lean)
     short = {n.split(".")[-1] for n in names} | names
     short_lower = {s.lower() for s in short}
@@ -934,7 +948,7 @@ def readme_identifiers_missing(readme: str, lean: str) -> list[str]:
     for n in names:
         parts = n.split(".")
         namespaces |= {".".join(parts[:k]) for k in range(1, len(parts))}
-    ids = set(re.findall(r"`([A-Za-z][\w.']*(?:_[\w.']+)+)`", readme))
+    ids = set(re.findall(r"`([A-Za-z][\w.']*(?:_[\w.']+)+)`", REALISATION.sub("", readme)))
 
     def own(i: str) -> bool:
         if len(i.split("_")[0]) <= 2:

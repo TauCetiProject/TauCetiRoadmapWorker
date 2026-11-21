@@ -61,7 +61,9 @@ the merge order __ORDER__ (suppliers before consumers, one roadmap per line).
    not open as not verifiable, with the reason; never guess what a source says.
 3. **Adversarial pass** over every statement (below).
 4. **Duplication audit** against Mathlib, Tau Ceti, the roadmaps on main and the open roadmap pull
-   requests, by object: what they already state must be cited, not restated.
+   requests, by object: what Mathlib or another roadmap already states must be cited, not restated,
+   and so must what Tau Ceti already has of a new roadmap's statements. An item of a roadmap on main
+   stays, naming the Tau Ceti declaration that realises it (the section on the roadmap as a record).
 5. **Supplier order**: every roadmap the __SUBJECT__ cites as a supplier must come before it in the
    merge order; flag upward citations, cycles, unowned prerequisites and supplier drift (a cited
    section or declaration that does not exist where it is cited). Declared supplier gaps are
@@ -143,6 +145,8 @@ word) first.
 <!-- include: sections/defect-classes.md -->
 
 <!-- include: sections/readme-shape.md -->
+
+<!-- include: sections/record.md -->
 
 <!-- include: sections/lean-form.md -->
 

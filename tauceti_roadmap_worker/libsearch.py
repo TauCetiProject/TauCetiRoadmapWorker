@@ -236,8 +236,10 @@ def report(found: list[Found], note: str, rel: str) -> tuple[str, int]:
     lines = [f"# Library near-matches for `{rel}`", "",
              "What Loogle (by the constants of each conclusion) and LeanSearch (by each docstring) return for every "
              "declaration. Leads, not verdicts: open a candidate at the pinned Mathlib or Tau Ceti commit and compare "
-             "the statement before reporting that a target is already proved. A target the pin already states is a "
-             "finding (cite it; do not restate it); a weaker or more special library statement is not.", ""]
+             "the statement before reporting that a target is already proved. A target of a new roadmap that the pin "
+             "already states is a finding (cite it; do not restate it). An item the README on main already has stays "
+             "in the README and names the declaration; only its restatement leaves `Suggested.lean`. A weaker or more "
+             "special library statement is not a match.", ""]
     if note:
         lines += [f"_{note}._", ""]
     strong = 0
