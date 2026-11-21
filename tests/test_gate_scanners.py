@@ -143,6 +143,26 @@ def test_mechanical_agreement():
     assert gates.round_labels("label continuation-2 and gate3") and not gates.round_labels("analytic continuation")
 
 
+def test_a_completed_item_names_the_library_declarations_that_realise_it():
+    # A roadmap keeps its completed items and names, on an `*In Tau Ceti:*` line, the pinned Tau Ceti's
+    # declarations that realise each one (prompts/sections/record.md). Those names share a namespace with
+    # Suggested.lean's declarations, so read as claims about Suggested.lean they were counted as missing.
+    item = ("### 1.2 Orders multiply\n\nProve that the order of a product of finite groups is the product of the "
+            "orders (Author, *Example Book*, Thm I.2.4, p. 25).\n")
+    realised = item + "*In Tau Ceti:* `Toy.order_prod`, `Toy.order_mul_comm`.\n"
+    readme = CLEAN_README.replace("### Dependencies", realised + "\n### Dependencies")
+    assert gates.readme_identifiers_missing(readme, CLEAN_LEAN) == []
+    assert scan_folder("Toy", readme, CLEAN_LEAN, opts()).ok
+    for label in ("**In Tau Ceti:**", "_In Tau Ceti_:", "Prove it. *In Tau Ceti:*"):
+        line = realised.replace("*In Tau Ceti:*", label)
+        assert gates.readme_identifiers_missing(CLEAN_README + line, CLEAN_LEAN) == [], label
+    # The same name in an API bullet is still a claim that Suggested.lean declares it.
+    bullet = readme + "\n- `Toy.order_prod` is multiplicative.\n"
+    assert gates.readme_identifiers_missing(bullet, CLEAN_LEAN) == ["Toy.order_prod"]
+    assert gates.readme_identifiers_missing(item + "In Tau Ceti we have `Toy.order_prod`.\n", CLEAN_LEAN) == \
+        ["Toy.order_prod"]
+
+
 def test_no_gate_asks_for_lean_counterparts_of_checks_or_counts_declarations():
     """Suggested.lean states the headline theorems: README Checks stay prose, and a file that states
     one theorem, or nothing at all, passes."""
@@ -311,6 +331,10 @@ def test_layer_ids():
     assert gates.scan_layer_ids(good) == []
     assert gates.scan_layer_ids("### L0A — sheaves\n\n### S1: the site\n") == []
     assert gates.scan_layer_ids("# Roadmap\n\nNo layers here.\n") == []
+    assert gates.readme_layers(bad + "\n## Layer 1: valuations again\n") == [
+        ("Layer 0 Discrete convexity", "Layer 0 Discrete convexity", 1), ("Layer 1", "Layer 1: valuations", 5),
+        ("Layer 2 Coefficients", "Layer 2 Coefficients, Gauss values", 7)]
+    assert gates.readme_layers("## Layer 3: rings (p odd)\n")[0][:2] == ("Layer 3", "Layer 3: rings")
     r = scan_folder("Toy", CLEAN_README.replace("## Layer 1: orders", "## Layer 1 orders"), CLEAN_LEAN, opts())
     assert r.counts["layer-ids"] == 1 and not r.ok, r.details
 

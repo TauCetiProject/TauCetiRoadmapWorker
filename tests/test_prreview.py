@@ -2356,6 +2356,55 @@ def test_the_pull_request_text_comes_with_the_folders_change_against_its_base(tm
         repo, "origin/gone", "TauCetiRoadmap/Foo")
 
 
+def test_a_revision_is_compared_with_the_layers_of_its_readme_at_the_merge_base():
+    # A roadmap on main is a record of what the library contains (prompts/sections/record.md): a revision keeps
+    # every layer under its id with its subject. Read by id as the progress tools read the layers.
+    before = ("# Roadmap: foo\n\n## Layer 0: Groups\n\n## Layer 1: Rings\n\n## Layer 2: Fields\n\n"
+              "## Layer 3: Modules (p odd)\n")
+    after = ("# Roadmap: foo\n\n## Layer 0:   groups\n\n## Layer 2: A declaration catalogue\n\n"
+             "## Layer 3: Modules\n\n## Layer 4: Algebras\n")
+    assert lane_prreview.layer_changes(before, after) == (
+        ["Layer 1: Rings"], [("Layer 2: Fields", "Layer 2: A declaration catalogue")], ["Layer 4: Algebras"])
+    assert lane_prreview.layer_changes(before, before) == ([], [], [])
+
+
+@needs_git
+def test_the_change_against_the_base_lists_the_layers_a_revision_drops_or_retitles(tmp_path):
+    repo = tmp_path / "repo"
+    foo, bar = repo / "TauCetiRoadmap" / "Foo", repo / "TauCetiRoadmap" / "Bar"
+    foo.mkdir(parents=True)
+    sh(tmp_path, "init", "-q", str(repo))
+    (foo / "README.md").write_text("# Foo\n\n" + "".join(f"## Layer {k}: Part {k}\n\nThe statement {k}.\n\n"
+                                                           for k in range(10)))
+    sh(repo, "add", "-A")
+    sh(repo, "commit", "-q", "-m", "main")
+    sh(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    # The revision keeps three layers out of ten and gives Layer 8's id to another subject.
+    (foo / "README.md").write_text("# Foo\n\n## Layer 0: Part 0\n\n## Layer 8: A declaration catalogue\n\n"
+                                   "## Layer 9: Part 9\n")
+    sh(repo, "commit", "-q", "-am", "head")
+    text = lane_prreview.base_change(repo, "origin/main", "TauCetiRoadmap/Foo")
+    assert "### Layers of the README at the merge base (`" in text
+    assert ("The README at the merge base has 10 layers as the progress tools read its headings; this head lacks 7 "
+            "of those ids (-) and gives 1 another title (~); it adds 0 (+).") in text
+    listing = "".join(f"- Layer {k}: Part {k}\n" for k in range(1, 8)) + "~ Layer 8: Part 8 → Layer 8: A declaration catalogue"
+    assert f"```text\n{listing}\n```" in text
+    main = sh(repo, "rev-parse", "origin/main")
+    assert f"`git -C {repo} show {main}:TauCetiRoadmap/Foo/README.md` prints the README at the merge base" in text
+    # A revision that keeps every layer says so; a roadmap the base does not hold has no such section.
+    (foo / "README.md").write_text("# Foo\n\n" + "".join(f"## Layer {k}: Part {k}\n\nThe statement {k}, kept.\n\n"
+                                                           for k in range(10)) + "## Layer 10: More\n")
+    sh(repo, "commit", "-q", "-am", "keep")
+    text = lane_prreview.base_change(repo, "origin/main", "TauCetiRoadmap/Foo")
+    assert "this head lacks 0 of those ids (-) and gives 0 another title (~); it adds 1 (+)." in text
+    assert "```text\n+ Layer 10: More\n```" in text
+    bar.mkdir()
+    (bar / "README.md").write_text("# Bar\n\n## Layer 0: One\n")
+    sh(repo, "add", "-A")
+    sh(repo, "commit", "-q", "-m", "bar")
+    assert "Layers of the README" not in lane_prreview.base_change(repo, "origin/main", "TauCetiRoadmap/Bar")
+
+
 @needs_git
 def test_every_review_reads_the_pull_requests_text_against_the_head(dry_ctx, tmp_path, monkeypatch):  # noqa: F811
     repo, first, second = repaired_repo(tmp_path)
