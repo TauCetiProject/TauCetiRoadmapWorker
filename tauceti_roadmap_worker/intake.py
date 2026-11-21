@@ -1698,7 +1698,8 @@ def errors_hold(cfg, owner: str, events: list[replies.Event]) -> str:
     the review is answered, whoever wrote it. Every writer of the label asks this one function, with the
     same events: `sync_pull_requests` takes the label off, `sync_pr_reviews` takes it off and does not
     put it back, and the review lane does not add it (`PRReviewLane.update_label`), so no two of them
-    undo each other. Once the review is answered (a reply in reply form, or a fix and its reply), the
+    undo each other. Once the review is answered (a reply in reply form, or a fix and its reply; on a
+    pull request of an author outside the pool, the author's own later comment in any words), the
     label follows the AI reviews again: an accepted head that did not move gets it back at the next
     sync, with no new review."""
     r = cfg.replies
