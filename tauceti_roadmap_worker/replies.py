@@ -474,7 +474,13 @@ def unanswered_errors(events: list[Event], ours: set[str], markers: list[str], h
     pending = unanswered(events, ours, markers, housekeeping, ignore, maintainers, maintainer_prefix, owner)
     if owner and ours_l == {owner.lower()}:
         last = spoke_since(events, owner, maintainers, maintainer_prefix)
-        pending = [e for e in pending if e.ref.startswith("inline-") or e.user.lower() == owner.lower() or e.t >= last]
+        # Under the author's own login only a maintainer's review asks for anything: the board's reviews of such
+        # a pull request are posted by an operator, never by its author, so the author's comment that opens with
+        # a review marker is a reply in the author's own form, not a review of the pull request (2026-11-21: an
+        # accepted pull request lost its label over its author's ":robot: Response to the AI review ...").
+        pending = [e for e in pending if e.ref.startswith("inline-")
+                   or (is_maintainer_review(e, maintainers, maintainer_prefix) if e.user.lower() == owner.lower()
+                       else e.t >= last)]
     return _pointing(pending, events, ours_l, cues, owner)
 
 
