@@ -1804,7 +1804,11 @@ triggers: the schedule picks them up within ten minutes, and on a busy board eve
 the token's budget. That budget is 1,000 REST requests per hour for the repository, whatever the
 users' own tokens allow, and every run shares it; each `board intake|sync|stale` run ends with
 `GitHub API calls this run: N (rate limit remaining R/L, resets HH:MMZ)` and a `WARN:` line when
-fewer than 200 requests are left.
+fewer than 200 requests are left. A run also keeps what it reads of git objects at full commit shas
+(folder ids, folder entries, file texts: answers that cannot change) in `git-objects.sqlite` in the
+project's state directory, so a later run on the same machine does not ask GitHub for them again, and
+ends with `git objects: N cached, M read`; a row unused for three weeks is dropped, and the file may be
+deleted at any time.
 Everything the board writes works with that token: its notes are signed by `github-actions[bot]`
 (keep it in `[board] bot_logins`), and authorship always comes from the submission pull request's
 author.
