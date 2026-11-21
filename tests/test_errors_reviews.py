@@ -194,6 +194,22 @@ def test_an_outside_authors_own_later_comment_answers_a_review_whatever_its_firs
         ("inline-502", "an inline comment its thread has not answered")]
 
 
+def test_an_outside_authors_own_marked_comment_is_not_a_review_of_the_pull_request():
+    """An author outside the pool opened a reply with a robot marker and said which errors it had repaired:
+    read as an unanswered review that points out errors, it took the label off an accepted pull request."""
+    reply = comment(811, "2026-11-20T19:16:11Z", ":robot: Response to the AI review of abc (19 November). " + LISTING)
+    assert pending(events(comments=[reply])) == []
+    accepted = comment(812, "2026-11-20T20:59:15Z", "🤖 AI review (claude, fable) of def\n\nVerdict: APPROVE",
+                       user=REVIEWER)
+    assert pending(events(comments=[reply, accepted])) == []
+    # Someone else's review after it still waits for the author.
+    later = comment(813, "2026-11-21T09:00:00Z", LISTING, user=REVIEWER)
+    assert pending(events(comments=[reply, accepted, later])) == [("comment-813", "its words state an error")]
+    # A maintainer's review under the author's login is a review.
+    own = comment(814, "2026-11-21T10:00:00Z", "Maintainer review. " + LISTING)
+    assert pending(events(comments=[reply, own]), maintainers={AUTHOR}) == [("comment-814", "its words state an error")]
+
+
 def test_on_a_pool_pull_request_only_a_reply_in_reply_form_answers():
     """Where other answerers speak for the author and the author's login also posts reviews, a marked
     comment under that login stays what it was: no answer."""
