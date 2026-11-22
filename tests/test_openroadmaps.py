@@ -295,3 +295,130 @@ def test_a_name_on_several_lines_is_reported_at_its_first(world):
     index = openroadmaps.refresh(gh, cfg)
     readme = "`Foo.made_up_name` here\nand `Foo.made_up_name` again\n"
     assert openroadmaps.name_problems(cfg.state_dir(), index, readme, "", set())[0].startswith("README 1: Foo.made_up_name")
+
+
+# --- aggregate pull requests: what they carry is found and read, and they stay out of `prs` ----------
+
+MEMBER_FOO = {"TauCetiRoadmap/Foo/README.md": "# Roadmap: foo\n\n### 1.1 Weil pairing\n",
+              "TauCetiRoadmap/Foo/Suggested.lean": "def foo : Nat := 0\n"}
+ONLY_BAR = {"TauCetiRoadmap/Fam/Bar/README.md": "# Roadmap: bar\n\n### 1.1 Weil pairing on curves\n",
+            "TauCetiRoadmap/Fam/Bar/Suggested.lean": "def bar : Nat := 0\n"}
+
+
+@pytest.fixture
+def aggregated(world, tmp_path, monkeypatch):
+    """The world, plus #12 by alice adding Foo, and the aggregate #99 by bob carrying Foo and the nested
+    Fam/Bar, whose own pull request was closed in the aggregate's favour (so only #99 carries Bar)."""
+    cfg, gh = world
+    origin = tmp_path / "origin"
+    git(origin, "checkout", "-q", "-b", "foo", "main")
+    foo = commit(origin, MEMBER_FOO, "foo")
+    git(origin, "update-ref", "refs/pull/12/head", foo)
+    git(origin, "checkout", "-q", "-b", "aggregate", "main")
+    whole = commit(origin, {**MEMBER_FOO, **ONLY_BAR}, "foo and bar")
+    git(origin, "update-ref", "refs/pull/99/head", whole)
+    git(origin, "checkout", "-q", "main")
+    listing = gh.graphql
+
+    def with_the_aggregate(query, **variables):
+        data = listing(query, **variables)
+        data["repository"]["pullRequests"]["nodes"] += [
+            {"number": 12, "title": "Foo", "isDraft": False, "headRefOid": foo, "author": {"login": "alice"},
+             "files": {"nodes": [{"path": p} for p in MEMBER_FOO]}},
+            {"number": 99, "title": "Foo and Bar in one piece", "isDraft": False, "headRefOid": whole,
+             "author": {"login": "bob"}, "files": {"nodes": [{"path": p} for p in {**MEMBER_FOO, **ONLY_BAR}]}}]
+        return data
+    monkeypatch.setattr(gh, "graphql", with_the_aggregate, raising=False)
+    cfg.prreview.aggregate_prs = [99]
+    return cfg, gh
+
+
+def test_an_aggregate_is_indexed_apart_and_what_it_alone_carries_is_found_and_read(aggregated):
+    cfg, gh = aggregated
+    index = openroadmaps.refresh(gh, cfg, force=True)
+    assert [p["pr"] for p in index["prs"]] == [7, 12] and index["unfetched"] == []     # `prs` as before
+    [entry] = index["aggregates"]
+    assert entry["pr"] == 99 and entry["aggregate"] is True and entry["roadmaps"] == ["Foo", "Bar"]
+    assert entry["folders"]["Bar"] == "TauCetiRoadmap/Fam/Bar" and entry["adds"] == ["Foo", "Bar"]
+    mirror = openroadmaps.mirror(cfg.state_dir())
+    assert "refs/open/99" in git(mirror, "for-each-ref", "--format=%(refname)", "refs/open/").split()
+    # Where each roadmap can be read: main and the pull requests first, then the aggregate.
+    assert openroadmaps.sources_for(index, "Bar") == [("#99 (aggregate)", "refs/open/99")]
+    assert openroadmaps.sources_for(index, "Foo") == [("#12", "refs/open/12"), ("#99 (aggregate)", "refs/open/99")]
+    assert openroadmaps.sources_for(index, "Bar", aggregates=False) == []
+    # A nested roadmap only the aggregate carries is read in its folder there.
+    assert openroadmaps.read(cfg.state_dir(), index, "refs/open/99", "Bar").startswith("# Roadmap: bar")
+    assert openroadmaps.read(cfg.state_dir(), index, "refs/open/99", "Bar", "Suggested.lean") == "def bar : Nat := 0\n"
+    # The listing: one line for the aggregate after the others, Bar marked as carried only there.
+    lines = openroadmaps.rows(index)
+    assert lines[1].startswith("#12  Foo (new)  @alice") and len(lines) == 3
+    assert lines[2].startswith("#99 (aggregate)  Foo, Bar (only here)  @bob  ")
+    # grep: Bar is searched in the aggregate; Foo only in its member, so no hit is reported twice.
+    assert openroadmaps.grep(cfg.state_dir(), index, "Weil pairing", fixed=True) == [
+        "#12 Foo (@alice): TauCetiRoadmap/Foo/README.md:3: ### 1.1 Weil pairing",
+        "#99 (aggregate) Bar (@bob): TauCetiRoadmap/Fam/Bar/README.md:3: ### 1.1 Weil pairing on curves"]
+    # The resolver finds Bar and its ids and Lean names at the aggregate's head.
+    readme = "Bar §1.1 exists; Bar §9.9 does not.\nNames: `TauCetiRoadmap.Bar.bar`, `TauCetiRoadmap.Bar.nope`.\n"
+    assert openroadmaps.citation_problems(cfg.state_dir(), index, readme, own="Mine") == [
+        "1: Bar §9.9: Bar has no 9.9 (checked #99 (aggregate))"]
+    assert openroadmaps.name_problems(cfg.state_dir(), index, readme, "", None) == [
+        "README 2: TauCetiRoadmap.Bar.nope: not in Bar's Suggested.lean on main or at an open head"]
+    assert "2 open roadmap pull requests and 1 aggregate at their heads" in openroadmaps.report([], [], "", index, "x")
+
+
+def test_an_aggregate_whose_head_cannot_be_fetched_is_left_out(aggregated, monkeypatch):
+    cfg, gh = aggregated
+    listing = gh.graphql
+
+    def with_a_headless_aggregate(query, **variables):
+        data = listing(query, **variables)
+        data["repository"]["pullRequests"]["nodes"].append(
+            {"number": 98, "title": "Headless aggregate", "isDraft": False, "headRefOid": "0" * 40,
+             "author": {"login": "carol"}, "files": {"nodes": [{"path": "TauCetiRoadmap/Gone/README.md"}]}})
+        return data
+    monkeypatch.setattr(gh, "graphql", with_a_headless_aggregate, raising=False)
+    cfg.prreview.aggregate_prs = [98, 99]
+    index = openroadmaps.refresh(gh, cfg, force=True)
+    assert [p["pr"] for p in index["aggregates"]] == [99] and index["unfetched"] == []
+    assert [p["pr"] for p in index["prs"]] == [7, 12]
+
+
+def test_no_aggregate_leaves_the_index_as_it_was(aggregated):
+    cfg, gh = aggregated
+    cfg.prreview.aggregate_prs = []
+    index = openroadmaps.refresh(gh, cfg, force=True)
+    assert [p["pr"] for p in index["prs"]] == [7, 12, 99] and "aggregates" not in index
+    assert openroadmaps.sources_for(index, "Bar") == [("#99", "refs/open/99")]
+
+
+def test_the_command_lists_and_shows_what_an_aggregate_carries(aggregated, tmp_path, capsys):
+    from tauceti_roadmap_worker.board import new_job
+    from tauceti_roadmap_worker.lanes import base, lane_for
+    cfg, gh = aggregated
+    index = openroadmaps.refresh(gh, cfg, force=True)
+    conf = str(HERE / "tauceti-roadmap.toml.example")
+    assert cli.main(["--conf", conf, "roadmaps", "list"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("2 open roadmap pull requests and 1 aggregate (") and "#99 (aggregate)  Foo, Bar (only here)" in out
+    assert cli.main(["--conf", conf, "roadmaps", "show", "Bar"]) == 0
+    assert capsys.readouterr().out.startswith("<!-- Bar/README.md at #99 (aggregate) -->\n# Roadmap: bar")
+    assert cli.main(["--conf", conf, "roadmaps", "show", "Foo"]) == 0
+    assert capsys.readouterr().out.startswith("<!-- Foo/README.md at #12 -->")
+    assert cli.main(["--conf", conf, "roadmaps", "show", "Foo", "--pr", "99", "--file", "Suggested.lean"]) == 0
+    assert capsys.readouterr().out == "<!-- Foo/Suggested.lean at #99 (aggregate) -->\ndef foo : Nat := 0\n"
+    assert cli.main(["--conf", conf, "roadmaps", "grep", "curves"]) == 0
+    assert capsys.readouterr().out.startswith("#99 (aggregate) Bar (@bob): TauCetiRoadmap/Fam/Bar/README.md:3:")
+    with pytest.raises(SystemExit, match="no roadmap Bar on main"):     # overlap facts: per pull request
+        cli.main(["--conf", conf, "roadmaps", "overlaps", "Bar"])
+    # A brief whose index has an aggregate says how to read what it carries; one with none does not.
+    lane = lane_for(new_job("REV-PKG-Mine~2"))
+    ws = base.Workspace(job_dir=tmp_path / "j", scratch=tmp_path / "j" / "scratch", board=tmp_path, content=tmp_path,
+                        workdir=tmp_path, report=tmp_path / "r.md", branch="b", job_id="REV-PKG-Mine~2")
+
+    class Ctx:
+        def cli(self, *args):
+            return "tauceti-roadmap " + " ".join(args)
+    ws.extra["open_index"] = index
+    assert "listed as an aggregate carries roadmaps of a family in one piece" in lane.tools_text(Ctx(), ws)
+    ws.extra["open_index"] = {**index, "aggregates": []}
+    assert "aggregate" not in lane.tools_text(Ctx(), ws)

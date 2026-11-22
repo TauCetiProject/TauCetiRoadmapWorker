@@ -976,7 +976,10 @@ class Lane:
                 "README and Suggested.lean of the roadmap folders they carry, at their heads, then every roadmap on "
                 "main (`--fixed`, `-i`, `--readme-only`, `--lean-only`); "
                 f"`{ctx.cli('roadmaps', 'show', '<Name>')}` prints one (`--file Suggested.lean`, `--pr N`). Use them "
-                "for every ownership and duplication check, and to read a roadmap that is still a pull request.")
+                "for every ownership and duplication check, and to read a roadmap that is still a pull request."
+                + (" An open pull request listed as an aggregate carries roadmaps of a family in one piece: a roadmap "
+                   "an open aggregate carries is an open roadmap and is read there (`roadmaps show <Name>` says where), "
+                   "and that it has no pull request of its own is not a finding." if index.get("aggregates") else ""))
             citation = (f"- **Citations**: `{ctx.cli('roadmaps', 'resolve', '<README.md>')}` lists the cross-roadmap "
                         "citations and backticked Lean names of a README that are found nowhere (on main, at the open "
                         "heads, in the pinned sources). They are leads, not verdicts: check each before you rely on it "

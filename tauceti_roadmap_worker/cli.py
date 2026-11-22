@@ -904,7 +904,8 @@ def overlaps_text(state: Path, index: dict, args) -> str:
     if args.target.endswith(".md") and readme.is_file():
         name = args.name or readme.parent.name
         return overlaps.report(state, index, name, readme.read_text(encoding="utf-8"), pr=args.pr)[0]
-    places = openroadmaps.sources_for(index, args.target)
+    # Overlap facts are made pull request by pull request: an aggregate is not one of them.
+    places = openroadmaps.sources_for(index, args.target, aggregates=False)
     if args.pr:
         places = [(label, ref) for label, ref in places if label == f"#{args.pr}"]
     if not places:
@@ -916,6 +917,13 @@ def overlaps_text(state: Path, index: dict, args) -> str:
         raise SystemExit(f"{args.target} has no README.md at {label}")
     pr = int(label[1:]) if label.startswith("#") else 0
     return overlaps.report(state, index, args.target, text, pr=pr)[0]
+
+
+def aggregates_text(index: dict) -> str:
+    """` and N aggregates (...)` for the count lines of `roadmaps refresh` and `list`: '' with none."""
+    n = len(index.get("aggregates", []))
+    return (f" and {n} aggregate{'s' if n != 1 else ''} (each carries, in one piece, roadmaps its members add)"
+            if n else "")
 
 
 def roadmaps_cmd(args) -> int:
@@ -935,13 +943,14 @@ def roadmaps_cmd(args) -> int:
         return 0
     if args.action == "refresh":
         index = openroadmaps.refresh(GH(), cfg, force=True)
-        print(f"{len(index['prs'])} open roadmap pull requests indexed at {index['at']} (main {index['main'][:7]})")
+        print(f"{len(index['prs'])} open roadmap pull requests{aggregates_text(index)} indexed at {index['at']} "
+              f"(main {index['main'][:7]})")
         return 0
     index = openroadmaps.load(state)
     if not index:
         raise SystemExit("no index of the open roadmap pull requests on this host: run `roadmaps refresh`")
     if args.action == "list":
-        print(f"{len(index['prs'])} open roadmap pull requests, index of {index['at']}:")
+        print(f"{len(index['prs'])} open roadmap pull requests{aggregates_text(index)}, index of {index['at']}:")
         print("\n".join(openroadmaps.rows(index)))
         return 0
     if args.action == "overlaps":
@@ -963,8 +972,8 @@ def roadmaps_cmd(args) -> int:
         return 0
     if args.action == "show":
         places = openroadmaps.sources_for(index, args.target)
-        if args.pr:
-            places = [(label, ref) for label, ref in places if label == f"#{args.pr}"]
+        if args.pr:      # by its ref: an aggregate's label is `#N (aggregate)`
+            places = [(label, ref) for label, ref in places if ref == openroadmaps.pr_ref(args.pr)]
         if not places:
             raise SystemExit(f"no roadmap {args.target} on main or in an open roadmap pull request"
                              + (f" #{args.pr}" if args.pr else ""))
@@ -1418,7 +1427,8 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--readme-only", action="store_true")
     r.add_argument("--lean-only", action="store_true")
     r.add_argument("--limit", type=int, default=200, help="grep: at most this many lines")
-    r.add_argument("--pr", type=int, default=0, help="show, overlaps: this pull request's copy")
+    r.add_argument("--pr", type=int, default=0,
+                   help="show, overlaps: this pull request's copy (show: an aggregate's too)")
     r.add_argument("--file", default="README.md", choices=["README.md", "Suggested.lean"], help="show: which file")
     r.add_argument("--name", default="", help="resolve, overlaps: the roadmap's own name (default: the README's "
                                               "folder)")
