@@ -4012,13 +4012,25 @@ def test_an_aggregate_is_not_reviewed_and_is_labelled_when_its_members_are_accep
     files = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "accepted", H2)}
     labels = f"repos/{REPO}/issues/99/labels"
     gh = ContentGH(aggregate_nodes(), files=files, trees=SAME_TREES)
-    out, fake = sync(gh, [foo, bar], aggregate_prs=[99])
+    out, fake = sync(gh, [foo, bar], aggregate_prs=[99], pool=["alice"])
     assert fake.created == []                                   # no review round of the aggregate
-    assert gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})]
-    assert out == ["#99: ai-found-no-errors added (aggregate: all 2 roadmap folders hold the files of accepted members)"]
-    # Labelled, and nothing changed: kept without a write.
-    gh = ContentGH(aggregate_nodes(labels=["ai-found-no-errors"]), files=files, trees=SAME_TREES)
-    assert sync(gh, [foo, bar], aggregate_prs=[99])[0] == [] and gh.writes == []
+    # The acceptance is recorded on the aggregate (the folders' files at its head), then the label is added.
+    [(verb, path, sent), label] = gh.writes
+    assert (verb, path) == ("POST", f"repos/{REPO}/issues/99/comments") and sent["body"].startswith("Housekeeping at `")
+    assert intake.aggregate_recorded([replies.Event("t", "Alice", sent["body"])], {"alice"}) == {"Foo": {"foo"}, "Bar": {"bar"}}
+    assert label == ("POST", labels, {"labels": ["ai-found-no-errors"]})
+    assert out == ["#99: acceptance recorded for 2 roadmap folders at " + H3[:7] + " (aggregate)",
+                   "#99: ai-found-no-errors added (aggregate: all 2 roadmap folders hold the files of accepted members)"]
+    # The note is housekeeping, whoever reads the timeline: no review to answer (on a pull request of someone else's too).
+    cfg = example_config()
+    for user in ("alice", "someone-else", "github-actions[bot]"):
+        assert not replies.is_review(replies.Event("2026-11-22T00:00:00Z", user, sent["body"]), {"alice"},
+                                     cfg.replies.review_markers, housekeeping=cfg.replies.housekeeping_prefixes,
+                                     ignore={"github-actions[bot]"})
+    # Labelled, recorded, and nothing changed: kept without a write.
+    record = {"id": 5, "user": {"login": "alice"}, "body": sent["body"], "created_at": "2026-11-22T00:00:00Z"}
+    gh = ContentGH(aggregate_nodes(labels=["ai-found-no-errors"]), files=files, trees=SAME_TREES, comments={99: [record]})
+    assert sync(gh, [foo, bar], aggregate_prs=[99], pool=["alice"])[0] == [] and gh.writes == []
     # Without the setting it is a pull request like any other: both its folders get a review.
     gh = ContentGH(aggregate_nodes(), files=files, trees=SAME_TREES)
     _out, fake = sync(gh, [foo, bar], per_run=20)
@@ -4061,6 +4073,66 @@ def test_an_aggregate_keeps_its_label_as_it_is_while_a_member_is_undecided():
     assert not [w for w in gh.writes if "/issues/99/" in w[1]] and any("#99: ai-found-no-errors not checked" in x for x in out)
 
 
+def test_an_aggregate_keeps_its_label_by_its_record_when_its_members_are_closed():
+    # 2026-11-22: 41 members were to be closed once their folders sat in one pull request; the aggregate's
+    # label was computed from open members only, so closing them would have taken it off.
+    foo, bar = ("TauCetiRoadmap/Foo/README.md", "ADDED"), ("TauCetiRoadmap/Bar/README.md", "ADDED")
+    labels, comments = f"repos/{REPO}/issues/99/labels", f"repos/{REPO}/issues/99/comments"
+    gone = ("DELETE", f"{labels}/ai-found-no-errors", {})
+    trees = {(H3, "TauCetiRoadmap/Foo"): "foo", (H3, "TauCetiRoadmap/Bar"): "bar"}
+    kept = ("all 2 roadmap folders hold accepted files (2 by the record of an earlier acceptance, their own pull "
+            "requests being closed)")
+
+    def run(body, who="alice", labelled=True, trees=trees, nodes=None):
+        record = {"id": 5, "user": {"login": who}, "body": body, "created_at": "2026-11-22T00:00:00Z"}
+        gh = ContentGH(nodes or [node(99, H3, paths=[foo, bar], labels=["ai-found-no-errors"] if labelled else [])],
+                       trees=trees, comments={99: [record]})
+        return gh, sync(gh, aggregate_prs=[99], pool=["alice"])[0]
+
+    note = intake.aggregate_note(H3, {"Foo": "foo", "Bar": "bar"})
+    gh, out = run(note)                                         # both members closed: the record covers both folders
+    assert gh.writes == [] and out == []
+    gh, out = run(note, labelled=False)                         # ... and brings the label back
+    assert gh.writes == [("POST", labels, {"labels": ["ai-found-no-errors"]})]
+    assert out == [f"#99: ai-found-no-errors added (aggregate: {kept})"]
+    # A record by a login that is not trusted counts for nothing.
+    gh, out = run(note, who="mallory")
+    assert gh.writes == [gone]
+    assert out == ["#99: ai-found-no-errors removed (aggregate: Bar: no other open pull request carries it (and 1 more))"]
+    # A folder changed after its member was closed is not covered (and no record is written of it).
+    gh, out = run(note, trees={**trees, (H3, "TauCetiRoadmap/Bar"): "edited"})
+    assert gh.writes == [gone] and out == [("#99: ai-found-no-errors removed (aggregate: Bar: changed since its "
+                                           "acceptance was recorded, and no other open pull request carries it)")]
+    # While a member is open it decides, whatever the record says: here #13 holds the files and is not accepted.
+    bar_job = review_job(42, 1, 13, H2, "done", name="Bar")
+    record = {"id": 5, "user": {"login": "alice"}, "body": note, "created_at": "2026-11-22T00:00:00Z"}
+    gh = ContentGH([node(13, H2, paths=[bar], labels=["ai-found-no-errors"]),
+                    node(99, H3, paths=[foo, bar], labels=["ai-found-no-errors"])],
+                   files=verdict_file(bar_job, "needs_changes", H2), trees={**trees, (H2, "TauCetiRoadmap/Bar"): "bar"},
+                   comments={99: [record]})
+    out, _fake = sync(gh, [bar_job], aggregate_prs=[99], pool=["alice"])
+    assert gone in gh.writes and "#99: ai-found-no-errors removed (aggregate: Bar: #13 holds these files and is not accepted)" in out
+    # One member closed, the other open and accepted with new files the aggregate follows: a new record is written.
+    moved = {(H3, "TauCetiRoadmap/Foo"): "foo", (H3, "TauCetiRoadmap/Bar"): "bar2", (H2, "TauCetiRoadmap/Bar"): "bar2"}
+    gh = ContentGH([node(13, H2, paths=[bar], labels=["ai-found-no-errors"]),
+                    node(99, H3, paths=[foo, bar], labels=["ai-found-no-errors"])],
+                   files=verdict_file(bar_job, "accepted", H2), trees=moved, comments={99: [record]})
+    out, _fake = sync(gh, [bar_job], aggregate_prs=[99], pool=["alice"])
+    [(verb, path, sent)] = gh.writes
+    assert (verb, path) == ("POST", comments) and out == ["#99: acceptance recorded for 2 roadmap folders at " + H3[:7] + " (aggregate)"]
+    assert intake.aggregate_recorded([replies.Event("t", "alice", sent["body"])], {"alice"}) == {"Foo": {"foo"}, "Bar": {"bar2"}}
+
+
+def test_aggregate_records_are_read_from_trusted_comments_only():
+    one, two = intake.aggregate_note(H1, {"Foo": "a"}), intake.aggregate_note(H2, {"Foo": "b", "Bar": "c"})
+    assert one.startswith(f"Housekeeping at `{H1[:7]}`: the roadmap folder this pull request adds holds")
+    events = [replies.Event("t1", "Alice", one), replies.Event("t2", "alice", two), replies.Event("t3", "mallory",
+              intake.aggregate_note(H3, {"Foo": "z"})), replies.Event("t4", "alice", "<!-- tauceti-roadmap-aggregate {broken -->"),
+              replies.Event("t5", "alice", '<!-- tauceti-roadmap-aggregate {"trees": {"Foo": 7, "Baz": ""}} -->')]
+    assert intake.aggregate_recorded(events, {"alice"}) == {"Foo": {"a", "b"}, "Bar": {"c"}}
+    assert intake.aggregate_recorded(None, {"alice"}) == {} and intake.aggregate_recorded(events, set()) == {}
+
+
 def test_aggregate_state_reads_the_members():
     path_of = {"Foo": "R/Foo", "Bar": "R/Bar"}
     members = {"Foo": [(12, H1)], "Bar": [(13, H2), (14, H1)]}
@@ -4076,6 +4148,15 @@ def test_aggregate_state_reads_the_members():
     assert state({12, 14}, ids=missing)[0] is None
     # A folder that is not at the aggregate's head matches no member.
     assert state({12, 14}, ids={**ids, (H3, "R/Foo"): None}) == (False, "Foo: differs from #12")
+    # The record covers a folder no other open pull request carries, and only such a folder.
+    alone = {"Foo": [(12, H1)], "Bar": []}
+    recorded = lambda **trees: intake.aggregate_state(H3, ["Foo", "Bar"], path_of, alone, ids, {12}, set(), trees)
+    assert recorded(Bar={"bar"}) == (True, ("all 2 roadmap folders hold accepted files (1 by the record of an earlier "
+                                           "acceptance, their own pull requests being closed)"))
+    assert recorded(Bar={"old"}) == (False, "Bar: changed since its acceptance was recorded, and no other open pull request carries it")
+    assert recorded(Foo={"foo"}) == (False, "Bar: no other open pull request carries it")
+    assert intake.aggregate_state(H3, ["Foo", "Bar"], path_of, members, ids, {12, 13}, set(), {"Bar": {"bar"}}) == (
+        False, "Bar: #14 holds these files and is not accepted")
 
 
 def test_aggregate_prs_parse_are_checked_and_leave_the_listing():

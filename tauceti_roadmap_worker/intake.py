@@ -1885,9 +1885,50 @@ def review_plan(entry: dict, cfg, on_main: set[str]) -> tuple[dict[str, str], st
     return folders, ""
 
 
+AGGREGATE_MARK = "tauceti-roadmap-aggregate"
+AGGREGATE_RE = re.compile(r"<!--\s*" + AGGREGATE_MARK + r"\b(.*?)-->", re.DOTALL)
+
+
+def aggregate_note(head: str, trees: dict[str, str]) -> str:
+    """The housekeeping note on an aggregate pull request the label rule accepts at `head`, with its
+    record: the git object id of each roadmap folder there (`aggregate_recorded`). The record keeps the
+    acceptance for those files once the members are gone: a folder no other open pull request carries
+    counts as accepted while it holds the files a record names (`aggregate_state`). The note opens with
+    a housekeeping prefix and says that no further change is needed, so that no reading of the timeline
+    takes it for a review (`replies.is_review`), whoever posts it."""
+    count = f"each of the {len(trees)} roadmap folders" if len(trees) != 1 else "the roadmap folder"
+    data = {"head": head, "trees": dict(sorted(trees.items()))}
+    return (f"Housekeeping at `{head[:7]}`: {count} this pull request adds holds the files of a pull request of "
+            "its own that the AI review accepts. The record below keeps that acceptance for these files: a folder "
+            "that still holds them stays covered when its own pull request is closed, and a folder that changes "
+            "after that is covered again only through a pull request of its own. No further change is needed "
+            "and no review is filed here.\n\n"
+            f"<!-- {AGGREGATE_MARK} {json.dumps(data, sort_keys=True)} -->\n")
+
+
+def aggregate_recorded(events, trusted: set[str]) -> dict[str, set[str]]:
+    """folder -> the git object ids that the records on an aggregate pull request name for it
+    (`aggregate_note`), read from the comments (`events`) of the logins in `trusted` (lower case): a
+    record written by anyone else counts for nothing."""
+    out: dict[str, set[str]] = {}
+    for event in events or []:
+        if str(event.user or "").lower() not in trusted:
+            continue
+        for raw in AGGREGATE_RE.findall(event.body or ""):
+            try:
+                data = json.loads(raw.strip())
+            except ValueError:
+                continue
+            trees = data.get("trees") if isinstance(data, dict) else None
+            for folder, oid in (trees.items() if isinstance(trees, dict) else ()):
+                if isinstance(oid, str) and oid:
+                    out.setdefault(str(folder), set()).add(oid)
+    return out
+
+
 def aggregate_state(head: str, folders, path_of: dict[str, str], members: dict[str, list[tuple[int, str]]],
                     ids: dict[tuple[str, str], str | None], settled: set[int],
-                    undecided: set[int]) -> tuple[bool | None, str]:
+                    undecided: set[int], recorded: dict[str, set[str]] | None = None) -> tuple[bool | None, str]:
     """What its members say of an aggregate pull request (`[prreview] aggregate_prs`) at `head`:
     (True, how many folders) when every roadmap folder in `folders` holds there the files a settled
     member holds at its own head; (False, why) when a folder does not; (None, why) when that cannot be
@@ -1898,8 +1939,10 @@ def aggregate_state(head: str, folders, path_of: dict[str, str], members: dict[s
     `undecided`: the members whose label this run leaves as it is (a review of the head is being
     finished, or GitHub did not answer). A folder whose files a member holds only at a head that is
     not accepted counts against the aggregate; one whose member is undecided, or was not read, is
-    not told."""
-    waiting, unknown = [], []
+    not told. `recorded`: folder -> the object ids the aggregate's own records name (`aggregate_recorded`):
+    a folder that no other open pull request carries is accepted while it holds recorded files (its
+    member was accepted with them, and is closed since); while a member is open, the member decides."""
+    waiting, unknown, kept = [], [], 0
     for folder in sorted(folders):
         path = path_of[folder]
         if (head, path) not in ids:
@@ -1921,6 +1964,10 @@ def aggregate_state(head: str, folders, path_of: dict[str, str], members: dict[s
         elif members.get(folder):
             numbers = ", ".join(f"#{n}" for n, _h in members[folder])
             waiting.append(f"{folder}: differs from {numbers}")
+        elif mine is not None and mine in (recorded or {}).get(folder, ()):
+            kept += 1
+        elif (recorded or {}).get(folder):
+            waiting.append(f"{folder}: changed since its acceptance was recorded, and no other open pull request carries it")
         else:
             waiting.append(f"{folder}: no other open pull request carries it")
     if waiting:
@@ -1928,7 +1975,11 @@ def aggregate_state(head: str, folders, path_of: dict[str, str], members: dict[s
         return False, waiting[0] + more
     if unknown:
         return None, f"{len(unknown)} of {len(list(folders))} roadmap folders could not be compared with their members"
-    return True, f"all {len(list(folders))} roadmap folders hold the files of accepted members"
+    total = len(list(folders))
+    if kept:
+        return True, (f"all {total} roadmap folders hold accepted files ({kept} by the record of an earlier "
+                      "acceptance, their own pull requests being closed)")
+    return True, f"all {total} roadmap folders hold the files of accepted members"
 
 
 def author_reviewed(p, author: str) -> bool:
@@ -3153,8 +3204,10 @@ def sync_pr_reviews(ctx) -> list[str]:
                        f"({str(exc).splitlines()[0][:160]})")
 
     # Aggregate pull requests (`[prreview] aggregate_prs`): the label is on exactly when every roadmap folder
-    # the aggregate adds holds the files a member holds at a head the AI review accepts (`aggregate_state`);
-    # a review that points out errors on the aggregate itself keeps it off, as on any pull request.
+    # the aggregate adds holds the files a member holds at a head the AI review accepts, or, for a folder no
+    # other open pull request carries, the files a record of such an acceptance names (`aggregate_state`,
+    # `aggregate_note`); a review that points out errors on the aggregate itself keeps it off, as on any
+    # pull request.
     base = cfg.roadmap.active_dir.strip("/")
     settled = {n for n in accepted_prs if label_on.get(n)}
     for entry in aggregates if p.label else []:
@@ -3168,8 +3221,20 @@ def sync_pr_reviews(ctx) -> list[str]:
                             if e.get("head") and folder in plans[int(e["pr"])][0]] for folder in folders}
         ids = prbatch.tree_ids(ctx.gh, repo, [(head, path_of[f]) for f in folders]
                                + [(h, path_of[f]) for f in folders for _n, h in members[f]], batch)
-        state, note = aggregate_state(head, folders, path_of, members, ids, settled, undecided)
+        events = events_of(number)
+        recorded = aggregate_recorded(events, layout_trusted(cfg))
+        state, note = aggregate_state(head, folders, path_of, members, ids, settled, undecided, recorded)
         errors = errors_at(number, author) if state else ""
+        # Accepted: the record of the folders' files is kept current, so that the acceptance outlives the members.
+        mine = {str(folder): ids.get((head, path_of[folder])) for folder in folders}
+        if state and errors == "" and events is not None and any(
+                not oid or oid not in recorded.get(folder, ()) for folder, oid in mine.items()) and all(mine.values()):
+            try:
+                ctx.gh.write("POST", f"repos/{repo}/issues/{number}/comments", {"body": aggregate_note(head, mine)})
+                out.append(f"#{number}: acceptance recorded for {len(mine)} roadmap folder"
+                           f"{'s' if len(mine) != 1 else ''} at {head[:7]} (aggregate)")
+            except GHError as exc:
+                out.append(f"#{number}: acceptance record not posted ({str(exc).splitlines()[0][:160]})")
         try:
             if state is None or (state and errors is None):
                 out.append(f"#{number}: {p.label} not checked (aggregate: "
