@@ -10,6 +10,10 @@ authors and reviewers the open work itself:
   lock, at most once per `MAX_AGE`. The index is `<state>/open-roadmaps/index.json`.
 * `grep` searches the README and Suggested.lean of every roadmap on main and of the roadmap folders
   each open pull request carries, at its head; `show` prints one of those files.
+* An aggregate pull request (`[prreview] aggregate_prs`) is no roadmap pull request: it is not in the
+  index's `prs`, which everything done roadmap by roadmap reads. Its head is in the mirror all the same
+  and its entry under `aggregates`, so that a roadmap only it carries (its member closed in its favour)
+  is listed, searched, shown and resolved like any open roadmap, labelled `#<pr> (aggregate)`.
 * `resolve` checks a README's cross-roadmap citations (`Name §1.2`, `Name Layer 3`, `Name A1.2`)
   against the cited roadmap on main and at the heads of the open pull requests that carry it, and its
   backticked Lean names against the pinned libraries' sources (and `TauCetiRoadmap.<Name>.x` against
@@ -139,13 +143,16 @@ def changed_files(gh, repo: str, pr: dict) -> list[dict]:
     return out
 
 
-def inventory(gh, repo: str, dirs: tuple[str, ...], any_file: bool = False, skip=()) -> list[dict]:
+def inventory(gh, repo: str, dirs: tuple[str, ...], any_file: bool = False, skip=(),
+              aggregates: list[dict] | None = None) -> list[dict]:
     """The repository's open pull requests that touch a roadmap folder: number, title, author, head,
     draft, labels, the roadmap folders they touch (`roadmap_folders`), and every changed file with
     how it changes (`changed_files`). With `any_file`, also those whose only changes under `dirs` are
     other files (an extra Lean file of a roadmap).
     `skip`: pull request numbers that are left out (`[prreview] aggregate_prs`: an aggregate
-    carries folders its members are reviewed in, and is nobody's roadmap pull request).
+    carries folders its members are reviewed in, and is nobody's roadmap pull request). When the list
+    `aggregates` is given, the entry of each of them that touches a roadmap folder is appended to it
+    instead (the same entry, with `aggregate: True`), so that what it carries can be found and read.
 
     One GraphQL request per 50 open pull requests, each with its labels and first 100 changed files.
     The change of a file is a field of the file nodes the request lists anyway, so it costs nothing:
@@ -158,20 +165,25 @@ def inventory(gh, repo: str, dirs: tuple[str, ...], any_file: bool = False, skip
         data = gh.graphql(QUERY, owner=owner, name=name, after=after)
         page = ((data.get("repository") or {}).get("pullRequests") or {})
         for pr in page.get("nodes") or []:
-            if pr.get("number") in skipped:
+            aggregate = pr.get("number") in skipped
+            if aggregate and aggregates is None:
                 continue
             files = changed_files(gh, repo, pr)
             paths = [f["path"] for f in files]
             folders = roadmap_folders(paths, dirs)
             under = any_file and any(p.startswith(d.rstrip("/") + "/") for p in paths for d in dirs)
             if folders or under:
-                out.append({"pr": pr["number"], "title": pr.get("title", ""), "head": pr.get("headRefOid", ""),
-                            "author": (pr.get("author") or {}).get("login", ""), "draft": bool(pr.get("isDraft")),
-                            # a human has approved it: the board files nothing that could push to it
-                            "approved": pr.get("reviewDecision") == "APPROVED",
-                            "labels": [x.get("name", "") for x in ((pr.get("labels") or {}).get("nodes") or [])
-                                       if isinstance(x, dict)],
-                            "roadmaps": list(folders), "folders": folders, "files": files})
+                entry = {"pr": pr["number"], "title": pr.get("title", ""), "head": pr.get("headRefOid", ""),
+                         "author": (pr.get("author") or {}).get("login", ""), "draft": bool(pr.get("isDraft")),
+                         # a human has approved it: the board files nothing that could push to it
+                         "approved": pr.get("reviewDecision") == "APPROVED",
+                         "labels": [x.get("name", "") for x in ((pr.get("labels") or {}).get("nodes") or [])
+                                    if isinstance(x, dict)],
+                         "roadmaps": list(folders), "folders": folders, "files": files}
+                if aggregate:
+                    aggregates.append({**entry, "aggregate": True})
+                else:
+                    out.append(entry)
         info = page.get("pageInfo") or {}
         if not info.get("hasNextPage"):
             return out
@@ -245,7 +257,13 @@ def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any
     other files (an extra Lean file of a roadmap: `inventory`). A pull request whose head ref the
     remote does not have is read from its test merge when that has the listed head as second parent
     (`_head_from_merge`); otherwise it is left out and its number recorded under `unfetched`. Raises
-    on any other GitHub or git failure; the caller decides what a missing index means."""
+    on any other GitHub or git failure; the caller decides what a missing index means.
+
+    The aggregate pull requests (`[prreview] aggregate_prs`) are not in `prs`: everything done roadmap
+    by roadmap or pull request by pull request leaves them out. Their heads are fetched all the same and
+    their entries kept under `aggregates`, so that a roadmap only an aggregate carries can be found and
+    read (`sources_for`, `read`, `rows`, `grep`); one whose head cannot be fetched is left out (and
+    not listed under `unfetched`, which names pull requests of `prs`)."""
     state, repo, branch = cfg.state_dir(), cfg.repositories.content, cfg.project.branch
     dirs = (cfg.roadmap.active_dir, cfg.roadmap.completed_dir)
     with _lock(state):
@@ -253,11 +271,12 @@ def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any
         if not force and current.get("repo") == repo and age(current, now) < max_age:
             return current
         # GitHub first: nothing is cloned when it cannot be read
-        prs = inventory(gh, repo, dirs, any_file=any_file, skip=cfg.prreview.aggregate_prs)
+        aggregates: list[dict] = []
+        prs = inventory(gh, repo, dirs, any_file=any_file, skip=cfg.prreview.aggregate_prs, aggregates=aggregates)
         if not (mirror(state) / "HEAD").exists():
             mirror(state).parent.mkdir(parents=True, exist_ok=True)
             git(None, "clone", "-q", "--bare", "--no-tags", gitops.url(repo), str(mirror(state)))
-        heads = {p["pr"]: f"+refs/pull/{p['pr']}/head:{pr_ref(p['pr'])}" for p in prs}
+        heads = {p["pr"]: f"+refs/pull/{p['pr']}/head:{pr_ref(p['pr'])}" for p in prs + aggregates}
         refspecs = [f"+refs/heads/{branch}:{_main_ref(branch)}"] + list(heads.values())
         unfetched: list[int] = []
         for i in range(0, len(refspecs), FETCH_BATCH):
@@ -273,33 +292,56 @@ def refresh(gh, cfg, *, force: bool = False, now: dt.datetime | None = None, any
                         raise
                     batch.remove(gone)
                     unfetched.append(int(found.group(1)))
-        listed = {p["pr"]: p.get("head", "") for p in prs}
+        listed = {p["pr"]: p.get("head", "") for p in prs + aggregates}
         unfetched = [n for n in unfetched if not _head_from_merge(mirror(state), n, listed[n])]
         prs = [p for p in prs if p["pr"] not in unfetched]
-        keep = {pr_ref(p["pr"]) for p in prs}
+        numbers = {p["pr"] for p in aggregates}
+        aggregates = [p for p in aggregates if p["pr"] not in unfetched]
+        unfetched = [n for n in unfetched if n not in numbers]
+        keep = {pr_ref(p["pr"]) for p in prs + aggregates}
         for ref in git(mirror(state), "for-each-ref", "--format=%(refname)", "refs/open/").split():
             if ref not in keep:
                 git(mirror(state), "update-ref", "-d", ref, check=False)
         on_main = main_roadmaps(state, branch, dirs)
-        for p in prs:
+        for p in prs + aggregates:
             p["adds"] = [n for n in p["roadmaps"] if n not in on_main]
         index = {"at": (now or dt.datetime.now(dt.UTC)).strftime("%Y-%m-%dT%H:%M:%SZ"), "repo": repo, "branch": branch,
                  "main": git(mirror(state), "rev-parse", _main_ref(branch)).strip(), "dirs": list(dirs),
                  "main_roadmaps": sorted(on_main), "main_folders": on_main, "prs": prs,
                  "unfetched": sorted(unfetched)}
+        if aggregates:
+            index["aggregates"] = aggregates
         tmp = index_path(state).with_suffix(".tmp")
         tmp.write_text(json.dumps(index, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
         os.replace(tmp, index_path(state))
         return index
 
 
+def aggregate_label(p: dict) -> str:
+    """How an aggregate pull request is named wherever a roadmap it carries is found: `#123 (aggregate)`."""
+    return f"#{p['pr']} (aggregate)"
+
+
+def _carried(index: dict) -> set[str]:
+    """The roadmaps on main or in an open roadmap pull request of `prs`: those an aggregate need not
+    stand for."""
+    return set(index.get("main_roadmaps", [])) | {n for p in index.get("prs", []) for n in p["roadmaps"]}
+
+
 def rows(index: dict) -> list[str]:
-    """One line per open roadmap pull request, for `list` and the briefs."""
+    """One line per open roadmap pull request, for `list` and the briefs, then one per aggregate with
+    the roadmaps it carries (`(only here)`: neither on main nor in another open pull request)."""
     out = []
     for p in index.get("prs", []):
         names = ", ".join(f"{n} (new)" if n in p.get("adds", []) else n for n in p["roadmaps"])
         out.append(f"#{p['pr']}  {names}  @{p['author']}  {p['head'][:7]}{'  draft' if p.get('draft') else ''}  "
                    f"{p['title'][:100]}")
+    carried, aggregates = _carried(index), index.get("aggregates", [])
+    for p in aggregates:
+        elsewhere = carried | {n for q in aggregates if q is not p for n in q["roadmaps"]}
+        names = ", ".join(n if n in elsewhere else f"{n} (only here)" for n in p["roadmaps"])
+        out.append(f"{aggregate_label(p)}  {names}  @{p['author']}  {p['head'][:7]}"
+                   f"{'  draft' if p.get('draft') else ''}  {p['title'][:100]}")
     return out
 
 
@@ -310,19 +352,24 @@ def _paths(index: dict, name: str, files=FILES, pr: dict | None = None) -> list[
     return [f"{f}/{file}" for f in folders for file in files]
 
 
-def sources_for(index: dict, name: str) -> list[tuple[str, str]]:
+def sources_for(index: dict, name: str, aggregates: bool = True) -> list[tuple[str, str]]:
     """(label, tree-ish) of every place the roadmap `name` can be read: main, then each open pull
-    request that carries it, at its head."""
+    request that carries it, at its head, then (unless `aggregates` is false) each aggregate pull
+    request that carries it, at its head (`#123 (aggregate)`)."""
     out = []
     if name in index.get("main_roadmaps", []):
         out.append(("main", _main_ref(index.get("branch", "main"))))
     out += [(f"#{p['pr']}", pr_ref(p["pr"])) for p in index.get("prs", []) if name in p["roadmaps"]]
+    if aggregates:
+        out += [(aggregate_label(p), pr_ref(p["pr"])) for p in index.get("aggregates", []) if name in p["roadmaps"]]
     return out
 
 
 def read(state: Path, index: dict, treeish: str, name: str, file: str = "README.md") -> str:
-    """The text of roadmap `name`'s `file` at a tree-ish of the mirror ('' when absent)."""
-    pr = next((p for p in index.get("prs", []) if pr_ref(p["pr"]) == treeish), None)
+    """The text of roadmap `name`'s `file` at a tree-ish of the mirror ('' when absent): main, or the
+    head of an open pull request or of an aggregate."""
+    pr = next((p for p in [*index.get("prs", []), *index.get("aggregates", [])] if pr_ref(p["pr"]) == treeish),
+              None)
     for path in _paths(index, name, (file,), pr):
         text = git(mirror(state), "show", f"{treeish}:{path}", check=False)
         if text:
@@ -333,7 +380,9 @@ def read(state: Path, index: dict, treeish: str, name: str, file: str = "README.
 def grep(state: Path, index: dict, pattern: str, *, fixed: bool = False, ignore_case: bool = False,
          lean: bool = True, readme: bool = True, limit: int = 200) -> list[str]:
     """Matching lines of the roadmaps on main and of the folders each open pull request carries, at its
-    head: `main: <path>:<line>: <text>` or `#<pr> <Name> (@author): <path>:<line>: <text>`."""
+    head: `main: <path>:<line>: <text>` or `#<pr> <Name> (@author): <path>:<line>: <text>`. An
+    aggregate is searched only in the folders of the roadmaps that neither main nor an open pull
+    request of `prs` carries (the others are found there), as `#<pr> (aggregate) <Name> (@author)`."""
     files = tuple(f for f, on in (("README.md", readme), ("Suggested.lean", lean)) if on)
     if not files:
         return []
@@ -342,6 +391,13 @@ def grep(state: Path, index: dict, pattern: str, *, fixed: bool = False, ignore_
     for p in index.get("prs", []):
         paths = [path for n in p["roadmaps"] for path in _paths(index, n, files, p)]
         targets.append((f"#{p['pr']} {', '.join(p['roadmaps'])} (@{p['author']})", pr_ref(p["pr"]), paths))
+    carried = _carried(index)
+    for p in index.get("aggregates", []):
+        names = [n for n in p["roadmaps"] if n not in carried]
+        carried |= set(names)            # a second aggregate carrying them is not searched again
+        if names:
+            paths = [path for n in names for path in _paths(index, n, files, p)]
+            targets.append((f"{aggregate_label(p)} {', '.join(names)} (@{p['author']})", pr_ref(p["pr"]), paths))
     targets.append(("main", _main_ref(index.get("branch", "main")),
                     [f"{d}/*/{f}" for d in index.get("dirs", []) for f in files]))
     out, more = [], 0
@@ -450,8 +506,9 @@ def _enumerated(text: str, parent: str, n: int) -> bool:
 
 
 def citation_problems(state: Path, index: dict, readme: str, own: str = "") -> list[str]:
-    """`<line>: <citation>: <why>` for each cross-roadmap citation of `readme` found nowhere."""
-    known = set(index.get("main_roadmaps", [])) | {n for p in index.get("prs", []) for n in p["roadmaps"]}
+    """`<line>: <citation>: <why>` for each cross-roadmap citation of `readme` found nowhere (a roadmap
+    only an aggregate carries is found, at the aggregate's head)."""
+    known = _carried(index) | {n for p in index.get("aggregates", []) for n in p["roadmaps"]}
     cite = cite_pattern(known)
     unknown = re.compile(r"(?<![\w./])(" + CAMEL + r")" + CITE_TAIL)
     texts: dict[str, list[tuple[str, str]]] = {}
@@ -576,9 +633,11 @@ def resolve(state: Path, index: dict, readme: str, *, own: str = "", lean: str =
 
 def report(citations: list[str], names: list[str], note: str, index: dict, what: str) -> str:
     """The resolver's result as Markdown, for a job's scratch folder and the command line."""
+    count = len(index.get("aggregates", []))
+    also = f" and {count} aggregate{'s' if count != 1 else ''}" if count else ""
     lines = [f"# Citations of {what}", "",
              f"Checked against main ({index.get('main', '')[:7]}) and {len(index.get('prs', []))} open roadmap pull "
-             f"requests at their heads (index of {index.get('at', '?')}). Only what is found nowhere is listed; "
+             f"requests{also} at their heads (index of {index.get('at', '?')}). Only what is found nowhere is listed; "
              "these are leads to check, not verdicts.", ""]
     lines += ["## Cross-roadmap citations found nowhere", ""] + ([f"- {c}" for c in citations] or ["None."]) + [""]
     lines += ["## Lean names found nowhere", ""] + ([f"- {n}" for n in names] or ["None."])
