@@ -290,6 +290,10 @@ max_folders = 10
 # earlier finding and reviews the changed passages and what depends on them; otherwise it is a full
 # review. The reviewer gets the folder's diff since that head, cut at `diff_cap_lines` lines.
 small_change_lines = 150
+# A review that would be full, of a roadmap folder already on the pull request's base branch, reviews
+# the change since the merge base instead: what it adds or changes and the untouched text it affects;
+# a defect in other untouched text is a non-blocking remark for a separate pull request. Off by default.
+# review_changes_of_merged = true
 # A review whose every finding is P3 ends with its repair (no further review of that folder for the
 # repaired head; the label follows once every folder is settled), and a repair may settle a finding
 # as `outside this folder`, recorded once in the verdict and not raised again. Both off by default.

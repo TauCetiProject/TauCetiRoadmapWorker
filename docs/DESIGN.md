@@ -173,7 +173,13 @@ checkout, submits a PR to the board, and the intake advances the state.
     accounts for every earlier finding (repaired, partly repaired or not repaired), reviews only the
     changed passages and what depends on them, carries the earlier adversarial rows for untouched
     statements, runs the gate, and says so in its comment and marker; a larger change gets a full
-    review. On a pull request whose author is in `[roadmap] pool`, a review that asks for changes
+    review. With `[prreview] review_changes_of_merged` on (off by default), a review that would be
+    full, of a roadmap folder that is on the pull request's base branch, reviews the change instead
+    (mode `change`): its text there was reviewed when it merged, so the agent gets the folder's change
+    since the merge base, reviews every passage it adds or changes and every untouched one it
+    affects, and lists a defect in other untouched text as a non-blocking `Untouched text:` remark for
+    a separate pull request, which a repair leaves alone; acceptance and the label are a full
+    review's. On a pull request whose author is in `[roadmap] pool`, a review that asks for changes
     (never a rejection), by a pool operator with `[prreview] repair_pool` on (the default), goes on
     in the same job, after its comment and before its board submission: the gate lane's steps
     answer that comment on the same worktree (the gate brief, its checks, the push with the lease on

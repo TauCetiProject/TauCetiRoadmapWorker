@@ -922,6 +922,7 @@ an operator files by hand at an accepted head (inputs `operator_check`) is not c
 | `max_folders` | `10` | a pull request editing more roadmap folders than this is a chore and not reviewed, unless it adds the README.md of every one of them |
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
+| `review_changes_of_merged` | `false` | a review that is not incremental, of a roadmap folder whose `README.md` is on the pull request's base branch, reviews the change instead of the whole folder (below): `changes.md` holds the folder's change since the merge base, every passage it adds or changes and every untouched passage it affects is reviewed, and a defect in other untouched text is a non-blocking remark (`Untouched text: …`) for a separate pull request, which a repair leaves alone; off: such a review is full |
 | `carry_minor` | `false` | an acceptance with small corrections applies them in one small commit on a pool author's pull request (and, in reviews before 2026-11-18, a review whose every finding is P3 ended with its repair): no further review of that folder is filed for the repaired head, and the pull request is labelled once every folder is settled (below) |
 | `carry_unchanged` | `true` | a head that moved without changing the pull request's roadmap folders (a rebase, a merge of the base branch) keeps the acceptance of the head it came from: the label stays and no review of the new head is filed (below) |
 | `carry_unchanged_folders` | `true` | the same folder by folder, on a pull request with several roadmap folders: a folder whose latest review settled the files it still holds is not reviewed again when another folder's repair moves the head, and counts as accepted there (below) |
@@ -1043,7 +1044,31 @@ wrong without touching them, so a stale sentence is a small correction. The work
 rule of the report and the verdict is that of a full review. A larger change, a previous head that
 cannot be read, or a previous report not on the board yet gives a full review, with `changes.md`
 offered as context. The first line of an incremental re-review's comment ends `(incremental re-review
-since <sha7>)`, and every review's marker carries `mode`: `incremental` or `full`.
+since <sha7>)`, and every review's marker carries `mode`: `incremental`, `change` or `full`.
+
+With `review_changes_of_merged` (off by default), a review that would be full, of a roadmap folder
+that is on the pull request's base branch (that branch, as the job's worktree knows it, has the
+folder's `README.md`), is a review of the change instead (`mode` `change`): the text on the base
+branch was reviewed and accepted when it merged, so a short change to a long merged roadmap is not
+reviewed as the whole roadmap again. The worker reads the merge base of the head with the base branch
+and writes `changes.md` as the folder's change since that commit (the same summary, diff and outside
+files as above). The agent reviews in full every passage the change adds or changes (statements,
+routes, citations, Lean declarations) and every untouched passage it affects (one that cites a
+changed or removed section, depends on a changed statement, or is contradicted by the change); a
+defect in other untouched text is not a finding but a small correction or format note whose title
+begins `Untouched text:`, with its place, for a separate pull request. The whole folder is in the
+worktree as context, and the automatic checks still cover all of it (a build failure, a cycle or an
+upward supplier stays a finding wherever it lies). The report's summary opens with the review of the
+change against the base branch, its number of changed lines and the merge base's short sha; its
+verdict notes say `review of the change against <branch>: <N> changed lines since <sha7>`. A
+re-review that is not incremental is such a review too, and first checks the previous findings
+finding by finding, as a full review does. Everything else is a full review's: the rules of the
+report, the acceptance and the label. A repair after such a review (`repair_pool`) leaves alone the
+untouched text the `Untouched text:` remarks point at, and an acceptance whose only small corrections
+are such remarks applies nothing (`carry_minor`). A roadmap the pull request adds gets a full review,
+an incremental re-review stays incremental, and a git failure while reading the base branch or the
+merge base gives a full review, never a failed job; with the setting on, the round's log says which
+mode it chose and, for a full review, why (`review mode: full (… not compared with origin/main: …)`).
 
 With `carry_minor`, a review that accepts with small corrections ends the loop for its folder on a
 pool author's pull request: the same job applies the corrections (the repair brief asks for them and

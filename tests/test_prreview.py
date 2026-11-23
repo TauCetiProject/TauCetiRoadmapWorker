@@ -2606,6 +2606,191 @@ def test_an_incremental_re_review_accounts_for_every_finding_of_the_previous_rep
     assert lane_prreview.unaccounted_findings(PREVIOUS_REPORT, "R01 — the hypothesis\nR012 repaired") == ["R01", "R02"]
 
 
+# --- a review of the change to a roadmap on the base branch ---------------------------------------------
+
+UNTOUCHED_CORRECTION = "## C02 — Untouched text: the locator of 4.2 names no page\n\nIn 4.2 (line 80). Give it.\n\n"
+
+
+def test_the_review_of_changes_of_merged_roadmaps_is_off_by_default_and_a_boolean():
+    assert config.PRReview().review_changes_of_merged is False
+    text = '[project]\nname = "P"\n[prreview]\nreview_changes_of_merged = true\n'
+    assert config.parse(text).prreview.review_changes_of_merged is True
+    with pytest.raises(config.ConfigError, match="prreview.review_changes_of_merged: expected bool, got int"):
+        config.parse(text.replace("true", "1"))
+
+
+@pytest.mark.parametrize("on,extra,rereview,mode", [
+    (True, {"on_base": True, "base_lines": 30}, False, "change"),
+    (True, {"on_base": True, "base_lines": 0}, False, "change"),
+    (False, {"on_base": True, "base_lines": 30}, False, "full"),                # the setting off: as before
+    (True, {"on_base": False, "base_lines": None}, False, "full"),              # a roadmap the pull request adds
+    (True, {"on_base": True, "base_lines": None}, False, "full"),               # its change could not be read
+    (True, {"on_base": True, "base_lines": 30, "change_lines": 20, "previous_report": "r.md"}, True, "incremental"),
+    (True, {"on_base": True, "base_lines": 30, "change_lines": 151, "previous_report": "r.md"}, True, "change"),
+    (False, {"on_base": True, "base_lines": 30, "change_lines": 151, "previous_report": "r.md"}, True, "full")])
+def test_a_review_of_a_roadmap_on_the_base_branch_reviews_its_change_with_the_setting_on(on, extra, rereview, mode):
+    cfg = example_config()
+    cfg.prreview.review_changes_of_merged = on
+    job = new_job("PRREVIEW-Foo~2", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo", "rereview": rereview})
+    assert lane_prreview.review_mode(job, cfg, extra) == mode
+
+
+def merged_repo(tmp_path):
+    """A content repository whose `origin/main` holds Foo, and two heads of a pull request that revises
+    it, the first rewriting five lines of its README and the second eight more: (repository, main, the
+    first head, the second head)."""
+    repo = tmp_path / "repo"
+    readme = repo / "TauCetiRoadmap" / "Foo" / "README.md"
+    readme.parent.mkdir(parents=True)
+    sh(tmp_path, "init", "-q", str(repo))
+    heads = []
+    for revised in (set(), set(range(5)), set(range(5)) | set(range(30, 38))):
+        readme.write_text("# Foo\n\n" + "".join(f"line {k}{' (revised)' if k in revised else ''}\n" for k in range(40)))
+        sh(repo, "add", "-A")
+        sh(repo, "commit", "-q", "-m", f"revision {len(heads)}")
+        heads.append(sh(repo, "rev-parse", "HEAD"))
+    sh(repo, "update-ref", "refs/remotes/origin/main", heads[0])
+    return repo, *heads
+
+
+def merged_git_in(repo, monkeypatch):
+    """The dry-run context's fake git, except that what reads the content repository's history runs in `repo`."""
+    fake = lane_prreview.gitops.git
+
+    def git(cwd, *args, **kw):
+        return (REAL_GIT(repo, *args, **kw) if args[0] in ("cat-file", "diff", "ls-tree", "merge-base", "show")
+                else fake(cwd, *args, **kw))
+    monkeypatch.setattr(lane_prreview.gitops, "git", git)
+
+
+def flat_brief(lane, job, ctx, ws):
+    text = prompts.render("prreview", {**lane.common_values(job, ctx, ws), **lane.values(job, ctx, ws)})
+    assert not re.search(r"__[A-Z][A-Z0-9_]*__", text)
+    return " ".join(text.split())
+
+
+@needs_git
+def test_a_review_of_the_change_reads_the_change_since_the_merge_base(dry_ctx, tmp_path, monkeypatch):  # noqa: F811
+    repo, main, first, second = merged_repo(tmp_path)
+    merged_git_in(repo, monkeypatch)
+    dry_ctx.cfg.prreview.review_changes_of_merged = True
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": second, "owner": "carol", "name": "Foo", "folder": "Foo",
+                                            "rereview": False})
+    lane = lane_for(job)
+    ws = lane.prepare(job, dry_ctx)
+    assert ws.extra["mode"] == "change" and ws.extra["on_base"] is True and ws.extra["merge_base"] == main
+    assert ws.extra["base_lines"] == 26 and ws.extra["change_lines"] is None
+    text = (ws.scratch / "changes.md").read_text()
+    assert text.startswith(f"# Changes since {main[:7]}, the merge base with `main` (data)\n")
+    assert f"The merge base of this head with `main` is `{main}`" in text and f"this review reads `{second}`" in text
+    assert "`TauCetiRoadmap/Foo/`: 26 changed lines (13 insertions, 13 deletions)." in text
+    assert f"review mode: change (26 changed lines of the folder since the merge base {main[:7]} with main)" in ws.extra["notes"]
+    brief = flat_brief(lane, job, dry_ctx, ws)
+    assert "**A review of a change to a roadmap on `main`.**" in brief and "**A full review.**" not in brief
+    assert (f"from the merge base `{main[:7]}` to this head the folder changed by 26 lines, set out in "
+            f"`{ws.scratch / 'changes.md'}`") in brief
+    assert "(data): none (a review of the change reads the change since the merge base instead: below)." in brief
+    assert "First check finding by finding" not in brief
+    # A re-review of a small repair stays incremental, on the change since the head the previous review read.
+    ctx = rereview_ctx(dry_ctx, second, 16)
+    rereview = rereview_job(first, second)
+    ws = lane.prepare(rereview, ctx)
+    assert ws.extra["mode"] == "incremental" and ws.extra["change_lines"] == 16 and ws.extra["base_lines"] == 26
+    assert (ws.scratch / "changes.md").read_text().startswith(f"# Changes since {first[:7]} (data)\n")
+    # A larger one is a review of the change since the merge base that first checks the previous findings.
+    ctx.cfg.prreview.small_change_lines = 15
+    ws = lane.prepare(rereview, ctx)
+    assert ws.extra["mode"] == "change" and ws.extra["change_lines"] == 16
+    assert (ws.scratch / "changes.md").read_text().startswith(f"# Changes since {main[:7]}, the merge base")
+    assert (f"This re-review of a repaired head is not incremental: the folder changed by 16 lines since `{first[:7]}`, "
+            "the head the previous review read (more than `[prreview] small_change_lines` = 15). First check finding "
+            "by finding") in flat_brief(lane, rereview, ctx, ws)
+    # The setting off: a full review as before, with the change since the previous head as context.
+    ctx.cfg.prreview.review_changes_of_merged = False
+    ws = lane.prepare(rereview, ctx)
+    assert ws.extra["mode"] == "full" and ws.extra["on_base"] is None and ws.extra["change_lines"] == 16
+    assert not any(n.startswith("review mode") for n in ws.extra.get("notes", []))
+    assert (ws.scratch / "changes.md").read_text().startswith(f"# Changes since {first[:7]} (data)\n")
+
+
+@pytest.mark.parametrize("fails", ["ls-tree", "merge-base"])
+def test_a_git_failure_leaves_the_review_of_a_roadmap_on_the_base_full(dry_ctx, monkeypatch, fails):  # noqa: F811
+    fake = lane_prreview.gitops.git
+
+    def git(cwd, *args, **kw):
+        if args[0] == fails:
+            raise lane_prreview.gitops.GitError(f"git {fails} origin/main: fatal: bad revision 'origin/main'")
+        return "TauCetiRoadmap/Foo/README.md\n" if args[0] == "ls-tree" else fake(cwd, *args, **kw)
+    monkeypatch.setattr(lane_prreview.gitops, "git", git)
+    dry_ctx.cfg.prreview.review_changes_of_merged = True
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": "abc1234" + "0" * 33, "owner": "carol", "name": "Foo",
+                                            "rereview": False})
+    lane = lane_for(job)
+    ws = lane.prepare(job, dry_ctx)
+    assert ws.extra["mode"] == "full" and ws.extra["base_lines"] is None and ws.extra["changes"] is None
+    assert (f"review mode: full (TauCetiRoadmap/Foo/ not compared with origin/main: git {fails} origin/main: fatal: "
+            "bad revision 'origin/main')") in ws.extra["notes"]
+    assert "**A full review.** Review the whole roadmap folder as below." in flat_brief(lane, job, dry_ctx, ws)
+
+
+def test_the_brief_of_a_review_of_the_change_makes_a_defect_in_untouched_text_a_remark():
+    cfg = example_config()
+    job = new_job("PRREVIEW-Foo~2", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo", "rereview": True,
+                                            "previous_head": H2})
+    extra = {"base_ref": "main", "merge_base": H3, "base_lines": 24, "changes": "changes.md", "change_lines": 400}
+    text = " ".join(lane_prreview.mode_text("change", job, cfg, extra).split())
+    assert text.startswith("**A review of a change to a roadmap on `main`.** This roadmap folder is on `main`")
+    assert ("every passage the diff adds or changes: its statements, routes, citations and Lean declarations. Review "
+            "as well every untouched passage the change affects") in text
+    assert ("A defect in untouched text that the change does not affect is NOT a finding of this review, however "
+            "serious") in text
+    assert "whose title begins `Untouched text:` and names its place" in text and "does not block" in text
+    assert "The automatic checks and the elaboration still cover the whole folder, and so does their report." in text
+    assert "the build failing, or a cycle or an upward supplier, is a finding wherever it lies" in text
+    assert f'opens with the sentence "A review of the change against `main`: 24 changed lines since `{H3[:7]}`."' in text
+    assert (f"This re-review of a repaired head is not incremental: the folder changed by 400 lines since `{H2[:7]}`"
+            in text and "First check finding by finding" not in text)       # no previous report to check against
+    assert "First check finding by finding" in lane_prreview.mode_text("change", job, cfg, {**extra, "previous_report": "r.md"})
+    assert "**A full review.**" in lane_prreview.mode_text("full", job, cfg, extra)
+
+
+def test_a_review_of_the_change_records_its_mode_and_is_checked_as_a_full_review(review_env, monkeypatch):
+    monkeypatch.setattr(lane_prreview.gitops, "git", lambda cwd, *args, **kw: H1 + "\n" if args[0] == "rev-parse" else "")
+    ctx = lane_ctx(review_env, gh=LabelGH())
+    job = rereview_job(H2, H1)
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    ws.extra["mode"] = "change"
+    body = lane.comment_body(job, ctx, ws)
+    assert body.split("\n")[0] == f"\U0001f916 AI review (codex, gpt-x) of {H1}"       # a full review's first line
+    assert prreviews.prreview_marker(body)["mode"] == "change" and same_review_ok(body, job)
+    assert prreviews.read_posted(body).since == ""
+    # Its previous findings are checked as a full review's: no line for each is required.
+    previous = review_env / "previous.md"
+    previous.write_text(PREVIOUS_REPORT)
+    ws.extra["previous_report"] = previous
+    assert lane.check(job, ctx, ws) == []
+
+
+def test_the_repair_after_a_review_of_the_change_leaves_the_untouched_text_alone(review_env):
+    for status in ("accepted", "needs_changes"):
+        assert lane_prreview.CHANGE_REPAIR in lane_prreview.remarks_brief(status, 150, "change")
+        assert lane_prreview.CHANGE_REPAIR not in lane_prreview.remarks_brief(status, 150)
+    assert "`Untouched text:`" in lane_prreview.CHANGE_REPAIR and "leave that text as it is" in lane_prreview.CHANGE_REPAIR
+    report = REPORT.format(h7=H1[:7], v="accepted", findings=CORRECTION + UNTOUCHED_CORRECTION)
+    assert [title for title, _b in lane_prreview.own_corrections(report, "change")] == ["a locator names no page"]
+    assert len(lane_prreview.own_corrections(report, "full")) == 2
+    # An acceptance whose only small corrections are on untouched text has nothing to apply.
+    ctx = lane_ctx(review_env, gh=LabelGH())
+    ctx.cfg.prreview.carry_minor = True
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 905, "head": H1, "owner": "carol", "name": "Foo"})
+    lane, ws = finished_ws(review_env, ctx, job, "accepted")
+    ws.report.write_text(REPORT.format(h7=H1[:7], v="accepted", findings=UNTOUCHED_CORRECTION))
+    ws.extra["mode"] = "change"
+    assert not lane.applies_corrections(job, ctx, ws)
+    ws.extra["mode"] = "full"
+    assert lane.applies_corrections(job, ctx, ws)
+
+
 # --- the repair of a pool author's pull request -----------------------------------------------------
 
 DEPENDS_BLOCK = "<!-- depends-on -->\n**Depends on**\n- [ ] #77 Bar\n<!-- /depends-on -->"
@@ -3835,6 +4020,28 @@ def test_an_acceptance_applies_its_small_corrections_in_one_small_commit_and_the
     # The intake reads the record, and settles the folder at the new head.
     assert intake.carried_record(review, 150) == review["carried"]
     assert intake.carried_record({**review, "carried": {**review["carried"], "corrections": False}}, 150) is None
+
+
+@needs_git
+def test_a_review_of_the_change_applies_only_its_own_corrections_and_posts_its_mode(hub, monkeypatch, tmp_path):  # noqa: F811
+    """`[prreview] review_changes_of_merged`: Foo is on main, so its review reads the change since the merge
+    base; the acceptance applies its small correction on the change and leaves the one on untouched text."""
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    briefs = []
+    repair_agent(monkeypatch, briefs, report="## H01 (AI review PRREVIEW-Foo~2) — applied\nThe page is given.\n")
+    ctx = pool_ctx(rh)
+    ctx.cfg.prreview.carry_minor = True
+    ctx.cfg.prreview.review_changes_of_merged = True
+    lane = lane_for(job)
+    ws = reviewed_with(lane, job, ctx, head, CORRECTION + UNTOUCHED_CORRECTION, 0, status="accepted")
+    assert ws.extra["mode"] == "change" and ws.extra["on_base"] is True and ws.extra["base_lines"] == 0
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted" and rh.head(905) != head, result.detail
+    assert lane_prreview.CHANGE_REPAIR in briefs[0][1]
+    assert submitted_verdict(lane, job, ctx, ws)["carried"]["findings"] == 1
+    [review] = [c["body"] for c in rh.comments[905] if prreviews.prreview_marker(c["body"])]
+    assert prreviews.prreview_marker(review)["mode"] == "change"
+    assert "**C02** Untouched text: the locator of 4.2 names no page" in review
 
 
 @needs_git
