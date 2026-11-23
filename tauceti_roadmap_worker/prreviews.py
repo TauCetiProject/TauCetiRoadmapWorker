@@ -502,7 +502,7 @@ def render_pr_review(head: str, status: str, report: str, marker: dict, reviewed
     questions for the human reviewers and source issues; then one collapsed block of what was
     checked: the sentence on the worker's checks (`validation`), the earlier findings, what could not
     be verified, the checks set aside as false positives; then the marker `tauceti-roadmap-prreview`
-    ({job, head, verdict, agent, model, worker, mode}: `incremental` or `full`). `## Verified sound`,
+    ({job, head, verdict, agent, model, worker, mode}: `incremental`, `change` or `full`). `## Verified sound`,
     `Source independence:` and `Research link:` stay in the report and are not posted."""
     p = posted_from_report(report)
     p.head = head

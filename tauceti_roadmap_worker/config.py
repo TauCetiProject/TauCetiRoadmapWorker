@@ -341,6 +341,12 @@ class PRReview:
     small_change_lines: int = 150
     # Lines of the folder's diff since the previous reviewed head the reviewer is given in changes.md.
     diff_cap_lines: int = 2000
+    # A review that is not incremental, of a roadmap folder that is on the pull request's base branch (its
+    # README.md is there), reviews the change instead of the whole folder: the text on the base branch was
+    # reviewed when it merged. The reviewer gets the folder's change since the merge base in changes.md and
+    # reviews every passage it adds or changes and every untouched passage it affects; a defect in other
+    # untouched text is a non-blocking remark for a separate pull request. Off: such a review is full.
+    review_changes_of_merged: bool = False
     # A review that asks for changes on a pull request by a pool author (`[roadmap] pool`), run by a
     # pool operator, goes on in the same job to repair it as a gate round would (push onto its branch,
     # reply finding by finding); the next review of the repaired head is another worker's.
