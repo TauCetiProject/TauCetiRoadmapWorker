@@ -1124,25 +1124,161 @@ def raw_prose(body: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(x.rstrip() for x in lines)).strip() + "\n"
 
 
+# The line after the sentences of each line of prose (`sentence_lines`): the record separator, which
+# `raw_prose` never leaves in a text, since `str.splitlines` ends a line at it.
+PARAGRAPH_MARK = "\x1e"
+ABBREVIATIONS = frozenset({"cf", "resp", "vs", "thm", "prop", "lem", "cor", "def", "sec", "ch", "eq", "fig", "vol",
+                           "pp"})
+SENTENCE_CLOSERS = ")*_\"'”’"   # what may stand between the end of a sentence and the space after it
+
+
+def abbreviation_at(line: str, dot: int) -> bool:
+    """Whether the `.` at `dot` in `line` ends an abbreviation or a number rather than a sentence: after a
+    digit (`1.`, `3.2.`), a lone capital (`J.`), a letter after a `.` (`e.g.`) or a word of
+    `ABBREVIATIONS` (`Prop.`)."""
+    start = dot
+    while start and line[start - 1].isalpha():
+        start -= 1
+    word = line[start:dot]
+    return (line[dot - 1:dot].isdigit() or (len(word) == 1 and word.isupper())
+            or (word != "" and line[start - 1:start] == ".") or word.lower() in ABBREVIATIONS)
+
+
+def prose_sentences(line: str) -> list[str]:
+    """The sentences of one line of prose, which joined by single spaces give the line back (none for a
+    blank line). A sentence ends at `.`, `;` or `:` (and any closing bracket, emphasis or quote after it)
+    followed by one space and more text, outside a code span and not at an abbreviation
+    (`abbreviation_at`). Where this splits less, a merge by sentence (`merged_prose`) is coarser, not wrong."""
+    if not line:
+        return []
+    cuts, fence, i = [], 0, 0
+    while i < len(line):
+        if line[i] == "`":
+            start = i
+            while i < len(line) and line[i] == "`":
+                i += 1
+            # A code span closes at a run of as many backticks as opened it.
+            fence = 0 if fence == i - start else fence or i - start
+            continue
+        end = i + 1
+        while end < len(line) and line[end] in SENTENCE_CLOSERS:
+            end += 1
+        if (not fence and line[i] in ".;:" and line[end:end + 1] == " " and line[end + 1:end + 2].strip()
+                and not (line[i] == "." and abbreviation_at(line, i))):
+            cuts.append(end)
+        i += 1
+    return [line[a:b] for a, b in zip([0, *(c + 1 for c in cuts)], [*cuts, len(line)], strict=True)]
+
+
+def sentence_lines(prose: str) -> str:
+    """`prose` (as `raw_prose` writes it) with one sentence a line and `PARAGRAPH_MARK` on a line after the
+    sentences of each of its lines, so that a blank line is the mark alone; `prose_lines` gives it back."""
+    rows = []
+    for line in prose.removesuffix("\n").split("\n"):
+        rows += [*prose_sentences(line), PARAGRAPH_MARK]
+    return "".join(f"{x}\n" for x in rows)
+
+
+def prose_lines(text: str) -> str | None:
+    """The prose that `sentence_lines` wrote as `text`: the sentences before each mark joined into one line.
+    None when sentences follow the last mark, which `sentence_lines` never writes."""
+    rows: list[str] = []
+    row: list[str] = []
+    for x in text.removesuffix("\n").split("\n"):
+        if x == PARAGRAPH_MARK:
+            rows.append(" ".join(row))
+            row = []
+        else:
+            row.append(x)
+    return None if row else "\n".join(rows) + "\n"
+
+
+def merge_file(texts: list[str], *options: str) -> tuple[int, str] | None:
+    """`git merge-file -p` on three texts (ours, base, theirs, in that order): the number of conflicts and
+    the merged text, or None when git failed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = []
+        for name, text in zip(("ours", "base", "theirs"), texts, strict=True):
+            path = Path(tmp) / name
+            path.write_text(text, encoding="utf-8")
+            paths.append(str(path))
+        done = subprocess.run(["git", "merge-file", "-p", *options, *paths], capture_output=True,
+                              encoding="utf-8", timeout=60, check=False)
+    return (done.returncode, done.stdout) if 0 <= done.returncode < 128 else None
+
+
+def both_insertions(ours: list[str], theirs: list[str]) -> list[str]:
+    """Two runs of lines inserted at one place, as one: what the two begin with in common once, then the
+    rest of ours, the rest of theirs, and what those end with in common once. A repair's description often
+    carries, beside its own sentence, one that another writer has put in the description meanwhile."""
+    head = 0
+    while head < min(len(ours), len(theirs)) and ours[head] == theirs[head]:
+        head += 1
+    a, b = ours[head:], theirs[head:]
+    tail = 0
+    while tail < min(len(a), len(b)) and a[-1 - tail] == b[-1 - tail]:
+        tail += 1
+    return ours[:head] + a[:len(a) - tail] + b[:len(b) - tail] + a[len(a) - tail:]
+
+
+def insertions_resolved(merged: str, size: int) -> str | None:
+    """The output of `git merge-file --diff3` (labels ours, base and theirs, markers of `size`) with each
+    conflict taken as two insertions at one place (`both_insertions`): ours, then theirs, with what the
+    two share kept once. None when a conflict has a base part, which both sides changed, or when the
+    markers are out of order."""
+    marks = ["<" * size + " ours", "|" * size + " base", "=" * size, ">" * size + " theirs"]
+    out: list[str] = []
+    parts: list[list[str]] = []
+    side = -1                   # outside a conflict, else the part being read: 0 ours, 1 base, 2 theirs
+    for line in merged.split("\n"):
+        if line not in marks:
+            (out if side < 0 else parts[side]).append(line)
+            continue
+        if marks.index(line) != side + 1:
+            return None
+        side = -1 if line == marks[3] else marks.index(line)
+        if line == marks[0]:
+            parts = [[], [], []]
+        elif line == marks[3]:
+            ours, base, theirs = parts
+            if base:
+                return None
+            out += both_insertions(ours, theirs)
+    return None if side >= 0 else "\n".join(out)
+
+
+def merged_by_sentence(texts: list[str]) -> str | None:
+    """Three prose texts (ours, base, theirs) merged three ways with one sentence a line (`sentence_lines`),
+    cleanly or with every conflict two insertions at one place (`insertions_resolved`); else None."""
+    split = [sentence_lines(x) for x in texts]
+    done = merge_file(split)
+    if done and done[0]:
+        # Markers longer than any run of their characters that opens a line, so no line reads as one.
+        size = 1 + max([6, *(len(x) - len(x.lstrip(c)) for t in split for x in t.split("\n") for c in "<|=>")])
+        done = merge_file(split, "--diff3", f"--marker-size={size}", "-L", "ours", "-L", "base", "-L", "theirs")
+        merged = done and (insertions_resolved(done[1], size) if done[0] else done[1])
+    else:
+        merged = done and done[1]
+    return prose_lines(merged) if merged else None
+
+
 def merged_prose(base: str, ours: str, theirs: str) -> str | None:
     """The prose of a description that two writers changed at once, merged three ways line by line
     (`git merge-file`; a paragraph is one line): `base` is the description a repair read, `theirs` the
-    one it wrote, `ours` the description as it is now. None when both rewrote the same lines, and when
-    the merge could not be run: then nothing is known, and the caller writes nothing. 2026-11-24: on a
-    pull request of 92 roadmap folders the repairs of several folders ran at once, each wrote its own
-    sentence of the description, and all but the first were dropped."""
+    one it wrote, `ours` the description as it is now. When the lines conflict the three are merged again
+    sentence by sentence (`merged_by_sentence`), where two sentences inserted at one place are both kept,
+    ours first: two writers often add a sentence each to the same paragraph. None when both changed the
+    same sentence or two neighbouring ones (other than by inserting at one place), and when the merge
+    could not be run: then nothing is known, and the caller writes nothing. 2026-11-24: on a pull request
+    of 92 roadmap folders the repairs of several folders ran at once, each wrote its own sentence of the
+    description, and all but the first were dropped."""
+    texts = [raw_prose(x) for x in (ours, base, theirs)]
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = []
-            for name, text in (("ours", ours), ("base", base), ("theirs", theirs)):
-                path = Path(tmp) / name
-                path.write_text(raw_prose(text), encoding="utf-8")
-                paths.append(str(path))
-            done = subprocess.run(["git", "merge-file", "-p", *paths], capture_output=True, text=True, timeout=60,
-                                  check=False)
-    except (OSError, subprocess.SubprocessError):
+        done = merge_file(texts)
+        merged = done and (merged_by_sentence(texts) if done[0] else done[1])
+    except (OSError, subprocess.SubprocessError, UnicodeError):
         return None
-    return done.stdout if done.returncode == 0 and done.stdout.strip() else None
+    return merged if merged and merged.strip() and PARAGRAPH_MARK not in merged else None
 
 
 def save_gate(path: Path, head: str, result: gates.GateResult) -> None:
@@ -1964,7 +2100,7 @@ class PRReviewLane(Lane):
         REPAIR_TEXT): the repair's prose, then the generated blocks and markers of the description as it
         is now (`merged_description`). A description whose prose is no longer the one the repair read
         (another roadmap folder's repair rewrote it, or its author did) gets the two changes merged when
-        they touch different lines (`merged_prose`); when they touch the same lines it is left alone,
+        they touch different sentences (`merged_prose`); when they touch the same one it is left alone,
         since the repair's text would undo that change; so is one GitHub refuses to write. Either is noted and not retried:
         the files' repair stands, and the next review reads the description as it then is. The summary
         block the repair wrote (`summary_brief`) replaces the present one in the same write, whether or
@@ -1991,7 +2127,7 @@ class PRReviewLane(Lane):
                     fields = {k: v for k, v in want.items() if v.strip() != (now.get(k) or "").strip()}
                     if fields and read is not None and found != read and not wrote:
                         # Another writer changed the description while the repair ran: the two changes are
-                        # merged when they touch different lines (`merged_prose`), else nothing is written.
+                        # merged when they touch different sentences (`merged_prose`), else nothing is written.
                         both = merged_prose(read_body, old, theirs) if read_body else None
                         if both is None:
                             fields, refused = {}, ("title and description not written: the description was changed "
