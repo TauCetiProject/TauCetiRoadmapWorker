@@ -12,12 +12,11 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from tauceti_roadmap_worker import board, cli, intake, prbatch, reports, watch, worker
+from tauceti_roadmap_worker import board, intake, prbatch, reports, watch
 from tauceti_roadmap_worker.board import Board, Job, new_job
 from tauceti_roadmap_worker.gh import GHError
-from tauceti_roadmap_worker.lanes import Context
 
-from .fakes import FakeBoard, FakeClaims, FakeIssuesGH, FakeTransport, example_config, job_issue
+from .fakes import FakeBoard, FakeIssuesGH, FakeTransport, example_config, job_issue
 
 SHA = "a" * 40
 LIBRARY = "https://github.com/TauCetiProject/TauCeti"
@@ -484,39 +483,17 @@ def test_the_configuration_is_checked():
     assert cfg.reports.enabled and cfg.reports.per_run == 5 and cfg.reports.per_author == 2
 
 
-# --- a kind no lane takes ----------------------------------------------------------------------------------
+# --- the job kind ------------------------------------------------------------------------------------------
 
 def test_report_job_ids_titles_and_issue_text():
     job = new_job("REPORT-QuadraticFormInvariants~1", inputs={"roadmap": "QuadraticFormInvariants"})
     assert job.kind == "report" and board.make_id("report", "Foo") == "REPORT-Foo~1"
     assert board.title_for(job) == "[Report] QuadraticFormInvariants (round 1)"
-    assert board.stage_of(job.id) == "REPORT" and "report" in board.NO_LANE
+    assert board.stage_of(job.id) == "REPORT"
     body = board.issue_body(job, "o/board", "packages", preamble="text")
-    assert "No worker lane takes `report` jobs yet" in body and "work --only" not in body
+    assert "tauceti-roadmap work --only report" in body
     assert board.decode_spec(body).id == job.id
     assert reports.job_name("RepresentationTheory/compactGroups") == "CompactGroups"
-
-
-def test_a_worker_never_takes_a_report_job(tmp_path, monkeypatch):
-    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
-    cfg = example_config()
-    gh = FakeIssuesGH([job_issue(1, "REPORT-Foo~1", "available", inputs={"roadmap": "Foo"})])
-    ns = FakeClaims()
-    ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=ns, worker_id="w1", operator="alice", agent="codex",
-                  model="m")
-    monkeypatch.setattr(worker, "lane_for", lambda job: pytest.fail(f"a lane was asked for {job.id}"))
-    assert worker.work_once(ctx, None, log=lambda line: None).status == "idle"
-    assert worker.work_once(ctx, None, job_id="REPORT-Foo~1", log=lambda line: None).status == "idle"
-    assert ns.acquired == [] and gh.writes == [] and gh.states(1) == ["available"]
-
-
-def test_work_only_and_overflow_refuse_the_report_kind(monkeypatch):
-    monkeypatch.setattr(cli.GH, "login", lambda self: "alice")
-    with pytest.raises(SystemExit, match="no lane takes report jobs"):
-        cli.main(["--conf", str(cli.paths.HERE / "tauceti-roadmap.toml.example"), "--dry-run", "work", "--worker-id",
-                  "w", "--only", "report"])
-    with pytest.raises(SystemExit, match="unknown kind 'report'"):
-        cli._overflow("report=30")
 
 
 def test_status_lists_report_jobs_and_resume_ignores_them():
@@ -530,20 +507,6 @@ def test_status_lists_report_jobs_and_resume_ignores_them():
     # A REPORT job of the roadmap neither holds its resumption nor is taken for its last job.
     ctx = SimpleNamespace(cfg=cfg, gh=gh, board=Board(cfg, gh))
     assert "REPORT" not in intake.resume_roadmap(ctx, "Foo", jobs, yes=False)
-
-
-def test_the_intake_takes_no_submission_for_a_report_job(monkeypatch):
-    cfg = example_config()
-    gh = FakeIssuesGH([job_issue(1, "REPORT-Foo~1", "available")])
-    ctx = SimpleNamespace(cfg=cfg, gh=gh, board=Board(cfg, gh))
-    for name, value in (("admission_problems", lambda *a, **k: []), ("submission_files", lambda *a, **k: ([], [])),
-                        ("deliverable_problems", lambda *a, **k: []), ("_checks", lambda *a, **k: ([], False))):
-        monkeypatch.setattr(intake, name, value)
-    pr = {"number": 5, "state": "open", "draft": False, "labels": [], "user": {"login": "alice"},
-          "head": {"sha": "b" * 40, "repo": {"full_name": "alice/board"}},
-          "body": "Refs #1\n\n" + board.encode_submission("REPORT-Foo~1", "w1", "alice", "codex")}
-    out = intake.intake(ctx, 5, yes=True, pr=pr)
-    assert out == "#5: not merged: REPORT-Foo~1 is a report job, which no lane takes and no submission answers"
 
 
 def test_a_search_with_more_than_its_pages_narrows_its_window():

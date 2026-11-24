@@ -56,6 +56,7 @@ from . import (
     prbatch,
     prreviews,
     replies,
+    reports,
     summary,
 )
 from .board import Job, Outcome
@@ -141,6 +142,9 @@ def outcome_for(ctx, job: Job, pr: dict, all_jobs: list[Job]) -> Outcome:
         return Outcome(verdict=t["verdict"], name=t["name"], into=t["into"])
     if job.kind == "port":
         return Outcome(pr=pr_number_from_report(read(f"{pkg}/reports/{job.id}.md")), operator=pr["user"]["login"])
+    if job.kind == "report":
+        text = read(f"{pkg}/reports/{job.id}.md")
+        return Outcome(verdict=reports.parse_triage(text)["verdict"], report=text)
     if job.kind == "redteam":
         j = board.parse_job_id(job.id)
         passes = board.redteam_passes(j.name, j.round, len(ctx.cfg.redteam.passes))
@@ -244,6 +248,8 @@ def deliverable_problems(ctx, job: Job, pr: dict, texts: dict[str, str], jobs: l
             out += prreview_verdict_problems(json.loads(verdict), job)
         except ValueError:
             pass
+    if job.kind == "report" and report in texts:
+        out += reports.triage_problems(texts[report], job.id)
     if job.kind == "port" and report in texts:
         number = pr_number_from_report(texts[report])
         if not number:
@@ -300,8 +306,6 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None, shared=N
         return f"#{number}: not open"
     if job.state in ("done", "blocked", "needs-references"):
         problems.append(f"{job.id} is {job.state}")
-    if job.kind in board.NO_LANE:
-        problems.append(f"{job.id} is a {job.kind} job, which no lane takes and no submission answers")
     problems += admission_problems(ctx, job, pr, sub, jobs, shared)
     files, listed = submission_files(ctx, repo, number, pr)
     problems += listed
@@ -366,11 +370,39 @@ def merged_note(number: int, author: str, sub: dict) -> str:
 def complete_merged(ctx, job: Job, pr: dict, jobs: list[Job]) -> str:
     """What follows a submission's merge: its successors, then the job done and its issue closed. The
     job becomes done last, so a run stopped on the way leaves it unfinished with its pull request
-    merged, and `reconcile_merged` finishes it (the board creates no job twice)."""
+    merged, and `reconcile_merged` finishes it (the board creates no job twice). A roadmap report's triage
+    releases nothing: `confirmed` and `rejected` end the job (the next `board sync` records the verdict in
+    the register), and `needs-human` parks it, open, for a human (`triage_note`)."""
+    if job.kind == "report":
+        outcome = outcome_for(ctx, job, pr, jobs)
+        note, parked = triage_note(ctx, job, outcome)
+        if parked:
+            ctx.board.set_state(job, "blocked", note)
+            return f"triage {outcome.verdict}: parked for a human"
+        ctx.board.comment(job.number, note)
+        ctx.board.set_state(job, "done")
+        ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}", {"state": "closed"})
+        return f"triage {outcome.verdict}"
     note = advance(ctx, job, outcome_for(ctx, job, pr, jobs), jobs)
     ctx.board.set_state(job, "done")
     ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}", {"state": "closed"})
     return note
+
+
+def triage_note(ctx, job: Job, outcome: Outcome) -> tuple[str, bool]:
+    """(the note on a REPORT job whose triage was merged, whether the job is parked for a human). A
+    `needs-human` triage parks it with what it lacks quoted: a human answers on the issue and moves the job
+    to `state:available` to triage it again, corrects the roadmap, or closes the issue (recorded as rejected)."""
+    path = reports.triage_path(ctx.cfg, job)
+    if outcome.verdict == "needs-human":
+        missing = reports.parse_triage(outcome.report).get("missing", "")
+        return (f"Parked for a human: the triage (`{path}`) could not settle this report. What it lacks, in the "
+                "triage's words:\n\n" + reports.quoted_block(missing) + "\n\nAnswer here, then move the job to "
+                "`state:available` to triage it again; or correct the roadmap, or close this issue (the report is "
+                "then recorded as rejected).", True)
+    return (f"Triage: `{outcome.verdict}` (`{path}`). `board sync` records it in `{reports.REGISTER}`"
+            + (", and the correction it states waits there for a pull request on the roadmap repository."
+               if outcome.verdict == "confirmed" else "."), False)
 
 
 RECONCILE_WINDOW = 50   # the most recently closed pull requests a run looks through
@@ -661,13 +693,13 @@ def note_gap_registry_blocks(ctx) -> list[str]:
 
 def sync_origins(ctx) -> list[str]:
     """`board sync`: an open job that does not say where its roadmap came from gets the origin of its
-    roadmap (a target a human filed, `target:<issue>`, or an import, `explorer:<job>`) recorded. A job
-    no lane takes (a roadmap report) is ranked by nobody and left alone."""
+    roadmap (a target a human filed, `target:<issue>`, or an import, `explorer:<job>`) recorded. A roadmap
+    report is no stage of its roadmap's planning: it is left alone."""
     jobs = ctx.board.all_jobs()
     known = board.origins(jobs)
     out = []
     for job in jobs:
-        if job.state == "done" or job.kind in board.NO_LANE or board.own_origin(job) or not known.get(job.name):
+        if job.state == "done" or job.kind == "report" or board.own_origin(job) or not known.get(job.name):
             continue
         job.inputs["origin"] = known[job.name]
         ctx.board.update_spec(job)

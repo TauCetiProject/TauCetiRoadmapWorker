@@ -153,7 +153,7 @@ available again once every key is answered.
 | `gate` | answer the human reviewers of the draft pull request: fix, push, reply finding by finding |
 | `errata` | read a roadmap's sources at the locators it cites and register their misprints, errors and gaps |
 | `prreview` | the AI review of one roadmap folder (nested ones included) of a pull request by any author: one comment with a verdict; the `ai-found-no-errors` label once every roadmap folder of the head is accepted, and off while a review that points out errors waits for an answer; a human approves and merges |
-| `report` | filed by `board sync` from a roadmap report a Tau Ceti worker left in the library (`[reports] enabled`): a roadmap statement it found wrong; no lane takes it yet, a human answers it with a roadmap pull request |
+| `report` | triage a roadmap report a Tau Ceti worker left in a pull request on the library (filed by `board sync`, `[reports] enabled`): read-only, `confirmed` with the correction, `rejected`, or `needs-human`; the register records the verdict |
 
 ## Filing targets
 

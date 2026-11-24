@@ -27,13 +27,15 @@ from . import paths
 
 AGENTS = ("codex", "claude")
 # Job stages, closest to delivery first: what `[board] priority` orders. A review of a roadmap pull
-# request comes after the repairs of pull requests in flight (gate rounds, red-team fixes); the errata
-# of a roadmap's sources deliver nothing to its pull request: they come last.
+# request comes after the repairs of pull requests in flight (gate rounds, red-team fixes); the triage of a
+# roadmap report checks a roadmap on main; the errata of a roadmap's sources deliver nothing to its pull
+# request: they come last.
 STAGE_ORDER = ("GATE", "PORT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN",
-               "DESIGN", "TARGET", "ERRATA")
+               "DESIGN", "TARGET", "REPORT", "ERRATA")
 # A lane with no `[agents.lanes.<kind>]` table of its own runs on the models of this one: the errata of
-# a roadmap's sources, and the reviews of roadmap pull requests, run on the review models.
-LANE_FALLBACK = {"errata": "review", "prreview": "review"}
+# a roadmap's sources, the reviews of roadmap pull requests and the triage of roadmap reports run on the
+# review models.
+LANE_FALLBACK = {"errata": "review", "prreview": "review", "report": "review"}
 SANDBOX_PROFILES = ("off", "proxy", "netjail")
 # What an operator's overlay (`--overlay`, `$TAUCETI_ROADMAP_OVERLAY`) may set over the project file:
 # settings of the host or the operator, never the board's rules. None: every key of the table.

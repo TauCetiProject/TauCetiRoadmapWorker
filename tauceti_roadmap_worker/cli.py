@@ -64,7 +64,7 @@ from . import (
 )
 from . import targets as target_files
 from . import usage as usage_mod
-from .board import KINDS, NO_LANE, Board
+from .board import KINDS, Board
 from .gh import GH, GHError, GHHalt, GHRateLimited
 
 OK, WARN, FAIL = "ok", "warn", "FAIL"
@@ -117,9 +117,8 @@ def _overflow(text: str) -> dict[str, int]:
             continue
         kind, _, minutes = item.partition("=")
         kind = kind.strip()
-        if kind not in KINDS or kind in NO_LANE:
-            kinds = ", ".join(k for k in KINDS if k not in NO_LANE)
-            raise SystemExit(f"--overflow: unknown kind {kind!r} (kinds: {kinds})")
+        if kind not in KINDS:
+            raise SystemExit(f"--overflow: unknown kind {kind!r} (kinds: {', '.join(KINDS)})")
         if not minutes.strip().isdigit() or int(minutes) <= 0:
             raise SystemExit(f"--overflow: {item!r} must be <kind>=<minutes>, the minutes a positive number")
         out[kind] = int(minutes)
@@ -413,9 +412,6 @@ def work(args) -> int:
     unknown = [k for k in only or () if k not in KINDS]
     if unknown:
         raise SystemExit(f"--only: unknown kind(s) {', '.join(unknown)} (kinds: {', '.join(KINDS)})")
-    laneless = [k for k in only or () if k in NO_LANE]
-    if laneless:
-        raise SystemExit(f"--only: no lane takes {', '.join(laneless)} jobs (a human answers them)")
     overflow = _overflow(getattr(args, "overflow", ""))
     agent = args.agent or cfg.agents.default
     model = args.model or cfg.model_for(agent)

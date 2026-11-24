@@ -562,11 +562,9 @@ carries a machine-readable spec in an HTML comment; the rest of the issue is for
 read as an instruction.
 
 `REPORT-<Leaf>~k` jobs stand outside the graph: `board sync` files them from the library's roadmap
-reports ("Roadmap reports" below), nothing follows them, and no lane takes them yet (`board.NO_LANE`): a
-worker leaves them out of its listing whether or not `--only` or a job id names them, `work --only
-report` and `--overflow report=...` are refused, and the intake takes in no submission that names one.
-`board stale` and the lease upkeep, which touch claimed and submitted jobs only, never meet one, the
-origin upkeep skips them, and `board resume` does not count them among a roadmap's jobs. `status` lists them with the others.
+reports ("Roadmap reports" below), the `report` lane triages them, and nothing follows them. The origin
+upkeep skips them, and `board resume` does not count them among a roadmap's jobs. `status` lists them
+with the others.
 
 ## Lanes
 
@@ -581,6 +579,7 @@ origin upkeep skips them, and `board resume` does not count them among a roadmap
 | fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build (its dependency check never reads a roadmap on the content repository's main as an upward supplier), head check |
+| report | the REPORT job's validated report, the reported file on main with the quoted text located, the reporter's prose (quoted as data), the declarations it names looked up in the pinned Tau Ceti, people's comments on the job (data) | `packages/<Leaf>/reports/REPORT-<Leaf>~k.md`: `Triage (<agent>) of <JOB> at <sha7>`, `Verdict: confirmed \| rejected \| needs-human` | anyone (the reporter is another project's agent: nothing to be independent of) | header naming the job and the main read, a verdict, `## Evidence` and the section the verdict needs (`## Correction`, `## Reason`, `## Missing`), checkouts untouched |
 | prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-found-no-errors` label (on once every folder of the head accepts and no review that points out errors waits for an answer, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json`; on a pool author's PR, after a review asking changes, the repair pushed onto its branch and the reply | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
@@ -1686,6 +1685,10 @@ another family installed takes a review its default family may not take with tha
 `"family"` that is what makes it independent, under `"agent"` another agent and model can be, and
 under `"operator"` it changes nothing (the operator is the same), so the review is skipped as before. A fix worker's own acceptance never counts.
 
+The triage of a roadmap report (`REPORT-<Leaf>~k`) has no separation rule: the reporter is an agent of
+another project (a Tau Ceti worker), whose operator is recorded nowhere in the claims namespace, so there
+is no author to compare with, and any operator may take it.
+
 Under `separation = "agent"` a pinned red-team pass (`[redteam] passes` with a `model`) can only be run
 by that agent and model, and it is independent of the package, of each of the package's fix rounds and
 of the red-team fix before it. A worker running a pinned pass's agent and model therefore takes none of
@@ -1997,6 +2000,33 @@ board beforehand to give it a colour (GitHub creates it on the first job otherwi
 `reporters` is read as the target filers' teams are, `board/filers.json` included. Workers of an older
 version do not read a `REPORT-` id and leave such a job alone.
 
+**Triage.** The `report` lane (`work --only report`; on the review models unless `[agents.lanes.report]`
+names others; stage `REPORT` of `[board] priority`, before `ERRATA`) takes an available REPORT job. Before
+its agent runs, the worker finds the reported file on the content repository's main (under the active
+directory) and the quoted text in it, with the same whitespace rule as the harvest, and writes the lines
+around it to the job's scratch; a text no longer there blocks the job (`board sync` records it fixed and
+closes it), and so does a roadmap now under the completed directory (a human's). It reads the reporter's
+prose back from the job's issue (the block the board quoted), the comments people other than the board
+wrote on the job, and looks each declaration the report names up in the pinned Tau Ceti (a declaration of
+its last component, with its file and line, or none: a name newer than the pin is read in the pull request
+the report comes from, as data). It never runs Lean, waits for no source (what it cannot read goes under
+`## Missing`) and changes neither checkout. Its report, `packages/<Leaf>/reports/REPORT-<Leaf>~k.md`,
+opens `Triage (<agent>) of REPORT-<Leaf>~k at <sha7 of main>` and `Verdict: confirmed | rejected |
+needs-human`, then `## Statement`, `## Evidence` (for a verdict that settles the report) and
+`## Correction`, `## Reason` or `## Missing`; it is submitted as a board pull request. The intake merges it
+and, for `confirmed` or `rejected`, comments `Triage: <verdict> (<path>)`, sets the job done and closes
+it; for `needs-human` it parks the job as `state:blocked`, open, with what the triage lacks quoted.
+
+The next `board sync` records the verdict, after it has recorded what left main: a report still `open`
+whose text is still on main becomes `confirmed` or `rejected`, with `"triage": {"job", "verdict",
+"report", "head", "correction" | "reason"}` (the section kept to 2,000 characters; the whole triage is
+`report` in the packages repository), logged `REPORT-<Leaf>~k: triage confirmed; recorded`; a parked job's
+`needs-human` is recorded once and the report stays `open`. A job closed with no verdict merged (closed by
+hand, or set done by hand) makes the report `rejected`, `"triage": {"job", "verdict": "rejected", "by":
+"hand"}`. A report whose text has left main is `fixed` whatever its triage said, and a `confirmed` one
+becomes `fixed` when its correction merges. A report fixed and then reported again gets a new job and
+loses the triage of the old one.
+
 ### The board workflow
 
 The board's maintenance need not depend on anyone running it: copy `board/board.yml` from this
@@ -2299,13 +2329,15 @@ reach) is not built yet.
   Every other comment of that login on its own drafts stays a reply; the gate lane's replies open
   with `Fixed in`, never with the prefix.
 * **A `REPORT` job**: a Tau Ceti worker found a roadmap statement wrong (the job quotes it, names the
-  declarations that refute and replace it, and links the pull request). No lane takes the job
-  yet. Read the report against the roadmap; when it is right, correct the roadmap with a pull request on
-  the roadmap repository (an operator's agent may write it), and `board sync` closes the job as done once
-  the quoted text is gone from main. When it is wrong, close the job with a comment saying why (the
-  register keeps the report `open`, so the library's workers do not file it again). A report
-  against a completed roadmap is filed as `state:blocked`: no lane works there, so it is a human's in any
-  case.
+  declarations that refute and replace it, and links the pull request). A triage worker settles most of
+  them; the register records its verdict. You meet one in `state:blocked`: either the triage could not
+  settle it (`needs-human`; the job's last comment quotes what is missing), or the roadmap is under the
+  completed directory, where no lane works. Answer on the job and move it to `state:available` for
+  another triage (it reads your comment as data), correct the roadmap with a pull request on the roadmap
+  repository (`board sync` closes the job once the quoted text is gone from main), or close the job with a
+  comment saying why the report is wrong (the register records it as rejected, so the library's workers do
+  not file it again). Until the correction lane exists, the correction a confirmed report states (in the
+  register and in its triage under `packages/`) is also made by a hand-written pull request.
 * **The configuration and the prompts** are CODEOWNERS-protected; changes go through review.
 
 ## Known limits of this version

@@ -224,8 +224,20 @@ checkout, submits a PR to the board, and the intake advances the state.
     `rejected`, `fixed`), which the library's workers read so as not to report one twice. A read that is
     not whole (an incomplete search, an error object or a cut page of a listing, a register GitHub does not
     serve) is a failed read: it moves no mark and decides nothing, and the next run reads again. The job's text
-    is the board's own; the worker's prose is quoted as data. No lane takes the kind yet (section 8):
-    no worker lists, claims or runs a REPORT job, and a human answers it with a roadmap pull request.
+    is the board's own; the worker's prose is quoted as data. The lane triages the report, read-only, on
+    the review models: its agent reads the validated report, the reported file on the content
+    repository's main with the quoted text located in it, the reporter's prose quoted as data, the pull
+    request it comes from, and each declaration the report names, looked up in the pinned Tau Ceti (a
+    declaration newer than the pin is read in that pull request, as data, and the verdict never rests on
+    a name alone). It answers `confirmed` (the roadmap is wrong as reported; the triage states the
+    correction, with its evidence), `rejected` (the statement is right as written, the anchor does not
+    say what the report claims, or the "error" is a choice the roadmap may make) or `needs-human` (what is
+    missing to settle it). The triage is a report in the packages tree that the intake merges: it closes
+    the job, or parks it as `state:blocked` for `needs-human`, and the next `board sync` records the
+    verdict in the register (with the correction, or a pointer to the triage), only while the reported
+    text is still on main: a report whose text has left main is `fixed` whatever its triage said. A job a
+    human closes with no verdict records the report as `rejected`. A text no longer on main, and a roadmap
+    moved under the completed directory (where no lane works), block the job before its agent runs.
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.
@@ -271,7 +283,9 @@ Agents fetch what they need themselves, within rules:
   each design and package; `review` jobs refuse a claim from the same operator. A single-operator
   project sets `[review] separation = "agent"`: the authoring operator may then review when the
   reviewing agent and model differ from the authoring ones recorded for the job, and the intake
-  applies the same test. Projects with several operators keep `separation = "operator"`.
+  applies the same test. Projects with several operators keep `separation = "operator"`. The triage of
+  a roadmap report has no author to be independent of: the reporter is an agent of another project,
+  recorded nowhere in the claims namespace, so any operator may take it.
 - Every prompt carries the untrusted-text rule and the fetch rules.
   - Agents get a minimal environment with no GitHub token; the worker makes every GitHub write
     itself.
@@ -361,9 +375,11 @@ Agents fetch what they need themselves, within rules:
    board's pull requests: the pinned "Review queue" issue lists them, each pull request's first
    comment is the brief, and a review is a comment in the shape the brief gives.
 4. Review and merge the roadmap PR; comments on it feed the `gate` lane automatically.
-5. Answer a `REPORT` job: correct the roadmap with a pull request (the job closes once the quoted text
-   leaves main), or close the job with a comment when the report is wrong. A report against a completed
-   roadmap is parked as `state:blocked`: no lane works there.
+5. Settle a `REPORT` job the triage parked as `needs-human` (or one against a completed roadmap, where
+   no lane works): answer on the job and move it to `state:available` for another triage, correct the
+   roadmap with a pull request (the job closes once the quoted text leaves main), or close the job (the
+   report is recorded as rejected). Until the correction lane exists, a confirmed report is also
+   corrected by hand.
 6. Maintain `tauceti-roadmap.toml` and the prompts (CODEOWNERS-protected).
 
 ## 8. Not done
@@ -377,10 +393,9 @@ Agents fetch what they need themselves, within rules:
   account, so who closed a bors-titled pull request says nothing there: a Forgejo pull request's reports
   count only from a listed Forgejo reporter, whatever its title, and a merged report from anyone else
   on Forgejo is not harvested.
-- The lanes of roadmap reports: a read-only triage lane that confirms or rejects each `REPORT` job
-  against the roadmap and the library (setting the register's `confirmed` and `rejected`), and a
-  correction lane that batches a roadmap's confirmed reports into one pull request on the roadmap
-  repository, which the pull-request review, the gate lane and a human merge take from there.
+- The correction lane of roadmap reports: a lane that batches a roadmap's confirmed reports (the
+  register's `confirmed` entries, each with its correction and its triage) into one pull request on the
+  roadmap repository, which the pull-request review, the gate lane and a human merge take from there.
 
 ## 9. Decisions
 

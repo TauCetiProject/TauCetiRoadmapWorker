@@ -91,7 +91,7 @@ dispatch = true
 dispatch_workflow = "board.yml"
 human_first = true
 priority = ["GATE", "PORT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN",
-            "DESIGN", "TARGET", "ERRATA"]
+            "DESIGN", "TARGET", "REPORT", "ERRATA"]
 # `board sync` reads the open roadmap pull requests (each with its reviews, issue comments and inline
 # comments) and the verdicts of finished pull-request reviews by GraphQL, this many pull requests per
 # query, from GraphQL's own hourly budget rather than four REST requests per pull request. A pull
@@ -191,8 +191,9 @@ timeout_minutes = 360
 # the model per family and leave the family to the worker. Reviews run only on the review models,
 # whichever family a worker runs; a worker pinned with --model to another model skips them (one
 # pinned with --agent only picks the family). Authoring lanes keep the family defaults above. Errata
-# jobs (the mistakes in a roadmap's sources) and reviews of roadmap pull requests (PRREVIEW) run on
-# the review models unless [agents.lanes.errata] or [agents.lanes.prreview] names others.
+# jobs (the mistakes in a roadmap's sources), reviews of roadmap pull requests (PRREVIEW) and the triage
+# of roadmap reports (REPORT) run on the review models unless [agents.lanes.errata], [agents.lanes.prreview]
+# or [agents.lanes.report] names others.
 [agents.lanes.review]
 codex_model = "gpt-6-astra"
 claude_model = "fable"
@@ -341,8 +342,9 @@ statement_hygiene = true
 # roadmap on the content repository's main, and files a REPORT-<Leaf>~k job per new report (the same
 # roadmap, file and quoted text count once, whatever the source); a report whose text main no longer
 # holds is recorded as fixed, and an open report whose text leaves main is fixed and its job done. It
-# keeps `reports/register.json` on the board, which the library's workers read. No lane takes REPORT jobs
-# yet: a human answers them. Off by default.
+# keeps `reports/register.json` on the board, which the library's workers read. The `report` lane triages
+# each REPORT job (confirmed, rejected or needs a human), and the next sync records its verdict in the
+# register. Off by default.
 enabled = false
 # The library on GitHub (empty: [repositories] library), and on Forgejo: the instance's base URL (empty:
 # GitHub only) and the repository there (empty: the same OWNER/NAME). Forgejo is read without a token.
