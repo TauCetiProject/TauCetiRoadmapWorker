@@ -455,7 +455,10 @@ def work(args) -> int:
         signal.signal(signal.SIGTERM, _stop)
         if args.loop:
             try:
-                ended = work_loop(ctx, only, lambda: _order(ctx), log=log, build=started)
+                overlay = getattr(args, "overlay", None)
+                ended = work_loop(ctx, only, lambda: _order(ctx), log=log, build=started,
+                                  conf=lambda: config.fingerprint(args.conf, overlay),
+                                  conf_started=config.fingerprint(args.conf, overlay))
             except KeyboardInterrupt:
                 return 130
             except SandboxUnavailable as exc:

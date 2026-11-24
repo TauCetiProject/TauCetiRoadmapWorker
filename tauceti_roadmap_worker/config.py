@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -758,6 +759,29 @@ def fetch(url: str, opener=None, sleep=time.sleep, delays: tuple[int, ...] = RET
         except (OSError, ValueError) as exc:   # URLError, HTTPError, timeouts are OSErrors
             last = exc
     raise last if last else OSError(f"{url}: not read")
+
+
+def fingerprint(conf: str | None = None, overlay: str | None = None, opener=None, sleep=time.sleep) -> str:
+    """A hash of the configuration a worker starting now would load: the text behind `conf`, read as
+    `load` reads it (fetched from an https URL, else from the file), and the operator's overlay. '' when
+    the text cannot be read, or does not parse and validate: unknown, never a different configuration,
+    so a network fault or a broken edit of the project's file restarts no worker (`worker.work_loop`).
+    Nothing is cached or written."""
+    try:
+        where = discover(conf)
+        extra, extra_path = read_overlay(overlay)
+        if where.startswith("https://"):
+            text = fetch(where, opener, sleep, delays=())
+        elif where.startswith("http://"):
+            return ""
+        else:
+            text = Path(where).expanduser().read_text(encoding="utf-8")
+        parse(text, where, extra, extra_path)
+    except (ConfigError, OSError, ValueError):
+        return ""
+    digest = hashlib.sha256(text.encode("utf-8"))
+    digest.update(b"\0" + json.dumps(extra, sort_keys=True, default=str).encode("utf-8"))
+    return digest.hexdigest()[:16]
 
 
 def ignored_logins(cfg) -> set[str]:

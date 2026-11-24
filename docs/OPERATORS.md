@@ -365,7 +365,15 @@ not render, a checkout that fails) is on the operator's side: the job is release
 (`uv tool install --force ...`) under a running worker cannot mix new briefs with old code. At
 every round boundary it compares the installed build with the one it started on; when they differ
 it logs `installed build changed (old → new); exiting for restart` and exits 0, so run workers under
-a service that restarts them (`Restart=always`), or start them again by hand. A job that fails three times on one worker is
+a service that restarts them (`Restart=always`), or start them again by hand.
+
+**A changed configuration.** A worker holds the configuration it loaded when it started. A looping
+worker therefore looks again at every round boundary, at most every five minutes: when the
+project's file or the operator's overlay differs from what it loaded, it logs
+`the configuration changed (old → new); exiting for restart` and exits 0, as for a new build, and
+the service starts it on the new configuration. It never stops in the middle of a job. A
+configuration that cannot be read, or that does not validate, restarts nothing: the worker goes on
+with the one it has. A job that fails three times on one worker is
 skipped by that worker (the count is in `workers/<id>/attempts.json`; delete the job's entry to let
 the worker try it again); other workers may still try it. The design lane is capped per
 operator per day (`[design] daily_cap`), counted in `design-ledger.jsonl` on the host.
