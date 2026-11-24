@@ -12,12 +12,12 @@ from tauceti_roadmap_worker.board import Job, new_job
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes import correction as lane_correction
 from tauceti_roadmap_worker.lanes import lane_for
-from tauceti_roadmap_worker.lanes.base import LaneBlocked, read_pending
+from tauceti_roadmap_worker.lanes.base import LaneBlocked, LaneError, read_pending
 from tauceti_roadmap_worker.lanes.prreview import PRReviewLane
 
 from .fakes import FakeGH, FakeTransport, example_config
 from .test_checkout import commit, live, needs_git  # noqa: F401 - the shared fixture
-from .test_reports import ANCHOR, LIBRARY, NOW, ReportsGH, context, marker
+from .test_reports import ANCHOR, LIBRARY, NOW, ReportsGH, context, item, marker
 
 CJOB = "CORRECT-QuadraticFormInvariants~1"
 RJOB = "REPORT-QuadraticFormInvariants~1"
@@ -103,7 +103,10 @@ def test_colliding_pull_requests_are_those_that_edit_the_folder():
     index = {"prs": [{"pr": 5, "folders": {"QuadraticFormInvariants": FOLDER}},
                      {"pr": 6, "folders": {"Other": "TauCetiRoadmap/Other"}},
                      {"pr": 8, "folders": {"Nested": f"{FOLDER}/Nested"}}]}
-    assert lane_correction.colliding(index, FOLDER) == [5, 8]
+    assert lane_correction.colliding(index["prs"], FOLDER) == [5, 8]
+    inventory = [{"pr": 9, "files": [{"path": "TauCetiRoadmap/Elsewhere/README.md", "previous": README}]},
+                 {"pr": 10, "files": [{"path": f"{FOLDER}Two/README.md"}]}]       # a rename away; a longer name
+    assert lane_correction.colliding(inventory, FOLDER) == [9]
 
 
 def test_the_lane_runs_on_the_family_defaults_and_ranks_after_the_port():
@@ -376,7 +379,7 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(live
         report.write_text(correction(head=head))
         return agents.AgentResult(exit_code=0, seconds=1.0)
     monkeypatch.setattr(agents, "run_agent", agent)
-    monkeypatch.setattr(openroadmaps, "refresh", lambda gh, cfg, **k: {"prs": []})     # no other pull request
+    monkeypatch.setattr(openroadmaps, "inventory", lambda gh, repo, dirs, **k: [])     # no other pull request
 
     class StopsOnce(FakeGH):
         stop = True
@@ -401,6 +404,7 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(live
     first = lane_for(job).run(job, ctx)
     assert first.status == "failed" and "next attempt finishes its submission" in first.detail, first.detail
     assert read_pending(ctx, job)["done"] == ["content-push", "content-pull-request", "push"]
+    commit(tmp_path / "origin-content", {"TauCetiRoadmap/Other/README.md": "# Other\n"}, "unrelated work on main")
     second = lane_for(job).run(job, ctx)
 
     assert second.status == "submitted", second.detail
@@ -416,3 +420,93 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(live
     assert "rank at least two" in pushed
     report = gitops.git(forks["alice/TauCetiRoadmapJobs"], "show", f"w1/CORRECT-QuadraticFormInvariants_r1:{REPORT}")
     assert "\nPull request: #99 (roadmap/quadratic-form-invariants-correction-1 at " in report
+
+
+# --- review findings ------------------------------------------------------------------------------------------
+
+def test_a_correction_job_filed_before_a_failed_register_write_is_associated_again():
+    gh = PullsGH([], main={**MAIN, REPORT: correction() + "Pull request: #12\n"},
+                 pulls={12: {"state": "open", "labels": []}})
+    register(gh, entry())                                       # the write that would have attached it failed
+    done = correction_job(state="done")
+    done.closed = True
+    ctx = context(gh, jobs=[done], corrections=True)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert ctx.board.created == []                              # no second round beside #12
+    assert entries_of(gh)[0]["correction"] == {"job": CJOB, "pr": 12}
+    assert f"reports: {CJOB}: {RJOB} attached again (its register write had failed)" in out
+
+
+def test_a_report_back_on_main_retires_its_old_correction():
+    gh = PullsGH([item(9, updated="2026-11-24T11:00:00Z")], main=MAIN)
+    register(gh, entry(state="fixed", correction={"job": CJOB, "pr": 12, "merged": True}))
+    ctx = context(gh, jobs=[correction_job(state="done")], corrections=True)
+    ctx.board.jobs[0].closed = True
+    reports.sync_reports(ctx, now=NOW)                          # round 2 of the report is filed
+    [e] = entries_of(gh)
+    assert e["state"] == "open" and "correction" not in e
+    assert e["corrections"] == [{"job": CJOB, "pr": 12, "merged": True}]
+    # Confirmed again, it gets a new correction.
+    e = {**e, "state": "confirmed", "triage": {"job": "REPORT-QuadraticFormInvariants~2", "verdict": "confirmed",
+                                               "report": TRIAGE, "correction": "Fix it again."}}
+    register(gh, e)
+    reports.sync_reports(ctx, now=NOW)
+    assert [j.id for j, _s, _p in ctx.board.created][-1] == "CORRECT-QuadraticFormInvariants~2"
+
+
+class InventoryGH(FakeGH):
+    """The content repository's open pull requests with their changed files (GraphQL `inventory`)."""
+
+    def __init__(self, prs, fail_files: bool = False):
+        super().__init__()
+        self.prs, self.fail_files = prs, fail_files
+
+    def graphql(self, query, **variables):
+        return {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": self.prs}}}
+
+    def api(self, path, paginate=False):
+        if "/files" in path and self.fail_files:
+            raise GHError("HTTP 502")
+        return super().api(path, paginate)
+
+
+def pr_node(number: int, paths, total: int | None = None) -> dict:
+    return {"number": number, "title": "t", "isDraft": False, "headRefOid": "c" * 40, "reviewDecision": None,
+            "author": {"login": "carol"}, "labels": {"nodes": []},
+            "files": {"totalCount": total if total is not None else len(paths),
+                      "nodes": [{"path": p, "changeType": "MODIFIED"} for p in paths]}}
+
+
+@needs_git
+def test_a_same_folder_pull_request_the_cached_index_lacks_parks_the_job(live, tmp_path):  # noqa: F811
+    ctx, _board = live
+    commit(tmp_path / "origin-content", content_files(), "the roadmap")
+    path = openroadmaps.index_path(ctx.state)                   # a fresh cached index, from before the pull request
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"at": "2099-01-01T00:00:00Z", "repo": ctx.cfg.repositories.content, "prs": []}))
+    gh = InventoryGH([pr_node(44, [README]), pr_node(45, ["TauCetiRoadmap/Other/README.md"])])
+    ctx = dataclasses.replace(ctx, gh=gh)
+    job = correction_job()
+    with pytest.raises(LaneBlocked, match="pull request #44 on"):
+        lane_for(job).run(job, ctx)
+    assert job.inputs["waits_for"] == [44]
+
+
+@needs_git
+def test_an_inventory_that_cannot_be_read_whole_opens_nothing(live, tmp_path):  # noqa: F811
+    ctx, _board = live
+    commit(tmp_path / "origin-content", content_files(), "the roadmap")
+    gh = InventoryGH([pr_node(46, ["TauCetiRoadmap/Other/README.md"], total=150)], fail_files=True)
+    ctx = dataclasses.replace(ctx, gh=gh)
+    job = correction_job()
+    with pytest.raises(LaneError, match="could not be read"):     # the worker releases the job: nothing opened
+        lane_for(job).run(job, ctx)
+
+
+def test_a_done_correction_job_left_open_is_closed():
+    gh = PullsGH([], main=MAIN, pulls={12: {"state": "open", "labels": []}})
+    register(gh, entry(correction={"job": CJOB, "pr": 12}))
+    ctx = context(gh, jobs=[correction_job(state="done")], corrections=True)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert ("PATCH", "repos/TauCetiProject/TauCetiRoadmapJobs/issues/30", {"state": "closed"}) in gh.writes
+    assert f"reports: {CJOB}: done, but its issue was open; closed" in out

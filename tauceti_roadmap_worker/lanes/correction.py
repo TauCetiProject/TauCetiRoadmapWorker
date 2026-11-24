@@ -60,14 +60,30 @@ WAITS = ("pull request #{n} on `{repo}` also edits `{folder}`: two pull requests
          "this correction waits; `board sync` makes it available again once that pull request is merged or closed")
 
 
-def colliding(index: dict, folder: str) -> list[int]:
-    """The open pull requests of the index that edit the roadmap folder `folder` (or a folder below it)."""
+def colliding(prs: list[dict], folder: str) -> list[int]:
+    """The open pull requests that change a file in the roadmap folder `folder` (or below it), by their
+    changed files (`openroadmaps.inventory` entries: `files`, each with its `path` and, for a rename, its
+    `previous` path), or by the folders an index entry lists."""
     out = []
-    for p in index.get("prs", []):
-        folders = (p.get("folders") or {}).values()
-        if any(f == folder or f.startswith(folder + "/") for f in folders):
+    for p in prs:
+        paths = [f.get(k, "") for f in p.get("files") or [] for k in ("path", "previous") if isinstance(f, dict)]
+        paths += list((p.get("folders") or {}).values())
+        if any(x == folder or x.startswith(folder + "/") for x in paths):
             out.append(int(p["pr"]))
-    return sorted(out)
+    return sorted(set(out))
+
+
+def open_pull_requests(ctx) -> list[dict]:
+    """Every open pull request of the content repository that changes a file under the roadmap directories,
+    aggregates included, with all its changed files: read now (one GraphQL query per 50 open pull requests,
+    one REST listing more for a pull request with over 100 files), never from the host's index, which may be
+    half an hour old and leaves out a pull request whose head it could not fetch. Raises when any of it cannot
+    be read: a correction is never opened beside a pull request it cannot see."""
+    cfg = ctx.cfg
+    aggregates: list[dict] = []
+    prs = openroadmaps.inventory(ctx.gh, cfg.repositories.content, (cfg.roadmap.active_dir, cfg.roadmap.completed_dir),
+                                 any_file=True, skip=cfg.prreview.aggregate_prs, aggregates=aggregates)
+    return prs + aggregates
 
 
 def corrections_document(cfg, job: Job, wt: Path, board_dir: Path) -> str:
@@ -142,20 +158,24 @@ class CorrectionLane(Lane):
                 or not job.inputs.get("entries"):
             raise LaneError(f"{job.id}: its spec names no roadmap folder under `{cfg.roadmap.active_dir}/` and no report")
         ws = super().prepare(job, ctx)
-        replay = read_pending(ctx, job) is not None       # a kept run finishes its submission, whatever is open now
-        if not replay:
+        pending = read_pending(ctx, job)      # a kept run finishes its submission, whatever is open now
+        if pending is None:
             try:
-                index = (openroadmaps.refresh(ctx.gh, cfg) if ctx.gh is not None and not ctx.dry_run
-                         else openroadmaps.load(ctx.state))
-            except Exception as exc:  # noqa: BLE001 - GitHub or git: what is open cannot be known, so nothing is done
+                prs = (open_pull_requests(ctx) if ctx.gh is not None and not ctx.dry_run
+                       else openroadmaps.load(ctx.state).get("prs", []))      # a dry run writes the brief only
+            except Exception as exc:  # noqa: BLE001 - GitHub: what is open cannot be known, so nothing is done
                 raise LaneError(f"the open roadmap pull requests could not be read ({type(exc).__name__}: "
                                 f"{str(exc)[:160]}): a correction is never opened beside one it cannot see") from exc
-            others = colliding(index, folder)
+            others = colliding(prs, folder)
             if others:
                 job.inputs["waits_for"] = others
                 try:
                     ctx.board.update_spec(job)
-                except (GHError, AttributeError):
+                except GHError as exc:
+                    # Parked without `waits_for`, nothing would ever release the job: it is not parked.
+                    raise LaneError(f"pull request #{others[0]} also edits `{folder}`, and the wait could not be "
+                                    f"recorded on the job ({str(exc).splitlines()[0][:120]})") from exc
+                except AttributeError:
                     pass
                 raise LaneBlocked(WAITS.format(n=", #".join(map(str, others)), repo=cfg.repositories.content,
                                                folder=folder))
@@ -167,7 +187,9 @@ class CorrectionLane(Lane):
         wt = fresh_worktree(ctx, ws.content, job.name, "correct", ws)
         release_branch(ws.content, branch, keep=wt)
         gitops.git(wt, "checkout", "-q", "-B", branch)
-        base = gitops.git(wt, "rev-parse", "HEAD").strip()
+        # A kept run is checked against the main it was built on (its report names it, and its diff is from
+        # it); `restore_pending` puts its commit back on the branch. Main may have moved on since.
+        base = kept_commit(pending or {}, "content").get("base") or gitops.git(wt, "rev-parse", "HEAD").strip()
         doc = ws.scratch / "corrections.md"
         doc.write_text(corrections_document(cfg, job, wt, ws.board), encoding="utf-8")
         prs = []

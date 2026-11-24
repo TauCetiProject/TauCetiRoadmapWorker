@@ -255,7 +255,8 @@ checkout, submits a PR to the board, and the intake advances the state.
     sync` files one `CORRECT-<Leaf>~k` per roadmap whose confirmed reports, still on main, no correction
     holds, batching all of them (two pull requests editing one README conflict), and none while a
     correction of that roadmap or its pull request is open. A roadmap another open pull request edits
-    parks the job (`state:blocked`, `waits_for`) until that pull request is merged or closed; the board
+    parks the job (`state:blocked`, `waits_for`; the open pull requests and their changed files are read
+    from GitHub then, never from a cached index) until that pull request is merged or closed; the board
     does not relay the corrections onto it as a review (section 8). Otherwise an authoring agent, on the
     family defaults, applies each correction its triage stated to the folder's README and
     `Suggested.lean` on main as the smallest change, keeping the roadmap as a record (ids, items and

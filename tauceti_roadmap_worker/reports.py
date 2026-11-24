@@ -640,6 +640,15 @@ def newer(job_id: str, than: str) -> bool:
         return False
 
 
+def retire(entry: dict) -> None:
+    """A report's new round: the earlier round's triage and correction are kept as history (`triages`,
+    `corrections`), so neither decides, nor holds back, the new round."""
+    for key, history in (("triage", "triages"), ("correction", "corrections")):
+        if entry.get(key):
+            entry.setdefault(history, []).append(entry.pop(key))
+        entry.pop(key, None)
+
+
 def report_of(job: board.Job) -> Report | None:
     """The report a REPORT job's spec records (its inputs), validated as a marker is, except that its
     declarations are those of all its sources (`project`): their number has no per-marker limit."""
@@ -874,8 +883,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             known[report.identity] = entry
         else:
             entry.update(job=job.id, state="open")
-            retire_triage(entry)
-            entry.pop("correction", None)
+            retire(entry)
         # Each source's evidence: the register's where it has it, else the spec's (what that source said when the
         # job was filed or its spec last rewritten); a source neither records is read again (`retry`), and its
         # names stay as the spec has them meanwhile. The spec's union is never any source's statement.
@@ -1079,7 +1087,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
         if reopened:                          # fixed once, and back on main
             entry.update(new_entry(report, job.id, "open", "") | {"sources": list(entry.get("sources", [])),
                                                                  "evidence": dict(entry.get("evidence", {}))})
-            entry.pop("triage", None)         # the triage of the earlier job judged the text it then read
+            retire(entry)                     # the earlier round's triage and correction judged the text it read
             revise(entry, source.url, report)
         else:
             entry = new_entry(report, job.id, "open", source.url)
@@ -1495,8 +1503,7 @@ def ask_again(ctx, run: Run, jobs: dict, known: dict) -> None:
             " This round reads the earlier rounds' triages and what people wrote on their issues."))
         if new is None:
             continue
-        retire_triage(entry)
-        entry.pop("correction", None)
+        retire(entry)                         # the earlier round's triage and correction are history
         entry.pop("asked_seen", None)
         entry.update(job=new.id, state="open")
         run.changed.append(f"{new.id} filed (asked again)")
@@ -1633,6 +1640,19 @@ def keep_corrections(ctx, run: Run, report_jobs: dict, known: dict, texts: dict,
         return 0
     cjobs = {j.id: j for j in ctx.board.kind_jobs("correction")}
     changed = 0
+    # A correction job filed by a run whose register write failed: its confirmed reports, which no correction
+    # holds, are attached to it again (to the newest job that names them), before anything reads `attached`.
+    for job in sorted(cjobs.values(), key=lambda j: (board.parse_job_id(j.id).round, j.number)):
+        for spec in job.inputs.get("entries", []) if isinstance(job.inputs.get("entries"), list) else []:
+            e = known.get((str(job.inputs.get("roadmap", "")), str(spec.get("file", "")),
+                           anchor_key(str(spec.get("anchor", "")))))
+            if e is not None and e.get("state") == "confirmed" and not e.get("correction") \
+                    and job.id not in {c.get("job") for c in e.get("corrections", [])}:
+                e["correction"] = {"job": job.id}
+                attached.append(e)
+                changed += 1
+                run.changed.append(f"{job.id} attached again")
+                run.out.append(f"reports: {job.id}: {e.get('job')} attached again (its register write had failed)")
 
     def note(line: str, register: bool = True) -> None:
         nonlocal changed
@@ -1711,6 +1731,12 @@ def keep_corrections(ctx, run: Run, report_jobs: dict, known: dict, texts: dict,
                                     + f" on `{cfg.repositories.content}` " + ("is" if len(numbers) == 1 else "are")
                                     + " closed; this correction runs on the roadmap as main now has it.")
             note(f"{job.id}: " + ", ".join(f"#{n}" for n in numbers) + " closed; available again", register=False)
+
+    # A correction job set done whose issue a failed write left open is closed now (two writes).
+    for job in cjobs.values():
+        if job.state == "done" and not job.closed and not ctx.dry_run:
+            close_issue(ctx, job)
+            note(f"{job.id}: done, but its issue was open; closed", register=False)
 
     # Jobs with nothing left to correct (a human corrected the roadmap meanwhile, or the reports were settled).
     for job in cjobs.values():

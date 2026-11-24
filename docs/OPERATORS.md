@@ -2102,10 +2102,15 @@ text still on main under the active directory, no correction holds: all of them 
 `"correction": {"job": ...}` in the register. A roadmap with a correction job open, or whose correction
 pull request is open, files none (`... wait for the next correction (...)`): reports confirmed meanwhile
 join the next round. The `correction` lane (`work --only correction`; an authoring lane, on the family
-defaults; stage `CORRECT`, right after `PORT`) first reads the index of open roadmap pull requests
-(refreshed; a correction is never opened beside a pull request it cannot see): when another open pull
-request edits the roadmap's folder, the job is parked as `state:blocked` with `waits_for` in its spec and
-a comment naming the pull request, and `board sync` makes it available again once every one of them is
+defaults; stage `CORRECT`, right after `PORT`) first reads every open pull request of the content
+repository that changes a file under the roadmap directories, aggregates included, with all its changed
+files, from GitHub at that moment (one GraphQL query per 50 open pull requests, one REST listing more
+for a pull request with over 100 files), never from the host's index of open roadmap pull requests, which
+may be half an hour old and leaves out a pull request whose head it could not fetch; if any of it cannot
+be read, the round fails and nothing is opened. When another open pull request changes a file in the
+roadmap's folder (a rename out of it included), the job is parked as `state:blocked` with `waits_for` in
+its spec and a comment naming the pull request (a wait that cannot be recorded in the spec parks nothing:
+the round fails and is tried again), and `board sync` makes it available again once every one of them is
 merged or closed. Otherwise the worker checks out main in a worktree on `roadmap/<leaf>-correction-<k>`,
 writes the reports to correct to the job's scratch (each with the text that is wrong, the lines where it
 stands, the correction its triage stated and the path of the triage on the board), and its agent applies
@@ -2123,7 +2128,9 @@ wrong, the correction, a link to the triage on the board, the REPORT job and the
 those it declined, the validation paragraph and the marker the board's upkeep of roadmap pull requests reads,
 labels it `[roadmap] pr_label` and awaiting-review, and adds `Pull request: #N` to the report it submits to
 the board. The push and the pull request are effects of the job's record: a run that stops after either
-finishes on the next attempt without running the agent again, a second push or a second pull request. A
+finishes on the next attempt without running the agent again, a second push or a second pull request,
+checked against the main it was built on (its report names that commit), however far main has moved
+since. A
 correction whose every report is declined opens no pull request. The intake merges the report as any
 submission (refusing one whose applied correction names no pull request its author opened).
 
@@ -2135,7 +2142,12 @@ its reports become `fixed` (`"merged": true`; a corrected pin may keep the name 
 then never leaves main); closed unmerged, they are freed for the next round, the closed attempt kept under
 `corrections`, unless the pull request carries `[reports] stop_label` (default `no-correction`), which
 records them `rejected`. A correction job whose reports are all settled meanwhile (corrected by hand) is
-closed as done. The pull request itself is reviewed by the pull-request review, which never runs under
+closed as done, and a correction job that is done but whose issue a failed write left open is closed. A
+correction job filed by a run whose register write failed is attached again to its confirmed reports
+(those no correction holds), before anything else, so no second round is filed beside its pull request.
+A report that comes back to main after it was fixed starts a new round with its earlier triage and
+correction kept as history (`triages`, `corrections`): neither holds back the new round's correction.
+The pull request itself is reviewed by the pull-request review, which never runs under
 the operator who opened it (its author), answered by gate rounds of that operator, and merged by a human.
 
 ### The board workflow
