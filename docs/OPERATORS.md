@@ -1857,12 +1857,18 @@ on the library (reports travel only in pull requests: a marker in an issue is ne
 ```
 
 `roadmap` is the folder under the active directory (`/`-separated when nested), `file` is `README.md` or
-`Suggested.lean`, `roadmap_sha` the commit of the roadmap repository the worker read, `anchor` the
-declaration's name or a verbatim quote of the statement (at most 300 characters), `kind` one of
-`false-statement`, `missing-hypothesis`, `unprovable-pin`, `wrong-definition`, `circular-dependency`,
-`stale-name`, `effect` `blocked` or `worked-around`, and `refutes` and `replaces` at most ten declaration
-names each. A marker that does not parse or validate is logged and skipped; the others of the body still
-count; unknown fields are ignored.
+`Suggested.lean`, `roadmap_sha` the commit of the roadmap repository the worker read (40 lowercase hex
+digits), `anchor` the declaration's name or a verbatim quote of the statement (at most 300 characters as
+written), `kind` one of `false-statement`, `missing-hypothesis`, `unprovable-pin`, `wrong-definition`,
+`circular-dependency`, `stale-name`, `effect` `blocked` or `worked-around`, and `refutes` and `replaces` at
+most ten declaration names each (each at most 200 characters, non-empty parts joined by single dots, none
+holding whitespace, a backtick, `<`, `>` or `@`). No value is trimmed or case-folded before it is checked:
+these are the rules the worker's checker and the review runner apply, so a marker they accept is
+harvested. A marker that does not decode (for any reason, nesting deep enough to exhaust the decoder
+included) or validate is logged and skipped; the others of the body still count; unknown fields are
+ignored. The board alone harvests a valid marker with no `### Roadmap report` section (its job then has no
+prose), so a missing heading never loses a report. A body the reader cannot read at all is logged and
+passed (`its body could not be read (<error>); passed`), so no pull request's text can stop the harvest.
 
 With `[reports] enabled` (off by default), every `board sync` ends with the reports step:
 

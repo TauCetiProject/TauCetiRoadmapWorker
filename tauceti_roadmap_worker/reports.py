@@ -116,23 +116,25 @@ def _names(data: dict, key: str) -> tuple[tuple[str, ...], str]:
 
 
 def validate(data) -> tuple[Report | None, str]:
-    """The report a decoded marker describes, or (None, why not)."""
+    """The report a decoded marker describes, or (None, why not). The rules are the shared ones (the worker's
+    checker and the review runner apply the same): no value is trimmed or case-folded before it is checked,
+    the anchor's length is counted as written, and only the anchor is stored normalised (for its identity)."""
     if not isinstance(data, dict):
         return None, "not a JSON object"
     for key in ("roadmap", "file", "roadmap_sha", "anchor", "kind", "effect"):
         if not isinstance(data.get(key), str) or not data[key].strip():
             return None, f"`{key}` is missing or not a string"
-    roadmap = data["roadmap"].strip().strip("/")
+    roadmap = data["roadmap"]
     if not all(SEGMENT.fullmatch(s) for s in roadmap.split("/")):
         return None, "`roadmap` is not a roadmap folder"
     if data["file"] not in FILES:
         return None, f"`file` is not one of {', '.join(FILES)}"
-    sha = data["roadmap_sha"].strip().lower()
+    sha = data["roadmap_sha"]
     if not SHA.fullmatch(sha):
-        return None, "`roadmap_sha` is not a 40-hex commit"
-    anchor = normalise(data["anchor"])
-    if len(anchor) > MAX_ANCHOR:
+        return None, "`roadmap_sha` is not 40 lowercase hex digits"
+    if len(data["anchor"]) > MAX_ANCHOR:
         return None, f"`anchor` is longer than {MAX_ANCHOR} characters"
+    anchor = normalise(data["anchor"])
     if data["kind"] not in KINDS:
         return None, "`kind` is not a known kind"
     if data["effect"] not in EFFECTS:
@@ -162,7 +164,7 @@ def parse(body: str) -> tuple[list[Report], list[str]]:
             continue
         try:
             data = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):      # deep nesting raises RecursionError: a marker never raises
             problems.append(f"marker {n}: not valid JSON")
             continue
         report, why = validate(data)
@@ -643,7 +645,11 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
     candidates: list[tuple[Source, Report]] = []
     recorded = 0
     for source in found:
-        got, problems = parse(source.body)
+        try:
+            got, problems = parse(source.body)
+        except Exception as exc:  # noqa: BLE001 - a body is anyone's text: it must never stop the harvest
+            run.out.append(f"reports: {source.url}: its body could not be read ({type(exc).__name__}); passed")
+            continue
         run.out += [f"reports: {source.url}: {p}; not read" for p in problems]
         if not got:
             continue

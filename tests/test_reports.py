@@ -71,7 +71,7 @@ def test_braces_and_quotes_inside_an_anchor_are_read():
     ({"roadmap": "Quadratic-Forms"}, "`roadmap` is not a roadmap folder"),
     ({"roadmap": "1Forms"}, "`roadmap` is not a roadmap folder"),
     ({"file": "STATUS.md"}, "`file` is not one of"),
-    ({"roadmap_sha": "abc123"}, "`roadmap_sha` is not a 40-hex commit"),
+    ({"roadmap_sha": "abc123"}, "`roadmap_sha` is not 40 lowercase hex digits"),
     ({"anchor": "x" * 301}, "longer than 300"),
     ({"anchor": "   "}, "`anchor` is missing"),
     ({"kind": "typo"}, "`kind` is not a known kind"),
@@ -702,3 +702,58 @@ def test_a_bors_title_counts_as_merged_only_when_the_queue_closed_it():
     gh.closers = {2: "stranger"}
     reports.sync_reports(ctx, now=NOW)
     assert sorted(gh.closer_reads[reads:]) == [2, 3]
+
+
+# --- the field rules shared with the worker's checker and the review runner (SPEC "Exact field rules") -------
+# The cases mirror TauCetiReview's tests/test_roadmap_reports.py (Form.INVALID and Form.STRICTER), so that
+# the three readers give the same verdict on each: whatever the worker and the review call valid, the board
+# harvests.
+
+SHARED_INVALID = [
+    {"roadmap": None}, {"roadmap": "../Secrets"}, {"roadmap": "Representation Theory"}, {"roadmap": "Quadratic-Forms"},
+    {"roadmap": "1Forms"}, {"file": "STATUS.md"}, {"roadmap_sha": "abc"}, {"roadmap_sha": "abc123"},
+    {"anchor": "x" * 301}, {"anchor": "  "}, {"kind": "typo"}, {"effect": "fixed"}, {"refutes": "TauCeti.x"},
+    {"refutes": [f"TauCeti.n{i}" for i in range(11)]}, {"replaces": [f"TauCeti.x{i}" for i in range(11)]},
+    {"replaces": ["two words"]}, {"replaces": ["TauCeti.x y"]}, {"refutes": ["`TauCeti.x`"]}, {"refutes": [3]},
+    {"replaces": ["TauCeti." + "x" * 200]},
+    # once accepted here by trimming or case-folding first; refused by all three now
+    {"roadmap": " QuadraticFormInvariants "}, {"roadmap": "QuadraticFormInvariants/"}, {"roadmap_sha": "A" * 40},
+    {"roadmap_sha": " " + SHA}, {"anchor": "x " + " " * 150 + "y" * 150},
+    {"refutes": ["TauCeti..x"]}, {"refutes": ["TauCeti.x."]}, {"refutes": ["TauCeti.<x>"]}, {"replaces": ["@TauCeti.x"]},
+]
+SHARED_VALID = [{}, {"refutes": None, "replaces": None, "future": 1}, {"roadmap": "RepresentationTheory/CompactGroups"},
+                {"file": "Suggested.lean", "anchor": "theorem foo {R} : \"}\""}]
+
+
+@pytest.mark.parametrize("fields", SHARED_INVALID, ids=lambda f: json.dumps(f)[:40])
+def test_the_shared_rules_refuse(fields):
+    found, problems = reports.parse(marker(**fields) + "\n" + marker(anchor="another"))
+    assert [r.anchor for r in found] == ["another"] and len(problems) == 1 and problems[0].startswith("marker 1: ")
+
+
+@pytest.mark.parametrize("fields", SHARED_VALID, ids=lambda f: json.dumps(f)[:40])
+def test_the_shared_rules_accept(fields):
+    assert len(reports.parse(marker(**fields))[0]) == 1
+
+
+def test_a_deeply_nested_marker_is_invalid_not_a_crash():
+    nested = reports.MARKER + "[" * 100000 + "]" * 100000 + "-->"
+    found, problems = reports.parse(nested + "\n" + marker())
+    assert len(found) == 1 and problems == ["marker 1: not valid JSON"]
+    # And a body carrying it costs the sync nothing else: the other sources are harvested.
+    gh = ReportsGH([item(1, body=nested), item(2, body=marker(anchor="diagonal chains"))])
+    ctx = context(gh)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{LIBRARY}/pull/2"]]
+    assert f"reports: {LIBRARY}/pull/1: marker 1: not valid JSON; not read" in out
+
+
+def test_a_body_the_reader_cannot_read_is_logged_and_passed(monkeypatch):
+    real = reports.parse
+    monkeypatch.setattr(reports, "parse", lambda body: (_ for _ in ()).throw(MemoryError()) if "boom" in body
+                        else real(body))
+    gh = ReportsGH([item(1, body="boom " + marker()), item(2, body=marker(anchor="diagonal chains"))])
+    ctx = context(gh)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{LIBRARY}/pull/2"]]
+    assert f"reports: {LIBRARY}/pull/1: its body could not be read (MemoryError); passed" in out
