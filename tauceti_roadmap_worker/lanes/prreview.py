@@ -1207,10 +1207,25 @@ def merge_file(texts: list[str], *options: str) -> tuple[int, str] | None:
     return (done.returncode, done.stdout) if 0 <= done.returncode < 128 else None
 
 
+def both_insertions(ours: list[str], theirs: list[str]) -> list[str]:
+    """Two runs of lines inserted at one place, as one: what the two begin with in common once, then the
+    rest of ours, the rest of theirs, and what those end with in common once. A repair's description often
+    carries, beside its own sentence, one that another writer has put in the description meanwhile."""
+    head = 0
+    while head < min(len(ours), len(theirs)) and ours[head] == theirs[head]:
+        head += 1
+    a, b = ours[head:], theirs[head:]
+    tail = 0
+    while tail < min(len(a), len(b)) and a[-1 - tail] == b[-1 - tail]:
+        tail += 1
+    return ours[:head] + a[:len(a) - tail] + b[:len(b) - tail] + a[len(a) - tail:]
+
+
 def insertions_resolved(merged: str, size: int) -> str | None:
     """The output of `git merge-file --diff3` (labels ours, base and theirs, markers of `size`) with each
-    conflict taken as two insertions at one place: ours, then theirs, or once when the two are the same.
-    None when a conflict has a base part, which both sides changed, or when the markers are out of order."""
+    conflict taken as two insertions at one place (`both_insertions`): ours, then theirs, with what the
+    two share kept once. None when a conflict has a base part, which both sides changed, or when the
+    markers are out of order."""
     marks = ["<" * size + " ours", "|" * size + " base", "=" * size, ">" * size + " theirs"]
     out: list[str] = []
     parts: list[list[str]] = []
@@ -1228,7 +1243,7 @@ def insertions_resolved(merged: str, size: int) -> str | None:
             ours, base, theirs = parts
             if base:
                 return None
-            out += ours if ours == theirs else ours + theirs
+            out += both_insertions(ours, theirs)
     return None if side >= 0 else "\n".join(out)
 
 

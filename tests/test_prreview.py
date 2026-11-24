@@ -4697,3 +4697,20 @@ def test_aggregate_prs_parse_are_checked_and_leave_the_listing():
     gh = ContentGH(aggregate_nodes())
     assert [x["pr"] for x in openroadmaps.inventory(gh, REPO, ("TauCetiRoadmap",))] == [12, 13, 99]
     assert [x["pr"] for x in openroadmaps.inventory(gh, REPO, ("TauCetiRoadmap",), skip=[99])] == [12, 13]
+
+
+def test_two_insertions_at_one_place_keep_a_shared_sentence_once():
+    base = "The roadmap gains one section. It gains no supplier.\n"
+    # the description gained sentence X meanwhile; the repair's text carries X and its own sentence Y
+    ours = "The roadmap gains one section. Alpha gains §1.2a. It gains no supplier.\n"
+    theirs = "The roadmap gains one section. Alpha gains §1.2a. Beta gains §3.4b, cited by Gamma. It gains no supplier.\n"
+    assert lane_prreview.merged_prose(base, ours, theirs) == theirs
+    # the same with the shared sentence last, and with nothing shared
+    theirs_first = "The roadmap gains one section. Beta gains §3.4b, cited by Gamma. Alpha gains §1.2a. It gains no supplier.\n"
+    assert lane_prreview.merged_prose(base, ours, theirs_first) == theirs_first
+    other = "The roadmap gains one section. Beta gains §3.4b, cited by Gamma. It gains no supplier.\n"
+    assert lane_prreview.merged_prose(base, ours, other) == (
+        "The roadmap gains one section. Alpha gains §1.2a. Beta gains §3.4b, cited by Gamma. It gains no supplier.\n")
+    assert lane_prreview.both_insertions(["x", "m"], ["n", "m"]) == ["x", "n", "m"]
+    assert lane_prreview.both_insertions(["x"], ["x"]) == ["x"]
+
