@@ -120,18 +120,20 @@ def test_quoted_text_cannot_break_out_mention_or_carry_a_marker():
 
 
 @pytest.mark.parametrize("item, merged", [
-    ({"state": "closed", "title": "[Merged by Bors] - feat: x", "pull_request": {"merged_at": None}}, True),
+    ({"state": "closed", "title": "[Merged by Bors] - feat: x", "pull_request": {"merged_at": None}}, False),
     ({"state": "closed", "title": "feat: x", "pull_request": {"merged_at": "2026-11-20T00:00:00Z"}}, True),
     ({"state": "closed", "title": "feat: x", "pull_request": {"merged_at": None}}, False),
     ({"state": "open", "title": "[Merged by Bors] - feat: x", "pull_request": {"merged_at": None}}, False),
     ({"state": "closed", "title": "[Merged by Bors] - feat: x", "pull_request": {"merged": False, "merged_at": None}},
-     True),                                                                     # Forgejo's shape, bors merged it
+     False),                                                    # Forgejo's shape: a bors title is verified apart
     ({"state": "closed", "title": "feat: x", "pull_request": {"merged": True}}, True),
     ({"state": "closed", "title": "[Merged by Bors] - x", "pull_request": None}, False),     # a Forgejo issue
     ({"state": "closed", "title": "[Merged by Bors] - x"}, False),                           # a GitHub issue
 ])
 def test_merged_pull_requests_on_both_forges(item, merged):
     assert reports.merged(item) is merged
+    titled = str(item.get("title", "")).startswith(reports.BORS) and item.get("state") == "closed"
+    assert reports.bors_closed(item) is (titled and isinstance(item.get("pull_request"), dict) and not merged)
 
 
 # --- the harvest -------------------------------------------------------------------------------------------
@@ -157,6 +159,8 @@ class ReportsGH:
         self.files: dict[str, str] = {}
         self.writes: list[tuple[str, str, dict]] = []
         self.queries: list[str] = []
+        self.closers: dict[int, str] = {}                   # who closed a pull request (default: the merge queue)
+        self.closer_reads: list[int] = []
         self.dry_run, self.fence = False, None
 
     def api(self, path, paginate=False):
@@ -170,6 +174,13 @@ class ReportsGH:
             if name not in self.files:
                 raise GHError(f"GET {path}: 404")
             return {"content": base64.b64encode(self.files[name].encode()).decode(), "sha": "s-" + name}
+        m = re.fullmatch(r"repos/TauCetiProject/TauCeti/issues/(\d+)", path)
+        if m:
+            self.closer_reads.append(int(m.group(1)))
+            who = self.closers.get(int(m.group(1)), "tauceti-queue[bot]")
+            if who is None:
+                raise GHError(f"GET {path}: HTTP 502")
+            return {"number": int(m.group(1)), "closed_by": {"login": who}}
         raise GHError(f"GET {path}: not faked")
 
     def graphql(self, query, **variables):
@@ -220,7 +231,11 @@ def test_a_merged_bors_pull_request_files_one_job_and_the_register_records_it():
                      "kind": "false-statement", "effect": "worked-around", "state": "open",
                      "sources": [f"{LIBRARY}/pull/6903"],
                      "refutes": ["TauCeti.exists_rankOne_equivalent_not_diagonalChain"],
-                     "replaces": ["TauCeti.diagonalChain_iff_equivalent_of_two_le"]}
+                     "replaces": ["TauCeti.diagonalChain_iff_equivalent_of_two_le"],
+                     "evidence": {f"{LIBRARY}/pull/6903": {
+                         "kind": "false-statement", "effect": "worked-around",
+                         "refutes": ["TauCeti.exists_rankOne_equivalent_not_diagonalChain"],
+                         "replaces": ["TauCeti.diagonalChain_iff_equivalent_of_two_le"]}}}
     assert gh.register()["version"] == 1 and gh.register()["scanned"] == {"github": "2026-11-24T10:00:00Z"}
     assert gh.queries == ['repo:TauCetiProject/TauCeti is:pr "tauceti-roadmap-report:v1" in:body']
     # The next run searches from the mark, finds the same source recorded, and writes nothing.
@@ -363,7 +378,8 @@ def test_main_that_cannot_be_read_decides_nothing():
                                              "roadmaps": {}})
     ctx = context(gh)
     out = reports.sync_reports(ctx, now=NOW)
-    assert ctx.board.created == [] and gh.writes == []
+    assert ctx.board.created == [] and gh.register()["roadmaps"] == {}     # only the verified merge is recorded
+    assert gh.register()["scanned"]["github"] == "2026-11-24T10:00:00Z"        # held at the source left for later
     assert f"reports: {LIBRARY}/pull/1: QuadraticFormInvariants README.md: main could not be read; left for a later " \
            "run" in out
 
@@ -385,7 +401,7 @@ def test_a_failed_register_write_is_recovered_from_the_job_on_the_board():
 
 def test_forgejo_pull_requests_are_harvested_by_their_bors_title():
     transport = FakeTransport()
-    base = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues?type=pulls&state=all&q=tauceti-roadmap-report%3Av1&limit=50"
+    base = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues?type=pulls&state=all&limit=50"
     forgejo_pr = item(3668, base=f"{FORGEJO}/TauCetiProject/TauCeti", updated="2026-11-23T11:40:44Z")
     forgejo_pr["pull_request"] = {"merged": False, "merged_at": None, "draft": False,
                                   "html_url": forgejo_pr["html_url"]}
@@ -394,7 +410,10 @@ def test_forgejo_pull_requests_are_harvested_by_their_bors_title():
     open_one["pull_request"] = {"merged": False, "merged_at": None}
     transport.add(f"{base}&page=1", json.dumps([forgejo_pr, open_one]).encode())
     gh = ReportsGH([])
-    ctx = context(gh, transport=transport, forgejo=FORGEJO, forgejo_reporters=["Kim"])
+    timeline = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues/3668/timeline?limit=50&page=1"
+    transport.add(timeline, json.dumps([{"type": "change_title", "user": {"login": "queue"}},
+                                        {"type": "close", "user": {"login": "queue"}}]).encode())
+    ctx = context(gh, transport=transport, forgejo=FORGEJO, forgejo_reporters=["Kim"], forgejo_merge_bots=["queue"])
     out = reports.sync_reports(ctx, now=NOW)
     assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [
         [f"{FORGEJO}/TauCetiProject/TauCeti/pulls/3700"], [f"{FORGEJO}/TauCetiProject/TauCeti/pulls/3668"]]
@@ -491,11 +510,11 @@ def test_the_intake_takes_no_submission_for_a_report_job(monkeypatch):
     assert out == "#5: not merged: REPORT-Foo~1 is a report job, which no lane takes and no submission answers"
 
 
-def test_searches_read_at_most_three_pages_and_marks_follow_what_was_read():
+def test_a_search_with_more_than_its_pages_narrows_its_window():
     stamps = [f"2026-11-2{1 + k // 200}T{(k // 60) % 24:02d}:{k % 60:02d}:00Z" for k in range(350)]
     gh = ReportsGH([item(k, body="no marker here", updated=stamps[k]) for k in range(350)])
     transport = FakeTransport()
-    base = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues?type=pulls&state=all&q=tauceti-roadmap-report%3Av1&limit=50"
+    base = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues?type=pulls&state=all&limit=50"
     page = [item(k, body="no marker", base=f"{FORGEJO}/TauCetiProject/TauCeti") for k in range(50)]
     for n in (1, 2, 3):
         transport.add(f"{base}&page={n}&since=2026-10-31T23%3A55%3A00Z", json.dumps(page).encode())
@@ -504,11 +523,27 @@ def test_searches_read_at_most_three_pages_and_marks_follow_what_was_read():
     ctx = context(gh, transport=transport, forgejo=FORGEJO)
     out = reports.sync_reports(ctx, now=NOW)
     assert len(gh.queries) == 3 and len(transport.requests) == 3
-    assert "reports: more github results than 3 pages; the rest are read by the next run" in out
-    assert "reports: more forgejo results than 3 pages; its mark stays where it was (Forgejo lists in no order of " \
-           "change)" in out
+    assert ("reports: more github results between the start and 2026-11-24T11:55:00Z than 3 pages; the next run reads "
+            "them to 2013-06-13T05:57:30Z") in out
+    assert ("reports: more forgejo results between 2026-10-31T23:55:00Z and 2026-11-24T11:55:00Z than 3 pages; the "
+            "next run reads them to 2026-11-12T17:55:00Z") in out
     scanned = gh.register()["scanned"]
-    assert scanned == {"github": stamps[299], "forgejo": "2026-11-01T00:00:00Z"}
+    assert scanned == {"forgejo": "2026-11-01T00:00:00Z", "forgejo-until": "2026-11-12T17:55:00Z",
+                       "github-until": "2013-06-13T05:57:30Z"}
+    # The next Forgejo listing asks for the earlier half only.
+    transport.add(f"{base}&page=1&since=2026-10-31T23%3A55%3A00Z&before=2026-11-12T17%3A55%3A00Z", b"[]")
+    reports.sync_reports(ctx, now=NOW)
+    scanned = gh.register()["scanned"]
+    assert scanned["forgejo"] == "2026-11-12T17:55:00Z" and scanned["forgejo-exact"] is True
+    assert "forgejo-until" not in scanned
+
+
+def test_a_window_of_one_second_is_passed_with_a_warning():
+    marks = {"github": "2026-11-24T10:00:00Z", "github-exact": True, "github-until": "2026-11-24T10:00:01Z"}
+    line = reports.next_marks(marks, "github", [], True, [], "2026-11-24T12:00:00Z")
+    assert line == ("reports: more github results updated within one second (2026-11-24T10:00:01Z) than 3 pages; "
+                    "some may be missed")
+    assert marks == {"github": "2026-11-24T10:00:01Z", "github-exact": True}
 
 
 def test_the_origin_upkeep_leaves_report_jobs_alone():
@@ -521,3 +556,149 @@ def test_the_origin_upkeep_leaves_report_jobs_alone():
     fb = FakeBoard(jobs=[target, report, design])
     assert intake.sync_origins(SimpleNamespace(cfg=example_config(), board=fb)) == ["DESIGN-Foo: origin target:3"]
     assert [jid for jid, _spec in fb.specs] == ["DESIGN-Foo"]
+
+
+# --- review findings: evidence revisions, recovery, closing, dense windows -----------------------------------
+
+def test_a_corrected_source_replaces_its_evidence_and_its_open_job_says_so():
+    first = item(1, body=marker(refutes=["TauCeti.wrong_counterexample"]), updated="2026-11-24T10:00:00Z")
+    gh = ReportsGH([first])
+    ctx = context(gh)
+    reports.sync_reports(ctx, now=NOW)
+    [(job, _s, _p)] = ctx.board.created
+    job.number, job.state = 501, "available"
+    ctx.board.jobs = [job]
+    revised = item(1, body=marker(refutes=["TauCeti.right_counterexample"], kind="missing-hypothesis"),
+                   updated="2026-11-24T11:00:00Z")
+    gh.search = [revised]
+    out = reports.sync_reports(ctx, now=NOW)
+    [entry] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert entry["refutes"] == ["TauCeti.right_counterexample"] and entry["kind"] == "missing-hypothesis"
+    assert entry["evidence"][f"{LIBRARY}/pull/1"]["refutes"] == ["TauCeti.right_counterexample"]
+    assert job.inputs["refutes"] == ["TauCeti.right_counterexample"] and job.inputs["kind"] == "missing-hypothesis"
+    assert ctx.board.specs[-1][0] == job.id
+    assert ctx.board.posted[-1][0] == 501 and "Revised in https://github.com/TauCetiProject/TauCeti/pull/1" in \
+        ctx.board.posted[-1][1]
+    assert any("evidence revised" in line for line in out)
+    # Another source keeps its own evidence: the names are the union of what each source says now.
+    gh.search = [item(2, body=marker(replaces=["TauCeti.other"]), updated="2026-11-24T11:30:00Z")]
+    reports.sync_reports(ctx, now=NOW)
+    [entry] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert entry["refutes"] == ["TauCeti.right_counterexample", "TauCeti.exists_rankOne_equivalent_not_diagonalChain"]
+
+
+def test_new_evidence_for_a_rejected_report_is_posted_on_its_closed_job():
+    gh = ReportsGH([item(2, updated="2026-11-24T11:00:00Z")])
+    entry = reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1", "rejected",
+                              f"{LIBRARY}/pull/1")
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+    job = Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1, number=40, state="done",
+              closed=True)
+    ctx = context(gh, jobs=[job])
+    reports.sync_reports(ctx, now=NOW)
+    [(number, text)] = ctx.board.posted
+    assert number == 40 and "rejected" in text and "reopen" in text
+
+
+def test_a_recurrence_filed_before_a_failed_register_write_is_not_filed_again():
+    gh = ReportsGH([item(9, updated="2026-11-24T11:00:00Z")])
+    entry = reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1", "fixed",
+                              f"{LIBRARY}/pull/1")
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+    old = Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1, number=40, state="done",
+              closed=True)
+    ctx = context(gh, jobs=[old])
+    write = gh.write
+    gh.write = lambda m, p, payload=None: (_ for _ in ()).throw(GHError("PUT: HTTP 502"))
+    with pytest.raises(GHError):
+        reports.sync_reports(ctx, now=NOW)             # round 2 is filed, the register write fails
+    [(round2, _s, _p)] = ctx.board.created
+    round2.number, round2.state = 41, "available"
+    ctx.board.jobs.append(round2)
+    gh.write = write
+    reports.sync_reports(ctx, now=NOW)
+    assert [j.id for j, _s, _p in ctx.board.created] == ["REPORT-QuadraticFormInvariants~2"]
+    [entry] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert entry["job"] == "REPORT-QuadraticFormInvariants~2" and entry["state"] == "open"
+    assert entry["sources"] == [f"{LIBRARY}/pull/1", f"{LIBRARY}/pull/9"]
+
+
+def test_a_failed_close_is_retried_while_the_job_is_done_but_open():
+    gh = ReportsGH([], main={README: "corrected"})
+    entry = reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1", "open",
+                              f"{LIBRARY}/pull/1")
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+    job = Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1, number=40, state="available")
+    ctx = context(gh, jobs=[job])
+    write, fails = gh.write, [1]
+
+    def flaky(method, path, payload=None):
+        if method == "PATCH" and fails:
+            fails.pop()
+            raise GHError("PATCH: HTTP 502")
+        return write(method, path, payload)
+    gh.write = flaky
+    with pytest.raises(GHError):
+        reports.sync_reports(ctx, now=NOW)
+    assert job.state == "done" and not job.closed       # the label went on, the close failed
+    reports.sync_reports(ctx, now=NOW)
+    closes = [w for w in gh.writes if w[0] == "PATCH"]
+    assert closes == [("PATCH", "repos/TauCetiProject/TauCetiRoadmapJobs/issues/40", {"state": "closed"})]
+    assert gh.register()["roadmaps"]["QuadraticFormInvariants"][0]["state"] == "fixed"
+
+
+class WindowGH(ReportsGH):
+    """GitHub's issue search as it filters and orders: `updated:>=A` or `updated:A..B`, oldest first."""
+
+    def api(self, path, paginate=False):
+        if not path.startswith("search/issues?"):
+            return super().api(path, paginate)
+        q = parse_qs(urlsplit(path).query)
+        self.queries.append(q["q"][0])
+        page = int(q["page"][0])
+        lo, hi = "", "9999"
+        m = re.search(r"updated:(>=)?(\S+?)(?:\.\.(\S+))?(?:\s|$)", q["q"][0])
+        if m:
+            lo, hi = m.group(2), m.group(3) or "9999"
+        hits = sorted((i for i in self.search if lo <= i["updated_at"] <= hi), key=lambda i: i["updated_at"])
+        return {"total_count": len(hits), "items": copy.deepcopy(hits[(page - 1) * 100:page * 100])}
+
+
+def test_a_dense_lookback_window_cannot_hold_the_mark_for_ever():
+    old = [item(k, body="a pull request with no marker", updated=f"2026-11-24T10:0{k // 60}:{k % 60:02d}Z")
+           for k in range(300)]
+    new = item(999, updated="2026-11-24T10:05:00Z")
+    gh = WindowGH(old + [new])
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T10:04:59Z"},
+                                             "roadmaps": {}})
+    ctx = context(gh)
+    for _run in range(12):
+        reports.sync_reports(ctx, now=NOW)
+        if ctx.board.created:
+            break
+    assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{LIBRARY}/pull/999"]]
+    assert len(gh.queries) <= 40
+
+
+def test_a_bors_title_counts_as_merged_only_when_the_queue_closed_it():
+    gh = ReportsGH([item(1, login="stranger"), item(2, login="stranger", body=marker(anchor="diagonal chains")),
+                    item(3, login="stranger", body=marker(anchor="rank one are equivalent"))])
+    gh.closers = {2: "stranger", 3: None}                     # 2 closed by its author, 3 unreadable now
+    ctx = context(gh)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{LIBRARY}/pull/1"]]
+    assert (f"reports: {LIBRARY}/pull/2: titled as a bors merge, but not closed by a merge-queue account ([reports] "
+            "merge_bots); read as a pull request closed unmerged") in out
+    assert f"reports: {LIBRARY}/pull/2: a pull request closed unmerged; not harvested" in out
+    assert any(line.startswith(f"reports: {LIBRARY}/pull/3: titled as a bors merge; who closed it could not be read")
+               for line in out)
+    assert gh.register()["merges"] == {f"{LIBRARY}/pull/1": "tauceti-queue[bot]"}
+    assert gh.register()["scanned"]["github"] == "2026-11-24T10:00:00Z"        # held at the source left for later
+    # A verified merge is read once.
+    reads = len(gh.closer_reads)
+    gh.closers = {2: "stranger"}
+    reports.sync_reports(ctx, now=NOW)
+    assert sorted(gh.closer_reads[reads:]) == [2, 3]

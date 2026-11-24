@@ -209,9 +209,11 @@ checkout, submits a PR to the board, and the intake advances the state.
     searches the library's pull requests once per forge per run (GitHub, and Forgejo when configured)
     and files one
     `REPORT-<Leaf>~k` per new report: from a merged pull request whoever wrote it (a bors merge, a
-    closed pull request titled `[Merged by Bors] - `, counts), from an open pull request only when its
-    author is in `[reports] reporters`, from a pull request closed unmerged never. The roadmap, file and quoted text (whitespace
-    normalised, case folded) are one report whatever its sources; a report whose text main no longer
+    closed pull request titled `[Merged by Bors] - `, counts when a configured merge-queue account closed
+    it), from an open pull request only when its author is in `[reports] reporters`, from a pull request
+    closed unmerged never. The roadmap, file and quoted text (whitespace normalised, case folded) are one
+    report whatever its sources, and what each source says now (an edited description replaces its own
+    evidence) is what the report and its open job carry; a report whose text main no longer
     holds is recorded as fixed and files nothing, and an open report is fixed, its job done, once its
     text leaves main. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
     `rejected`, `fixed`), which the library's workers read so as not to report one twice. The job's text

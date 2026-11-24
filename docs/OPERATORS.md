@@ -1866,19 +1866,36 @@ count; unknown fields are ignored.
 
 With `[reports] enabled` (off by default), every `board sync` ends with the reports step:
 
-1. One search per forge, for pull requests whose body changed since the mark the register keeps, less five
-   minutes: GitHub's search (`repo:<library> is:pr "tauceti-roadmap-report:v1" in:body updated:>=<mark>`,
-   oldest change first, at most three pages of 100), and with `[reports] forgejo` the instance's listing of
-   pull requests (`type=pulls`, its keyword search, `since=<mark>`, three pages of 50, no token). Both
-   searches are fuzzy: every hit is read again by parsing its body, and one that is not a pull request is
-   ignored.
-2. A merged pull request counts from anyone; GitHub's `merged_at`, Forgejo's `merged`, or a bors merge (the
-   pull request is closed and its title starts `[Merged by Bors] - `) is merged. An open pull request
-   counts only from `[reports] reporters` (GitHub logins or `team:<org>/<slug>`, resolved as
-   `[board] target_filers` are) or `forgejo_reporters`; a pull request closed unmerged never.
-3. A report is its roadmap, file and anchor (whitespace runs as one space, case folded). One the register
-   holds gains the source (logged `already reported (REPORT-<Leaf>~k, open); source added`, and an open job
-   gets one comment `Reported again in <url>`).
+1. One search per forge, of the pull requests updated in its window: from the mark the register keeps,
+   less five minutes, to now. GitHub's search (`repo:<library> is:pr "tauceti-roadmap-report:v1" in:body
+   updated:<from>..<to>`, oldest change first, at most three pages of 100); with `[reports] forgejo`, the
+   instance's listing of pull requests (`type=pulls`, `since` and `before`, three pages of 50, no token;
+   not filtered by keyword, since Forgejo's keyword search ignores `before`, so every body is read).
+   GitHub's search is fuzzy: every hit is read again by parsing its body, and one that is not a pull
+   request is ignored. A window with more results than its pages is halved: the run reads what it got,
+   and the next run reads the earlier half (`more github results between <from> and <to> than 3 pages;
+   the next run reads them to <mid>`), halving again until a window fits; a window that fits moves the
+   mark to its end, and the window after it starts there exactly (it is past the search index's lag). So
+   dense updates and ties cannot hold the mark, on either forge, whatever order the listing has; only more
+   than three pages updated within one second are passed with a warning (`some may be missed`).
+2. A merged pull request counts from anyone; GitHub's `merged_at` and Forgejo's `merged` are merged. A
+   bors merge is a pull request closed and titled `[Merged by Bors] - `, which its author can also do by
+   hand: it counts as merged only when a merge-queue account closed it (`[reports] merge_bots`, default
+   `tauceti-queue[bot]`, read from GitHub's `closed_by`; `forgejo_merge_bots`, read from the last `close`
+   event of the Forgejo timeline), else it is a pull request closed unmerged (`titled as a bors merge, but
+   not closed by a merge-queue account`); a closer that cannot be read leaves the source for a later run.
+   A verified merge is kept in the register (`merges`), so each costs one read, at most twenty a run. An
+   open pull request counts only from `[reports] reporters` (GitHub logins or `team:<org>/<slug>`,
+   resolved as `[board] target_filers` are) or `forgejo_reporters`; a pull request closed unmerged never.
+3. A report is its roadmap, file and anchor (whitespace runs as one space, case folded). The register
+   keeps what each of its sources says now (`evidence`: kind, effect, declarations, by source): the
+   report's declarations are those its sources name now, and its kind and effect those of the source
+   revised last. A new source is added (logged `already reported (REPORT-<Leaf>~k, open); source added`);
+   a source whose description was edited replaces its own evidence, so a declaration it corrected away is
+   dropped unless another source still names it (`evidence revised (refutes; ...)`). The job hears of
+   either: an open job's spec follows the report (what a triage reads) with one comment, `Reported again
+   in <url>` or `Revised in <url>: now ...`; a rejected report's closed job gets the same comment, saying
+   that reopening the issue and moving it to `state:available` has it triaged again.
 4. A new one is checked against the roadmap repository's main: the file under the active directory, else
    under the completed one, read as GraphQL blobs (one query for up to sixty files, no REST request unless
    a file is too large for GraphQL), the anchor sought in it with whitespace normalised. Still there: a
@@ -1891,7 +1908,8 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    back on main is filed again, as the next round.
 5. Every `open` or `confirmed` report whose anchor has left main becomes `fixed`; its job is set done with
    one comment and closed (`REPORT-<Leaf>~k: the anchor is gone from <roadmap>/<file> on main; fixed, job
-   done`).
+   done`). The label and the close are two writes: a REPORT job that is done but whose issue is still open
+   (a close that failed) is closed by the next run (`done, but its issue was open; closed`).
 
 The step ends with `reports: N source(s) read, R report(s) recorded already, F filed, X fixed[, L left for a
 later run]`. The job's issue is written by the board from the validated fields: the roadmap and file, the
@@ -1902,19 +1920,24 @@ mention anyone, link an issue, close its quoting or carry a marker the board rea
 
 The register, `reports/register.json` on the board's main, is the step's only state (the hosted workflow
 keeps none between runs): `{"version": 1, "roadmaps": {"<roadmap>": [{"job", "file", "anchor", "kind",
-"effect", "state", "sources", "refutes", "replaces"}]}, "scanned": {"github": ..., "forgejo": ...}}`, the
+"effect", "state", "sources", "refutes", "replaces", "evidence"}]}, "scanned": {"github": ...,
+"forgejo": ...}, "merges": {"<url>": "<closer>"}}` (`scanned` also holds `<forge>-until`, the end of a
+narrowed window, and `<forge>-exact`), the
 states `open`, `confirmed`, `rejected` and `fixed` (a fixed report recorded without a job has `"job": ""`).
 The library's workers read it so as not to report one thing twice. It is written in one commit when a
-report changed, or when a forge's mark is a day behind; a mark left in memory only costs the next search a
-few more hits, all of them recorded already. The mark stops at the first source a run left for later (a
-cap, an unreadable file, a team it could not read), so the next search reads it again; a Forgejo listing
-longer than three pages leaves the Forgejo mark where it was (it lists in no order of change). A job that a run
-filed without writing the register (the write failed) is recorded from its spec by the next run. With
+report changed, when a window was narrowed, or when a forge's mark is a day behind; a mark left in memory
+only costs the next search a few more hits, all of them recorded already. The mark stops at the first
+source a run left for later (a cap, an unreadable file or closer, a team it could not read), so the next
+search reads it again. A job that a run filed without writing the register (the write failed) is recorded
+from its spec by the next run: a first report as a new entry, a later round of a report (a recurrence) as
+that entry's new round, so it is never filed twice. With
 `--yes` absent, the step logs every decision with `would file ... (dry run)` and writes nothing.
 
 A run costs the board's budget the read of the register, the listing of `kind:report` jobs (from the
-listing the sync holds already) and its writes; the search comes from GitHub's search budget (30 a minute),
-the reads of main from GraphQL's, Forgejo nothing. To turn it on: set `[reports] enabled = true`, the
+listing the sync holds already), one read per bors-titled source not verified yet (at most twenty a run,
+once per source) and its writes; the search (one to three pages; a narrowed window adds runs, not pages)
+comes from GitHub's search budget (30 a minute), the reads of main from GraphQL's, Forgejo nothing.
+To turn it on: set `[reports] enabled = true`, the
 reporters, and `forgejo` if the library has pull requests there; create the label `kind:report` on the
 board beforehand to give it a colour (GitHub creates it on the first job otherwise). A team in
 `reporters` is read as the target filers' teams are, `board/filers.json` included. Workers of an older
