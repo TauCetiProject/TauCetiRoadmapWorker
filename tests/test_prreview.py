@@ -3658,6 +3658,123 @@ def test_the_summary_is_written_when_the_prose_changed_under_the_repair(hub, mon
     assert "odd prime p, with the even prime left out" in payload["body"] and "even prime included" not in payload["body"]
 
 
+@needs_git
+def test_two_changes_of_the_description_are_merged_when_they_touch_different_lines(hub, monkeypatch, tmp_path):  # noqa: F811
+    """The repairs of two roadmap folders of one pull request run at once and each rewrites its own
+    paragraph of the description: the second one's text is merged with what the first left."""
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    mine = "Title: Foo: first layers\n\nAdds Layers 1 and 2 for every odd prime p. Validation: built at the first head.\n\n" \
+           "A stale paragraph between the blocks.\n"
+    repair_agent(monkeypatch, [], edit=False, description=[mine])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    rh.text["body"] = PR_TEXT["body"].replace("A stale paragraph between the blocks.", "The other folder's repair rewrote this paragraph.")
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted", result.detail
+    assert "description rewritten" in result.detail and "not written" not in result.detail
+    [(payload, _n)] = rh.patches
+    prose = ("Adds Layers 1 and 2 for every odd prime p. Validation: built at the first head.\n\n"
+             "The other folder's repair rewrote this paragraph.")
+    assert payload == {"body": f"{prose}\n\n{DEPENDS_BLOCK}\n\n{PR_MARKER_LINE}\n\n{FOOTER}\n"}
+    # Both rewrote the same line: nothing is merged (the next test), and the helper says so.
+    assert lane_prreview.merged_prose("a\n\nb\n", "A\n\nb\n", "a!\n\nb\n") is None
+    assert lane_prreview.merged_prose("a\n\nb\n", "A\n\nb\n", "a\n\nB\n") == "A\n\nB\n"
+    assert lane_prreview.raw_prose("One.\n\n" + DEPENDS_BLOCK + "\n\n\nTwo.\n\n" + FOOTER + "\n") == "One.\n\nTwo.\n"
+
+
+# A paragraph is one line of a description, so two writers who each add a sentence to one paragraph
+# conflict line by line; `merged_prose` then merges by sentence.
+PARAGRAPHS = ("Adds Layers 1 and 2 of `Foo.layer_one` for every odd prime p. The statement reads "
+              "`theorem layer_one (p : ℕ) [Fact p.Prime] : Foo p`. Validation: built at the first head.\n\n"
+              "- Baz: the comparison with the classical form. It feeds the later layers.\n\n"
+              "Closes #5.\n")
+
+
+def test_a_line_of_prose_splits_into_sentences_outside_code_spans_and_abbreviations():
+    split = lane_prreview.prose_sentences
+    assert split("Adds `p. q` here; see Prop. 3.2 and Q. Zorvath, e.g. the case p. **Then.** It (as said.) ends: so.") \
+        == ["Adds `p. q` here;", "see Prop. 3.2 and Q. Zorvath, e.g. the case p.", "**Then.**", "It (as said.)",
+            "ends:", "so."]
+    assert split("Built at `theorem foo (p : ℕ) : p.Prime`. Then more.") == \
+        ["Built at `theorem foo (p : ℕ) : p.Prime`.", "Then more."]
+    assert split("- Baz: the first member. It stays.") == ["- Baz:", "the first member.", "It stays."]
+    assert split("1. The first step. Then 2. comes.") == ["1. The first step.", "Then 2. comes."]
+    assert split("Two spaces.  Not cut. A URL https://example.org/a. and a time 10:30 stay.") == \
+        ["Two spaces.  Not cut.", "A URL https://example.org/a.", "and a time 10:30 stay."]
+    assert split("") == [] and split("No end") == ["No end"]
+
+
+@pytest.mark.parametrize("text", [
+    PARAGRAPHS,
+    "One.\n\n\n\nTwo.  Three.\n" + DEPENDS_BLOCK + "\n\n- a: b. c.\n- d; e.\n  indented. line.\n\n" + FOOTER + "\n",
+    "Title\n=======\n\n<<<<<<< not a marker\n\nA `code span. with: stops` and an unclosed ` tick. Here.\n",
+    "",
+])
+def test_prose_split_into_sentences_and_joined_again_is_unchanged(text):
+    prose = lane_prreview.raw_prose(text)
+    lines = lane_prreview.sentence_lines(prose)
+    assert lane_prreview.prose_lines(lines) == prose
+    assert lane_prreview.PARAGRAPH_MARK not in prose and lines.endswith(lane_prreview.PARAGRAPH_MARK + "\n")
+
+
+@needs_git
+def test_two_sentences_appended_to_one_paragraph_are_both_kept_ours_first():
+    ours = PARAGRAPHS.replace("the later layers.", "the later layers. Its statement names the prime.")
+    theirs = PARAGRAPHS.replace("the later layers.", "the later layers. The proof is left to Layer 3.")
+    expected = PARAGRAPHS.replace(
+        "the later layers.", "the later layers. Its statement names the prime. The proof is left to Layer 3.")
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, theirs) == expected
+    # The same with the generated blocks, the marker and the attribution line around the prose.
+    bodies = [f"{x.strip()}\n\n{DEPENDS_BLOCK}\n\n{PR_MARKER_LINE}\n\n{FOOTER}\n" for x in (PARAGRAPHS, ours, theirs)]
+    assert lane_prreview.merged_prose(*bodies) == expected
+
+
+@needs_git
+@pytest.mark.parametrize("theirs, expected", [
+    # theirs changes a later sentence of the paragraph
+    (PARAGRAPHS.replace("the first head.", "the second head."),
+     PARAGRAPHS.replace("odd prime p. ", "odd prime p. It is the case n = 1 of the family. ")
+     .replace("the first head.", "the second head.")),
+    # theirs inserts a sentence later in the paragraph
+    (PARAGRAPHS.replace("Foo p`. ", "Foo p`. Layer 2 follows from it. "),
+     PARAGRAPHS.replace("odd prime p. ", "odd prime p. It is the case n = 1 of the family. ")
+     .replace("Foo p`. ", "Foo p`. Layer 2 follows from it. ")),
+])
+def test_a_sentence_inserted_mid_paragraph_merges_with_a_change_elsewhere_in_it(theirs, expected):
+    ours = PARAGRAPHS.replace("odd prime p. ", "odd prime p. It is the case n = 1 of the family. ")
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, theirs) == expected
+    assert lane_prreview.merged_prose(PARAGRAPHS, theirs, ours) == expected
+
+
+@needs_git
+def test_a_sentence_both_add_at_one_place_is_kept_once():
+    same = "odd prime p. Layer 2 needs p odd. "
+    ours = PARAGRAPHS.replace("odd prime p. ", same).replace("the first head.", "the first head. Ours ends here.")
+    theirs = PARAGRAPHS.replace("odd prime p. ", same).replace("the first head.", "the first head. Theirs too.")
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, theirs) == \
+        PARAGRAPHS.replace("odd prime p. ", same).replace("the first head.", "the first head. Ours ends here. Theirs too.")
+    # A conflict whose two sides are the same insertion is taken once.
+    conflict = "a\n<<<<<<< ours\nX.\n||||||| base\n=======\nX.\n>>>>>>> theirs\nb\n"
+    assert lane_prreview.insertions_resolved(conflict, 7) == "a\nX.\nb\n"
+    assert lane_prreview.insertions_resolved(conflict.replace("||||||| base\n", ""), 7) is None
+
+
+@needs_git
+def test_a_sentence_both_rewrote_is_not_merged_even_beside_one_that_merges():
+    # Ours adds a sentence the merge would keep, and both rewrite the statement in its code span (one
+    # sentence: the code span is not split at its `:` and `.`), each at a different end of it.
+    ours = PARAGRAPHS.replace("the first head.", "the first head. It took an hour.").replace("(p : ℕ)", "(q : ℕ)")
+    theirs = PARAGRAPHS.replace("Foo p`", "Bar p`")
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, theirs) is None
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, PARAGRAPHS.replace("Closes #5.", "Closes #6.")) == \
+        ours.replace("Closes #5.", "Closes #6.")
+    # Both append to the list item, and both rewrite its first sentence.
+    ours = PARAGRAPHS.replace("the later layers.", "the later layers. Ours.").replace("classical form", "old form")
+    theirs = PARAGRAPHS.replace("the later layers.", "the later layers. Theirs.").replace("classical form", "usual form")
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, theirs) is None
+
+
 FAMILY_README = "TauCetiRoadmap/Family/README.md"
 
 
@@ -3860,6 +3977,54 @@ def test_a_description_is_read_only_in_the_form_asked(tmp_path, text, problem):
         assert problems == [] and (got is None) == (not text)
     else:
         assert got is None and any(problem in p for p in problems), problems
+
+
+def test_a_decision_of_the_human_reviewers_reaches_the_review_of_its_pull_request(tmp_path):
+    """2026-11-24: a review found, by the rules, that a pull request removed a layer of a roadmap on main, said
+    only the human reviewers could allow it, and found it again in every round after they had."""
+    from tauceti_roadmap_worker import config as config_mod
+    cfg = lane_ctx(tmp_path).cfg
+    assert lane_prreview.decisions_text(cfg, 12) == ""
+    cfg.prreview.decisions = {"12": ["Foo: Layer 6 moves to   Bar under new numbers; the human reviewers allow it."]}
+    text = lane_prreview.decisions_text(cfg, 12)
+    assert "- Foo: Layer 6 moves to Bar under new numbers; the human reviewers allow it." in text
+    assert "binding for this review" in text and "never excuses a mathematical error" in text
+    # an earlier finding the decision settles still counts as accounted for in an incremental re-review
+    assert lane_prreview.unaccounted_findings("## R01 (P1) — the layer is removed\n\ntext\n",
+                                              "## Previous findings\n\n- R01 — repaired: settled by a decision of "
+                                              "the human reviewers\n") == []
+    assert lane_prreview.decisions_text(cfg, 13) == "" and lane_prreview.decisions_text(cfg, None) == ""
+    config_mod.validate(cfg)
+    for bad in ({"x12": ["a"]}, {"12": []}, {"12": [""]}, {"12": ["see <!-- marker -->"]}, {"12": "a sentence"}):
+        cfg.prreview.decisions = bad
+        with pytest.raises(config_mod.ConfigError, match="prreview.decisions"):
+            config_mod.validate(cfg)
+
+
+def test_a_long_description_may_grow_and_is_never_asked_to_shrink(tmp_path):
+    """2026-11-24: 11,905 characters of description under a fixed limit of 12,000: every repair with a
+    sentence to add shortened what stood about other folders."""
+    limit, grow = lane_prreview.DESCRIPTION_LIMIT, lane_prreview.DESCRIPTION_GROWTH
+    block = "<!-- merge-order -->\n" + "y" * 3000 + "\n<!-- /merge-order -->\n"
+    assert lane_prreview.description_limit("") == limit
+    assert lane_prreview.description_limit("It adds §2.\n\n" + block) == limit          # a short one: as before
+    long = "x" * (limit - 95) + "\n\n" + block + "\n🤖 Generated\n"
+    prose = len(lane_prreview.raw_prose(long))
+    assert prose < limit and lane_prreview.description_limit(long) == prose + grow       # near the limit: room to add
+    longer = "x" * 30000 + "\n\n" + block
+    assert lane_prreview.description_limit(longer) == len(lane_prreview.raw_prose(longer)) + grow
+    # GitHub's limit holds for the whole description, the kept blocks included
+    full = "x" * 30000 + "\n\n<!-- outline -->\n" + "y" * 34000 + "\n<!-- /outline -->\n"
+    got = lane_prreview.description_limit(full)
+    assert got < len(lane_prreview.raw_prose(full)) + grow
+    assert got + (len(full) - len(lane_prreview.raw_prose(full))) < lane_prreview.BODY_LIMIT
+    ctx = lane_ctx(tmp_path)
+    path = tmp_path / "description.md"
+    path.write_text("Title: Foo\n\n" + "x" * (limit + 500))
+    assert lane_prreview.read_description(path, ctx)[1]                                   # over the fixed limit
+    text, problems = lane_prreview.read_description(path, ctx, lane_prreview.description_limit(long))
+    assert problems == [] and len(text["body"]) == limit + 500
+    assert any("is over 12400 characters" in p for p in lane_prreview.read_description(path, ctx, 12400)[1])
 
 
 @pytest.mark.parametrize("change,repairs", [
@@ -4532,6 +4697,22 @@ def test_aggregate_prs_parse_are_checked_and_leave_the_listing():
     gh = ContentGH(aggregate_nodes())
     assert [x["pr"] for x in openroadmaps.inventory(gh, REPO, ("TauCetiRoadmap",))] == [12, 13, 99]
     assert [x["pr"] for x in openroadmaps.inventory(gh, REPO, ("TauCetiRoadmap",), skip=[99])] == [12, 13]
+
+
+def test_two_insertions_at_one_place_keep_a_shared_sentence_once():
+    base = "The roadmap gains one section. It gains no supplier.\n"
+    # the description gained sentence X meanwhile; the repair's text carries X and its own sentence Y
+    ours = "The roadmap gains one section. Alpha gains §1.2a. It gains no supplier.\n"
+    theirs = "The roadmap gains one section. Alpha gains §1.2a. Beta gains §3.4b, cited by Gamma. It gains no supplier.\n"
+    assert lane_prreview.merged_prose(base, ours, theirs) == theirs
+    # the same with the shared sentence last, and with nothing shared
+    theirs_first = "The roadmap gains one section. Beta gains §3.4b, cited by Gamma. Alpha gains §1.2a. It gains no supplier.\n"
+    assert lane_prreview.merged_prose(base, ours, theirs_first) == theirs_first
+    other = "The roadmap gains one section. Beta gains §3.4b, cited by Gamma. It gains no supplier.\n"
+    assert lane_prreview.merged_prose(base, ours, other) == (
+        "The roadmap gains one section. Alpha gains §1.2a. Beta gains §3.4b, cited by Gamma. It gains no supplier.\n")
+    assert lane_prreview.both_insertions(["x", "m"], ["n", "m"]) == ["x", "n", "m"]
+    assert lane_prreview.both_insertions(["x"], ["x"]) == ["x"]
 
 
 # --- a supplier of a declared gap reaches the base branch after the acceptance ----------------------------

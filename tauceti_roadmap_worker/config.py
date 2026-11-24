@@ -362,6 +362,13 @@ class PRReview:
     # a worker that reviews with `fable` repair with `claude-opus-5-5` (a model of the same agent). A
     # reviewing model that is not listed repairs with itself.
     repair_models: dict[str, str] = field(default_factory=dict)
+    # Decisions of the project's human reviewers, by pull request number (written as a string: a TOML key). The
+    # reviewing brief quotes each as binding: where a rule leaves a question to the human reviewers, or makes a
+    # finding of what a decision allows (an item of a roadmap on main that the head hands to another roadmap, say),
+    # the review checks that the head does what the decision says and raises no finding. Only the board's
+    # configuration carries them, which a pull request's author cannot write; the text of a pull request never
+    # counts as one.
+    decisions: dict[str, list[str]] = field(default_factory=dict)
     # Such a repair also answers findings about the pull request's title and description, and puts right what
     # its own change makes wrong in them: its agent writes the corrected text, and the worker puts it on the
     # pull request with the push, keeping the generated blocks and markers of the description as they are.
@@ -654,6 +661,11 @@ def validate(cfg: Config) -> None:
         problems.append("prreview.small_change_lines must be >= 0")
     if any(not (isinstance(k, str) and isinstance(v, str) and k and v) for k, v in cfg.prreview.repair_models.items()):
         problems.append("prreview.repair_models maps a reviewing model to the model that repairs: both non-empty strings")
+    if any(not (isinstance(k, str) and k.isdigit() and isinstance(v, list) and v
+                and all(isinstance(x, str) and x.strip() and "<!--" not in x and len(x) <= 1200 for x in v))
+           for k, v in cfg.prreview.decisions.items()):
+        problems.append("prreview.decisions maps a pull request number to the decisions of the human reviewers for "
+                        "it: non-empty sentences of at most 1200 characters, without HTML comments")
     if cfg.prreview.diff_cap_lines < 1:
         problems.append("prreview.diff_cap_lines must be at least 1")
     if cfg.prreview.enabled and not re.fullmatch(r"[^\s,][^,]{0,49}", cfg.prreview.label or ""):

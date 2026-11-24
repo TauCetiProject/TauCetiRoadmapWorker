@@ -52,6 +52,8 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 from urllib.parse import quote
@@ -115,6 +117,8 @@ REPAIR_EFFECTS = (REPAIR, CONTENT_PUSH, REPAIR_TEXT, REPAIR_COMMENT)
 # scratch directory), and as the worker checked and recorded it (in the job directory).
 DESCRIPTION, REPAIR_DESCRIPTION = "description.md", "repair-description.json"
 TITLE_LIMIT, DESCRIPTION_LIMIT = 200, 12000
+DESCRIPTION_GROWTH = 2000              # what one repair may add to a description that is already long
+BODY_LIMIT = 65536                     # GitHub's limit on a description, generated blocks included
 REPAIR_REPORT = "repair-report.md"        # in the job folder: the repair's report, H01… per finding
 REPAIR_GATE = "repair-gate.json"          # in the job folder: the gate's result at the repaired head
 CARRIES = 2                               # times a repair is carried onto a head that moved under it (`carry`)
@@ -649,6 +653,34 @@ def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
     return text + supplier_scope(job, extra, mode)
 
 
+DECISIONS = """
+
+**Decisions of the project's human reviewers for this pull request.** The human reviewers have decided the \
+following, and the operator recorded it in the board's configuration (it is not text of the pull request, which \
+its author writes):
+
+{items}
+
+Each is binding for this review. Where a rule of this brief leaves a question to the human reviewers, or makes a \
+finding of something a decision above allows (an item of a roadmap on main that the head hands to another roadmap, \
+for example), raise no finding and no remark for it: check instead that the head does what the decision says and \
+nothing beyond it, and say under `## For the human reviewers`, in one line, that the decision was applied. A \
+finding of an earlier report that a decision settles is accounted for under `## Previous findings` as \
+`- R01 — repaired: settled by a decision of the human reviewers`, and is not written again. A decision never \
+excuses a mathematical error, a statement the head gets wrong, or anything it does not name: if the head goes \
+beyond what a decision says, that part is reviewed by the rules as usual."""
+
+
+def decisions_text(cfg, number) -> str:
+    """The paragraph of a reviewing brief on the decisions the human reviewers took for pull request `number`
+    (`[prreview] decisions`); '' when there is none. 2026-11-24: a review found, rightly by the rules, that a
+    pull request removed a layer of a roadmap on main (it handed the layer to a new roadmap), said that only the
+    human reviewers could allow it, and found it again in every later round after they had: nothing told a
+    review what they had decided, and the description, which did, is its author's text."""
+    items = [" ".join(str(x).split()) for x in (cfg.prreview.decisions.get(str(number)) or []) if str(x).strip()]
+    return DECISIONS.format(items="\n".join(f"- {x}" for x in items)) if items else ""
+
+
 def unaccounted_findings(previous: str, report: str) -> list[str]:
     """The findings of the previous report (`prreviews.report_finding_ids`) an incremental re-review's
     report does not account for: each must be named on a line that says it is repaired, partly
@@ -961,6 +993,8 @@ def board_edits_brief(job: Job, ctx: Context, ws: Workspace) -> str:
 def description_brief(ws: Workspace, base: str, folder: str) -> str:
     """The paragraph of the repair brief on the pull request's title and description: for findings about
     them, and for what the repair's own change makes wrong in them (the next review would ask for it)."""
+    limit = ws.extra.get("description_limit", DESCRIPTION_LIMIT)
+    fits = len(raw_prose(ws.extra.get("pr_body") or "")) <= limit
     return (f"The pull request's title and description as well (the one exception to \"no pull-request text\"), "
             f"for findings about them (a description of an earlier head, a statement of the change that is "
             f"wrong or missing, a stale validation report, a title that no longer names the change) and for what "
@@ -978,13 +1012,14 @@ def description_brief(ws: Workspace, base: str, folder: str) -> str:
             f"reader must know to review it; a `Closes #N` line and an attribution line that are still right stay, "
             f"and so does what it says of roadmap folders other than yours, unless a finding is about it. "
             f"No history of earlier heads, no review round, no build log, no local path, no @-mention, and at most "
-            f"{DESCRIPTION_LIMIT} characters. Write the prose only: the worker keeps, after your text and as they "
-            f"are, every generated block of the present description (`<!-- name -->` … `<!-- /name -->`: the "
-            f"dependency task list, the merge order) and every marker comment, so copy none of them and write no "
-            f"HTML comment. A finding about the content of the dependency task list or of the merge order is not "
-            f"yours to repair: say in its section that the block is generated. Check every statement of the new "
-            f"text against the head, as you would a README line. When neither a finding nor your repair makes "
-            f"the title or description wrong, do not write the file.")
+            f"{limit} characters" + (" (the present text fits: shorten nothing of it to make room)" if fits else "")
+            + ". Write the prose only: the worker keeps, after your text and as they "
+            "are, every generated block of the present description (`<!-- name -->` … `<!-- /name -->`: the "
+            "dependency task list, the merge order) and every marker comment, so copy none of them and write no "
+            "HTML comment. A finding about the content of the dependency task list or of the merge order is not "
+            "yours to repair: say in its section that the block is generated. Check every statement of the new "
+            "text against the head, as you would a README line. When neither a finding nor your repair makes "
+            "the title or description wrong, do not write the file.")
 
 
 def summary_brief(ws: Workspace) -> str:
@@ -1062,7 +1097,7 @@ HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 SUMMARY_BLOCK = "roadmap-summary"      # the block `summary` writes; it stays first in a description
 
 
-def read_description(path: Path, ctx: Context) -> tuple[dict | None, list[str]]:
+def read_description(path: Path, ctx: Context, limit: int = DESCRIPTION_LIMIT) -> tuple[dict | None, list[str]]:
     """(the title and description a repair wrote in `path`, why they cannot be delivered): None with no
     problem when the repair wrote none. The text goes onto a pull request under the author's name, so it
     is refused, for the repair's second pass to put right, when it is not in the form asked, carries an
@@ -1078,8 +1113,8 @@ def read_description(path: Path, ctx: Context) -> tuple[dict | None, list[str]]:
         problems.append(f"its title is over {TITLE_LIMIT} characters")
     if not body:
         problems.append("it has a title and no description")
-    if len(body) > DESCRIPTION_LIMIT:
-        problems.append(f"its description is over {DESCRIPTION_LIMIT} characters")
+    if len(body) > limit:
+        problems.append(f"its description is over {limit} characters")
     text = title + "\n" + body
     if "<!--" in text or "-->" in text:
         problems.append("it carries an HTML comment (the worker keeps the generated blocks and markers itself)")
@@ -1112,6 +1147,19 @@ def merged_description(prose: str, old: str) -> str:
     return "\n\n".join([*first, prose.strip(), *kept]) + "\n"
 
 
+def description_limit(body: str) -> int:
+    """How long a description a repair may write for a pull request whose description is `body`:
+    `DESCRIPTION_LIMIT`, and for a description whose prose is already near or over it, that prose and
+    `DESCRIPTION_GROWTH` more, as far as GitHub's limit leaves room beside what the worker keeps (the
+    generated blocks, the markers, the attribution line). 2026-11-24: a pull request of 92 roadmap
+    folders had 11,905 characters of description under a fixed limit of 12,000, so each repair that had a
+    sentence to add shortened paragraphs about other folders to make room: text was lost, and two repairs
+    at once rewrote the same lines, which no merge can join (`merged_prose`)."""
+    prose = len(raw_prose(body))
+    room = BODY_LIMIT - (len(body) - prose) - 512
+    return max(0, min(max(DESCRIPTION_LIMIT, prose + DESCRIPTION_GROWTH), room))
+
+
 def description_prose(body: str) -> str:
     """The prose of a description, what a repair reads and rewrites: without the generated blocks, the
     markers and the attribution line that `merged_description` keeps, and with its whitespace folded."""
@@ -1120,6 +1168,172 @@ def description_prose(body: str) -> str:
     if lines and lines[-1].startswith("🤖"):
         lines.pop()
     return "\n".join(lines)
+
+
+def raw_prose(body: str) -> str:
+    """The prose of a description as it is written: `description_prose` without the folding, so that its
+    paragraphs and blank lines survive a merge (`merged_prose`)."""
+    lines = HTML_COMMENT.sub("", GENERATED_BLOCK.sub("", body)).strip().splitlines()
+    if lines and lines[-1].strip().startswith("🤖"):
+        lines.pop()
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(x.rstrip() for x in lines)).strip() + "\n"
+
+
+# The line after the sentences of each line of prose (`sentence_lines`): the record separator, which
+# `raw_prose` never leaves in a text, since `str.splitlines` ends a line at it.
+PARAGRAPH_MARK = "\x1e"
+ABBREVIATIONS = frozenset({"cf", "resp", "vs", "thm", "prop", "lem", "cor", "def", "sec", "ch", "eq", "fig", "vol",
+                           "pp"})
+SENTENCE_CLOSERS = ")*_\"'”’"   # what may stand between the end of a sentence and the space after it
+
+
+def abbreviation_at(line: str, dot: int) -> bool:
+    """Whether the `.` at `dot` in `line` ends an abbreviation or a number rather than a sentence: after a
+    digit (`1.`, `3.2.`), a lone capital (`J.`), a letter after a `.` (`e.g.`) or a word of
+    `ABBREVIATIONS` (`Prop.`)."""
+    start = dot
+    while start and line[start - 1].isalpha():
+        start -= 1
+    word = line[start:dot]
+    return (line[dot - 1:dot].isdigit() or (len(word) == 1 and word.isupper())
+            or (word != "" and line[start - 1:start] == ".") or word.lower() in ABBREVIATIONS)
+
+
+def prose_sentences(line: str) -> list[str]:
+    """The sentences of one line of prose, which joined by single spaces give the line back (none for a
+    blank line). A sentence ends at `.`, `;` or `:` (and any closing bracket, emphasis or quote after it)
+    followed by one space and more text, outside a code span and not at an abbreviation
+    (`abbreviation_at`). Where this splits less, a merge by sentence (`merged_prose`) is coarser, not wrong."""
+    if not line:
+        return []
+    cuts, fence, i = [], 0, 0
+    while i < len(line):
+        if line[i] == "`":
+            start = i
+            while i < len(line) and line[i] == "`":
+                i += 1
+            # A code span closes at a run of as many backticks as opened it.
+            fence = 0 if fence == i - start else fence or i - start
+            continue
+        end = i + 1
+        while end < len(line) and line[end] in SENTENCE_CLOSERS:
+            end += 1
+        if (not fence and line[i] in ".;:" and line[end:end + 1] == " " and line[end + 1:end + 2].strip()
+                and not (line[i] == "." and abbreviation_at(line, i))):
+            cuts.append(end)
+        i += 1
+    return [line[a:b] for a, b in zip([0, *(c + 1 for c in cuts)], [*cuts, len(line)], strict=True)]
+
+
+def sentence_lines(prose: str) -> str:
+    """`prose` (as `raw_prose` writes it) with one sentence a line and `PARAGRAPH_MARK` on a line after the
+    sentences of each of its lines, so that a blank line is the mark alone; `prose_lines` gives it back."""
+    rows = []
+    for line in prose.removesuffix("\n").split("\n"):
+        rows += [*prose_sentences(line), PARAGRAPH_MARK]
+    return "".join(f"{x}\n" for x in rows)
+
+
+def prose_lines(text: str) -> str | None:
+    """The prose that `sentence_lines` wrote as `text`: the sentences before each mark joined into one line.
+    None when sentences follow the last mark, which `sentence_lines` never writes."""
+    rows: list[str] = []
+    row: list[str] = []
+    for x in text.removesuffix("\n").split("\n"):
+        if x == PARAGRAPH_MARK:
+            rows.append(" ".join(row))
+            row = []
+        else:
+            row.append(x)
+    return None if row else "\n".join(rows) + "\n"
+
+
+def merge_file(texts: list[str], *options: str) -> tuple[int, str] | None:
+    """`git merge-file -p` on three texts (ours, base, theirs, in that order): the number of conflicts and
+    the merged text, or None when git failed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = []
+        for name, text in zip(("ours", "base", "theirs"), texts, strict=True):
+            path = Path(tmp) / name
+            path.write_text(text, encoding="utf-8")
+            paths.append(str(path))
+        done = subprocess.run(["git", "merge-file", "-p", *options, *paths], capture_output=True,
+                              encoding="utf-8", timeout=60, check=False)
+    return (done.returncode, done.stdout) if 0 <= done.returncode < 128 else None
+
+
+def both_insertions(ours: list[str], theirs: list[str]) -> list[str]:
+    """Two runs of lines inserted at one place, as one: what the two begin with in common once, then the
+    rest of ours, the rest of theirs, and what those end with in common once. A repair's description often
+    carries, beside its own sentence, one that another writer has put in the description meanwhile."""
+    head = 0
+    while head < min(len(ours), len(theirs)) and ours[head] == theirs[head]:
+        head += 1
+    a, b = ours[head:], theirs[head:]
+    tail = 0
+    while tail < min(len(a), len(b)) and a[-1 - tail] == b[-1 - tail]:
+        tail += 1
+    return ours[:head] + a[:len(a) - tail] + b[:len(b) - tail] + a[len(a) - tail:]
+
+
+def insertions_resolved(merged: str, size: int) -> str | None:
+    """The output of `git merge-file --diff3` (labels ours, base and theirs, markers of `size`) with each
+    conflict taken as two insertions at one place (`both_insertions`): ours, then theirs, with what the
+    two share kept once. None when a conflict has a base part, which both sides changed, or when the
+    markers are out of order."""
+    marks = ["<" * size + " ours", "|" * size + " base", "=" * size, ">" * size + " theirs"]
+    out: list[str] = []
+    parts: list[list[str]] = []
+    side = -1                   # outside a conflict, else the part being read: 0 ours, 1 base, 2 theirs
+    for line in merged.split("\n"):
+        if line not in marks:
+            (out if side < 0 else parts[side]).append(line)
+            continue
+        if marks.index(line) != side + 1:
+            return None
+        side = -1 if line == marks[3] else marks.index(line)
+        if line == marks[0]:
+            parts = [[], [], []]
+        elif line == marks[3]:
+            ours, base, theirs = parts
+            if base:
+                return None
+            out += both_insertions(ours, theirs)
+    return None if side >= 0 else "\n".join(out)
+
+
+def merged_by_sentence(texts: list[str]) -> str | None:
+    """Three prose texts (ours, base, theirs) merged three ways with one sentence a line (`sentence_lines`),
+    cleanly or with every conflict two insertions at one place (`insertions_resolved`); else None."""
+    split = [sentence_lines(x) for x in texts]
+    done = merge_file(split)
+    if done and done[0]:
+        # Markers longer than any run of their characters that opens a line, so no line reads as one.
+        size = 1 + max([6, *(len(x) - len(x.lstrip(c)) for t in split for x in t.split("\n") for c in "<|=>")])
+        done = merge_file(split, "--diff3", f"--marker-size={size}", "-L", "ours", "-L", "base", "-L", "theirs")
+        merged = done and (insertions_resolved(done[1], size) if done[0] else done[1])
+    else:
+        merged = done and done[1]
+    return prose_lines(merged) if merged else None
+
+
+def merged_prose(base: str, ours: str, theirs: str) -> str | None:
+    """The prose of a description that two writers changed at once, merged three ways line by line
+    (`git merge-file`; a paragraph is one line): `base` is the description a repair read, `theirs` the
+    one it wrote, `ours` the description as it is now. When the lines conflict the three are merged again
+    sentence by sentence (`merged_by_sentence`), where two sentences inserted at one place are both kept,
+    ours first: two writers often add a sentence each to the same paragraph. None when both changed the
+    same sentence or two neighbouring ones (other than by inserting at one place), and when the merge
+    could not be run: then nothing is known, and the caller writes nothing. 2026-11-24: on a pull request
+    of 92 roadmap folders the repairs of several folders ran at once, each wrote its own sentence of the
+    description, and all but the first were dropped."""
+    texts = [raw_prose(x) for x in (ours, base, theirs)]
+    try:
+        done = merge_file(texts)
+        merged = done and (merged_by_sentence(texts) if done[0] else done[1])
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None
+    return merged if merged and merged.strip() and PARAGRAPH_MARK not in merged else None
 
 
 def save_gate(path: Path, head: str, result: gates.GateResult) -> None:
@@ -1230,6 +1444,8 @@ class PRReviewLane(Lane):
             pull_request_document(number, data, owner, change, ws.extra["fixed_title"]), encoding="utf-8")
         ws.extra["pr_text"] = str(ws.scratch / PULL_REQUEST_TEXT)
         ws.extra["pr_prose"] = description_prose(data.get("body") or "")
+        ws.extra["pr_body"] = data.get("body") or ""
+        ws.extra["description_limit"] = description_limit(data.get("body") or "")
         ws.extra["pr_summary"] = summary.block_kind(data.get("body") or "")
         ws.extra["pr_text_digest"] = summary.text_digest(data.get("title") or "", data.get("body") or "")
         self.write_changes(job, ctx, ws)
@@ -1506,7 +1722,8 @@ class PRReviewLane(Lane):
                 "GATE_REPORT": str(ws.scratch / GATE_REPORT), "PR_TEXT": str(ws.scratch / PULL_REQUEST_TEXT),
                 "OUTSIDE_CHECK": f"git -C {ws.workdir} diff --stat {pr_base(ctx, ws)}...HEAD -- . {excluded}",
                 "PREVIOUS": f"`{previous}`" if previous else "none", "CHANGES": since,
-                "MODE": mode_text(mode, job, cfg, ws.extra) + deferred_text(ws.extra.get("deferred") or []),
+                "MODE": (mode_text(mode, job, cfg, ws.extra) + decisions_text(cfg, ws.extra.get("pr"))
+                         + deferred_text(ws.extra.get("deferred") or [])),
                 "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)),
                 "ELABORATE": elaborate_line(cfg, dataclasses.replace(ws, content=ws.workdir)),
                 "LIBRARY": library_description(ws.workdir)}
@@ -1937,8 +2154,9 @@ class PRReviewLane(Lane):
         once its branch is at the repaired head and before the reply that reports them (effect
         REPAIR_TEXT): the repair's prose, then the generated blocks and markers of the description as it
         is now (`merged_description`). A description whose prose is no longer the one the repair read
-        (another roadmap folder's repair rewrote it, or its author did) is left alone, since the repair's
-        text would undo that change; so is one GitHub refuses to write. Either is noted and not retried:
+        (another roadmap folder's repair rewrote it, or its author did) gets the two changes merged when
+        they touch different sentences (`merged_prose`); when they touch the same one it is left alone,
+        since the repair's text would undo that change; so is one GitHub refuses to write. Either is noted and not retried:
         the files' repair stands, and the next review reads the description as it then is. The summary
         block the repair wrote (`summary_brief`) replaces the present one in the same write, whether or
         not the prose was written: it stands apart from what an author or another repair rewrites. Returns the
@@ -1950,6 +2168,7 @@ class PRReviewLane(Lane):
         if record.is_file():
             want = json.loads(record.read_text(encoding="utf-8"))
             read, block = want.pop("read", None), want.pop("summary", "")
+            read_body = want.pop("read_body", "")
             path = f"repos/{ctx.cfg.repositories.content}/pulls/{ws.extra['pr']}"
             try:
                 now = ctx.gh.api(path) or {}
@@ -1957,12 +2176,20 @@ class PRReviewLane(Lane):
                 found, fields, refused = description_prose(old), {}, ""
                 want = kept_title(ctx.cfg, want, now.get("title") or "")
                 if "body" in want:
-                    wrote = found == description_prose(want["body"])
-                    want["body"] = merged_description(want["body"], old)
+                    theirs = want["body"]
+                    wrote = found == description_prose(theirs)
+                    want["body"] = merged_description(theirs, old)
                     fields = {k: v for k, v in want.items() if v.strip() != (now.get(k) or "").strip()}
                     if fields and read is not None and found != read and not wrote:
-                        fields, refused = {}, ("title and description not written: the description was changed "
-                                               "while the repair ran")
+                        # Another writer changed the description while the repair ran: the two changes are
+                        # merged when they touch different sentences (`merged_prose`), else nothing is written.
+                        both = merged_prose(read_body, old, theirs) if read_body else None
+                        if both is None:
+                            fields, refused = {}, ("title and description not written: the description was changed "
+                                                   "while the repair ran")
+                        else:
+                            want["body"] = merged_description(both, old)
+                            fields = {k: v for k, v in want.items() if v.strip() != (now.get(k) or "").strip()}
                 names = {"title": "title", "body": "description"}
                 done = [names[k] for k in names if k in fields]
                 # The summary block stands apart from the prose: it is replaced whoever rewrote the rest.
@@ -2042,7 +2269,8 @@ class PRReviewLane(Lane):
                 self.note(ws, "board edits delivered with the review: " + ", ".join(sorted(edits)))
             if result.limited or result.exit_code != 0:
                 raise LaneError("the repair agent " + ("hit a usage limit" if result.limited else f"exited {result.exit_code}"))
-            text, text_problems = read_description(described, ctx) if with_text else (None, [])
+            text, text_problems = (read_description(described, ctx, ws.extra.get("description_limit", DESCRIPTION_LIMIT))
+                                   if with_text else (None, []))
             block, block_problems = (read_summary(summarised, ws.extra.get("pr_summary") or "", ctx)
                                      if with_text else ("", []))
             problems = (([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report)
@@ -2057,7 +2285,8 @@ class PRReviewLane(Lane):
         new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
         save_gate(ws.job_dir / REPAIR_GATE, new, gate)
         if text or block:
-            kept = {**(text or {}), "read": ws.extra.get("pr_prose", ""), **({"summary": block} if block else {})}
+            kept = {**(text or {}), "read": ws.extra.get("pr_prose", ""), "read_body": ws.extra.get("pr_body", ""),
+                    **({"summary": block} if block else {})}
             record.write_text(json.dumps(kept, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         owe(ctx, job, ws, (), content={"sha": new, "base": head, "branch": ws.extra["branch"]})
         settle(ctx, job, REPAIR, repair={"sha": new, **({"merged": merged} if merged else {})})
