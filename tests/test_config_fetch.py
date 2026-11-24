@@ -125,3 +125,44 @@ def test_agents_commands_carry_the_overlay():
     ctx = Context(cfg=SimpleNamespace(overlay_path="/home/a/overlay.toml"), gh=None, board=None, claims=None,
                   worker_id="w1", operator="alice", agent="claude", model="m", conf="/home/a/conf.toml")
     assert ctx.cli("gate", "x") == "tauceti-roadmap --conf /home/a/conf.toml --overlay /home/a/overlay.toml gate x"
+
+
+class Serving:
+    """An opener that serves the text it is given."""
+
+    def __init__(self, text: str):
+        self.text, self.calls = text, 0
+
+    def __call__(self, url):
+        self.calls += 1
+        return io.BytesIO(self.text.encode())
+
+
+def test_the_fingerprint_follows_the_text_and_the_overlay(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_ROADMAP_OVERLAY", "")           # no overlay, not even the host's default
+    first = config.fingerprint(URL, opener=Serving(TEXT))
+    assert first and len(first) == 16 and config.fingerprint(URL, opener=Serving(TEXT)) == first
+    changed = TEXT.replace("# review_changes_of_merged = true", "review_changes_of_merged = true", 1)
+    assert changed != TEXT and config.fingerprint(URL, opener=Serving(changed)) not in ("", first)
+    assert not config.url_cache(URL).exists()                    # nothing is cached or written
+    path = tmp_path / "conf.toml"
+    path.write_text(TEXT)
+    assert config.fingerprint(str(path)) == first                # a file and a URL with one text agree
+    overlay = tmp_path / "overlay.toml"
+    overlay.write_text('[worker]\nkeep_job_days = 3\n')
+    assert config.fingerprint(str(path), overlay=str(overlay)) not in ("", first)
+
+
+def test_a_configuration_that_cannot_be_read_or_does_not_validate_has_no_fingerprint(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_ROADMAP_OVERLAY", "")
+    failing = Opener(99)
+    assert config.fingerprint(URL, opener=failing, sleep=lambda s: 1 / 0) == "" and failing.calls == 1   # one try, no backoff
+    assert config.fingerprint(URL, opener=Serving("this is not = toml [")) == ""
+    assert config.fingerprint(URL, opener=Serving(TEXT.replace("schema_version = 1", "schema_version = 99"))) == "" \
+        or "schema_version" not in TEXT
+    assert config.fingerprint(str(tmp_path / "missing.toml")) == ""
+    broken = tmp_path / "overlay.toml"
+    broken.write_text("[worker\n")
+    path = tmp_path / "conf.toml"
+    path.write_text(TEXT)
+    assert config.fingerprint(str(path), overlay=str(broken)) == ""

@@ -688,8 +688,11 @@ def blind_limit(result: LaneResult) -> bool:
     return result.status == "limited" and not result.retry_at and result.worked < LIMIT_WORK_NOTED
 
 
+CONF_POLL = 300   # seconds between two looks at the configuration by a looping worker
+
+
 def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=print, sleep=time.sleep,
-              build: str = "") -> str:
+              build: str = "", conf=None, conf_started: str = "", clock=time.monotonic) -> str:
     """Rounds until interrupted: sleep through idle periods and usage limits. A usage limit pauses
     only the family that hit it (until its reset plus five minutes): the worker goes on with jobs
     of its other families and leaves that family's jobs alone until then; a worker whose every
@@ -701,7 +704,14 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
     worker parked for references (looked up every QUICK_POLL seconds of idle time, for at most
     PARKED_WATCH seconds per job). A board that cannot be read counts as an idle round. With `build`
     (the build it started on), every round boundary compares it with the installed build and
-    returns "restart" when they differ. GitHub's refusal of the account (`GHHalt`), here or on another
+    returns "restart" when they differ. With `conf` (a function giving the fingerprint of the
+    configuration a worker starting now would load, `config.fingerprint`) and `conf_started` (the one
+    this worker loaded), a round boundary also compares those two, at most every CONF_POLL seconds,
+    and returns "restart" when they differ: a worker holds the configuration it started with, so a
+    change of the project's file or of the operator's overlay would otherwise reach it only at its
+    next restart (2026-11-24: `[prreview] review_changes_of_merged` was switched on, and every
+    running worker went on reviewing in full). A configuration that cannot be read, or that does not
+    validate, has no fingerprint and restarts nothing. GitHub's refusal of the account (`GHHalt`), here or on another
     worker of the host (`halt.json`), returns "halted"; a spent primary rate limit sleeps until it
     resets."""
     idle = idle_sleep or ctx.cfg.worker.idle_seconds
@@ -711,6 +721,7 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
     paused: dict[str, dt.datetime] = {}   # agent family -> end of its usage limit
     noted: dict[str, dt.datetime] = {}    # pauses already logged by work_once
     blind: dict[str, int] = {}            # agent family -> its limits in a row with no reset time and no work
+    conf_seen: float | None = None        # when the configuration was last looked at
     while True:
         for family in [f for f, until in paused.items() if until <= now()]:
             del paused[family]
@@ -722,6 +733,14 @@ def work_loop(ctx: Context, only, order_fn, idle_sleep: int | None = None, log=p
                 log(f"{now():%Y-%m-%dT%H:%MZ} the installed build cannot be read (being replaced?); going on with {build}")
             elif installed != build:
                 log(f"{now():%Y-%m-%dT%H:%MZ} installed build changed ({build} → {installed}); exiting for restart")
+                return "restart"
+        at = clock() if conf and conf_started else 0.0
+        if conf and conf_started and (conf_seen is None or at - conf_seen >= CONF_POLL):
+            conf_seen = at
+            present = conf()
+            if present and present != conf_started:
+                log(f"{now():%Y-%m-%dT%H:%MZ} the configuration changed ({conf_started} → {present}); "
+                    "exiting for restart")
                 return "restart"
         if halt := halt_record(ctx):
             log(f"{now():%Y-%m-%dT%H:%MZ} halted: {halt.get('detail', '')} ({halt_path(ctx)}, {halt.get('at', '')})")

@@ -196,3 +196,51 @@ def test_reviews_of_late_authors_rank_after_everything_else():
     late = worker.late_review(cfg.prreview, own.worker)
     assert [late(j) for j in jobs] == [True, True, False, False]
     assert [worker.late_review(example_config().prreview, own.worker)(j) for j in jobs] == [False, True, False, False]
+
+
+def test_the_loop_exits_when_the_configuration_changes(monkeypatch):
+    monkeypatch.setattr(worker, "current_build", lambda: "0.1.0+aaaa")
+    prints = iter(["c0ffee", "c0ffee", "decaf0"])
+    rounds, lines = [], []
+    monkeypatch.setattr(worker, "work_once", lambda *a, **k: rounds.append(1) or worker.LaneResult("", "idle", "x"))
+    ticks = iter(range(0, 10 * worker.CONF_POLL, worker.CONF_POLL))     # every round boundary is a poll apart
+    ended = worker.work_loop(SimpleNamespace(cfg=example_config(), board=FakeBoard()), None, list, log=lines.append,
+                             sleep=lambda s: None, build="0.1.0+aaaa", conf=lambda: next(prints), conf_started="c0ffee",
+                             clock=lambda: next(ticks))
+    assert ended == "restart" and rounds == [1, 1]
+    assert lines[-1].endswith("the configuration changed (c0ffee → decaf0); exiting for restart")
+
+
+def test_an_unreadable_configuration_restarts_nothing_and_is_not_read_at_every_round(monkeypatch):
+    monkeypatch.setattr(worker, "current_build", lambda: "0.1.0+aaaa")
+    asked, rounds, lines = [], [], []
+
+    def conf():
+        asked.append(1)
+        return "" if len(asked) < 3 else "decaf0"      # unreadable twice, then changed
+
+    def once(*a, **k):
+        rounds.append(1)
+        return worker.LaneResult("", "idle", "x")
+
+    monkeypatch.setattr(worker, "work_once", once)
+    # three round boundaries inside one poll interval, then one interval later each
+    ticks = iter([0, 1, 2, worker.CONF_POLL, 2 * worker.CONF_POLL, 3 * worker.CONF_POLL])
+
+    def clock():
+        return next(ticks)
+
+    ended = worker.work_loop(SimpleNamespace(cfg=example_config(), board=FakeBoard()), None, list, log=lines.append,
+                             sleep=lambda s: None, build="0.1.0+aaaa", conf=conf, conf_started="c0ffee", clock=clock)
+    assert ended == "restart" and len(asked) == 3 and len(rounds) == 4      # '' never restarts; one read per interval
+    assert not any("configuration changed" in line for line in lines[:-1])
+
+
+def test_a_loop_without_a_configuration_check_never_asks(monkeypatch):
+    builds = iter(["0.1.0+aaaa", "0.1.0+bbbb"])
+    monkeypatch.setattr(worker, "current_build", lambda: next(builds))
+    monkeypatch.setattr(worker, "work_once", lambda *a, **k: worker.LaneResult("", "idle", "x"))
+    lines = []
+    worker.work_loop(SimpleNamespace(cfg=example_config(), board=FakeBoard()), None, list, log=lines.append,
+                     sleep=lambda s: None, build="0.1.0+aaaa", conf=lambda: 1 / 0, conf_started="")
+    assert lines[-1].endswith("exiting for restart") and "build" in lines[-1]
