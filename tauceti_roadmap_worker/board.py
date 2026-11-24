@@ -17,6 +17,8 @@ manual_jobs.py, with the same job-id scheme `KIND-NAME~roundN`:
                            open roadmap pull request (any author)
     REPORT-Name~k          the k-th roadmap report against the roadmap folder named Name, harvested from the
                            library by `board sync` (reports.py) and triaged by the `report` lane
+    CORRECT-Name~k         the k-th correction of the roadmap folder named Name: its confirmed reports, applied
+                           in one pull request on the content repository (the `correction` lane)
 
 Every job issue carries `<namespace label>`, `kind:<kind>` and `state:<state>` labels and a
 machine-readable spec in an HTML comment. The pure functions here (ids, specs, successors,
@@ -33,23 +35,25 @@ from urllib.parse import quote
 
 from .gh import GH, GHError, GHHalt, GHRateLimited, check_fence
 
-KINDS = ("target", "design", "package", "review", "fix", "port", "redteam", "gate", "errata", "prreview", "report")
+KINDS = ("target", "design", "package", "review", "fix", "port", "redteam", "gate", "errata", "prreview", "report",
+         "correction")
 PREFIX = {"target": "TARGET", "design": "DESIGN", "package": "PKG", "review": "REV", "fix": "FIX",
           "port": "PORT", "redteam": "RT", "gate": "GATE", "errata": "ERRATA", "prreview": "PRREVIEW",
-          "report": "REPORT"}
+          "report": "REPORT", "correction": "CORRECT"}
 KIND_OF = {v: k for k, v in PREFIX.items()}
 SUBJECTS = {"REV": ("DESIGN", "PKG"), "FIX": ("DESIGN", "PKG", "RT")}
 STATES = ("available", "claimed", "submitted", "done", "blocked", "needs-references")
 # Which work a worker takes first: humans waiting on a PR, then work in flight, then new work.
 KIND_PRIORITY = {"gate": 0, "fix": 1, "prreview": 2, "redteam": 3, "review": 4, "port": 5, "package": 6, "design": 7,
-                 "target": 8, "errata": 9, "report": 10}
+                 "target": 8, "errata": 9, "report": 10, "correction": 11}
 TITLE = {"target": "Target", "design": "Design", "package": "Package", "review": "Review", "fix": "Fix",
          "port": "Port", "redteam": "Red team", "gate": "Gate", "errata": "Errata", "prreview": "PR review",
-         "report": "Report"}
+         "report": "Report", "correction": "Correction"}
 
 NAME_RE = r"[A-Z][A-Za-z0-9]*"
 JOB_ID_RE = re.compile(
-    rf"^(?P<prefix>TARGET|DESIGN|PKG|REV|FIX|PORT|RT|GATE|ERRATA|PRREVIEW|REPORT)-(?:(?P<subject>DESIGN|PKG|RT)-)?"
+    r"^(?P<prefix>TARGET|DESIGN|PKG|REV|FIX|PORT|RT|GATE|ERRATA|PRREVIEW|REPORT|CORRECT)-"
+    rf"(?:(?P<subject>DESIGN|PKG|RT)-)?"
     rf"(?P<name>{NAME_RE})(?:~(?P<round>[1-9]\d*)(?P<pass>[a-z])?)?$")
 DUPLICATE_LABEL = "duplicate"     # a job issue closed as the twin of an older one: no longer a job
 SUPERSEDED_LABEL = "superseded"   # a job closed as done because what it would work on is gone (a moved head)
@@ -99,13 +103,13 @@ def parse_job_id(text: str) -> JobId:
     return JobId(prefix, m["name"], int(m["round"] or 1), subject, pass_)
 
 
-EXPLICIT_ROUNDS = ("RT", "GATE", "PRREVIEW", "REPORT")
+EXPLICIT_ROUNDS = ("RT", "GATE", "PRREVIEW", "REPORT", "CORRECT")
 
 
 def format_job_id(jid: JobId) -> str:
     """Canonical form: round 1 of a design, package, review or design/package fix carries no suffix
-    (as in the explorer); red-team passes, red-team fixes, gate rounds, pull-request reviews and roadmap
-    reports always name their round."""
+    (as in the explorer); red-team passes, red-team fixes, gate rounds, pull-request reviews, roadmap
+    reports and their corrections always name their round."""
     head = f"{jid.prefix}-{jid.subject + '-' if jid.subject else ''}{jid.name}"
     if jid.pass_:
         return f"{head}~{jid.round}{jid.pass_}"
@@ -352,7 +356,7 @@ def title_for(job: Job) -> str:
     text = f"[{what}] {job.name}"
     if j.pass_:
         text += f" (round {j.round}, pass {j.pass_})"
-    elif (j.round > 1 or job.kind in ("redteam", "gate", "prreview", "report")
+    elif (j.round > 1 or job.kind in ("redteam", "gate", "prreview", "report", "correction")
           or (job.kind == "fix" and j.subject == "RT")):
         text += f" (round {j.round})"
     return text
@@ -504,8 +508,8 @@ def successors(job: Job, outcome: Outcome, *, max_rounds: int = 3, redteam_round
 
 
 def stage_of(job_id: str) -> str:
-    """GATE, PORT, FIX-RT, PRREVIEW, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN, TARGET,
-    ERRATA or REPORT."""
+    """GATE, PORT, CORRECT, FIX-RT, PRREVIEW, RT, FIX-PKG, REV-PKG, PKG, FIX-DESIGN, REV-DESIGN, DESIGN,
+    TARGET, REPORT or ERRATA."""
     j = parse_job_id(job_id)
     return f"{j.prefix}-{j.subject}" if j.prefix in ("FIX", "REV") and j.subject else j.prefix
 

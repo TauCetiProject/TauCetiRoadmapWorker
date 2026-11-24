@@ -250,6 +250,24 @@ checkout, submits a PR to the board, and the intake advances the state.
     stated into the triage (a stopped submission finished later keeps it), and a verdict on evidence a source revised since is not recorded; the report's
     next round is filed instead. A verdict recorded is never undone by a later revision: the job is told,
     and a human asks again if it matters.
+12. `correction` — a roadmap's confirmed reports applied in one pull request on the content
+    repository. With `[reports] corrections` (off by default, apart from `[reports] enabled`), `board
+    sync` files one `CORRECT-<Leaf>~k` per roadmap whose confirmed reports, still on main, no correction
+    holds, batching all of them (two pull requests editing one README conflict), and none while a
+    correction of that roadmap or its pull request is open. A roadmap another open pull request edits
+    parks the job (`state:blocked`, `waits_for`) until that pull request is merged or closed; the board
+    does not relay the corrections onto it as a review (section 8). Otherwise an authoring agent, on the
+    family defaults, applies each correction its triage stated to the folder's README and
+    `Suggested.lean` on main as the smallest change, keeping the roadmap as a record (ids, items and
+    completed statements stay; a corrected pin elaborates at the pins and never imports a declaration
+    newer than them), or declines it with its reason; the push gate runs with the targeted build, and the
+    worker pushes a branch of the operator's fork and opens the pull request (title `<Name>: ...`, the
+    summary block of a revision, each report with what was wrong, the correction, its triage and its
+    sources), each step an effect of the job's record. The pull request then goes the way of every roadmap
+    pull request: the pull-request review (never by the author's operator), the gate lane, a human merge.
+    The register records the correction's job and pull request on each report; a merged correction makes
+    the report `fixed`, one closed unmerged frees it for the next round (or, with `[reports] stop_label`,
+    records it `rejected`), and a declined one is not tried again.
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.
@@ -297,7 +315,9 @@ Agents fetch what they need themselves, within rules:
   reviewing agent and model differ from the authoring ones recorded for the job, and the intake
   applies the same test. Projects with several operators keep `separation = "operator"`. The triage of
   a roadmap report has no author to be independent of: the reporter is an agent of another project,
-  recorded nowhere in the claims namespace, so any operator may take it.
+  recorded nowhere in the claims namespace, so any operator may take it. A correction's pull request is its operator's
+  own (opened from that operator's fork), so the review of roadmap pull requests already keeps that
+  operator off it.
 - Every prompt carries the untrusted-text rule and the fetch rules.
   - Agents get a minimal environment with no GitHub token; the worker makes every GitHub write
     itself.
@@ -390,8 +410,11 @@ Agents fetch what they need themselves, within rules:
 5. Settle a report the triage left as `needs-human` (or one against a completed roadmap, where no lane
    works): answer on the job's issue in a comment with a line `triage again` for the report's next triage
    round, or correct the roadmap with a pull request (the report is fixed once the quoted text leaves
-   main); a rejected report is asked again the same way. Until the correction lane exists, a confirmed report is also
-   corrected by hand.
+   main); a rejected report is asked again the same way. Review and merge a correction pull request like any roadmap pull
+   request; close one unmerged to have its reports corrected again in the next round, or label it
+   `[reports] stop_label` to record them as rejected; close a correction job before it opens a pull
+   request to keep its reports from being corrected automatically; a declined report is corrected by
+   hand.
 6. Maintain `tauceti-roadmap.toml` and the prompts (CODEOWNERS-protected).
 
 ## 8. Not done
@@ -405,9 +428,11 @@ Agents fetch what they need themselves, within rules:
   account, so who closed a bors-titled pull request says nothing there: a Forgejo pull request's reports
   count only from a listed Forgejo reporter, whatever its title, and a merged report from anyone else
   on Forgejo is not harvested.
-- The correction lane of roadmap reports: a lane that batches a roadmap's confirmed reports (the
-  register's `confirmed` entries, each with its correction and its triage) into one pull request on the
-  roadmap repository, which the pull-request review, the gate lane and a human merge take from there.
+- Relaying corrections onto another open pull request: a correction whose roadmap another open pull
+  request edits waits until that pull request is merged or closed. Posting the corrections there as a
+  review the pull request's gate round answers would need a comment that always reads as a review by
+  someone other than the author's side; under the reply rules (`replies.py`) that does not hold when the
+  correction's operator is the author or in its pool, or writes in a reply form.
 
 ## 9. Decisions
 

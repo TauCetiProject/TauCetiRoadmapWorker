@@ -254,19 +254,28 @@ def deliverable_problems(ctx, job: Job, pr: dict, texts: dict[str, str], jobs: l
             out.append("report: no `Evidence: <digest>` line (the worker writes the digest of the report it was "
                        "briefed on)")
         out += triaged_already(ctx, job, report)
+    if job.kind == "correction" and report in texts:
+        out += reports.correction_problems(texts[report], job)
+        c = reports.parse_correction(texts[report])
+        if any(o == "applied" for o, _b in c["outcomes"].values()):
+            out += opened_by(ctx, report, c["pr"], pr["user"]["login"])
     if job.kind == "port" and report in texts:
-        number = pr_number_from_report(texts[report])
-        if not number:
-            out.append(f"{report} names no roadmap pull request (`Pull request: #N`)")
-        else:
-            try:
-                opener = ((ctx.gh.api(f"repos/{ctx.cfg.repositories.content}/pulls/{number}") or {}).get("user") or {})
-            except GHError:
-                opener = None
-            if opener is None or opener.get("login", "").lower() != pr["user"]["login"].lower():
-                out.append(f"{report} names #{number} on {ctx.cfg.repositories.content}, which `{pr['user']['login']}` "
-                           "did not open")
+        out += opened_by(ctx, report, pr_number_from_report(texts[report]), pr["user"]["login"])
     return out
+
+
+def opened_by(ctx, report: str, number: int, login: str) -> list[str]:
+    """Why the roadmap pull request a port or a correction report names (`Pull request: #N`) is not one its
+    submission's author opened on the content repository."""
+    if not number:
+        return [f"{report} names no roadmap pull request (`Pull request: #N`)"]
+    try:
+        opener = ((ctx.gh.api(f"repos/{ctx.cfg.repositories.content}/pulls/{number}") or {}).get("user") or {})
+    except GHError:
+        opener = None
+    if opener is None or opener.get("login", "").lower() != login.lower():
+        return [f"{report} names #{number} on {ctx.cfg.repositories.content}, which `{login}` did not open"]
+    return []
 
 
 def merge_base_text(ctx, repo: str, path: str, pr: dict) -> str:
@@ -718,12 +727,13 @@ def note_gap_registry_blocks(ctx) -> list[str]:
 def sync_origins(ctx) -> list[str]:
     """`board sync`: an open job that does not say where its roadmap came from gets the origin of its
     roadmap (a target a human filed, `target:<issue>`, or an import, `explorer:<job>`) recorded. A roadmap
-    report is no stage of its roadmap's planning: it is left alone."""
+    report and its correction are no stage of its roadmap's planning: they are left alone."""
     jobs = ctx.board.all_jobs()
     known = board.origins(jobs)
     out = []
     for job in jobs:
-        if job.state == "done" or job.kind == "report" or board.own_origin(job) or not known.get(job.name):
+        if (job.state == "done" or job.kind in ("report", "correction") or board.own_origin(job)
+                or not known.get(job.name)):
             continue
         job.inputs["origin"] = known[job.name]
         ctx.board.update_spec(job)
@@ -815,7 +825,7 @@ def port_resuming_red_team(last: Job, jobs: list[Job]) -> Job:
 
 def resume_roadmap(ctx, name: str, jobs: list[Job], yes: bool) -> str:
     cfg = ctx.cfg
-    mine = [j for j in jobs if j.name == name and j.kind not in ("errata", "report")]
+    mine = [j for j in jobs if j.name == name and j.kind not in ("errata", "report", "correction")]
     if not mine:
         return "no job on the board"
     held = [j for j in mine if j.state != "done"]

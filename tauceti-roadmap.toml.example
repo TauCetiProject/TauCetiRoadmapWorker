@@ -90,8 +90,8 @@ reference_answerers = []
 dispatch = true
 dispatch_workflow = "board.yml"
 human_first = true
-priority = ["GATE", "PORT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN",
-            "DESIGN", "TARGET", "REPORT", "ERRATA"]
+priority = ["GATE", "PORT", "CORRECT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN",
+            "REV-DESIGN", "DESIGN", "TARGET", "REPORT", "ERRATA"]
 # `board sync` reads the open roadmap pull requests (each with its reviews, issue comments and inline
 # comments) and the verdicts of finished pull-request reviews by GraphQL, this many pull requests per
 # query, from GraphQL's own hourly budget rather than four REST requests per pull request. A pull
@@ -367,6 +367,16 @@ merge_bots = ["tauceti-queue[bot]"]
 # REPORT jobs filed per run, and per author per run; the rest are filed by later runs.
 per_run = 5
 per_author = 2
+# Corrections: `board sync` files one CORRECT-<Leaf>~k job per roadmap whose confirmed reports no correction
+# holds yet (all of them, batched: two pull requests editing one README conflict), and the `correction` lane
+# applies them on the roadmap's folder on main, runs the push gate and opens a pull request on the content
+# repository, which the pull-request review, the gate lane and a human merge take from there. A roadmap that
+# an open pull request already edits waits until that pull request merges or closes. Off by default: a
+# project may harvest and triage reports without automatic corrections.
+corrections = false
+# A correction pull request closed unmerged frees its reports for the next round, unless it carries this
+# label: its reports are then recorded as rejected and never corrected again.
+stop_label = "no-correction"
 
 [sources]
 # Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through

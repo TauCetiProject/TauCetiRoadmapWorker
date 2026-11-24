@@ -50,7 +50,7 @@ def remove_worktree(content: Path, wt: Path) -> None:
     gitops.git(content, "worktree", "prune", check=False)
 
 
-ROADMAP_WORKTREES = ("pr", "port")     # never build/: it holds the worker's snapshot of the briefs
+ROADMAP_WORKTREES = ("pr", "port", "correct")     # never build/: it holds the worker's snapshot of the briefs
 
 
 def is_worktree_of(wt: Path, content: Path) -> bool:

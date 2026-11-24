@@ -562,9 +562,11 @@ carries a machine-readable spec in an HTML comment; the rest of the issue is for
 read as an instruction.
 
 `REPORT-<Leaf>~k` jobs stand outside the graph: `board sync` files them from the library's roadmap
-reports ("Roadmap reports" below), the `report` lane triages them, and nothing follows them. The origin
-upkeep skips them, and `board resume` does not count them among a roadmap's jobs. `status` lists them
-with the others.
+reports ("Roadmap reports" below), the `report` lane triages them, and nothing follows them. So do
+`CORRECT-<Leaf>~k` jobs, which `board sync` files from confirmed reports with `[reports] corrections`: the
+`correction` lane opens one roadmap pull request per job, which the pull-request review and gate rounds
+then follow as any other. The origin upkeep skips both kinds, and `board resume` does not count them among
+a roadmap's jobs. `status` lists them with the others.
 
 ## Lanes
 
@@ -580,6 +582,7 @@ with the others.
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build (its dependency check never reads a roadmap on the content repository's main as an upward supplier), head check |
 | report | the REPORT job's validated report, the reported file on main with the quoted text located, the reporter's prose (quoted as data), the declarations it names looked up in the pinned Tau Ceti, people's comments on the job (data) | `packages/<Leaf>/reports/REPORT-<Leaf>~k.md`: `Triage (<agent>) of <JOB> at <sha7>`, `Verdict: confirmed \| rejected \| needs-human` | anyone (the reporter is another project's agent: nothing to be independent of) | header naming the job and the main read, a verdict, `## Evidence` and the section the verdict needs (`## Correction`, `## Reason`, `## Missing`), checkouts untouched |
+| correction | the job's confirmed reports (each with the text that is wrong located on main, its triage's correction and the triage itself), the roadmap folder on main, the pinned libraries, the open roadmap PRs | a commit on `roadmap/<leaf>-correction-<k>` of the operator's fork, the roadmap PR (labels `[roadmap] pr_label`, awaiting-review; a draft as `[roadmap] open_as_draft`); on the board `reports/CORRECT-<Leaf>~k.md` | anyone; parked while another open PR edits the folder | header naming the job and the main read, an outcome per report with what changed or why declined, a title `<Name>: ...` and a revision summary when anything is applied, a commit only then, nothing outside the folder, the push gate with the targeted build |
 | prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-found-no-errors` label (on once every folder of the head accepts and no review that points out errors waits for an answer, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json`; on a pool author's PR, after a review asking changes, the repair pushed onto its branch and the reply | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
@@ -1687,7 +1690,10 @@ under `"operator"` it changes nothing (the operator is the same), so the review 
 
 The triage of a roadmap report (`REPORT-<Leaf>~k`) has no separation rule: the reporter is an agent of
 another project (a Tau Ceti worker), whose operator is recorded nowhere in the claims namespace, so there
-is no author to compare with, and any operator may take it.
+is no author to compare with, and any operator may take it. A correction (`CORRECT-<Leaf>~k`) is an
+authoring job: its pull request is opened by its operator from that operator's fork, so the pull-request
+review of it already refuses that operator (the review's `owner` is the pull request's author; under
+`separation = "agent"`, as for any pull request, the author's operator reviews on the review models).
 
 Under `separation = "agent"` a pinned red-team pass (`[redteam] passes` with a `model`) can only be run
 by that agent and model, and it is independent of the package, of each of the package's fix rounds and
@@ -1731,7 +1737,9 @@ tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; on
                                                    # PR, ai-found-no-errors upkeep;
                                                    # the errata register (submitted ERRATA jobs → done);
                                                    # with [reports] enabled: REPORT jobs from the
-                                                   # library's roadmap reports, reports/register.json
+                                                   # library's roadmap reports, reports/register.json;
+                                                   # with [reports] corrections: CORRECT jobs, and
+                                                   # the corrections' pull requests followed
 tauceti-roadmap --conf $CONF board sync --prune-order --yes   # first remove from the merge order every
                                                    # roadmap on the content repository's main
 tauceti-roadmap --conf $CONF board intake --yes    # take in submissions (designs and packages stay open
@@ -2087,6 +2095,49 @@ whatever its triage said, and a `confirmed` one
 becomes `fixed` when its correction merges. A report fixed and then reported again gets a new job and
 loses the triage of the old one.
 
+**Corrections.** With `[reports] corrections = true` (off by default; harvesting and triage need only
+`enabled`), the same step files one `CORRECT-<Leaf>~k` per roadmap whose `confirmed` reports, with their
+text still on main under the active directory, no correction holds: all of them in one job (logged
+`filed CORRECT-<Leaf>~k (#N) for n confirmed report(s) of <roadmap>`), each report then carrying
+`"correction": {"job": ...}` in the register. A roadmap with a correction job open, or whose correction
+pull request is open, files none (`... wait for the next correction (...)`): reports confirmed meanwhile
+join the next round. The `correction` lane (`work --only correction`; an authoring lane, on the family
+defaults; stage `CORRECT`, right after `PORT`) first reads the index of open roadmap pull requests
+(refreshed; a correction is never opened beside a pull request it cannot see): when another open pull
+request edits the roadmap's folder, the job is parked as `state:blocked` with `waits_for` in its spec and
+a comment naming the pull request, and `board sync` makes it available again once every one of them is
+merged or closed. Otherwise the worker checks out main in a worktree on `roadmap/<leaf>-correction-<k>`,
+writes the reports to correct to the job's scratch (each with the text that is wrong, the lines where it
+stands, the correction its triage stated and the path of the triage on the board), and its agent applies
+each as the smallest change of the folder's `README.md` and `Suggested.lean` (the roadmap as a record: no
+layer or item removed or renumbered; a corrected pin must elaborate at the pins, and a Tau Ceti declaration
+newer than the pin is never imported or named in `Suggested.lean`, only cited in the README's prose), or
+declines it with its reason, commits, and writes `packages/<Leaf>/reports/CORRECT-<Leaf>~k.md`: first line
+`Correction (<agent>) of CORRECT-<Leaf>~k at <sha7>`, one `## REPORT-<Leaf>~k — applied | declined`
+section per report, and, when anything is applied, `## Title` (`<Name>: ...`), `## Summary` (the three
+paragraphs of a revision's summary block) and `## Checks`. The push gate runs as on a gate round (the
+targeted build, the text gates, the dependency check, nothing outside the folder). The worker then pushes
+the branch to the operator's fork (it must be new), opens the pull request against the project branch (a
+draft as `[roadmap] open_as_draft` says) with the summary block, each report it answers (the text that was
+wrong, the correction, a link to the triage on the board, the REPORT job and the library's pull requests),
+those it declined, the validation paragraph and the marker the board's upkeep of roadmap pull requests reads,
+labels it `[roadmap] pr_label` and awaiting-review, and adds `Pull request: #N` to the report it submits to
+the board. The push and the pull request are effects of the job's record: a run that stops after either
+finishes on the next attempt without running the agent again, a second push or a second pull request. A
+correction whose every report is declined opens no pull request. The intake merges the report as any
+submission (refusing one whose applied correction names no pull request its author opened).
+
+The next `board sync` records what the correction did: `"correction": {"job", "pr"}` for an applied report,
+`{"job", "declined": <reason>}` for a declined one (never tried again), `{"job", "by": "hand"}` for the
+reports of a job closed by hand before it opened a pull request (a human's way of saying: do not correct
+these automatically). It reads each correction pull request still open (one REST request each): merged,
+its reports become `fixed` (`"merged": true`; a corrected pin may keep the name the report quoted, which
+then never leaves main); closed unmerged, they are freed for the next round, the closed attempt kept under
+`corrections`, unless the pull request carries `[reports] stop_label` (default `no-correction`), which
+records them `rejected`. A correction job whose reports are all settled meanwhile (corrected by hand) is
+closed as done. The pull request itself is reviewed by the pull-request review, which never runs under
+the operator who opened it (its author), answered by gate rounds of that operator, and merged by a human.
+
 ### The board workflow
 
 The board's maintenance need not depend on anyone running it: copy `board/board.yml` from this
@@ -2397,8 +2448,16 @@ reach) is not built yet.
   lane works. Either way you may also correct the roadmap with a pull request on the roadmap repository
   (`board sync` closes the job once the quoted text is gone from main), or close an open job with a
   comment saying why the report is wrong (the register records it as rejected, so the library's workers do
-  not file it again). Until the correction lane exists, the correction a confirmed report states (in the
-  register and in its triage under `packages/`) is also made by a hand-written pull request.
+  not file it again). With `[reports] corrections` on, a confirmed report is corrected by a `CORRECT` job;
+  otherwise, or when the correction declined it, by a hand-written pull request from the correction in the
+  register and in its triage under `packages/`.
+* **A correction pull request** (opened by the `correction` lane): review it as any roadmap pull request;
+  the gate lane answers your comments. Merge it, and its reports become `fixed`. Close it unmerged, and its
+  reports are corrected again in the next round; label it `no-correction` (`[reports] stop_label`) before
+  or when closing it, and they are recorded as rejected instead. A `CORRECT` job parked in `state:blocked`
+  waits for the open pull request its comment names, and moves on by itself once that one is merged or
+  closed; close the job by hand before it opens a pull request to keep its reports from being corrected
+  automatically.
 * **The configuration and the prompts** are CODEOWNERS-protected; changes go through review.
 
 ## Known limits of this version
@@ -2409,6 +2468,10 @@ reach) is not built yet.
   file; that round says "still wrong" or "right as written". A `README.md` correction that leaves the
   quoted words intact is not seen; a human asks with `triage again`.
 
+* A correction whose roadmap another open pull request edits waits for that pull request; the board does
+  not relay the corrections onto it as a review. Under the reply rules a comment by the correction's
+  operator counts as the author's side when that operator opened the other pull request or is in its
+  pool, so such a relay would sometimes read as the author's own reply.
 * The harness runs standalone; running the lanes as TauCetiWorker `only=` kinds, with its quota
   pacing, dashboard and Bubble sandbox, is the intended integration.
 * Two workers of the branch owner may run a red-team fix and a gate round on the same pull request

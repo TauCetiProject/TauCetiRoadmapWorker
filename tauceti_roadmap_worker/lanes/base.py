@@ -1677,7 +1677,7 @@ class Lane:
     def drop_worktree(self, ctx: Context, ws: Workspace) -> None:
         """After a submission, the lane's roadmap worktree (pr/<Name>, port/<Name>) goes: the next
         round that needs it checks it out again, its Lake packages a link to the shared copy."""
-        if ws.workdir != ws.board and ws.workdir.parent.name in ("pr", "port") and ws.workdir.is_dir():
+        if ws.workdir != ws.board and ws.workdir.parent.name in ("pr", "port", "correct") and ws.workdir.is_dir():
             from .pr import remove_worktree
             remove_worktree(ws.content, ws.workdir)
 

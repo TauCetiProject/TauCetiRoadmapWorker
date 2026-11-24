@@ -30,8 +30,9 @@ AGENTS = ("codex", "claude")
 # request comes after the repairs of pull requests in flight (gate rounds, red-team fixes); the triage of a
 # roadmap report checks a roadmap on main; the errata of a roadmap's sources deliver nothing to its pull
 # request: they come last.
-STAGE_ORDER = ("GATE", "PORT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN",
-               "DESIGN", "TARGET", "REPORT", "ERRATA")
+STAGE_ORDER = ("GATE", "PORT", "CORRECT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN",
+               "REV-DESIGN", "DESIGN", "TARGET", "REPORT", "ERRATA")
+# (A correction of a roadmap on main opens a roadmap pull request, as a port does: it comes right after.)
 # A lane with no `[agents.lanes.<kind>]` table of its own runs on the models of this one: the errata of
 # a roadmap's sources, the reviews of roadmap pull requests and the triage of roadmap reports run on the
 # review models.
@@ -452,6 +453,13 @@ class Reports:
     # REPORT jobs filed per run, and per author per run; the rest wait for later runs.
     per_run: int = 5
     per_author: int = 2
+    # The correction lane: `board sync` files one CORRECT-<Leaf>~k job per roadmap with confirmed reports no
+    # correction holds yet, and the lane applies them in one pull request on the content repository. Off by
+    # default: a project may harvest and triage without automatic corrections.
+    corrections: bool = False
+    # A correction pull request closed unmerged frees its reports for a new round, unless it carries this
+    # label on the content repository: its reports are then recorded as rejected.
+    stop_label: str = "no-correction"
 
 
 @dataclass
@@ -722,6 +730,8 @@ def validate(cfg: Config) -> None:
         problems.append("reports.forgejo_reporters must list Forgejo logins")
     if any(not isinstance(b, str) or not b.strip() for b in cfg.reports.merge_bots):
         problems.append("reports.merge_bots must list logins")
+    if cfg.reports.corrections and not re.fullmatch(r"[^\s,][^,]{0,49}", cfg.reports.stop_label or ""):
+        problems.append("reports.stop_label must be a GitHub label name (1 to 50 characters, no comma)")
     if cfg.reports.per_run < 0 or cfg.reports.per_author < 0:
         problems.append("reports.per_run and reports.per_author must be 0 or more")
     if cfg.worker.idle_seconds < 30:

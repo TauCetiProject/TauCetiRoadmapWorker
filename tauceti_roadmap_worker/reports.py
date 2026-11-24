@@ -46,6 +46,14 @@ to report the same thing twice. It is written in one commit when a report change
 of a forge is a day behind (a mark alone is not worth a commit every run). Nothing harvested is an
 instruction: the job's issue is the board's own text from the validated fields, with the reporter's
 prose quoted in a code block.
+
+A confirmed report is corrected by the `correction` lane (lanes/correction.py) when `[reports]
+corrections` is on: `keep_corrections` files one `CORRECT-<Leaf>~k` per roadmap with confirmed reports
+no correction holds (all of them in one job), attaches them (`correction` on the entry), records what the
+lane did with each (the pull request it opened, or why it declined), turns a report `fixed` when its
+correction merges, frees it for another round when the pull request is closed unmerged (or records it
+`rejected` when the pull request carries `[reports] stop_label`), makes a job that waits for another pull
+request available once that one is closed, and closes a job with nothing left to correct.
 """
 
 from __future__ import annotations
@@ -1111,6 +1119,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
     restated(ctx, run, jobs, known, texts, oids, branch)
     close_finished(ctx, run, jobs, known)
     ask_again(ctx, run, jobs, known)
+    corrected = keep_corrections(ctx, run, jobs, known, texts, branch)
 
     refresh_specs(ctx, run, jobs, known)
 
@@ -1133,6 +1142,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
     left = len(run.deferred)
     run.out.append(f"reports: {len(found)} source(s) read, {recorded} report(s) recorded already, {len(filed)} "
                    f"filed, {fixed} fixed" + (f", {triaged} triaged" if triaged else "")
+                   + (f", {corrected} correction change(s)" if corrected else "")
                    + (f", {left} left for a later run" if left else ""))
     if not run.changed and not moved:
         return run.out
@@ -1522,3 +1532,228 @@ def next_round(ctx, jobs: dict, entry: dict, job: board.Job, lead: str, asked: i
         text=quoted_prose(str(issue.get("body") or "")), sources=list(entry.get("sources", []))))
     jobs[new.id] = new
     return new
+
+
+# --- corrections ------------------------------------------------------------------------------------------
+
+CORRECTION_HEAD = re.compile(r"^Correction \((?P<agent>[^)\n]*)\) of (?P<job>CORRECT-\S+) at (?P<sha>[0-9a-f]{7,40})$")
+OUTCOME = re.compile(r"^(?P<job>REPORT-\S+) — (?P<outcome>applied|declined)$")
+PR_LINE = re.compile(r"^Pull request: #(\d+)", re.M)
+TITLE_LIMIT = 120
+
+
+def correction_sections(text: str) -> list[tuple[str, str]]:
+    """(heading, body) of every `## ` section of a correction report, outside code fences, in order."""
+    out, fenced = [], False
+    for line in (text or "").split("\n"):
+        if re.match(r"^\s*(```|~~~)", line):
+            fenced = not fenced
+        if not fenced and line.startswith("## "):
+            out.append([line[3:].strip(), []])
+        elif out:
+            out[-1][1].append(line)
+    return [(h, "\n".join(b).strip()) for h, b in out]
+
+
+def parse_correction(text: str) -> dict:
+    """A correction report: its first line (agent, job, head of main read), the pull request the worker
+    opened (`Pull request: #N`, 0 for none), each report's outcome (`## REPORT-<Leaf>~k — applied |
+    declined` and its body), `## Title` and `## Summary`."""
+    first = (text or "").split("\n", 1)[0].strip().strip("*").strip()
+    head = CORRECTION_HEAD.match(first)
+    m = PR_LINE.search(text or "")
+    out = {"agent": head["agent"] if head else "", "job": head["job"] if head else "",
+           "head": head["sha"] if head else "", "pr": int(m.group(1)) if m else 0, "outcomes": {}, "title": "",
+           "summary": "", "duplicates": []}
+    for heading, body in correction_sections(text):
+        o = OUTCOME.match(heading)
+        if o:
+            if o["job"] in out["outcomes"]:
+                out["duplicates"].append(o["job"])
+            out["outcomes"][o["job"]] = (o["outcome"], body)
+        elif heading.lower() in ("title", "summary"):
+            out[heading.lower()] = body
+    return out
+
+
+def correction_problems(text: str, job: board.Job, head: str = "") -> list[str]:
+    """Why a correction report would not be taken in: its first line names another job (or, with `head`,
+    another commit of main); a report of the job has no outcome, or two, or one with no account of what
+    changed or why it was declined; a report the job does not hold is answered; and, when anything is
+    applied, the `## Title` (one line, `<Name>: ...`) or the `## Summary` (the three paragraphs of a
+    revision's summary block) is not in its form."""
+    from . import summary
+    c, problems = parse_correction(text), []
+    if c["job"] != job.id or (head and not head.startswith(c["head"] or "-")):
+        at = head[:7] or "<sha7 of main>"
+        problems.append(f"report: first line must be `Correction (<agent>) of {job.id} at {at}`")
+    wanted = [str(e.get("job")) for e in job.inputs.get("entries", []) if isinstance(e, dict)]
+    for rid in wanted:
+        if rid not in c["outcomes"]:
+            problems.append(f"report: no `## {rid} — applied | declined` section")
+        elif not c["outcomes"][rid][1]:
+            problems.append(f"report: `## {rid} — {c['outcomes'][rid][0]}` says nothing (what changed, or why not)")
+    problems += [f"report: `{rid}` is answered twice" for rid in c["duplicates"]]
+    problems += [f"report: `{rid}` is not a report of this job" for rid in c["outcomes"] if rid not in wanted]
+    if any(o == "applied" for o, _b in c["outcomes"].values()):
+        title = c["title"]
+        if "\n" in title or not title.startswith(f"{job.name}: ") or len(title) > TITLE_LIMIT \
+                or re.search(r"#\d|@|<", title):
+            problems.append(f"report: `## Title` is one line `{job.name}: <what the correction changes>`, at most "
+                            f"{TITLE_LIMIT} characters, with no number sign, mention or HTML")
+        problems += [f"report: `## Summary`: {p}" for p in summary.validate(c["summary"], "revision")]
+    return problems
+
+
+def correction_inputs(cfg, roadmap: str, entries: list[tuple[dict, board.Job | None]]) -> dict:
+    """The spec of a correction job: the roadmap and, for each confirmed report, what the lane applies."""
+    return {"roadmap": roadmap, "folder": f"{cfg.roadmap.active_dir}/{roadmap}", "entries": [
+        {"job": e.get("job", ""), "issue": job.number if job else 0, "file": e.get("file", ""),
+         "anchor": e.get("anchor", ""), "kind": e.get("kind", ""),
+         "triage": (e.get("triage") or {}).get("report", ""),
+         "correction": (e.get("triage") or {}).get("correction", ""), "sources": list(e.get("sources", []))}
+        for e, job in entries]}
+
+
+def correction_preamble(cfg, job: board.Job) -> str:
+    ids = ", ".join(f"`{e['job']}`" for e in job.inputs.get("entries", []))
+    return (f"The correction of `{job.inputs.get('folder')}` in `{cfg.repositories.content}`: the confirmed roadmap "
+            f"reports {ids}, applied in one pull request from the roadmap as it stands on main. A correction the "
+            "worker finds wrong or unsafe to apply is declined with its reason. The pull request then goes through "
+            "the review of roadmap pull requests and a human merge. Closing this issue by hand before a pull request "
+            "exists means: do not correct these reports automatically.")
+
+
+def keep_corrections(ctx, run: Run, report_jobs: dict, known: dict, texts: dict, branch: str) -> int:
+    """`sync_reports`: the upkeep of corrections and, with `[reports] corrections`, their filing (module doc).
+    Returns how many register entries or jobs it changed."""
+    cfg = ctx.cfg
+    attached = [e for e in known.values() if isinstance(e.get("correction"), dict)]
+    if not cfg.reports.corrections and not attached:
+        return 0
+    cjobs = {j.id: j for j in ctx.board.kind_jobs("correction")}
+    changed = 0
+
+    def note(line: str, register: bool = True) -> None:
+        nonlocal changed
+        changed += 1
+        if register:
+            run.changed.append(line.split(";")[0])
+        run.out.append(f"reports: {line}" + (" (dry run: not written)" if ctx.dry_run else ""))
+
+    # What a finished (or abandoned) correction job did with its reports.
+    todo = {}
+    for e in attached:
+        c, job = e["correction"], cjobs.get(str(e["correction"].get("job") or ""))
+        if e.get("state") != "confirmed" or {"pr", "declined", "by"} & set(c) or job is None:
+            continue
+        if job.state == "done":
+            todo.setdefault(job.id, (job, []))[1].append(e)
+        elif job.closed:
+            c["by"] = "hand"
+            note(f"{job.id}: closed by hand before a pull request; {e['job'] or e['anchor'][:40]} is not corrected "
+                 "automatically")
+    found = prbatch.blob_texts(ctx.gh, cfg.repositories.packages_repo(),
+                               sorted(("main", triage_path(cfg, job)) for job, _es in todo.values()),
+                               cfg.board.graphql_batch) if todo else {}
+    for job, es in todo.values():
+        key = ("main", triage_path(cfg, job))
+        if key not in found:
+            continue
+        c = parse_correction(found[key] or "")
+        for e in es:
+            outcome, body = c["outcomes"].get(str(e.get("job")), ("", ""))
+            if outcome == "applied" and c["pr"]:
+                e["correction"]["pr"] = c["pr"]
+                note(f"{job.id}: {e['job']} corrected in #{c['pr']} on {cfg.repositories.content}")
+            elif outcome == "declined":
+                e["correction"]["declined"] = body if len(body) <= TRIAGE_KEEP else body[:TRIAGE_KEEP] + " [...]"
+                note(f"{job.id}: the correction of {e['job']} was declined; recorded, not tried again")
+            else:
+                e["correction"]["by"] = "hand"
+                note(f"{job.id}: done with no correction of {e['job']} merged; recorded, not tried again")
+
+    # The pull requests that hold corrections, and the jobs that wait for another pull request.
+    prs: dict[int, list[dict]] = {}
+    for e in attached:
+        c = e["correction"]
+        if e.get("state") == "confirmed" and c.get("pr") and not {"merged", "closed"} & set(c):
+            prs.setdefault(int(c["pr"]), []).append(e)
+    waiting = {j.id: j for j in cjobs.values() if j.state == "blocked" and not j.closed and j.inputs.get("waits_for")}
+    states: dict[int, dict | None] = {}
+    for number in sorted(set(prs) | {int(n) for j in waiting.values() for n in j.inputs["waits_for"]}):
+        try:
+            states[number] = ctx.gh.api(f"repos/{cfg.repositories.content}/pulls/{number}") or None
+        except GHError:
+            states[number] = None                 # not read: nothing is decided
+    for number, es in prs.items():
+        pr = states.get(number)
+        if not pr or pr.get("state") != "closed":
+            continue
+        stop = cfg.reports.stop_label in {label.get("name") for label in pr.get("labels", []) if isinstance(label, dict)}
+        for e in es:
+            if pr.get("merged_at") or pr.get("merged"):
+                # The roadmap is corrected: a corrected pin may keep the name the report quoted, which then
+                # never leaves main, so the merge itself settles the report.
+                e["state"], e["correction"]["merged"] = "fixed", True
+                note(f"#{number}: merged; {e['job']} fixed")
+            elif stop:
+                e["state"], e["correction"]["closed"] = "rejected", cfg.reports.stop_label
+                note(f"#{number}: closed unmerged with `{cfg.reports.stop_label}`; {e['job']} rejected")
+            else:
+                e.setdefault("corrections", []).append({**e.pop("correction"), "closed": True})
+                note(f"#{number}: closed unmerged; {e['job']} waits for the next correction")
+    for job in waiting.values():
+        numbers = [int(n) for n in job.inputs["waits_for"]]
+        if all((states.get(n) or {}).get("state") == "closed" for n in numbers):
+            if not ctx.dry_run:
+                ctx.board.set_state(job, "available", "Released: " + ", ".join(f"#{n}" for n in numbers)
+                                    + f" on `{cfg.repositories.content}` " + ("is" if len(numbers) == 1 else "are")
+                                    + " closed; this correction runs on the roadmap as main now has it.")
+            note(f"{job.id}: " + ", ".join(f"#{n}" for n in numbers) + " closed; available again", register=False)
+
+    # Jobs with nothing left to correct (a human corrected the roadmap meanwhile, or the reports were settled).
+    for job in cjobs.values():
+        if job.closed or job.state not in ("available", "blocked"):
+            continue
+        mine = [e for e in known.values() if (e.get("correction") or {}).get("job") == job.id]
+        if mine and not any(e.get("state") == "confirmed" for e in mine):
+            if not ctx.dry_run:
+                ctx.board.set_state(job, "done", "Nothing left to correct: every report of this job is settled "
+                                                 f"in `{REGISTER}`.")
+                ctx.gh.write("PATCH", f"repos/{cfg.repositories.board_repo()}/issues/{job.number}", {"state": "closed"})
+            note(f"{job.id}: nothing left to correct; done", register=False)
+
+    # New corrections: every confirmed report still on main that no correction holds, one job per roadmap.
+    if not cfg.reports.corrections:
+        return changed
+    by_roadmap: dict[str, list[dict]] = {}
+    for (roadmap, file, _a), e in known.items():
+        if (e.get("state") == "confirmed" and not e.get("correction")
+                and where(texts, branch, paths(cfg, roadmap, file), e["anchor"]) == "active"):
+            by_roadmap.setdefault(roadmap, []).append(e)
+    rounds: dict[str, int] = {}
+    for job in cjobs.values():
+        rounds[job.name] = max(rounds.get(job.name, 0), board.parse_job_id(job.id).round)
+    for roadmap, es in sorted(by_roadmap.items()):
+        name = job_name(roadmap)
+        busy = next((j for j in cjobs.values() if j.inputs.get("roadmap") == roadmap and not j.closed
+                     and j.state != "done"), None)
+        held = next((e["correction"] for (rm, _f, _a), e in known.items() if rm == roadmap
+                     and e.get("state") == "confirmed" and (e.get("correction") or {}).get("pr")
+                     and not {"merged", "closed"} & set(e["correction"])), None)
+        if busy or held:
+            run.out.append(f"reports: {roadmap}: {len(es)} confirmed report(s) wait for the next correction ("
+                           + (f"{busy.id} is {busy.state}" if busy else f"#{held['pr']} is open") + ")")
+            continue
+        rounds[name] = rounds.get(name, 0) + 1
+        job = board.new_job(board.make_id("correction", name, rounds[name]),
+                            inputs=correction_inputs(cfg, roadmap, [(e, report_jobs.get(e.get("job", ""))) for e in es]))
+        for e in es:
+            e["correction"] = {"job": job.id}
+        if ctx.dry_run:
+            note(f"would file {job.id} for {len(es)} confirmed report(s) of {roadmap}")
+            continue
+        number = ctx.board.create(job, preamble=correction_preamble(cfg, job))
+        note(f"filed {board.made_note(ctx.board, job, number)} for {len(es)} confirmed report(s) of {roadmap}")
+    return changed
