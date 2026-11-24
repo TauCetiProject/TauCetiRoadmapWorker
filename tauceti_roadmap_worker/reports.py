@@ -880,6 +880,16 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
         if url not in queued:
             data["retry"].append({"url": url, "forge": GITHUB if url.startswith("https://github.com/") else FORGEJO})
 
+    # A rejected report whose job a human reopened (open again, not done) is open again: it is triaged anew.
+    for entry in known.values():
+        job = jobs.get(str(entry.get("job") or ""))
+        if entry.get("state") == "rejected" and job is not None and not job.closed and job.state != "done":
+            entry["state"] = "open"
+            if entry.get("triage"):
+                entry.setdefault("triages", []).append(entry.pop("triage"))
+            run.changed.append(f"{job.id} reopened")
+            run.out.append(f"reports: {job.id}: reopened by a human; the report is open again")
+
     # 1. The sources, one search per forge.
     library = r.library or cfg.repositories.library
     found: list[Source] = []
@@ -1136,6 +1146,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
     return run.out
 
 
+LATER_NOTES = ("Reported again in ", "Revised in ")     # the board's notes on a job, read by the triage lane
 REOPEN = (" This report is recorded as rejected: to have it triaged again, reopen this issue and move it to "
           "`state:available`.")
 
@@ -1288,6 +1299,7 @@ def record_triage(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: 
             continue                          # not read: the next run tries again
         text = found[key]
         verdict = parse_triage(text)["verdict"] if text else ""
+        done = job.state == "done"            # this job's: never the last one the first loop looked at
         if job.state == "blocked" and not job.closed:
             if verdict != "needs-human":
                 continue                      # parked for another reason (a completed roadmap)

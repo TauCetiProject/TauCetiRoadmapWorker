@@ -375,6 +375,15 @@ def complete_merged(ctx, job: Job, pr: dict, jobs: list[Job]) -> str:
     the register), and `needs-human` parks it, open, for a human (`triage_note`)."""
     if job.kind == "report":
         outcome = outcome_for(ctx, job, pr, jobs)
+        if outcome.verdict not in reports.TRIAGE_VERDICTS:
+            # The merged report could not be read (outcome_for reads '' on a GitHub error): nothing is decided,
+            # and `reconcile_merged` finishes the job from the merged pull request on a later run.
+            return "triage merged, but its report could not be read; the job stays submitted"
+        # The submission this completes: a needs-human job is triaged again under the same id, and its earlier
+        # merged submission must never complete the next attempt (`reconcile_merged`).
+        if pr.get("number") and int(pr["number"]) not in job.inputs.get("completed", []):
+            job.inputs["completed"] = [*job.inputs.get("completed", []), int(pr["number"])]
+            ctx.board.update_spec(job)
         note, parked = triage_note(ctx, job, outcome)
         if parked:
             ctx.board.set_state(job, "blocked", note)
@@ -426,7 +435,8 @@ def reconcile_merged(ctx, yes: bool) -> list[str]:
         named = board.submission_issue(pr.get("body") or "")
         job = next((j for j in jobs if j.id == sub["job"] and (not named or j.number == named)), None) \
             or ctx.board.find(sub["job"], jobs)
-        if not job or job.state != "submitted":
+        if not job or job.state != "submitted" or int(pr["number"]) in job.inputs.get("completed", []):
+            # (a submission already completed: the job runs again under its id after a needs-human triage)
             continue
         number, author = int(pr["number"]), pr["user"]["login"]
         if not yes:

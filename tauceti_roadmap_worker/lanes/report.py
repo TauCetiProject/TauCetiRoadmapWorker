@@ -133,7 +133,7 @@ class ReportLane(Lane):
         anchor_file.write_text(f"# `{place}` at `{head[:7]}`: where the reported text stands (data)\n\n"
                                + excerpt(text, spans), encoding="utf-8")
         ws.extra.update(head=head, report=report, place=place, folder=folder, spans=spans, anchor_file=anchor_file,
-                        readme=folder / "README.md", prose=self.prose(job, ctx), notes=self.human_notes(job, ctx),
+                        readme=folder / "README.md", prose=self.prose(job, ctx), job_notes=self.notes(job, ctx),
                         decls=declaration_lines(pinned_library(ws.content),
                                                 list(dict.fromkeys([*report.refutes, *report.replaces]))))
         return ws
@@ -151,17 +151,23 @@ class ReportLane(Lane):
         return reports.quoted_prose(issue.get("body") or "")
 
     @staticmethod
-    def human_notes(job: Job, ctx: Context) -> str:
-        """What people other than the board wrote on the job's issue (an answer to an earlier `needs-human`
-        triage), oldest first, as one text; '' when there is none or the issue cannot be read."""
+    def notes(job: Job, ctx: Context) -> tuple[str, list[str]]:
+        """(what people other than the board wrote on the job's issue, an answer to an earlier `needs-human`
+        triage, oldest first, as one text; the board's own notes of later sources and revisions, `Reported
+        again in ...` and `Revised in ...`). Empty when the issue cannot be read."""
         bots = {b.lower() for b in ctx.cfg.board.bot_logins}
         try:
             comments = ctx.board.comments(job.number) if job.number else []
         except (GHError, AttributeError):
-            return ""
-        notes = [f"{(c.get('user') or {}).get('login', '?')} at {c.get('created_at', '?')}:\n{c.get('body') or ''}"
-                 for c in comments or [] if ((c.get("user") or {}).get("login") or "").lower() not in bots]
-        return "\n\n".join(notes)
+            return "", []
+        people, board_notes = [], []
+        for c in comments or []:
+            who, body = ((c.get("user") or {}).get("login") or ""), str(c.get("body") or "")
+            if who.lower() not in bots:
+                people.append(f"{who or '?'} at {c.get('created_at', '?')}:\n{body}")
+            elif body.startswith(reports.LATER_NOTES):
+                board_notes.append(body.split(reports.REOPEN.strip(), 1)[0].strip())
+        return "\n\n".join(people), board_notes
 
     def missing_references(self, job: Job, ctx: Context, ws: Workspace) -> list[references.MissingReference]:
         """None: a triage never waits for a source. What it could not read is in its `## Missing`, with a
@@ -181,7 +187,10 @@ class ReportLane(Lane):
                   "- Refutes (as the reporter names them): " + (", ".join(f"`{n}`" for n in r.refutes) or "none"),
                   "- Replaces (as the reporter names them): " + (", ".join(f"`{n}`" for n in r.replaces) or "none"),
                   "- Reported in: " + (", ".join(str(s) for s in job.inputs.get("sources", [])) or "(no link)")]
-        prose, notes = ws.extra["prose"], ws.extra["notes"]
+        prose, (notes, later) = ws.extra["prose"], ws.extra["job_notes"]  # never `notes`: the round log's
+        if later:
+            fields.append("- Since it was filed (the board's notes; the fields above are the report as its sources "
+                          "say it now): " + " ".join(later))
         earlier = ws.report.is_file()
         return {"ROADMAP": r.roadmap, "FIELDS": "\n".join(fields), "ANCHOR": prompts.quote_untrusted(r.anchor, 1000),
                 "ANCHOR_FILE": str(ws.extra["anchor_file"]), "FILE": str(ws.content / ws.extra["place"]),

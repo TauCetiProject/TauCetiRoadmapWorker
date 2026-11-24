@@ -9,14 +9,14 @@ import json
 import pytest
 
 from tauceti_roadmap_worker import agents, board, cli, config, gitops, intake, reports, worker
-from tauceti_roadmap_worker.board import Job, new_job
+from tauceti_roadmap_worker.board import Board, Job, new_job
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes import Context, lane_for
 from tauceti_roadmap_worker.lanes import report as lane_report
 from tauceti_roadmap_worker.lanes.base import LaneBlocked
 from tauceti_roadmap_worker.paths import HERE
 
-from .fakes import FakeBoard, FakeGH, FakeTransport, example_config
+from .fakes import FakeBoard, FakeGH, FakeIssuesGH, FakeTransport, example_config
 from .test_checkout import commit, live, needs_git  # noqa: F401 - the shared fixture
 from .test_reports import ANCHOR, BODY, LIBRARY, NOW, ReportsGH, context, marker
 
@@ -340,3 +340,99 @@ def test_an_open_job_without_a_verdict_changes_nothing():
     register_with(gh)
     reports.sync_reports(context(gh, jobs=[report_job(state="claimed")]), now=NOW)
     assert reports.REGISTER in gh.files and gh.writes == []
+
+
+# --- review findings ------------------------------------------------------------------------------------------
+
+def test_a_mixed_batch_records_each_job_by_its_own_state():
+    gh = ReportsGH([])
+    gh.main[TRIAGE] = triage()
+    gh.main["TauCetiRoadmap/Bar/README.md"] = "the bar statement"
+    foo = reports.new_entry(reports.parse(marker())[0][0], JOB, "open", f"{LIBRARY}/pull/1")
+    bar = reports.new_entry(reports.parse(marker(roadmap="Bar", anchor="the bar statement"))[0][0], "REPORT-Bar~1",
+                            "open", f"{LIBRARY}/pull/2")
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [foo], "Bar": [bar]}})
+    done = report_job(state="done")
+    done.closed = True
+    other = new_job("REPORT-Bar~1", inputs={"roadmap": "Bar"})
+    other.number, other.state = 8, "available"
+    reports.sync_reports(context(gh, jobs=[done, other]), now=NOW)
+    assert gh.register()["roadmaps"]["QuadraticFormInvariants"][0]["state"] == "confirmed"
+    assert gh.register()["roadmaps"]["Bar"][0]["state"] == "open"
+
+
+def test_an_unreadable_merged_triage_leaves_the_job_submitted():
+    gh, fb = MergedGH(""), StatesBoard()
+    gh.raw_file = lambda repo, path, ref="": (_ for _ in ()).throw(GHError("HTTP 502"))
+    job = report_job(state="submitted")
+    ctx = Context(cfg=example_config(), gh=gh, board=fb, claims=None, worker_id="board", operator="bot", agent="",
+                  model="")
+    out = intake.complete_merged(ctx, job, {"number": 5, "user": {"login": "alice"}}, [job])
+    assert out.startswith("triage merged, but its report could not be read") and fb.states == [] and gh.writes == []
+
+
+class ReplayGH(FakeIssuesGH):
+    """The board with an earlier merged triage submission of the job, and the merged report on main."""
+
+    def __init__(self, issues, text):
+        super().__init__(issues)
+        self.text = text
+
+    def raw_file(self, repo, path, ref=""):
+        return self.text
+
+
+def test_an_earlier_merged_needs_human_triage_is_not_replayed_over_its_replacement():
+    from .fakes import job_issue
+    issue = job_issue(7, JOB, "submitted", inputs={**report_job().inputs, "completed": [5]})
+    gh = ReplayGH([issue], triage("needs-human"))
+    gh.pulls = [{"number": 5, "state": "closed", "merged_at": "2026-11-24T10:00:00Z", "user": {"login": "alice"},
+                 "body": "Refs #7\n\n" + board.encode_submission(JOB, "w1", "alice", "codex")}]
+    cfg = example_config()
+    ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=None, worker_id="board", operator="bot", agent="",
+                  model="")
+    assert intake.reconcile_merged(ctx, yes=True) == []
+    assert gh.states(7) == ["submitted"]
+
+
+def test_a_needs_human_completion_records_the_submission_it_completed():
+    gh, fb = MergedGH(triage("needs-human")), StatesBoard()
+    job = report_job(state="submitted")
+    ctx = Context(cfg=example_config(), gh=gh, board=fb, claims=None, worker_id="board", operator="bot", agent="",
+                  model="")
+    intake.complete_merged(ctx, job, {"number": 5, "user": {"login": "alice"}}, [job])
+    assert job.inputs["completed"] == [5] and fb.specs[-1][0] == JOB
+
+
+def test_the_triage_reads_the_report_as_its_sources_say_it_now(ctx):
+    place(ctx)
+    job = report_job(refutes=["TauCeti.right_one"])          # the spec as the harvest revised it
+    job.inputs["sources"] = [f"{LIBRARY}/pull/6903", f"{LIBRARY}/pull/7000"]
+    ctx.board.threads[7].append({"user": {"login": "github-actions[bot]"},
+                                 "body": f"Revised in {LIBRARY}/pull/6903 (an open pull request): now refutes: "
+                                         "`TauCeti.right_one`."})
+    ctx.board.threads[7].append({"user": {"login": "github-actions[bot]"},
+                                 "body": f"Reported again in {LIBRARY}/pull/7000 (a merged pull request)."
+                                         + reports.REOPEN})
+    lane_for(job).run(job, ctx)
+    brief = (ctx.wdir / "jobs" / "REPORT-QuadraticFormInvariants_r1" / "brief.md").read_text()
+    assert "Refutes (as the reporter names them): `TauCeti.right_one`" in brief
+    assert "exists_rankOne" not in brief.split("The text it says is wrong")[0]       # the fields: names now
+    assert f"Reported in: {LIBRARY}/pull/6903, {LIBRARY}/pull/7000" in brief
+    assert (f"Since it was filed (the board's notes; the fields above are the report as its sources say it now): "
+            f"Revised in {LIBRARY}/pull/6903") in brief
+    assert f"Reported again in {LIBRARY}/pull/7000 (a merged pull request)." in brief
+    assert "To have it triaged again" not in brief and "Claimed for" not in brief
+
+
+def test_a_rejected_report_whose_job_a_human_reopens_is_open_again():
+    gh = ReportsGH([])
+    entry = reports.new_entry(reports.parse(marker())[0][0], JOB, "rejected", f"{LIBRARY}/pull/1") | {
+        "triage": {"job": JOB, "verdict": "rejected", "reason": "x"}}
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+    out = reports.sync_reports(context(gh, jobs=[report_job(state="available")]), now=NOW)
+    [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert e["state"] == "open" and "triage" not in e and e["triages"][0]["verdict"] == "rejected"
+    assert f"reports: {JOB}: reopened by a human; the report is open again" in out

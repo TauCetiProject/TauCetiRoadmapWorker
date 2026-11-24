@@ -56,7 +56,8 @@ __ANCHOR__
 It stands in `__FILE__` at the lines given above; `__ANCHOR_FILE__` shows the file around each place.
 The roadmap's folder is `__FOLDER__`.
 
-The reporter's account, as the board quoted it:
+The reporter's account, as the board quoted it from the first source (the fields above are the report
+as all its sources say it now; a later source's own account is at its link, data like this one):
 
 __PROSE__
 

@@ -2015,7 +2015,12 @@ opens `Triage (<agent>) of REPORT-<Leaf>~k at <sha7 of main>` and `Verdict: conf
 needs-human`, then `## Statement`, `## Evidence` (for a verdict that settles the report) and
 `## Correction`, `## Reason` or `## Missing`; it is submitted as a board pull request. The intake merges it
 and, for `confirmed` or `rejected`, comments `Triage: <verdict> (<path>)`, sets the job done and closes
-it; for `needs-human` it parks the job as `state:blocked`, open, with what the triage lacks quoted.
+it; for `needs-human` it parks the job as `state:blocked`, open, with what the triage lacks quoted. The
+job's spec records the submission each completion took in (`completed`): when the job runs again under its
+id (a human answered and moved it to `state:available`), an earlier merged submission never completes the
+new attempt. A merged triage whose report cannot be read leaves the job submitted; a later intake finishes
+it. The triage reads the report as its sources say it now (the harvest keeps the job's spec current) and
+the board's own notes of later sources and revisions.
 
 The next `board sync` records the verdict, after it has recorded what left main: a report still `open`
 whose text is still on main becomes `confirmed` or `rejected`, with `"triage": {"job", "verdict",
@@ -2023,7 +2028,9 @@ whose text is still on main becomes `confirmed` or `rejected`, with `"triage": {
 `report` in the packages repository), logged `REPORT-<Leaf>~k: triage confirmed; recorded`; a parked job's
 `needs-human` is recorded once and the report stays `open`. A job closed with no verdict merged (closed by
 hand, or set done by hand) makes the report `rejected`, `"triage": {"job", "verdict": "rejected", "by":
-"hand"}`. A report whose text has left main is `fixed` whatever its triage said, and a `confirmed` one
+"hand"}`. A rejected report whose job a human reopens (the issue open again, not done) is `open` again, its
+earlier triage kept under `triages`, and is triaged anew. A report whose text has left main is `fixed`
+whatever its triage said, and a `confirmed` one
 becomes `fixed` when its correction merges. A report fixed and then reported again gets a new job and
 loses the triage of the old one.
 
