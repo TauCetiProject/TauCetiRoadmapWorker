@@ -16,6 +16,11 @@ README equals the old one except (a) the opening, (b) the order of the top-level
 `## How to read the build` section folded into the opening (gone whole), and (d) direction-word swaps
 (`SWAPS`) inside the sections that move (`MOVED`). A README the check refuses is never pushed; the
 agent's output is discarded and the refusal reported.
+
+That check says the layers kept their words. It does not say the opening is true to them, and the push
+carries the acceptance with no review: so a second agent, which did not write the opening, reads each
+of its sentences against the rest of the README before anything is proposed (`unsupported`,
+`prompts/overview-check.md`); a sentence it cannot support goes back to the writer once.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ from pathlib import Path
 from . import agents, gates, intake, layout, openroadmaps, prbatch, prompts, relayout
 from .gh import GHError, GHHalt, GHRateLimited
 
-OUT_NAME, PLAN_NAME = "opening.md", "overview.json"
+OUT_NAME, PLAN_NAME, CHECK_NAME = "opening.md", "overview.json", "check.json"
 WORD_LIMIT = 850          # words of an opening the worker refuses beyond (the brief asks for 250 to 700)
 TIMEOUT = 30 * 60
 LEAN_NAME = re.compile(r"`([A-Za-z_][\w']*(?:\.[A-Za-z_][\w']*)+|[A-Za-z][\w']*_[\w'.]+)`")
@@ -216,11 +221,54 @@ def agent_values(ctx, workdir: Path, folder: str, original: str, fixed: list[tup
             "MECHANICAL": "\n".join(f"- in `## {h}`: “{a}” became “{b}”" for h, a, b in fixed) or "- none"}
 
 
+def unsupported(ctx, workdir: Path, folder: str, new: str, lean: str, attempt: int, *, agent: str, model: str,
+                launch=None) -> tuple[list[str], bool]:
+    """(what a second agent, which did not write the opening, finds in it that the rest of the README
+    does not support, whether that agent is at its usage limit). The mechanical checks hold the opening
+    to its form and the layers to their words; whether a sentence of the opening says what a layer says
+    is a reading, and the acceptance is carried across the push with no review, so this is the only one
+    (2026-11-18: an opening said a notion did not depend "on the metric" where the layer proves it for
+    any two continuous Riemannian metrics; a referee found it a day later). The reader gets the opening
+    and the README without it in a folder of its own (`check-<attempt>`), and writes `check.json`: one
+    entry for each asserting sentence. No answer, or an answer that lists no sentence, is a problem too."""
+    cfg, where = ctx.cfg, workdir / f"check-{attempt}"
+    if where.exists():
+        shutil.rmtree(where)
+    where.mkdir(parents=True)
+    title, opening = layout.split_opening(new)
+    found = layout.parts(new)
+    (where / OUT_NAME).write_text(opening + "\n", encoding="utf-8")
+    (where / "README.md").write_text(
+        layout.join([layout.Part("", title + "\n", "\n"), *found[1:]], ["\n", *[p.gap for p in found[1:]]]), encoding="utf-8")
+    (where / "Suggested.lean").write_text(lean, encoding="utf-8")
+    brief = prompts.render("overview-check", {
+        "ROADMAP": folder.rsplit("/", 1)[-1], "OPENING": str(where / OUT_NAME), "README": str(where / "README.md"),
+        "LEAN": str(where / "Suggested.lean"), "OUT": str(where / CHECK_NAME)})
+    result = agents.run_agent(agents.AgentRun(
+        agent=agent, model=model, workdir=where, brief=brief, log_out=where / "run.out", log_err=where / "run.err",
+        timeout=TIMEOUT, sandbox_profile=cfg.sandbox.profile, proxy_url=cfg.sandbox.proxy_url,
+        netjail=cfg.sandbox.netjail, claude_hook=cfg.sandbox.claude_hook, settings_dir=ctx.wdir / "settings"), launch)
+    if getattr(result, "limited", False):
+        return [], True
+    try:
+        answer = json.loads((where / CHECK_NAME).read_text(encoding="utf-8"))
+        sentences = [x for x in answer["sentences"] if isinstance(x, dict) and str(x.get("sentence") or "").strip()]
+    except (OSError, ValueError, KeyError, TypeError):
+        return [f"the reader of the opening wrote no usable `{CHECK_NAME}`"], False
+    if not sentences:
+        return [f"the reader of the opening listed no sentence in `{CHECK_NAME}`"], False
+    return [f"the README does not support “{' '.join(str(x['sentence']).split())[:300]}”"
+            + (f" ({' '.join(str(x['why']).split())[:300]})" if x.get("why") else "")
+            for x in sentences if x.get("supported") is not True], False
+
+
 def propose(ctx, workdir: Path, folder: str, path: str, readme: str, lean: str, *, agent: str, model: str,
-            launch=None, attempts: int = 2) -> Folder:
+            launch=None, attempts: int = 2, check: bool = False, check_agent: str = "", check_model: str = "") -> Folder:
     """The agent's overview of one README, checked: reordered, direction words fixed, the agent's opening
-    and proposals applied, then `rewrite_problems` against the README at the head. Its files stay in
-    `workdir` (the proposed README as `README.proposed.md`)."""
+    and proposals applied, then `rewrite_problems` against the README at the head and, with `check`, a
+    second agent's reading of the opening against the rest (`unsupported`; `check_agent` and
+    `check_model`, else the writer's). Its files stay in `workdir` (the proposed README as
+    `README.proposed.md`)."""
     out = Folder(folder, path, readme)
     try:
         reordered = layout.reorder(readme)
@@ -272,6 +320,14 @@ def propose(ctx, workdir: Path, folder: str, path: str, readme: str, lean: str, 
         problems = layout.rewrite_problems(readme, new)
         if problems:
             continue
+        if check:
+            problems, limited = unsupported(ctx, workdir, folder, new, lean, attempt, agent=check_agent or agent,
+                                            model=check_model or model, launch=launch)
+            if limited:
+                out.why = "the agent that reads the opening is at its usage limit"
+                return out
+            if problems:
+                continue
         out.new = new
         out.changes = ([f"opening {words(layout.split_opening(readme)[1])} -> {words(opening)} words"]
                        + ([f"moves {', '.join(layout.moved(readme))}"] if layout.moved(readme) else [])
@@ -305,12 +361,14 @@ def done_before(comments: list[dict], trusted: set[str]) -> bool:
 
 def run(ctx, *, numbers=(), authors=(), pool: bool = False, write: bool = False, pace: float = 2.0, limit: int = 0,
         accepted_only: bool = False, listing: bool = False, force: bool = False, agent: str = "claude",
-        model: str = "", launch=None, report=print, sleep=time.sleep) -> list[str]:
+        model: str = "", launch=None, report=print, sleep=time.sleep, check: bool = False, check_agent: str = "",
+        check_model: str = "") -> list[str]:
     """The command: for each pull request asked for (as `layout` selects them), refuse an approved or
     queued one, skip one with a round under way, and propose an overview for each README it adds or
     changes (`propose`); print the old and new opening sizes and where the proposed README is; with
     `write`, push the checked READMEs of a pull request in one commit with the note (`push_files`), the
-    head read again first. `listing` runs no agent."""
+    head read again first. `listing` runs no agent. With `check`, a second agent reads each opening
+    against the rest of its README before it is proposed (`unsupported`)."""
     cfg, repo, out = ctx.cfg, ctx.cfg.repositories.content, []
 
     def say(line: str) -> None:
@@ -367,7 +425,8 @@ def run(ctx, *, numbers=(), authors=(), pool: bool = False, write: bool = False,
                 except GHError:
                     lean = ""
                 workdir = ctx.state / "overviews" / f"pr-{number}" / folder.replace("/", "__")
-                got = propose(ctx, workdir, folder, path, readme, lean, agent=agent, model=model, launch=launch)
+                got = propose(ctx, workdir, folder, path, readme, lean, agent=agent, model=model, launch=launch,
+                              check=check, check_agent=check_agent, check_model=check_model)
                 if not got.new:
                     say(f"{who} {folder}: not proposed: {got.why} (scratch: {workdir})")
                     continue

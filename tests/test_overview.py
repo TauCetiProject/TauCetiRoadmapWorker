@@ -205,6 +205,54 @@ def test_a_proposal_is_built_from_the_agents_opening_and_checked(tmp_path):
     assert (tmp_path / "w" / "run-2.out").is_file()
 
 
+def writer_and_reader(opening, plan, answers):
+    """The writer of `agent_writing`, and a reader that answers the k-th reading with `answers[k]` (None:
+    it writes nothing). The reader is the run whose working directory is a `check-<n>` folder."""
+    write, seen = agent_writing(opening, plan), []
+
+    def launch(argv, cwd=None, **kwargs):
+        if not cwd.name.startswith("check-"):
+            return write(argv, cwd=cwd, **kwargs)
+        seen.append({p.name: p.read_text(encoding="utf-8") for p in cwd.iterdir() if p.is_file()})
+        answer = answers[len(seen) - 1]
+        if answer is not None:
+            (cwd / overview.CHECK_NAME).write_text(json.dumps(answer), encoding="utf-8")
+        return SimpleNamespace(stdin=SimpleNamespace(write=lambda s: None, close=lambda: None), stdout=iter(()),
+                               wait=lambda timeout=None: 0, pid=0)
+    return launch, seen
+
+
+def test_a_second_agent_reads_the_opening_against_the_rest_before_it_is_proposed(tmp_path):
+    ctx, plan = context(tmp_path), {"fold_guide": False, "directions": []}
+    args = (ctx, tmp_path / "w", "Toy", "TauCetiRoadmap/Toy/README.md", OLD, "import Mathlib\n")
+    good = {"sentences": [{"sentence": "It proves Lagrange's theorem.", "where": "2.1", "supported": True}]}
+    bad = {"sentences": [good["sentences"][0], {"sentence": "The order divides the order of every group.",
+                                                "where": "2.1", "supported": False, "why": "2.1 is for finite groups"}]}
+    # Supported throughout: proposed. The reader had the opening and the README without it, nothing else.
+    launch, seen = writer_and_reader(OPENING, plan, [good])
+    got = overview.propose(*args, agent="claude", model="m", launch=launch, check=True)
+    assert got.new and len(seen) == 1 and seen[0][overview.OUT_NAME].strip() == OPENING.strip()
+    assert "**Summary.**" not in seen[0]["README.md"] and "## Layer 2: Lagrange's theorem" in seen[0]["README.md"]
+    assert seen[0]["README.md"].startswith("# Roadmap: toy groups\n")
+    # A sentence the README does not support goes back to the writer once; unsupported again, nothing is proposed.
+    launch, seen = writer_and_reader(OPENING, plan, [bad, good])
+    assert overview.propose(*args, agent="claude", model="m", launch=launch, check=True).new and len(seen) == 2
+    launch, seen = writer_and_reader(OPENING, plan, [bad, bad])
+    got = overview.propose(*args, agent="claude", model="m", launch=launch, check=True)
+    assert got.new == "" and got.why == ("refused: the README does not support “The order divides the order of every "
+                                         "group.” (2.1 is for finite groups)")
+    # A reader that leaves no answer, or lists nothing, or omits `supported`, never passes an opening.
+    for answer, why in ((None, "the reader of the opening wrote no usable `check.json`"),
+                        ({"sentences": []}, "the reader of the opening listed no sentence in `check.json`"),
+                        ({"sentences": [{"sentence": "It proves Lagrange's theorem."}]},
+                         "the README does not support “It proves Lagrange's theorem.”")):
+        launch, seen = writer_and_reader(OPENING, plan, [answer, answer])
+        assert overview.propose(*args, agent="claude", model="m", launch=launch, check=True).why == "refused: " + why
+    # Without `check` no reader runs.
+    launch, seen = writer_and_reader(OPENING, plan, [])
+    assert overview.propose(*args, agent="claude", model="m", launch=launch).new and seen == []
+
+
 # --- the intake: a chain of such pushes carries the acceptance ---------------------------------------------
 
 def chain_gh(head_readme, lean_changed=False, comments=None, labels=("ai-found-no-errors",)):

@@ -33,7 +33,9 @@ from .. import (
     gitops,
     openroadmaps,
     overlaps,
+    librarymain,
     libsearch,
+    needs as needs_lines,
     prompts,
     prreviews,
     references,
@@ -849,7 +851,46 @@ class Lane:
         rel = readme.relative_to(ws.board) if readme.is_relative_to(ws.board) else readme.name
         path.write_text(openroadmaps.report(citations, names, why, index, str(rel)), encoding="utf-8")
         ws.extra["citations"] = (path, len(citations) + len(names))
+        self.prepare_needs(ws, readme)
         self.prepare_library_matches(job, ctx, ws, lean)
+        self.prepare_library_main(ctx, ws, readme, lean)
+
+    def prepare_needs(self, ws: Workspace, readme: Path) -> None:
+        """`scratch/needs.md`: for each numbered subsection of the README, the sections of the README its
+        text cites and its `*Needs:*` line does not list (`needs.report`). Computed from the text alone."""
+        try:
+            rel = readme.relative_to(ws.board) if readme.is_relative_to(ws.board) else readme.name
+            text, count = needs_lines.report(readme.read_text(encoding="utf-8"), str(rel))
+        except Exception as exc:  # noqa: BLE001 - a tool for the agent: its failure must never fail the round
+            print(f"{ws.job_dir.name}: the `*Needs:*` lines were not compared ({type(exc).__name__}: {str(exc)[:160]})")
+            return
+        path = ws.scratch / "needs.md"
+        path.write_text(text, encoding="utf-8")
+        ws.extra["needs"] = (path, count)
+
+    def prepare_library_main(self, ctx: Context, ws: Workspace, readme: Path, lean: Path) -> None:
+        """`scratch/library-main.md`: the directories of the library's main branch that hold files the
+        pinned tree lacks under a proper name the README uses (`librarymain.report`), so that what the
+        library gained since the pin is a lead the reviewer opens. Off with `[prreview] library_main =
+        false`; best effort, like the citations."""
+        if not getattr(ctx.cfg.prreview, "library_main", True) or ctx.dry_run or ctx.gh is None:
+            return
+        repo = ctx.cfg.repositories.library
+        pin = librarymain.pinned_rev(ws.content, repo.rsplit("/", 1)[-1])
+        if not pin:
+            return
+        try:
+            text, count = librarymain.report(
+                ctx.gh, repo, pin, "main",
+                readme.read_text(encoding="utf-8") + (lean.read_text(encoding="utf-8") if lean.is_file() else ""),
+                ctx.state / "library-trees")
+        except Exception as exc:  # noqa: BLE001 - as above
+            print(f"{ws.job_dir.name}: the library's main branch was not compared with the pin "
+                  f"({type(exc).__name__}: {str(exc)[:160]})")
+            return
+        path = ws.scratch / "library-main.md"
+        path.write_text(text, encoding="utf-8")
+        ws.extra["library_main"] = (path, count)
 
     def prepare_library_matches(self, job: Job, ctx: Context, ws: Workspace, lean: Path) -> None:
         """`scratch/library-matches.md`: what Loogle and LeanSearch return for every declaration of the
@@ -1014,6 +1055,25 @@ class Lane:
                     "already has stays in the README and names the declaration, and only its restatement leaves "
                     "`Suggested.lean` (a small correction: the section on the roadmap as a record). A weaker or more "
                     "special library statement is not a match.")
+            found = ws.extra.get("library_main")
+            if found and found[1]:
+                lines.append(
+                    f"- **The library past the pin**: `{found[0]}` lists {found[1]} directories of the library's main "
+                    "branch with files the pinned tree lacks, under a proper name this README uses. The pin decides "
+                    "what `Suggested.lean` may use; main decides what is duplicated. Open the likely ones (on GitHub "
+                    "at the commit the file names; the pinned checkout lacks them) for each target of this roadmap "
+                    "and for each thing it takes from a roadmap that is still a pull request. What main now provides "
+                    "is reported under `## For the human reviewers`, with the declaration's name and file: a target "
+                    "to drop or a supplier citation to replace once the pin moves. It is not a finding against the "
+                    "pinned text.")
+            found = ws.extra.get("needs")
+            if found and found[1]:
+                lines.append(
+                    f"- **`*Needs:*` lines**: `{found[0]}` lists, for {found[1]} subsections, the sections of this "
+                    "README the text cites and the `*Needs:*` line does not, and the later sections a `*Needs:*` line "
+                    "lists. Leads, not verdicts: read each in place. A section the statement, the route or a Check "
+                    "uses belongs in the line (build order, defect class 11); a section named only for contrast does "
+                    "not, and is no remark.")
         sigs = ws.extra.get("signatures")
         if sigs:
             path, total, flagged, reason = sigs
