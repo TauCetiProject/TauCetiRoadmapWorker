@@ -150,7 +150,11 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   and `status` prints it. A worker that lists a job whose roadmap none of the listed jobs gives an origin for reads the
   whole board for it, and keeps that reading in `<state>/board-origins.json` for thirty minutes, shared
   by the workers of the host (`worker.board_origins`): on a busy board the reading is over a hundred
-  pages, and one a round on every worker spent the host's hourly GitHub quota.
+  pages, and one a round on every worker spent the host's hourly GitHub quota. One worker of the host
+  reads at a time (a lock beside the file; the others rank with the older reading meanwhile), and
+  after a reading that failed none tries again for five minutes: when the kept reading ran out, nine
+  workers each read a board of 220 pages at once, and with the limit hit every round began another
+  reading that failed part-way.
 * `--agent` pins the agent family. Without it, each job runs on its lane's configured agent
   (`[agents.lanes.<kind>]`, default `[agents] default`), and a red-team pass on the agent it requires,
   if that agent is installed.
@@ -984,6 +988,24 @@ is a small correction. Generated blocks are outside that check. It writes its re
 verdict (`packages/<Leaf>/reports/PRREVIEW-<Leaf>~k.md` and `.json`, the head, pull request and
 `folder` named in the verdict).
 
+A rule of the brief may leave a question to the project's human reviewers (whether a roadmap on main may
+hand a layer to a new roadmap under new numbers, say). A review cannot waive such a rule, and until
+it is told what they decided it finds the same thing in every round, and the folder never reaches the
+label. `[prreview] decisions` tells it: a table from the pull request's number (written as a string)
+to the sentences the human reviewers decided, for example
+
+```toml
+[prreview.decisions]
+"3027" = ["Foo: its Layer 6 and sections 5.4 to 5.6 leave it and are Layers 0 to 4 of Bar, under new numbers; the human reviewers allow this move."]
+```
+
+Every review of that pull request quotes them as binding (`lanes.prreview.decisions_text`): what a
+decision allows is not raised, the review checks that the head does what the decision says and no
+more, says under "For the human reviewers" that it was applied, and accounts for an earlier finding
+it settles as repaired. A decision excuses no mathematical error. Only the board's configuration
+carries decisions: the description and the comments of a pull request are its author's text and
+never count as one, so record a decision only when a human reviewer has taken it.
+
 A review is a referee's report with three kinds of remark, numbered apart (`prompts/sections/remarks.md`):
 
 - **findings** (`R01`… in the report, `F01`… in the comment; P1 or P2 only): what makes a stated
@@ -1216,17 +1238,26 @@ change of its own the text leaves unstated, by writing `scratch/description.md`:
 `Title: <the title>`, a blank line, then the whole description as prose. The worker refuses a text
 that is not in that form, is over 200 characters of title or 12000 of description, carries an HTML
 comment, a path of the machine or an @-mention, or would read as a review; the refusal goes to the
-repair's second pass like any failed check. After the push (or with no push, when the files needed
+repair's second pass like any failed check. For a description whose prose is already near or over
+12000 characters the limit is that prose and 2000 more (`description_limit`; never more than
+GitHub's 65536 leave beside the generated blocks), and the brief says that nothing of the present
+text is to be shortened to make room: under the fixed limit, the repairs of a pull request of 92
+folders, at 11,905 characters, each shortened what stood about other folders, and two at once
+rewrote the same lines. After the push (or with no push, when the files needed
 no change) and before the reply, the worker writes the title and the description onto the pull
 request: the summary block when the description has one (it stays first), the agent's prose, then,
 verbatim and in their order, every other generated block of the present
 description (`<!-- name -->` … `<!-- /name -->`: a dependency task list, the merge-order paragraph),
 every other HTML comment (the worker's marker) and the attribution line it ends with. Prose outside
 those blocks is replaced. A description whose prose is no longer the one the repair read (another
-folder's repair rewrote it meanwhile, or the author did) is left as it is, since the repair's text
-would undo that change. That, like a write GitHub refuses, is noted (`title and description not
-written: <why>`) and not retried; the files' repair and its reply stand. The round's summary says `title and
-description rewritten` (or which of the two).
+folder's repair rewrote it meanwhile, or the author did) gets the two changes merged, line by line,
+and where both fall in one line (a paragraph is one line) sentence by sentence, keeping two sentences
+added at the same place, the present description's first (`merged_prose`): on a pull request with
+several roadmap folders the repairs of two folders often run at once, and each rewrites or adds its
+own sentence. When both changed the same sentence the description is left as it is, since the
+repair's text would undo the other change. That, like a write GitHub refuses, is noted (`title and
+description not written: <why>`) and not retried; the files' repair and its reply stand. The
+round's summary says `title and description rewritten` (or which of the two).
 
 The summary block that opens a description (`<!-- roadmap-summary -->`, written once by
 `tauceti-roadmap summary`) is the one generated block a repair may answer for, since nothing else
