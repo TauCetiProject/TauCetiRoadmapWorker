@@ -4532,3 +4532,80 @@ def test_aggregate_prs_parse_are_checked_and_leave_the_listing():
     gh = ContentGH(aggregate_nodes())
     assert [x["pr"] for x in openroadmaps.inventory(gh, REPO, ("TauCetiRoadmap",))] == [12, 13, 99]
     assert [x["pr"] for x in openroadmaps.inventory(gh, REPO, ("TauCetiRoadmap",), skip=[99])] == [12, 13]
+
+
+# --- a supplier of a declared gap reaches the base branch after the acceptance ----------------------------
+
+def plan_file(name, *suppliers):
+    return {f"packages/{name}/design/plan.json": json.dumps(
+        {"roadmap": name, "gaps": [{"slug": f"gap-{n}", "supplier": s, "section": "1.1", "needs": "a class"}
+                                   for n, s in enumerate(suppliers)]})}
+
+
+def test_an_accepted_folder_is_checked_against_a_gap_supplier_that_merged_since_its_review():
+    done = review_job(40, 1, 12, H1, "done")
+    pulls = text_pr(12)
+    digest = summary.text_digest("Roadmap: Foo", pulls[12]["body"])
+    listing = [node(12, H1, labels=["ai-found-no-errors", "awaiting-review"])]
+    read = verdict_read(done, "accepted", H1, digest)
+    on = {"text_per_run": 10, "supplier_checks": True}
+    # The supplier is not on main yet, or the roadmap declares no gap (or has no plan): nothing.
+    assert sync(ContentGH(listing, pulls=pulls, files={**read, **plan_file("Foo", "Sup")}), [done], **on)[1].created == []
+    assert sync(ContentGH(listing, pulls=pulls, files={**read, **plan_file("Foo")}, tree=["Sup"]), [done], **on)[1].created == []
+    assert sync(ContentGH(listing, pulls=pulls, files=read, tree=["Sup"]), [done], **on)[1].created == []
+    # The supplier of a gap is on main and no review of the folder read it there: one check round, which
+    # names the supplier and records what it reads. A gap with no owner (`none`) names no supplier.
+    files = {**read, **plan_file("Foo", "Sup", "Later", "none", "Sup")}
+    out, fake = sync(ContentGH(listing, pulls=pulls, files=files, tree=["Sup", "Other"]), [done], **on)
+    [(job, _s, _p)] = fake.created
+    assert job.inputs == {"pr": 12, "head": H1, "owner": "carol", "name": "Foo", "folder": "Foo", "rereview": True,
+                          "previous_head": H1, "previous_job": "PRREVIEW-Foo~1", "text_check": True,
+                          "text_digest": digest, "supplier_check": ["Sup"], "suppliers_read": ["Sup"]}
+    assert out == ["#12: PRREVIEW-Foo~2 created (a check against a supplier now on main: Sup; dependency depth 0)"]
+    # That round, open or finished, read it: no second one. Once another supplier merges, a round for that one.
+    job.number, job.state = 41, "available"
+    assert sync(ContentGH(listing, pulls=pulls, files=files, tree=["Sup"]), [done, job], **on)[1].created == []
+    job.state, job.labels = "done", ["roadmap-job", "kind:prreview", "state:done"]
+    finished = {**files, **verdict_read(job, "accepted", H1, digest)}
+    assert sync(ContentGH(listing, pulls=pulls, files=finished, tree=["Sup"]), [done, job], **on)[1].created == []
+    out, fake = sync(ContentGH(listing, pulls=pulls, files=finished, tree=["Sup", "Later"]), [done, job], **on)
+    [(later, _s, _p)] = fake.created
+    assert later.inputs["supplier_check"] == ["Later"] and later.inputs["suppliers_read"] == ["Later", "Sup"]
+    # A round closed as superseded read nothing; a plan GitHub did not serve leaves the folder as it is;
+    # and nothing is filed, or recorded, with the setting off.
+    job.labels = [*job.labels, board.SUPERSEDED_LABEL]
+    assert len(sync(ContentGH(listing, pulls=pulls, files=files, tree=["Sup"]), [done, job], **on)[1].created) == 1
+
+    class Unserved(ContentGH):
+        def raw_file(self, repo, path, ref=""):
+            if path.endswith("plan.json"):
+                raise GHError(f"gh api repos/{repo}/contents/{path}: HTTP 502: Bad Gateway")
+            return super().raw_file(repo, path, ref)
+    assert sync(Unserved(listing, pulls=pulls, files=files, tree=["Sup"]), [done], **on)[1].created == []
+    assert sync(ContentGH(listing, pulls=pulls, files=files, tree=["Sup"]), [done], text_per_run=10)[1].created == []
+
+
+def test_a_full_review_records_the_gap_suppliers_on_main_and_needs_no_check_of_them():
+    files = plan_file("Foo", "Sup", "Later")
+    out, fake = sync(ContentGH([node(12, H1)], files=files, tree=["Sup"]), supplier_checks=True)
+    [(first, _s, _p)] = fake.created
+    assert first.inputs == {"pr": 12, "head": H1, "owner": "carol", "name": "Foo", "folder": "Foo", "rereview": False,
+                            "suppliers_read": ["Sup"]}
+    assert intake.suppliers_due([first], ["Sup"]) == [] and intake.suppliers_due([first], ["Later", "Sup"]) == ["Later"]
+    # No supplier on main, or the setting off: the job is as it was.
+    for gh, over in ((ContentGH([node(12, H1)], files=files), {"supplier_checks": True}),
+                     (ContentGH([node(12, H1)], files=files, tree=["Sup"]), {})):
+        [(plain, _s, _p)] = sync(gh, **over)[1].created
+        assert "suppliers_read" not in plain.inputs
+
+
+def test_the_brief_of_a_supplier_check_names_the_suppliers_and_widens_the_changed_passages():
+    job = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "text_check": True,
+                                            "supplier_check": ["Sup", "Later"]})
+    text = lane_prreview.mode_text("incremental", job, example_config(),
+                                   {"previous_report": "r.md", "changes": "c.md", "change_lines": 0, "pr_text": "t.md"})
+    assert "merged since its review" in text and "Sup, Later" in text and "`t.md`" in text
+    assert "is a changed passage of step 2" in text and "checks the pull request's title and description" not in text
+    plain = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "text_check": True})
+    assert "merged since its review" not in lane_prreview.mode_text(
+        "incremental", plain, example_config(), {"previous_report": "r.md", "changes": "c.md", "change_lines": 0})

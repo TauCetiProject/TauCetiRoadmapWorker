@@ -3363,6 +3363,17 @@ def sync_pr_reviews(ctx) -> list[str]:
                        f"({str(exc).splitlines()[0][:160]})")
 
     made, waiting = 0, 0
+    main_leaves = {str(f).rsplit("/", 1)[-1] for f in on_main}
+    gap_plans: dict[str, set[str] | None] = {}
+
+    def merged_suppliers(leaves: list[str]) -> dict[str, list[str] | None]:
+        """With `[prreview] supplier_checks`: for each roadmap, the suppliers of its declared gaps that are
+        on the base branch (`gap_suppliers`, read once a run), None when its plan could not be read."""
+        if not p.supplier_checks:
+            return {}
+        gap_suppliers(ctx, [x for x in leaves if x not in gap_plans], batch, gap_plans)
+        return {x: None if gap_plans.get(x) is None else sorted(gap_plans[x] & main_leaves) for x in leaves}
+
     text_due: list[tuple[int, dict, list[str], str, list[Job]]] = []
     passed: dict[int, set[str]] = {}
 
@@ -3392,6 +3403,11 @@ def sync_pr_reviews(ctx) -> list[str]:
         if dispute:
             inputs.update({"rereview": False, "dispute_rereview": True})
         inputs.update(extra)
+        # What a review that reads the whole folder, or the supplier contracts (`supplier_check`), reads of
+        # the suppliers of its declared gaps: those on the base branch now (`suppliers_due`).
+        if extra.get("supplier_check") or not (inputs["rereview"] or dispute):
+            if on_now := merged_suppliers([leaf]).get(leaf):
+                inputs["suppliers_read"] = on_now
         # A pass before the final review, or the final review after the passes: a full review on the
         # review models, whatever the passes changed (`review_stage`; `final`: a pass left this head).
         passes = [j for j in ours if j.inputs.get("pre") and board.SUPERSEDED_LABEL not in j.labels]
@@ -3538,7 +3554,7 @@ def sync_pr_reviews(ctx) -> list[str]:
     if waiting:
         out.append(f"{waiting} review job(s) wait ([prreview] per_run = {p.per_run})")
     if text_due and p.text_per_run:
-        file_text_checks(ctx, listed, text_due, texts, file_round, lambda: made, out, pr_texts)
+        file_text_checks(ctx, listed, text_due, texts, file_round, lambda: made, out, pr_texts, merged_suppliers)
     for number in sorted({pr_of(j) for j in available if j.id in kept_rounds and j.state == "available"}):
         count = sum(1 for j in available if j.id in kept_rounds and j.state == "available" and pr_of(j) == number)
         out.append(f"#{number}: {count} review{'s' if count != 1 else ''} nobody took kept at "
@@ -3601,8 +3617,51 @@ def text_read(ctx, ours: list[Job], at: str, head: str, digest: str, texts: dict
     return bool(job and job.inputs.get("text_check") and job.inputs.get("text_digest") == digest), ""
 
 
+def gap_suppliers(ctx, names: list[str], batch: int, known: dict[str, set[str] | None]) -> None:
+    """Records in `known`, for each roadmap of `names`, the suppliers its plan on the board's main
+    declares gaps against (`design/plan.json`, `gaps[].supplier`; none for a roadmap without a plan,
+    which is any roadmap the board did not write), or None when GitHub did not serve the plan this run.
+    The plans are read in batches (`prbatch.verdict_texts`), one REST read for each the batch left out."""
+    repo = ctx.cfg.repositories.packages_repo()
+    paths = {name: f"{board.package_dir(ctx.cfg.board.packages_dir, name)}/design/plan.json" for name in dict.fromkeys(names)}
+    got = prbatch.verdict_texts(ctx.gh, repo, list(paths.values()), batch) if paths else {}
+    for name, path in paths.items():
+        text = got.get(path)
+        if path not in got:
+            try:
+                text = ctx.gh.raw_file(repo, path)
+            except GHError as exc:
+                if "404" not in str(exc):
+                    known[name] = None
+                    continue
+                text = None
+        try:
+            plan = json.loads(text) if text else {}
+        except ValueError:
+            plan = {}
+        gaps = plan.get("gaps") if isinstance(plan, dict) else None
+        known[name] = {str(g["supplier"]).strip() for g in gaps or [] if isinstance(g, dict)
+                       and str(g.get("supplier") or "").strip().lower() not in ("", "none")}
+
+
+def suppliers_due(ours: list[Job], on_main: list[str]) -> list[str]:
+    """The suppliers of a roadmap folder's declared gaps that are on the base branch (`on_main`) and that
+    no review of the folder read there: a round records the suppliers on the base branch when it was
+    filed (`suppliers_read`) when it reads the whole folder or checks the supplier contracts; a round
+    closed as superseded read nothing. A folder none of whose rounds has the record (they predate it) is
+    due for every supplier on the base branch: nothing says a review read the merged supplier.
+    2026-11-13: a roadmap accepted two days before its only gap supplier merged kept saying that its
+    definitions could not be stated for want of that supplier, through a check of its text and two
+    housekeeping pushes, until it merged."""
+    read: set[str] = set()
+    for job in ours:
+        if board.SUPERSEDED_LABEL not in job.labels:
+            read |= {str(s) for s in job.inputs.get("suppliers_read") or []}
+    return sorted(set(on_main) - read)
+
+
 def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round, made, out: list[str],
-                     read: dict[int, dict | None] | None = None) -> None:
+                     read: dict[int, dict | None] | None = None, merged_suppliers=None) -> None:
     """The check rounds of accepted pull requests' title and description (`[prreview] text_per_run`),
     filed by `sync_pr_reviews` after its other rounds, within `[prreview] per_run`.
 
@@ -3617,7 +3676,14 @@ def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round
     waiting only for those, and so on), then `awaiting-review` before the rest, non-drafts before
     drafts, oldest first, the folders of one pull request together, so that the pull requests
     closest to merging have their text checked first. The worker whose reply answered the folder's
-    latest review at this head may not take its check (`file_round`'s `answered`)."""
+    latest review at this head may not take its check (`file_round`'s `answered`).
+
+    With `[prreview] supplier_checks`, a folder is due as well when a supplier of one of its declared
+    gaps is on the base branch and no review of the folder read it there (`suppliers_due`;
+    `merged_suppliers`: roadmap -> those suppliers, None when its plan could not be read, which leaves
+    the folder as it is for this run). Its round is the same check round, with the suppliers to read
+    against as `supplier_check`: it reads the folder's supplier contracts against the merged
+    suppliers, and the text."""
     cfg, p = ctx.cfg, ctx.cfg.prreview
     room = min(p.text_per_run, p.per_run - made())
     if room <= 0:
@@ -3631,12 +3697,19 @@ def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round
             out.append(f"#{number}: text not checked (its title and description could not be read)")
             continue
         digest = summary.text_digest(got["title"], got["body"])
+        leaves = {folder: str(folder).rsplit("/", 1)[-1] for folder in heads}
+        on_main = merged_suppliers(list(leaves.values())) if merged_suppliers else {}
         for folder, at in heads.items():
-            read, reviewed = text_read(ctx, [j for j in mine if board.prreview_folder(j) == folder], at, head,
-                                       digest, texts)
-            if not read:
+            ours = [j for j in mine if board.prreview_folder(j) == folder]
+            merged = suppliers_due(ours, on_main.get(leaves[folder]) or [])
+            read, reviewed = text_read(ctx, ours, at, head, digest, texts)
+            if merged:
                 ready.append((number, entry, folder, digest, mine,
-                              "changed since its review" if reviewed else "its review did not record it"))
+                              f"a check against {'a supplier' if len(merged) == 1 else 'suppliers'} now on "
+                              f"{cfg.project.branch}: {', '.join(merged)}", {"supplier_check": merged}))
+            elif not read:
+                ready.append((number, entry, folder, digest, mine, "a check of its title and description: "
+                              + ("changed since its review" if reviewed else "its review did not record it"), {}))
     if not ready:
         return
     depths = dependency_depths(listed, bodies, p.dependency_label)
@@ -3644,15 +3717,15 @@ def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round
     ready.sort(key=lambda x: (depths.get(x[0], 0), review_label not in x[1].get("labels", []),
                               bool(x[1].get("draft")), x[0]))
     filed = 0
-    for number, entry, folder, digest, mine, why in ready:
+    for number, entry, folder, digest, mine, why, more in ready:
         if filed >= room:
             break
         ours = [j for j in mine if board.prreview_folder(j) == folder]
         # The worker that answered the folder's latest review at this head (a P3-only repair of its text,
         # say) wrote what the check reads: it may not take the check, whoever answered the other folders.
         last = previous_review(ours)
-        if file_round(number, entry, folder, ours, mine, {"text_check": True, "text_digest": digest},
-                      note=f" (a check of its title and description: {why}; dependency depth {depths.get(number, 0)})",
+        if file_round(number, entry, folder, ours, mine, {"text_check": True, "text_digest": digest, **more},
+                      note=f" ({why}; dependency depth {depths.get(number, 0)})",
                       answered=last.id if last else ""):
             filed += 1
     if len(ready) > filed:
