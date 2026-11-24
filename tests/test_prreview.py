@@ -4591,7 +4591,8 @@ def test_a_full_review_records_the_gap_suppliers_on_main_and_needs_no_check_of_t
     [(first, _s, _p)] = fake.created
     assert first.inputs == {"pr": 12, "head": H1, "owner": "carol", "name": "Foo", "folder": "Foo", "rereview": False,
                             "suppliers_read": ["Sup"]}
-    assert intake.suppliers_due([first], ["Sup"]) == [] and intake.suppliers_due([first], ["Later", "Sup"]) == ["Later"]
+    assert intake.suppliers_due([first], ["Sup"], H1, H1) == []
+    assert intake.suppliers_due([first], ["Later", "Sup"], H1, H1) == ["Later"]
     # No supplier on main, or the setting off: the job is as it was.
     for gh, over in ((ContentGH([node(12, H1)], files=files), {"supplier_checks": True}),
                      (ContentGH([node(12, H1)], files=files, tree=["Sup"]), {})):
@@ -4656,8 +4657,15 @@ def test_a_review_of_the_change_to_a_roadmap_on_main_does_not_count_as_reading_i
     # supplier check follows the acceptance.
     files = plan_file("Foo", "Sup")
     on = {"supplier_checks": True, "review_changes_of_merged": True}
-    [(first, _s, _p)] = sync(ContentGH([node(12, H1)], files=files, tree=["Sup", "Foo"]), **on)[1].created
+    def based(base, **kw):
+        return {**node(12, H1, **kw), "baseRefName": base}
+    [(first, _s, _p)] = sync(ContentGH([based("main")], files=files, tree=["Sup", "Foo"]), **on)[1].created
     assert "suppliers_read" not in first.inputs and first.inputs["rereview"] is False
+    # So does one stacked on another roadmap's branch, which may hold the folder though main does not, and
+    # one whose base the listing does not give.
+    for base in ("roadmap/foo", ""):
+        [(stacked, _s, _p)] = sync(ContentGH([based(base)], files=files, tree=["Sup"]), **on)[1].created
+        assert "suppliers_read" not in stacked.inputs, base
     first.number, first.state, first.labels = 40, "done", ["roadmap-job", "kind:prreview", "state:done"]
     pulls = text_pr(12)
     digest = summary.text_digest("Roadmap: Foo", pulls[12]["body"])
@@ -4667,7 +4675,7 @@ def test_a_review_of_the_change_to_a_roadmap_on_main_does_not_count_as_reading_i
     assert check.inputs["supplier_check"] == ["Sup"] and check.inputs["suppliers_read"] == ["Sup"]
     # A roadmap the pull request adds, or the setting off: the first review reads the whole folder.
     for tree, over in ((["Sup"], on), (["Sup", "Foo"], {"supplier_checks": True})):
-        [(whole, _s, _p)] = sync(ContentGH([node(12, H1)], files=files, tree=tree), **over)[1].created
+        [(whole, _s, _p)] = sync(ContentGH([based("main")], files=files, tree=tree), **over)[1].created
         assert whole.inputs["suppliers_read"] == ["Sup"]
 
 
@@ -4685,3 +4693,23 @@ def test_a_supplier_check_keeps_its_scope_in_every_review_mode():
     plain = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "rereview": True})
     assert all("base branch since" not in lane_prreview.mode_text(m, plain, cfg, extra) and "merged since its review"
                not in lane_prreview.mode_text(m, plain, cfg, extra) for m in ("incremental", "change", "full"))
+
+
+def test_a_supplier_record_counts_only_for_the_files_whose_acceptance_stands():
+    def job(round_, head, previous="", **inputs):
+        made = review_job(40 + round_, round_, 12, head, "done")
+        made.inputs.update({"rereview": bool(previous), **({"previous_head": previous} if previous else {}), **inputs})
+        return made
+    first = job(1, H1)                                       # accepted before the supplier merged
+    second = job(2, H2, H1)                                  # a revision of the contracts, re-reviewed
+    check = job(3, H2, H2, text_check=True, supplier_check=["Sup"], suppliers_read=["Sup"])
+    # The acceptance of H2 stands: its check read the supplier. So it does at a later head re-reviewed from H2.
+    assert intake.suppliers_due([first, second, check], ["Sup"], H2, H2) == []
+    later = job(4, H3, H2)
+    assert intake.suppliers_due([first, second, check, later], ["Sup"], H3, H3) == []
+    # H3 restores the files of H1, whose acceptance is carried to it: the check of H2 read other files.
+    assert intake.suppliers_due([first, second, check], ["Sup"], H1, H3) == ["Sup"]
+    # A whole review of H1 that recorded the supplier counts through the re-reviews that followed it.
+    whole = job(1, H1, suppliers_read=["Sup"])
+    assert intake.suppliers_due([whole, second], ["Sup"], H2, H2) == []
+    assert intake.suppliers_due([whole, second, check], ["Sup"], H1, H3) == []

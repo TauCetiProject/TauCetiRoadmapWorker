@@ -3405,10 +3405,14 @@ def sync_pr_reviews(ctx) -> list[str]:
         inputs.update(extra)
         # What a review that reads the whole folder, or the supplier contracts (`supplier_check`), reads of
         # the suppliers of its declared gaps: those on the base branch now (`suppliers_due`). A first review
-        # of a roadmap on the base branch reads its change only under `review_changes_of_merged`
-        # (`lanes.prreview.review_mode`), and may leave what the untouched text says of a supplier: it
-        # records nothing, and the check round follows its acceptance.
-        whole = not (inputs["rereview"] or dispute) and not (p.review_changes_of_merged and folder in on_main)
+        # of a roadmap on the branch the pull request merges into reads its change only under
+        # `review_changes_of_merged` (`lanes.prreview.review_mode`), and may leave what the untouched text
+        # says of a supplier: it records nothing, and the check round follows its acceptance. That branch is
+        # the project's only when the listing says so: a stacked pull request, whose base is another
+        # roadmap's branch, may hold the folder there though main does not, and so may one whose base the
+        # listing did not give.
+        adds = entry.get("base") == cfg.project.branch and folder not in on_main
+        whole = not (inputs["rereview"] or dispute) and (adds or not p.review_changes_of_merged)
         if extra.get("supplier_check") or whole:
             if on_now := merged_suppliers([leaf]).get(leaf):
                 inputs["suppliers_read"] = on_now
@@ -3648,7 +3652,7 @@ def gap_suppliers(ctx, names: list[str], batch: int, known: dict[str, set[str] |
                        and str(g.get("supplier") or "").strip().lower() not in ("", "none")}
 
 
-def suppliers_due(ours: list[Job], on_main: list[str]) -> list[str]:
+def suppliers_due(ours: list[Job], on_main: list[str], at: str, head: str) -> list[str]:
     """The suppliers of a roadmap folder's declared gaps that are on the base branch (`on_main`) and that
     no review of the folder read there: a round records the suppliers on the base branch when it was
     filed (`suppliers_read`) when it reads the whole folder (not a review of the change to a roadmap on
@@ -3657,11 +3661,21 @@ def suppliers_due(ours: list[Job], on_main: list[str]) -> list[str]:
     due for every supplier on the base branch: nothing says a review read the merged supplier.
     2026-11-13: a roadmap accepted two days before its only gap supplier merged kept saying that its
     definitions could not be stated for want of that supplier, through a check of its text and two
-    housekeeping pushes, until it merged."""
-    read: set[str] = set()
-    for job in ours:
-        if board.SUPERSEDED_LABEL not in job.labels:
-            read |= {str(s) for s in job.inputs.get("suppliers_read") or []}
+    housekeeping pushes, until it merged.
+
+    A record counts only for the files it was made on: those of the head the folder's acceptance comes
+    from (`at`), those of the pull request's head now (`head`), and the heads a chain of re-reviews leads
+    back to from either (a re-review reads what changed since its `previous_head`, so what the earlier
+    round read of the suppliers stands for the text it left alone). A review of other files does not
+    count: when a head restores the files of an earlier acceptance, which is carried to it, a supplier
+    check made on the revision in between says nothing of the restored contracts."""
+    live = [j for j in ours if board.SUPERSEDED_LABEL not in j.labels]
+    heads, grew = {str(h) for h in (at, head) if h}, True
+    while grew:
+        more = {str(j.inputs["previous_head"]) for j in live if str(j.inputs.get("head")) in heads
+                and j.inputs.get("rereview") and j.inputs.get("previous_head")} - heads
+        heads, grew = heads | more, bool(more)
+    read = {str(s) for j in live if str(j.inputs.get("head")) in heads for s in j.inputs.get("suppliers_read") or []}
     return sorted(set(on_main) - read)
 
 
@@ -3708,7 +3722,7 @@ def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round
         digest = summary.text_digest(got["title"], got["body"])
         for folder, at in heads.items():
             ours = [j for j in mine if board.prreview_folder(j) == folder]
-            merged = suppliers_due(ours, on_main.get(str(folder).rsplit("/", 1)[-1]) or [])
+            merged = suppliers_due(ours, on_main.get(str(folder).rsplit("/", 1)[-1]) or [], at, head)
             read, reviewed = text_read(ctx, ours, at, head, digest, texts)
             if merged:
                 ready.append((number, entry, folder, digest, mine,
