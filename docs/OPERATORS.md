@@ -1151,7 +1151,9 @@ the head the job names: it is neither closed nor filed again, and `board sync` s
 took kept at <sha7>`. A worker takes such a round and reviews the head the job names, as a review
 under way when the head moves does, and the review counts at the new head by the rule above. A round
 whose folder's files did change is closed as superseded and filed at the new head, as every round is
-with the switch off. Rounds that read the pull request's text or an answer given at their head
+with the switch off. So is a round filed before a change outside the active directory, such as a merge
+of the base branch: the repair of a review is never carried over such a move, so the round is filed
+again at the head that has it. Rounds that read the pull request's text or an answer given at their head
 (`text_check`, `operator_check`, `text_rereview`, `dispute_rereview`) belong to that head and are
 always closed when it moves. Without this, a pull request of many roadmap folders has all its waiting
 rounds closed and filed again at each repair of one folder, and no worker can take one in between.

@@ -314,7 +314,7 @@ class ContentGH:
         self.compares = dict(compares or {})                                  # (old, new) -> the comparison's files
         self.tree = [f"TauCetiRoadmap/{d}/README.md" for d in tree]
         self.writes, self.listings, self.dry_run, self.fence = [], 0, False, None
-        self.trees, self.tree_queries = trees, 0
+        self.trees, self.tree_queries, self.root_queries = trees, 0, 0
         self.entries, self.layout_queries = dict(entries or {}), 0
         self.blobs = blobs if blobs == "unread" else dict(blobs or {})
 
@@ -335,6 +335,14 @@ class ContentGH:
             asked = [int(n) for n in re.findall(r"p(\d+): pullRequest", query)]
             return {"repository": {f"p{n}": {"title": self.pulls[n].get("title", ""),
                                              "body": self.pulls[n].get("body", "")} for n in asked if n in self.pulls}}
+        roots = re.findall(r'(e\d+): object\(expression: "([0-9a-f]+):"\) \{ \.\.\. on Tree', query)
+        if roots:                                  # `prbatch.tree_entries` of root trees (`intake.outside_unchanged`)
+            self.root_queries += 1
+            if self.trees == "unread":
+                raise GHError("graphql: 502")
+            return {"repository": {alias: {"entries": [{"name": n, "oid": o} for n, o in self.entries.get(
+                (sha, ""), {"TauCetiRoadmap": f"roadmaps-{sha[:8]}", "lakefile.toml": "lakefile"}).items()]}
+                for alias, sha in roots}}
         listed = re.findall(r'(e\d+): object\(expression: "([0-9a-f]+):([^"]+)"\) \{ \.\.\. on Tree', query)
         if listed:                                 # `prbatch.tree_entries`
             self.layout_queries += 1
@@ -1744,6 +1752,36 @@ def test_a_review_nobody_took_stays_when_the_head_moved_in_another_folder():
         assert not intake.folder_round(foo) and intake.folder_round(bar)
         _out, fake = sync(ContentGH([two_folder_pr(H2)], trees=repaired), [foo, bar])
         assert ("PRREVIEW-Foo~1", "done") in fake.states
+
+
+def test_a_round_is_not_kept_across_a_change_outside_the_roadmaps():
+    """A merge of the base branch changes files outside the active directory; the repair of a round kept
+    across it could not be carried onto the branch, so the round is closed and filed at the new head."""
+    def queued():
+        return [review_job(41, 1, 1164, H1, "available", folder="Foo")]
+    same = same_trees(H1, H2)
+    merged = {(H1, ""): {"TauCetiRoadmap": "r1", "lakefile.toml": "lakefile", "umbrellas": "u1"},
+              (H2, ""): {"TauCetiRoadmap": "r2", "lakefile.toml": "lakefile", "umbrellas": "u2"}}
+    out, fake = sync(ContentGH([two_folder_pr(H2)], trees=same, entries=merged), queued())
+    assert fake.states == [("PRREVIEW-Foo~1", "done")] and "#1164: PRREVIEW-Foo~1 superseded" in out
+    assert ("PRREVIEW-Foo~2", "Foo") in created(fake)
+    # Only the active directory's own entry differs: kept.
+    inside = {(H1, ""): {"TauCetiRoadmap": "r1", "lakefile.toml": "lakefile"},
+              (H2, ""): {"TauCetiRoadmap": "r2", "lakefile.toml": "lakefile"}}
+    gh = ContentGH([two_folder_pr(H2)], trees=same, entries=inside)
+    out, fake = sync(gh, queued())
+    assert fake.states == [] and gh.root_queries == 1
+    assert intake.outside_unchanged(SimpleNamespace(cfg=example_config(), gh=gh), REPO, {(H1, H2)}, 5) == {(H1, H2): True}
+    assert intake.outside_unchanged(SimpleNamespace(cfg=example_config(), gh=ContentGH(entries=merged)), REPO,
+                                    {(H1, H2)}, 5) == {(H1, H2): False}
+    assert intake.outside_unchanged(SimpleNamespace(cfg=example_config(), gh=ContentGH(trees="unread")), REPO,
+                                    {(H1, H2)}, 5) == {}
+    # The lane takes the round under the same condition.
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 12, "head": H1, "owner": "carol", "name": "Foo"})
+    foo = {(H1, "TauCetiRoadmap/Foo"): "foo", (H2, "TauCetiRoadmap/Foo"): "foo"}
+    lane = lane_for(job)
+    assert lane.folder_unmoved(job, SimpleNamespace(cfg=example_config(), gh=ContentGH(trees=foo, entries=inside)), H1, H2)
+    assert not lane.folder_unmoved(job, SimpleNamespace(cfg=example_config(), gh=ContentGH(trees=foo, entries=merged)), H1, H2)
 
 
 def test_a_kept_round_is_closed_when_its_folder_needs_no_review():
