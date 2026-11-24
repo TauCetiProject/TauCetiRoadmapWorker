@@ -2827,6 +2827,37 @@ def next_review_round(reviews, leaf: str) -> int:
     return 1 + max((board.parse_job_id(j.id).round for j in reviews if j.name == leaf), default=0)
 
 
+def passed_folders(ctx, repo: str, head: str, folders, jobs: list[Job], texts, batch: int) -> set[str]:
+    """With `[prreview] carry_unchanged_folders` and passes before the final review: the roadmap folders
+    of a pull request (`jobs`: its PRREVIEW jobs) whose latest finished review is a pass that asked for
+    nothing (`PASSED`), read at an earlier head, and which hold at `head` the files that pass read (one
+    git tree, `prbatch.tree_ids`). The head moved by a repair of another folder or a merge of the base
+    branch, so the pass left this folder where it was: its next round is the final review, as it is
+    when the head itself stays. 2026-11-24: on a pull request of 92 roadmap folders every folder was
+    getting a second and a third pass on files a pass had accepted, because another folder's repair had
+    moved the head. A tree GitHub did not give names no folder: that folder gets another pass."""
+    found: dict[str, str] = {}
+    for folder in folders:
+        done = [j for j in jobs if board.prreview_folder(j) == folder and j.state == "done"
+                and board.SUPERSEDED_LABEL not in j.labels and j.inputs.get("head")]
+        if not done:
+            continue
+        job = max(done, key=round_key)
+        if not job.inputs.get("pre") or job.inputs.get("head") == head:
+            continue
+        verdict = prreview_verdicts(ctx, job.name, [job], "", texts).get(job.id)
+        if verdict and verdict.get("status") == PASSED and verdict.get("head") == job.inputs.get("head"):
+            found[folder] = str(job.inputs["head"])
+    if not found:
+        return set()
+    base = ctx.cfg.roadmap.active_dir.strip("/")
+    path_of = {folder: f"{base}/{str(folder).strip('/')}" for folder in found}
+    ids = prbatch.tree_ids(ctx.gh, repo, [(sha, path_of[folder]) for folder, start in found.items()
+                                          for sha in (head, start)], batch)
+    return {folder for folder, start in found.items()
+            if ids.get((head, path_of[folder])) and ids.get((head, path_of[folder])) == ids.get((start, path_of[folder]))}
+
+
 def folder_round(job: Job) -> bool:
     """Whether a PRREVIEW job reads a roadmap folder's files and nothing that belongs to one head: not a
     check of the pull request's text (`text_check`, `operator_check`), and not a round that reads an
@@ -3302,6 +3333,16 @@ def sync_pr_reviews(ctx) -> list[str]:
 
     made, waiting = 0, 0
     text_due: list[tuple[int, dict, list[str], str, list[Job]]] = []
+    passed: dict[int, set[str]] = {}
+
+    def passed_at(number: int, folders, mine: list[Job], head: str) -> set[str]:
+        """The folders of #number a pass accepted at an earlier head with the files they hold at `head`
+        (`passed_folders`), read once."""
+        if not p.carry_unchanged_folders or p.pre_passes <= 0:
+            return set()
+        if number not in passed:
+            passed[number] = passed_folders(ctx, repo, head, folders, mine, texts, batch)
+        return passed[number]
 
     def file_round(number: int, entry: dict, folder: str, ours: list[Job], mine: list[Job], extra: dict,
                    dispute: bool = False, note: str = "", answered: str = "", final: bool = False) -> bool:
@@ -3409,6 +3450,9 @@ def sync_pr_reviews(ctx) -> list[str]:
             # A pass before the final review that left the head where it was (it asked for nothing, or its
             # points were answered without a push): the final review reads this head.
             after_pass = bool(read_here) and bool(max(read_here, key=round_key).inputs.get("pre"))
+            # ... and so does a pass that asked for nothing at an earlier head, when the folder holds the
+            # files it read: the head moved in another folder (`passed_folders`).
+            after_pass = after_pass or (not same and folder in passed_at(number, folders, mine, head))
             if same and not after_pass:
                 # 2026-11-02: a review answered without moving the head (the reply's answered record names the
                 # reviewed head: a dispute) gets one more round, a full review by another worker; a head whose
