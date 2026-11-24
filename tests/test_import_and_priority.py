@@ -184,7 +184,19 @@ def test_the_whole_board_is_read_for_origins_once_a_while_for_the_host(tmp_path)
     assert worker.board_origins(one, listed, now=lambda: clock[0])["QWittVectors"] == "target:12"
     board.fail = False
     worker.board_origins(two, listed, now=lambda: clock[0])
+    assert board.reads == 1                                    # ... and no worker of the host tries again at once
+    clock[0] += worker.ORIGINS_RETRY + 1
+    # One worker reads at a time: while another holds the lock, the older reading ranks and nothing is read
+    # (2026-11-24: nine workers each read a board of 220 pages when the kept reading ran out).
+    import fcntl
+    with open(tmp_path / "board-origins.json.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert worker.board_origins(one, listed, now=lambda: clock[0])["QWittVectors"] == "target:12"
+        assert board.reads == 1
+    worker.board_origins(two, listed, now=lambda: clock[0])
     assert board.reads == 2
+    worker.board_origins(one, listed, now=lambda: clock[0])
+    assert board.reads == 2                                    # the new reading serves both
     # Jobs that all say their origin need no reading at all, and a context with no state directory still ranks.
     review.inputs["origin"] = "target:12"
     assert worker.board_origins(one, [review], now=lambda: clock[0] + 10 * worker.ORIGINS_TTL) == {"QWittVectors": "target:12"}

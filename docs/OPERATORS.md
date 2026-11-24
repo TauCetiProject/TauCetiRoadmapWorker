@@ -150,7 +150,11 @@ tauceti-roadmap --conf $CONF work --worker-id alice-port --only port,fix,gate --
   and `status` prints it. A worker that lists a job whose roadmap none of the listed jobs gives an origin for reads the
   whole board for it, and keeps that reading in `<state>/board-origins.json` for thirty minutes, shared
   by the workers of the host (`worker.board_origins`): on a busy board the reading is over a hundred
-  pages, and one a round on every worker spent the host's hourly GitHub quota.
+  pages, and one a round on every worker spent the host's hourly GitHub quota. One worker of the host
+  reads at a time (a lock beside the file; the others rank with the older reading meanwhile), and
+  after a reading that failed none tries again for five minutes: when the kept reading ran out, nine
+  workers each read a board of 220 pages at once, and with the limit hit every round began another
+  reading that failed part-way.
 * `--agent` pins the agent family. Without it, each job runs on its lane's configured agent
   (`[agents.lanes.<kind>]`, default `[agents] default`), and a red-team pass on the agent it requires,
   if that agent is installed.
