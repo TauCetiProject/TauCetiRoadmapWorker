@@ -888,21 +888,28 @@ description: changed since its review; dependency depth 0)`.
 accepted folder is not read again when a roadmap it declares supplier gaps against reaches the base
 branch: its files did not change, so its acceptance carries, while what it says of the supplier (the
 contracts, the section numbers, what `Suggested.lean` calls not statable for want of the supplier's
-carriers) was written against a design. With the setting on, such a folder is due for the same check
-round when the supplier of one of its gaps (the `gaps` of `design/plan.json` on the board's main,
-`intake.gap_suppliers`) is on the base branch and no review of the folder read it there
-(`intake.suppliers_due`). A round that reads the whole folder, and every such check, records the gap
-suppliers on the base branch when it was filed (`suppliers_read`); a folder none of whose rounds has
-the record is due once for each supplier already there. The round carries `supplier_check` (the
-suppliers to read against) besides `text_check`, and its brief makes every passage that cites, contracts
-with or waits for one of them changed text, in whatever mode the round runs
-(`lanes.prreview.supplier_scope`), so a defect there is a finding although the previous review passed the
-text. A first review of a roadmap on the base branch that reads its change only
-(`review_changes_of_merged`) records no `suppliers_read`: the check follows its acceptance. These rounds count within `text_per_run` and
-are filed in the same order; a plan GitHub does not serve leaves the folder as it is for the run. The
-log reads `#N: PRREVIEW-<Leaf>~k created (a check against a supplier now on main: <Supplier>;
-dependency depth 0)`. (2026-11-13: QuasiregularMaps was accepted two days before its only gap supplier
-merged, and merged eight days later still saying its definitions could not be stated without it.)
+carriers) was written against a design. With the setting on:
+
+- Every round filed for a folder records the suppliers of its gaps (the `gaps` of `design/plan.json`
+  on the board's main, `intake.gap_suppliers`) that are on the base branch at that moment, as
+  `suppliers_read`, and its brief has it read what the folder says of them in the mode the lane then
+  runs it in (`lanes.prreview.supplier_scope`): a full review and a review of the change against the
+  base read all of them, the second being told that those passages are changed text; an incremental
+  re-review reads what changed since the round it follows, and is told to read as well the suppliers
+  that round did not record (`supplier_check`). The record is true whatever mode is chosen, because
+  the brief is written from it.
+- An accepted folder is due for the check round above when a gap supplier on the base branch has no
+  such record at the head its acceptance comes from or at the head now (`intake.suppliers_due`): the
+  supplier merged after those rounds were filed, or they predate the record. A round of another head
+  never counts, so a head that restores the files of an earlier acceptance is checked again. The round
+  carries `supplier_check` besides `text_check`.
+
+These rounds count within `text_per_run` and are filed in the same order; the plans are read in one
+batched pass a run, and a plan GitHub does not serve leaves the folder as it is for the run. The log
+reads `#N: PRREVIEW-<Leaf>~k created (a check against a supplier now on main: <Supplier>; dependency
+depth 0)`. A folder whose rounds have no record is due once for each supplier already on the base
+branch. (2026-11-13: QuasiregularMaps was accepted two days before its only gap supplier merged, and
+merged eight days later still saying its definitions could not be stated without it.)
 
 The fourth needs no record: a title or description that is not the text the head's latest review read,
 when that review does not accept (`intake.text_moved`: the verdict's `text` against the digest of the

@@ -59,7 +59,7 @@ QUERY = """query($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 50, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
-      nodes { number title isDraft headRefOid baseRefName reviewDecision author { login } labels(first: 50) { nodes { name } }
+      nodes { number title isDraft headRefOid reviewDecision author { login } labels(first: 50) { nodes { name } }
               files(first: 100) { totalCount nodes { path changeType } } }
     }
   }
@@ -174,7 +174,6 @@ def inventory(gh, repo: str, dirs: tuple[str, ...], any_file: bool = False, skip
             under = any_file and any(p.startswith(d.rstrip("/") + "/") for p in paths for d in dirs)
             if folders or under:
                 entry = {"pr": pr["number"], "title": pr.get("title", ""), "head": pr.get("headRefOid", ""),
-                         "base": pr.get("baseRefName", ""),     # the branch it merges into ('' when not given)
                          "author": (pr.get("author") or {}).get("login", ""), "draft": bool(pr.get("isDraft")),
                          # a human has approved it: the board files nothing that could push to it
                          "approved": pr.get("reviewDecision") == "APPROVED",

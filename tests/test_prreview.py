@@ -4600,18 +4600,6 @@ def test_a_full_review_records_the_gap_suppliers_on_main_and_needs_no_check_of_t
         assert "suppliers_read" not in plain.inputs
 
 
-def test_the_brief_of_a_supplier_check_names_the_suppliers_and_widens_the_changed_passages():
-    job = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "text_check": True,
-                                            "supplier_check": ["Sup", "Later"]})
-    text = lane_prreview.mode_text("incremental", job, example_config(),
-                                   {"previous_report": "r.md", "changes": "c.md", "change_lines": 0, "pr_text": "t.md"})
-    assert "merged since its review" in text and "Sup, Later" in text and "`t.md`" in text
-    assert "counts as changed text in this round, never as untouched text" in text and "checks the pull request's title and description" not in text
-    plain = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "text_check": True})
-    assert "merged since its review" not in lane_prreview.mode_text(
-        "incremental", plain, example_config(), {"previous_report": "r.md", "changes": "c.md", "change_lines": 0})
-
-
 def test_the_plans_of_the_accepted_pull_requests_are_read_in_one_batched_pass():
     class Plans(ContentGH):
         """Serves the board's files by the batch query (`prbatch.verdict_texts`) and counts those that ask for a plan."""
@@ -4651,48 +4639,55 @@ def test_the_plans_of_the_accepted_pull_requests_are_read_in_one_batched_pass():
     assert gh.plan_paths == 120 and gh.plan_queries <= -(-120 // (max(batch, 1) * 4))
 
 
-def test_a_review_of_the_change_to_a_roadmap_on_main_does_not_count_as_reading_its_suppliers():
-    # A first review of a roadmap on the base branch reads its change only (`review_changes_of_merged`): an
-    # untouched passage that speaks of a merged supplier is outside it, so the round records nothing and the
-    # supplier check follows the acceptance.
-    files = plan_file("Foo", "Sup")
+SCOPE = "counts as changed text, never as untouched text"
+
+
+def test_every_round_records_the_gap_suppliers_on_main_and_an_incremental_one_is_told_the_new_ones():
+    files = plan_file("Foo", "Sup", "Later")
     on = {"supplier_checks": True, "review_changes_of_merged": True}
-    def based(base, **kw):
-        return {**node(12, H1, **kw), "baseRefName": base}
-    [(first, _s, _p)] = sync(ContentGH([based("main")], files=files, tree=["Sup", "Foo"]), **on)[1].created
-    assert "suppliers_read" not in first.inputs and first.inputs["rereview"] is False
-    # So does one stacked on another roadmap's branch, which may hold the folder though main does not, and
-    # one whose base the listing does not give.
-    for base in ("roadmap/foo", ""):
-        [(stacked, _s, _p)] = sync(ContentGH([based(base)], files=files, tree=["Sup"]), **on)[1].created
-        assert "suppliers_read" not in stacked.inputs, base
+    # A first review records them whatever the lane will make of it: on main or not, stacked or not.
+    for tree in (["Sup"], ["Sup", "Foo"]):
+        [(first, _s, _p)] = sync(ContentGH([node(12, H1)], files=files, tree=tree), **on)[1].created
+        assert first.inputs["suppliers_read"] == ["Sup"] and "supplier_check" not in first.inputs
+    # A re-review of a repaired head: what the round it follows recorded needs no second reading in an
+    # incremental round; a supplier that reached main since does.
     first.number, first.state, first.labels = 40, "done", ["roadmap-job", "kind:prreview", "state:done"]
-    pulls = text_pr(12)
-    digest = summary.text_digest("Roadmap: Foo", pulls[12]["body"])
-    listing = [node(12, H1, labels=["ai-found-no-errors", "awaiting-review"])]
-    gh = ContentGH(listing, pulls=pulls, files={**files, **verdict_read(first, "accepted", H1, digest)}, tree=["Sup", "Foo"])
-    [(check, _s, _p)] = sync(gh, [first], text_per_run=10, **on)[1].created
-    assert check.inputs["supplier_check"] == ["Sup"] and check.inputs["suppliers_read"] == ["Sup"]
-    # A roadmap the pull request adds, or the setting off: the first review reads the whole folder.
-    for tree, over in ((["Sup"], on), (["Sup", "Foo"], {"supplier_checks": True})):
-        [(whole, _s, _p)] = sync(ContentGH([based("main")], files=files, tree=tree), **over)[1].created
-        assert whole.inputs["suppliers_read"] == ["Sup"]
+    refused = verdict_file(first, "needs_changes", H1)
+    [(same, _s, _p)] = sync(ContentGH([node(12, H2)], files={**files, **refused}, tree=["Sup"]), [first], **on)[1].created
+    assert same.inputs["rereview"] and same.inputs["suppliers_read"] == ["Sup"] and "supplier_check" not in same.inputs
+    [(more, _s, _p)] = sync(ContentGH([node(12, H2)], files={**files, **refused}, tree=["Sup", "Later"]), [first], **on)[1].created
+    assert more.inputs["suppliers_read"] == ["Later", "Sup"] and more.inputs["supplier_check"] == ["Later"]
+    # A round that follows one with no record (it predates the setting) reads all of them.
+    del first.inputs["suppliers_read"]
+    [(old, _s, _p)] = sync(ContentGH([node(12, H2)], files={**files, **refused}, tree=["Sup"]), [first], **on)[1].created
+    assert old.inputs["supplier_check"] == ["Sup"]
 
 
-def test_a_supplier_check_keeps_its_scope_in_every_review_mode():
-    job = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "rereview": True,
-                                            "text_check": True, "supplier_check": ["Sup"]})
+def test_the_brief_puts_the_recorded_suppliers_in_scope_in_the_mode_the_round_runs_in():
     cfg = example_config()
     extra = {"previous_report": "r.md", "changes": "c.md", "change_lines": 0, "pr_text": "t.md",
              "base_ref": "main", "base_lines": 2, "merge_base": H2}
-    for mode in ("incremental", "change"):
-        text = lane_prreview.mode_text(mode, job, cfg, extra)
-        assert "counts as changed text in this round, never as untouched text" in text and "reached the base branch: Sup" in text, mode
-    full = lane_prreview.mode_text("full", job, cfg, extra)
-    assert "reached the base branch since a review of this folder last read them: Sup" in full
-    plain = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "rereview": True})
-    assert all("base branch since" not in lane_prreview.mode_text(m, plain, cfg, extra) and "merged since its review"
-               not in lane_prreview.mode_text(m, plain, cfg, extra) for m in ("incremental", "change", "full"))
+
+    def brief(mode, **inputs):
+        job = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "rereview": True, **inputs})
+        return lane_prreview.mode_text(mode, job, cfg, extra)
+    # A check round filed for a supplier that merged: it says so, and reads that supplier, in every mode.
+    check = {"text_check": True, "supplier_check": ["Sup"], "suppliers_read": ["Later", "Sup"]}
+    text = brief("incremental", **check)
+    assert "merged since its review" in text and "reached the base branch: Sup." in text and SCOPE in text
+    assert "`t.md`" in text and "checks the pull request's title and description" not in text
+    assert "merged since its review" in brief("change", **check) and "reached the base branch: Later, Sup." in brief("change", **check)
+    # An ordinary round: incremental, only the suppliers the round it follows did not record; a review of
+    # the change, and a full review, every one its job records.
+    plain = {"suppliers_read": ["Later", "Sup"]}
+    assert SCOPE not in brief("incremental", **plain)
+    assert "reached the base branch: Later." in brief("incremental", supplier_check=["Later"], **plain)
+    assert "merged since its review" not in brief("incremental", supplier_check=["Later"], **plain)
+    assert "reached the base branch: Later, Sup." in brief("change", **plain) and SCOPE in brief("change", **plain)
+    assert "reached the base branch: Later, Sup. Read every passage" in " ".join(brief("full", **plain).split())
+    # No record: the briefs are as they were, and a check of the text alone keeps its paragraph.
+    assert all("base branch:" not in brief(mode) for mode in ("incremental", "change", "full"))
+    assert "checks the pull request's title and description" in brief("incremental", text_check=True)
 
 
 def test_a_supplier_record_counts_only_for_the_files_whose_acceptance_stands():
@@ -4701,15 +4696,52 @@ def test_a_supplier_record_counts_only_for_the_files_whose_acceptance_stands():
         made.inputs.update({"rereview": bool(previous), **({"previous_head": previous} if previous else {}), **inputs})
         return made
     first = job(1, H1)                                       # accepted before the supplier merged
-    second = job(2, H2, H1)                                  # a revision of the contracts, re-reviewed
+    second = job(2, H2, H1)                                  # a revision of the contracts, filed before it too
     check = job(3, H2, H2, text_check=True, supplier_check=["Sup"], suppliers_read=["Sup"])
-    # The acceptance of H2 stands: its check read the supplier. So it does at a later head re-reviewed from H2.
+    assert intake.suppliers_due([first, second], ["Sup"], H2, H2) == ["Sup"]
     assert intake.suppliers_due([first, second, check], ["Sup"], H2, H2) == []
-    later = job(4, H3, H2)
-    assert intake.suppliers_due([first, second, check, later], ["Sup"], H3, H3) == []
     # H3 restores the files of H1, whose acceptance is carried to it: the check of H2 read other files.
     assert intake.suppliers_due([first, second, check], ["Sup"], H1, H3) == ["Sup"]
-    # A whole review of H1 that recorded the supplier counts through the re-reviews that followed it.
-    whole = job(1, H1, suppliers_read=["Sup"])
-    assert intake.suppliers_due([whole, second], ["Sup"], H2, H2) == []
-    assert intake.suppliers_due([whole, second, check], ["Sup"], H1, H3) == []
+    # A later head is credited by its own round, which recorded what its brief had it read, never by a
+    # round of another head, whatever chain of re-reviews joins them.
+    assert intake.suppliers_due([first, second, check, job(4, H3, H2)], ["Sup"], H3, H3) == ["Sup"]
+    assert intake.suppliers_due([first, second, check, job(4, H3, H2, suppliers_read=["Sup"])], ["Sup"], H3, H3) == []
+    superseded = job(4, H3, H2, suppliers_read=["Sup"])
+    superseded.labels = [*superseded.labels, board.SUPERSEDED_LABEL]
+    assert intake.suppliers_due([first, second, check, superseded], ["Sup"], H3, H3) == ["Sup"]
+
+
+@needs_git
+def test_a_re_review_that_falls_back_to_the_change_against_the_base_still_reads_its_suppliers(dry_ctx, tmp_path, monkeypatch):  # noqa: F811
+    # 2026-11-24: main holds Foo with a stale supplier contract; the head a supplier check accepted had
+    # repaired it; the next head restores it among other lines, and its re-review is too large to be
+    # incremental, so the lane reviews the change against main, where the contract is untouched text.
+    # The scheduler's job, taken through the lane's own choice of mode, must still read the supplier.
+    repo, main, first, second = merged_repo(tmp_path)
+    merged_git_in(repo, monkeypatch)
+    done = review_job(40, 1, 905, first, "done")
+    done.inputs.update(text_check=True, supplier_check=["Sup"], suppliers_read=["Sup"], rereview=False)
+    on = {"supplier_checks": True, "review_changes_of_merged": True}
+    files = {**plan_file("Foo", "Sup"), **verdict_file(done, "accepted", first)}
+    [(job, _s, _p)] = sync(ContentGH([node(905, second)], files=files, tree=["Sup", "Foo"]), [done], **on)[1].created
+    assert job.inputs["rereview"] and job.inputs["previous_head"] == first and job.inputs["suppliers_read"] == ["Sup"]
+    assert "supplier_check" not in job.inputs               # the round it follows read Sup
+    job.number = 8
+    lane = lane_for(job)
+    ctx = rereview_ctx(dry_ctx, second, 15)                 # sixteen lines changed since `first`: not incremental
+    ctx.cfg.prreview.review_changes_of_merged = True
+    ws = lane.prepare(job, ctx)
+    assert ws.extra["mode"] == "change" and ws.extra["change_lines"] == 16
+    brief = flat_brief(lane, job, ctx, ws)
+    assert "**A review of a change to a roadmap on `main`.**" in brief
+    assert "**Suppliers on the base branch.**" in brief and "reached the base branch: Sup." in brief and SCOPE in brief
+    # Its acceptance at this head therefore stands for Sup: no check follows. Had the job recorded nothing,
+    # one would.
+    job.state, job.labels = "done", ["roadmap-job", "kind:prreview", "state:done"]
+    assert intake.suppliers_due([done, job], ["Sup"], second, second) == []
+    del job.inputs["suppliers_read"]
+    assert intake.suppliers_due([done, job], ["Sup"], second, second) == ["Sup"]
+    # A small repair stays incremental and reads what changed since the round it follows, which read Sup.
+    job.inputs["suppliers_read"] = ["Sup"]
+    ws = lane.prepare(job, rereview_ctx(dry_ctx, second, 16))
+    assert ws.extra["mode"] == "incremental" and "**Suppliers on the base branch.**" not in flat_brief(lane, job, ctx, ws)

@@ -3403,19 +3403,18 @@ def sync_pr_reviews(ctx) -> list[str]:
         if dispute:
             inputs.update({"rereview": False, "dispute_rereview": True})
         inputs.update(extra)
-        # What a review that reads the whole folder, or the supplier contracts (`supplier_check`), reads of
-        # the suppliers of its declared gaps: those on the base branch now (`suppliers_due`). A first review
-        # of a roadmap on the branch the pull request merges into reads its change only under
-        # `review_changes_of_merged` (`lanes.prreview.review_mode`), and may leave what the untouched text
-        # says of a supplier: it records nothing, and the check round follows its acceptance. That branch is
-        # the project's only when the listing says so: a stacked pull request, whose base is another
-        # roadmap's branch, may hold the folder there though main does not, and so may one whose base the
-        # listing did not give.
-        adds = entry.get("base") == cfg.project.branch and folder not in on_main
-        whole = not (inputs["rereview"] or dispute) and (adds or not p.review_changes_of_merged)
-        if extra.get("supplier_check") or whole:
-            if on_now := merged_suppliers([leaf]).get(leaf):
-                inputs["suppliers_read"] = on_now
+        # The suppliers of the folder's declared gaps that are on the base branch now (`supplier_checks`):
+        # every round records them (`suppliers_read`), and its brief puts what the folder says of them in
+        # scope in whatever mode the lane then runs it (`lanes.prreview.supplier_scope`), so the record
+        # holds by construction. A review of the whole folder or of its change against the base reads all of
+        # them; an incremental re-review reads what changed since the round it follows, so it is told to
+        # read as well the suppliers that round did not record (`supplier_check`).
+        if on_now := merged_suppliers([leaf]).get(leaf):
+            inputs["suppliers_read"] = on_now
+            before = next((j for j in ours if j.id == inputs.get("previous_job")), None)
+            unread = set(on_now) - {str(s) for s in (before.inputs.get("suppliers_read") or [] if before else [])}
+            if inputs["rereview"] and (unread or extra.get("supplier_check")):
+                inputs["supplier_check"] = sorted(unread | set(extra.get("supplier_check") or []))
         # A pass before the final review, or the final review after the passes: a full review on the
         # review models, whatever the passes changed (`review_stage`; `final`: a pass left this head).
         passes = [j for j in ours if j.inputs.get("pre") and board.SUPERSEDED_LABEL not in j.labels]
@@ -3654,28 +3653,22 @@ def gap_suppliers(ctx, names: list[str], batch: int, known: dict[str, set[str] |
 
 def suppliers_due(ours: list[Job], on_main: list[str], at: str, head: str) -> list[str]:
     """The suppliers of a roadmap folder's declared gaps that are on the base branch (`on_main`) and that
-    no review of the folder read there: a round records the suppliers on the base branch when it was
-    filed (`suppliers_read`) when it reads the whole folder (not a review of the change to a roadmap on
-    the base branch, `review_changes_of_merged`) or checks the supplier contracts; a round
-    closed as superseded read nothing. A folder none of whose rounds has the record (they predate it) is
-    due for every supplier on the base branch: nothing says a review read the merged supplier.
+    no review read there in the files whose acceptance stands. Every round filed for a folder records the
+    gap suppliers on the base branch at that moment (`suppliers_read`), and its brief has it read what
+    the folder says of them, in whatever mode it runs (`lanes.prreview.supplier_scope`). A record counts
+    for the files its round read and no others: those of the head the folder's acceptance comes from
+    (`at`) and those of the pull request's head now (`head`, a check filed there since). A review of
+    another head does not count, whatever followed it: when a head restores the files of an earlier
+    acceptance, which is carried to it, a check made on the revision in between says nothing of the
+    restored contracts. A round closed as superseded read nothing. A folder whose rounds at those heads
+    have no record (they predate it, or the supplier merged after they were filed) is due for every
+    supplier on the base branch.
     2026-11-13: a roadmap accepted two days before its only gap supplier merged kept saying that its
     definitions could not be stated for want of that supplier, through a check of its text and two
-    housekeeping pushes, until it merged.
-
-    A record counts only for the files it was made on: those of the head the folder's acceptance comes
-    from (`at`), those of the pull request's head now (`head`), and the heads a chain of re-reviews leads
-    back to from either (a re-review reads what changed since its `previous_head`, so what the earlier
-    round read of the suppliers stands for the text it left alone). A review of other files does not
-    count: when a head restores the files of an earlier acceptance, which is carried to it, a supplier
-    check made on the revision in between says nothing of the restored contracts."""
-    live = [j for j in ours if board.SUPERSEDED_LABEL not in j.labels]
-    heads, grew = {str(h) for h in (at, head) if h}, True
-    while grew:
-        more = {str(j.inputs["previous_head"]) for j in live if str(j.inputs.get("head")) in heads
-                and j.inputs.get("rereview") and j.inputs.get("previous_head")} - heads
-        heads, grew = heads | more, bool(more)
-    read = {str(s) for j in live if str(j.inputs.get("head")) in heads for s in j.inputs.get("suppliers_read") or []}
+    housekeeping pushes, until it merged."""
+    heads = {str(h) for h in (at, head) if h}
+    read = {str(s) for j in ours if board.SUPERSEDED_LABEL not in j.labels and str(j.inputs.get("head")) in heads
+            for s in j.inputs.get("suppliers_read") or []}
     return sorted(set(on_main) - read)
 
 
