@@ -52,6 +52,8 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 from urllib.parse import quote
@@ -1067,6 +1069,36 @@ def description_prose(body: str) -> str:
     return "\n".join(lines)
 
 
+def raw_prose(body: str) -> str:
+    """The prose of a description as it is written: `description_prose` without the folding, so that its
+    paragraphs and blank lines survive a merge (`merged_prose`)."""
+    lines = HTML_COMMENT.sub("", GENERATED_BLOCK.sub("", body)).strip().splitlines()
+    if lines and lines[-1].strip().startswith("🤖"):
+        lines.pop()
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(x.rstrip() for x in lines)).strip() + "\n"
+
+
+def merged_prose(base: str, ours: str, theirs: str) -> str | None:
+    """The prose of a description that two writers changed at once, merged three ways line by line
+    (`git merge-file`; a paragraph is one line): `base` is the description a repair read, `theirs` the
+    one it wrote, `ours` the description as it is now. None when both rewrote the same lines, and when
+    the merge could not be run: then nothing is known, and the caller writes nothing. 2026-11-24: on a
+    pull request of 92 roadmap folders the repairs of several folders ran at once, each wrote its own
+    sentence of the description, and all but the first were dropped."""
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for name, text in (("ours", ours), ("base", base), ("theirs", theirs)):
+                path = Path(tmp) / name
+                path.write_text(raw_prose(text), encoding="utf-8")
+                paths.append(str(path))
+            done = subprocess.run(["git", "merge-file", "-p", *paths], capture_output=True, text=True, timeout=60,
+                                  check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 and done.stdout.strip() else None
+
+
 def save_gate(path: Path, head: str, result: gates.GateResult) -> None:
     data = {"head": head, "name": result.name, "counts": result.counts, "notes": result.notes,
             "details": {k: [f"line {h.line}: {h.text}" if getattr(h, "line", 0) else str(getattr(h, "text", h))
@@ -1175,6 +1207,7 @@ class PRReviewLane(Lane):
             pull_request_document(number, data, owner, change, ws.extra["fixed_title"]), encoding="utf-8")
         ws.extra["pr_text"] = str(ws.scratch / PULL_REQUEST_TEXT)
         ws.extra["pr_prose"] = description_prose(data.get("body") or "")
+        ws.extra["pr_body"] = data.get("body") or ""
         ws.extra["pr_summary"] = summary.block_kind(data.get("body") or "")
         ws.extra["pr_text_digest"] = summary.text_digest(data.get("title") or "", data.get("body") or "")
         self.write_changes(job, ctx, ws)
@@ -1882,8 +1915,9 @@ class PRReviewLane(Lane):
         once its branch is at the repaired head and before the reply that reports them (effect
         REPAIR_TEXT): the repair's prose, then the generated blocks and markers of the description as it
         is now (`merged_description`). A description whose prose is no longer the one the repair read
-        (another roadmap folder's repair rewrote it, or its author did) is left alone, since the repair's
-        text would undo that change; so is one GitHub refuses to write. Either is noted and not retried:
+        (another roadmap folder's repair rewrote it, or its author did) gets the two changes merged when
+        they touch different lines (`merged_prose`); when they touch the same lines it is left alone,
+        since the repair's text would undo that change; so is one GitHub refuses to write. Either is noted and not retried:
         the files' repair stands, and the next review reads the description as it then is. The summary
         block the repair wrote (`summary_brief`) replaces the present one in the same write, whether or
         not the prose was written: it stands apart from what an author or another repair rewrites. Returns the
@@ -1895,6 +1929,7 @@ class PRReviewLane(Lane):
         if record.is_file():
             want = json.loads(record.read_text(encoding="utf-8"))
             read, block = want.pop("read", None), want.pop("summary", "")
+            read_body = want.pop("read_body", "")
             path = f"repos/{ctx.cfg.repositories.content}/pulls/{ws.extra['pr']}"
             try:
                 now = ctx.gh.api(path) or {}
@@ -1902,12 +1937,20 @@ class PRReviewLane(Lane):
                 found, fields, refused = description_prose(old), {}, ""
                 want = kept_title(ctx.cfg, want, now.get("title") or "")
                 if "body" in want:
-                    wrote = found == description_prose(want["body"])
-                    want["body"] = merged_description(want["body"], old)
+                    theirs = want["body"]
+                    wrote = found == description_prose(theirs)
+                    want["body"] = merged_description(theirs, old)
                     fields = {k: v for k, v in want.items() if v.strip() != (now.get(k) or "").strip()}
                     if fields and read is not None and found != read and not wrote:
-                        fields, refused = {}, ("title and description not written: the description was changed "
-                                               "while the repair ran")
+                        # Another writer changed the description while the repair ran: the two changes are
+                        # merged when they touch different lines (`merged_prose`), else nothing is written.
+                        both = merged_prose(read_body, old, theirs) if read_body else None
+                        if both is None:
+                            fields, refused = {}, ("title and description not written: the description was changed "
+                                                   "while the repair ran")
+                        else:
+                            want["body"] = merged_description(both, old)
+                            fields = {k: v for k, v in want.items() if v.strip() != (now.get(k) or "").strip()}
                 names = {"title": "title", "body": "description"}
                 done = [names[k] for k in names if k in fields]
                 # The summary block stands apart from the prose: it is replaced whoever rewrote the rest.
@@ -2002,7 +2045,8 @@ class PRReviewLane(Lane):
         new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
         save_gate(ws.job_dir / REPAIR_GATE, new, gate)
         if text or block:
-            kept = {**(text or {}), "read": ws.extra.get("pr_prose", ""), **({"summary": block} if block else {})}
+            kept = {**(text or {}), "read": ws.extra.get("pr_prose", ""), "read_body": ws.extra.get("pr_body", ""),
+                    **({"summary": block} if block else {})}
             record.write_text(json.dumps(kept, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         owe(ctx, job, ws, (), content={"sha": new, "base": head, "branch": ws.extra["branch"]})
         settle(ctx, job, REPAIR, repair={"sha": new, **({"merged": merged} if merged else {})})
