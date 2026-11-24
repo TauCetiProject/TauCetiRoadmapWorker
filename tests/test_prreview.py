@@ -1684,6 +1684,60 @@ def test_a_review_nobody_took_is_superseded_when_the_head_moves_or_the_pull_requ
     assert out == [] and fake.states == [] and fake.created == []
 
 
+def test_a_review_nobody_took_stays_when_the_head_moved_in_another_folder():
+    """`[prreview] carry_unchanged_folders`: a repair of one roadmap folder moves the head of a pull
+    request with several; the queued review of a folder that holds the files it held is neither closed
+    nor filed again."""
+    def queued():
+        return [review_job(41, 1, 1164, H1, "available", folder="Foo"),
+                review_job(42, 1, 1164, H1, "available", name="Bar", folder="Bar")]
+    repaired = {(H1, "TauCetiRoadmap/Foo"): "foo", (H2, "TauCetiRoadmap/Foo"): "foo",
+                (H1, "TauCetiRoadmap/Bar"): "bar", (H2, "TauCetiRoadmap/Bar"): "bar-repaired"}
+    kept = f"#1164: 1 review nobody took kept at {H2[:7]} (the folder holds the files of the head the job names)"
+    out, fake = sync(ContentGH([two_folder_pr(H2)], trees=repaired), queued())
+    assert out == ["#1164: PRREVIEW-Bar~1 superseded", "#1164: PRREVIEW-Bar~2 created", kept]
+    assert fake.states == [("PRREVIEW-Bar~1", "done")] and created(fake) == [("PRREVIEW-Bar~2", "Bar")]
+    # Switched off: every round of the old head is closed and filed again, as before.
+    out, fake = sync(ContentGH([two_folder_pr(H2)], trees=repaired), queued(), carry_unchanged_folders=False)
+    assert fake.states == [("PRREVIEW-Foo~1", "done"), ("PRREVIEW-Bar~1", "done")]
+    assert sorted(created(fake)) == [("PRREVIEW-Bar~2", "Bar"), ("PRREVIEW-Foo~2", "Foo")]
+    # A tree GitHub did not give: nothing is known, and the rounds are left as they are for this run.
+    out, fake = sync(ContentGH([two_folder_pr(H2)], trees="unread"), queued())
+    assert fake.states == [] and fake.created == [] and kept not in out
+    # A round that reads the pull request's text, or an answer given at its head, belongs to that head.
+    for key in ("text_check", "operator_check", "text_rereview", "dispute_rereview"):
+        foo, bar = queued()
+        foo.inputs[key] = True
+        assert not intake.folder_round(foo) and intake.folder_round(bar)
+        _out, fake = sync(ContentGH([two_folder_pr(H2)], trees=repaired), [foo, bar])
+        assert ("PRREVIEW-Foo~1", "done") in fake.states
+
+
+def test_a_kept_round_is_closed_when_its_folder_needs_no_review():
+    """A round kept from an earlier head is closed like one of the head itself once the folder's latest
+    review settles the files it still holds."""
+    foo, bar = review_job(41, 1, 1164, H1, "done", folder="Foo"), review_job(42, 1, 1164, H1, "done", name="Bar", folder="Bar")
+    first = {**verdict_file(foo, "accepted", H1), **verdict_file(bar, "needs_changes", H1)}
+    repaired = {(H1, "TauCetiRoadmap/Foo"): "foo", (H2, "TauCetiRoadmap/Foo"): "foo",
+                (H1, "TauCetiRoadmap/Bar"): "bar", (H2, "TauCetiRoadmap/Bar"): "bar-repaired"}
+    stray = review_job(44, 2, 1164, H1, "available", folder="Foo")
+    out, fake = sync(ContentGH([two_folder_pr(H2)], files=first, trees=repaired), [foo, bar, stray])
+    assert out == ["#1164: PRREVIEW-Foo~2 superseded", "#1164: PRREVIEW-Bar~2 created"]
+    assert fake.posted[0][1].startswith(f"Superseded: Foo of #1164 at {H2[:7]} holds the files of {H1[:7]}")
+
+
+def test_the_trees_of_the_kept_rounds_are_read_in_one_query():
+    jobs = [review_job(41, 1, 1164, H1, "available", folder="Foo"),
+            review_job(42, 1, 1164, H1, "available", name="Bar", folder="Bar")]
+    gh = ContentGH([two_folder_pr(H2)], trees=same_trees(H1, H2))
+    kept, untold = intake.unmoved_rounds(SimpleNamespace(cfg=example_config(), gh=gh), REPO,
+                                         [(j, H2) for j in jobs], 5)
+    assert kept == {"PRREVIEW-Foo~1", "PRREVIEW-Bar~1"} and untold == set() and gh.tree_queries == 1
+    assert intake.unmoved_rounds(SimpleNamespace(cfg=example_config(), gh=gh), REPO, [], 5) == (set(), set())
+    gone = ContentGH([two_folder_pr(H2)], trees={(H1, "TauCetiRoadmap/Foo"): "foo", (H2, "TauCetiRoadmap/Foo"): None})
+    assert intake.unmoved_rounds(SimpleNamespace(cfg=example_config(), gh=gone), REPO, [(jobs[0], H2)], 5) == (set(), set())
+
+
 def test_the_label_goes_when_the_head_moves_and_stays_on_an_accepted_current_head():
     accepted_old = review_job(41, 1, 12, H1, "done")
     labels = f"repos/{REPO}/issues/12/labels/ai-found-no-errors"
@@ -1799,6 +1853,38 @@ def test_a_pull_request_that_moved_or_closed_is_not_reviewed(tmp_path, monkeypat
     ctx = lane_ctx(tmp_path, gh=ContentGH(pulls={12: {"number": 12, **pull}}))
     with pytest.raises(LaneError, match=re.escape(why)):
         lane_for(job).prepare(job, ctx)
+
+
+def test_a_round_is_taken_at_the_head_it_names_when_its_folder_did_not_move(tmp_path, monkeypatch):
+    """The head of the pull request moved by a repair of another roadmap folder: the round is still the
+    review of the files its folder holds, and the worker takes it (`[prreview] carry_unchanged_folders`)."""
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    job = new_job("PRREVIEW-Foo~1", inputs={"pr": 12, "head": H1, "owner": "carol", "name": "Foo"})
+    pulls = {12: {"number": 12, "state": "open", "head": {"sha": H2}}}
+    same = {(H1, "TauCetiRoadmap/Foo"): "foo", (H2, "TauCetiRoadmap/Foo"): "foo"}
+    lane = lane_for(job)
+    assert lane.folder_unmoved(job, lane_ctx(tmp_path, gh=ContentGH(pulls=pulls, trees=same)), H1, H2)
+    # Not when the folder's files changed, GitHub did not give the trees, or the switch is off ...
+    assert not lane.folder_unmoved(job, lane_ctx(tmp_path, gh=ContentGH(pulls=pulls)), H1, H2)
+    assert not lane.folder_unmoved(job, lane_ctx(tmp_path, gh=ContentGH(pulls=pulls, trees="unread")), H1, H2)
+    off = lane_ctx(tmp_path, gh=ContentGH(pulls=pulls, trees=same))
+    off.cfg.prreview.carry_unchanged_folders = False
+    assert not lane.folder_unmoved(job, off, H1, H2)
+    # ... nor for a round that reads the pull request's text at its head.
+    check = new_job("PRREVIEW-Foo~2", inputs={**job.inputs, "text_check": True})
+    assert not lane.folder_unmoved(check, lane_ctx(tmp_path, gh=ContentGH(pulls=pulls, trees=same)), H1, H2)
+
+    class Reached(Exception):
+        pass
+
+    def checkout(self, job, ctx):
+        raise Reached
+
+    monkeypatch.setattr(lane_base.Lane, "prepare", checkout)
+    with pytest.raises(Reached):            # past the check of the head: the checkout is next
+        lane.prepare(job, lane_ctx(tmp_path, gh=ContentGH(pulls=pulls, trees=same)))
+    with pytest.raises(LaneError, match=re.escape(f"#12 moved to {H2[:7]}; the intake files")):
+        lane.prepare(job, lane_ctx(tmp_path, gh=ContentGH(pulls=pulls)))
 
 
 def test_the_brief_gets_a_value_for_every_placeholder(dry_ctx):  # noqa: F811

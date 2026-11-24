@@ -2827,6 +2827,41 @@ def next_review_round(reviews, leaf: str) -> int:
     return 1 + max((board.parse_job_id(j.id).round for j in reviews if j.name == leaf), default=0)
 
 
+def folder_round(job: Job) -> bool:
+    """Whether a PRREVIEW job reads a roadmap folder's files and nothing that belongs to one head: not a
+    check of the pull request's text (`text_check`, `operator_check`), and not a round that reads an
+    answer given at the head it names (`text_rereview`, `dispute_rereview`)."""
+    return bool(job.inputs.get("head")) and not any(
+        job.inputs.get(key) for key in ("text_check", "operator_check", "text_rereview", "dispute_rereview"))
+
+
+def unmoved_rounds(ctx, repo: str, moved: list[tuple[Job, str]], batch: int) -> tuple[set[str], set[str]]:
+    """With `[prreview] carry_unchanged_folders`: (the ids of the reviews nobody took among `moved` whose
+    roadmap folder holds at the head now the files it held at the head the job names, the ids of those it
+    could not be told for). `moved`: (job, the head of its pull request now), each job filed for a head
+    the pull request has left. A folder holds the same files at two commits when its git tree is one
+    (`prbatch.tree_ids`). The head moved by a repair of another folder of the pull request, or by a merge
+    of the base branch, and the round reads what it was filed to read: it stays on the board
+    (`PRReviewLane.prepare` takes it at the head it names, and its review counts wherever the folder
+    holds those files, `unchanged_folders`). 2026-11-24: a pull request of 92 roadmap folders had every
+    queued round closed and filed again at each repair of one folder, and no worker could take a round
+    in between. A round GitHub gave no tree for is left as it is for this run: nothing is known."""
+    if not moved:
+        return set(), set()
+    base = ctx.cfg.roadmap.active_dir.strip("/")
+    path_of = {job.id: f"{base}/{board.prreview_folder(job).strip('/')}" for job, _head in moved}
+    wanted = dict.fromkeys((sha, path_of[job.id]) for job, head in moved for sha in (head, str(job.inputs["head"])))
+    ids = prbatch.tree_ids(ctx.gh, repo, list(wanted), batch)
+    kept, unknown = set(), set()
+    for job, head in moved:
+        here, there = (head, path_of[job.id]), (str(job.inputs["head"]), path_of[job.id])
+        if here not in ids or there not in ids:
+            unknown.add(job.id)
+        elif ids[here] and ids[here] == ids[there]:
+            kept.add(job.id)
+    return kept, unknown
+
+
 def sync_pr_reviews(ctx) -> list[str]:
     """`board sync`, with `[prreview] enabled`: the AI review of every roadmap folder an open pull
     request of the content repository adds or edits, whoever opened it, drafts included.
@@ -2840,7 +2875,10 @@ def sync_pr_reviews(ctx) -> list[str]:
     run, and it keeps an index for half an hour, while filing needs the heads as they are now.
 
     * An available PRREVIEW job whose pull request moved to another head, or was closed, is closed as
-      superseded (`supersede`); a claimed or submitted one is left to finish.
+      superseded (`supersede`); a claimed or submitted one is left to finish. With `[prreview]
+      carry_unchanged_folders`, a job whose roadmap folder holds at the new head the files it held at the
+      head the job names stays (`unmoved_rounds`): the head moved elsewhere, and the round is still the
+      review of those files.
     * `[prreview] label` is on a pull request exactly when an AI review of its current head accepts
       every roadmap folder it adds or edits (`folders_accepted`, from the verdicts on the board's
       main): added when the last folder's verdict lands, removed otherwise; while a review of that
@@ -2910,6 +2948,11 @@ def sync_pr_reviews(ctx) -> list[str]:
     batch = cfg.board.graphql_batch
     available = [j for j in reviews if j.state == "available"]
     unlisted = prbatch.PullReader(ctx.gh, repo, {pr_of(j) for j in available if pr_of(j) not in live}, batch)
+    # The untaken rounds of a head their pull request has left, whose folder may hold the same files still.
+    kept_rounds, untold = unmoved_rounds(ctx, repo, [
+        (j, live[pr_of(j)]["head"]) for j in available
+        if p.carry_unchanged_folders and pr_of(j) in live and folder_round(j)
+        and live[pr_of(j)].get("head") and live[pr_of(j)]["head"] != j.inputs.get("head")], batch)
     for job in available:
         number, entry = pr_of(job), live.get(pr_of(job))
         if entry is not None:
@@ -2924,6 +2967,8 @@ def sync_pr_reviews(ctx) -> list[str]:
         if state != "open":
             note = f"Closed: #{number} is closed"
         elif head != job.inputs.get("head"):
+            if job.id in kept_rounds or job.id in untold:
+                continue             # its folder holds the same files there, or GitHub did not say this run
             note = f"Superseded: #{number} is at {head[:7]}"
         else:
             continue
@@ -2979,12 +3024,13 @@ def sync_pr_reviews(ctx) -> list[str]:
         return kept[number]
 
     def close_untaken(number: int, mine: list[Job], head: str, still: dict[str, str]) -> None:
-        """Closes the reviews of `head` nobody took whose folder needs none: it holds the files of the
-        earlier head its last review settled it at (`still`, from `kept_folders`)."""
+        """Closes the reviews of `head` nobody took (and those kept from an earlier head, `kept_rounds`)
+        whose folder needs none: it holds the files of the earlier head its last review settled it at
+        (`still`, from `kept_folders`)."""
         for job in mine:
             folder = board.prreview_folder(job)
             # (a check of the text is about the description, which the folder's files do not settle)
-            untaken = (job.state == "available" and job.inputs.get("head") == head
+            untaken = (job.state == "available" and (job.inputs.get("head") == head or job.id in kept_rounds)
                        and not job.inputs.get("text_check") and not job.inputs.get("operator_check"))
             if untaken and still.get(folder, head) != head and supersede(
                     ctx, job, f"Superseded: {folder} of #{number} at {head[:7]} holds the files of "
@@ -3126,7 +3172,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                                                          batch, standing(number, author, labelled))
                 carried_prs.add(number)
                 for job in mine:
-                    if (job.state == "available" and job.inputs.get("head") == head
+                    if (job.state == "available" and (job.inputs.get("head") == head or job.id in kept_rounds)
                             and not job.inputs.get("text_check") and not job.inputs.get("operator_check")
                             and supersede(
                             ctx, job, f"Superseded: the roadmap folders of #{number} at {head[:7]} are those of "
@@ -3418,6 +3464,10 @@ def sync_pr_reviews(ctx) -> list[str]:
         out.append(f"{waiting} review job(s) wait ([prreview] per_run = {p.per_run})")
     if text_due and p.text_per_run:
         file_text_checks(ctx, listed, text_due, texts, file_round, lambda: made, out, pr_texts)
+    for number in sorted({pr_of(j) for j in available if j.id in kept_rounds and j.state == "available"}):
+        count = sum(1 for j in available if j.id in kept_rounds and j.state == "available" and pr_of(j) == number)
+        out.append(f"#{number}: {count} review{'s' if count != 1 else ''} nobody took kept at "
+                   f"{live[number]['head'][:7]} (the folder holds the files of the head the job names)")
     return out
 
 

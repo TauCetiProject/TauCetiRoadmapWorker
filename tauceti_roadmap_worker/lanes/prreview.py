@@ -1105,6 +1105,24 @@ class PRReviewLane(Lane):
             return "the worker that repaired this head does not review it"
         return ""
 
+    def folder_unmoved(self, job: Job, ctx: Context, recorded: str, live: str) -> bool:
+        """Whether the job's roadmap folder holds at `live`, the head its pull request moved to, the
+        files it held at `recorded`, the head the job names (one git tree, `prbatch.tree_ids`): with
+        `[prreview] carry_unchanged_folders`, the head moved by a repair of another folder or a merge of
+        the base branch, and the round is still the review of those files (the intake keeps it,
+        `intake.unmoved_rounds`). The review is then made at `recorded`, as one under way when the head
+        moves is, and counts at `live` as that one does (`intake.unchanged_folders`). False for a round
+        that reads the pull request's text or an answer given at its head (`intake.folder_round`), and
+        when GitHub does not give both trees."""
+        from ..intake import folder_round  # here: the intake imports the lanes
+        if not ctx.cfg.prreview.carry_unchanged_folders or not live or not folder_round(job):
+            return False
+        path = f"{ctx.cfg.roadmap.active_dir.strip('/')}/{board.prreview_folder(job).strip('/')}"
+        ids = prbatch.tree_ids(ctx.gh, ctx.cfg.repositories.content, [(live, path), (recorded, path)],
+                               ctx.cfg.board.graphql_batch)
+        here, there = ids.get((live, path)), ids.get((recorded, path))
+        return bool(here) and here == there
+
     # -- the workspace --
     def prepare(self, job: Job, ctx: Context) -> Workspace:
         cfg, repo = ctx.cfg, ctx.cfg.repositories.content
@@ -1122,7 +1140,7 @@ class PRReviewLane(Lane):
             if not replay and data.get("state") != "open":
                 raise LaneError(f"#{number} is {'merged' if data.get('merged') else data.get('state') or 'not open'}; "
                                 "the intake closes this job")
-            if not replay and live != recorded:
+            if not replay and live != recorded and not self.folder_unmoved(job, ctx, recorded, live):
                 raise LaneError(f"#{number} moved to {live[:7] or '?'}; the intake files the next round")
         ws = super().prepare(job, ctx)
         branch = f"prreview/{number}"
