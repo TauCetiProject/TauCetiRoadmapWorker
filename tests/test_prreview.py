@@ -3887,6 +3887,32 @@ def test_a_description_is_read_only_in_the_form_asked(tmp_path, text, problem):
         assert got is None and any(problem in p for p in problems), problems
 
 
+def test_a_long_description_may_grow_and_is_never_asked_to_shrink(tmp_path):
+    """2026-11-24: 11,905 characters of description under a fixed limit of 12,000: every repair with a
+    sentence to add shortened what stood about other folders."""
+    limit, grow = lane_prreview.DESCRIPTION_LIMIT, lane_prreview.DESCRIPTION_GROWTH
+    block = "<!-- merge-order -->\n" + "y" * 3000 + "\n<!-- /merge-order -->\n"
+    assert lane_prreview.description_limit("") == limit
+    assert lane_prreview.description_limit("It adds §2.\n\n" + block) == limit          # a short one: as before
+    long = "x" * (limit - 95) + "\n\n" + block + "\n🤖 Generated\n"
+    prose = len(lane_prreview.raw_prose(long))
+    assert prose < limit and lane_prreview.description_limit(long) == prose + grow       # near the limit: room to add
+    longer = "x" * 30000 + "\n\n" + block
+    assert lane_prreview.description_limit(longer) == len(lane_prreview.raw_prose(longer)) + grow
+    # GitHub's limit holds for the whole description, the kept blocks included
+    full = "x" * 30000 + "\n\n<!-- outline -->\n" + "y" * 34000 + "\n<!-- /outline -->\n"
+    got = lane_prreview.description_limit(full)
+    assert got < len(lane_prreview.raw_prose(full)) + grow
+    assert got + (len(full) - len(lane_prreview.raw_prose(full))) < lane_prreview.BODY_LIMIT
+    ctx = lane_ctx(tmp_path)
+    path = tmp_path / "description.md"
+    path.write_text("Title: Foo\n\n" + "x" * (limit + 500))
+    assert lane_prreview.read_description(path, ctx)[1]                                   # over the fixed limit
+    text, problems = lane_prreview.read_description(path, ctx, lane_prreview.description_limit(long))
+    assert problems == [] and len(text["body"]) == limit + 500
+    assert any("is over 12400 characters" in p for p in lane_prreview.read_description(path, ctx, 12400)[1])
+
+
 @pytest.mark.parametrize("change,repairs", [
     ({}, True),
     ({"status": "rejected"}, False), ({"status": "accepted"}, False), ({"dry_run": True}, False),

@@ -1216,7 +1216,12 @@ change of its own the text leaves unstated, by writing `scratch/description.md`:
 `Title: <the title>`, a blank line, then the whole description as prose. The worker refuses a text
 that is not in that form, is over 200 characters of title or 12000 of description, carries an HTML
 comment, a path of the machine or an @-mention, or would read as a review; the refusal goes to the
-repair's second pass like any failed check. After the push (or with no push, when the files needed
+repair's second pass like any failed check. For a description whose prose is already near or over
+12000 characters the limit is that prose and 2000 more (`description_limit`; never more than
+GitHub's 65536 leave beside the generated blocks), and the brief says that nothing of the present
+text is to be shortened to make room: under the fixed limit, the repairs of a pull request of 92
+folders, at 11,905 characters, each shortened what stood about other folders, and two at once
+rewrote the same lines. After the push (or with no push, when the files needed
 no change) and before the reply, the worker writes the title and the description onto the pull
 request: the summary block when the description has one (it stays first), the agent's prose, then,
 verbatim and in their order, every other generated block of the present
