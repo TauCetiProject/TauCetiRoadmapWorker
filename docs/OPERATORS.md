@@ -1248,8 +1248,9 @@ no change) and before the reply, the worker writes the title and the description
 request: the summary block when the description has one (it stays first), the agent's prose, then,
 verbatim and in their order, every other generated block of the present
 description (`<!-- name -->` … `<!-- /name -->`: a dependency task list, the merge-order paragraph),
-every other HTML comment (the worker's marker) and the attribution line it ends with. Prose outside
-those blocks is replaced. A description whose prose is no longer the one the repair read (another
+every other HTML comment (the worker's marker) and, as the last line, the attribution line (the last
+line of the prose when it opens with 🤖, wherever the blocks stand, and also when the agent copied it
+into its own prose). Prose outside those blocks is replaced. A description whose prose is no longer the one the repair read (another
 folder's repair rewrote it meanwhile, or the author did) gets the two changes merged, line by line,
 and where both fall in one line (a paragraph is one line) sentence by sentence, keeping two sentences
 added at the same place, the present description's first (`merged_prose`): on a pull request with

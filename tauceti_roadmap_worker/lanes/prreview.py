@@ -1074,22 +1074,33 @@ def read_description(path: Path, ctx: Context, limit: int = DESCRIPTION_LIMIT) -
     return {"title": title, "body": body}, []
 
 
+def attribution_line(text: str) -> str:
+    """The attribution line of a description, or of the prose a repair wrote: the last line of its prose
+    (the generated blocks and the markers aside, wherever they stand) when it opens with 🤖, else ''."""
+    lines = HTML_COMMENT.sub("", GENERATED_BLOCK.sub("", text)).strip().splitlines()
+    return lines[-1].strip() if lines and lines[-1].strip().startswith("🤖") else ""
+
+
 def merged_description(prose: str, old: str) -> str:
     """The description a repair delivers: the summary block of the present description `old` (it
     opens a description: `summary.MARK_OPEN`), then the repair's prose, then what else the worker and
     the operator's tools keep in `old`, verbatim and in their order: every other generated block
-    (`<!-- name -->` … `<!-- /name -->`), every other HTML comment (a marker), and the attribution
-    line it ends with (a last line that opens with 🤖)."""
+    (`<!-- name -->` … `<!-- /name -->`), every other HTML comment (a marker), and last the attribution
+    line (`attribution_line`: that of `old`, else the one the prose ends with). It is the last line
+    whatever the repair wrote: a repair that copies the line into its prose would otherwise leave it
+    above the blocks (2026-11-24: the next rewrite then read it as prose of no one and dropped it)."""
     first, kept, pos = [], [], 0
     while (m := HTML_COMMENT.search(old, pos)) is not None:
         block = GENERATED_BLOCK.match(old, m.start())
         end = block.end() if block else m.end()
         (first if block and block.group(1) == SUMMARY_BLOCK else kept).append(old[m.start():end].strip())
         pos = end
-    last = (old[pos:].strip().splitlines() or [""])[-1].strip()
-    if last.startswith("🤖") and last not in prose:
+    lines = prose.strip().splitlines()
+    own = lines.pop().strip() if lines and lines[-1].strip().startswith("🤖") else ""
+    last = attribution_line(old) or own
+    if last:
         kept.append(last)
-    return "\n\n".join([*first, prose.strip(), *kept]) + "\n"
+    return "\n\n".join(x for x in [*first, "\n".join(lines).strip(), *kept] if x) + "\n"
 
 
 def description_limit(body: str) -> int:
