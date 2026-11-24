@@ -80,7 +80,9 @@ the merge order __ORDER__ (suppliers before consumers, one roadmap per line).
    library lemma from the pinned libraries, restates a definition, mirrors a README Check, computes
    a small value or treats a boundary case is padding. Report it as a small correction with the
    repair "delete it from `Suggested.lean`" (the README keeps the statement), never as "prove it in
-   place".
+   place". Then, for a design as for a package, the downstream-use check (the section of that name
+   below), by reading: you run nothing, so its scratch Lean is left out and the clauses are checked
+   against the README, the Lean file and the suppliers as you can open them.
 8. **Copyright, licences and scope** (the section of that name below), against the legal copies you
    can open. The wording against the sources, the arrangement against the table of contents of the
    source cited most, and reuse: each is a finding as that section says. Close with the line
@@ -141,6 +143,8 @@ word) first.
 <!-- include: sections/gaps-and-order.md -->
 
 <!-- include: sections/adversarial.md -->
+
+<!-- include: sections/downstream.md -->
 
 <!-- include: sections/defect-classes.md -->
 

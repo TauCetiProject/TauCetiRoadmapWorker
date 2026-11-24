@@ -15,8 +15,10 @@ a full review (not an incremental one), test that directly, once:
    no provider is a gap: a finding (P2) whose witness is the clause and whose repair is the target
    that would provide it, or the supplier contract that should. A clause the README leaves open
    between two readings (for some weak differential or for every one; which measure "almost
-   everywhere" refers to; how a dimension is tied to a rank) is a small correction that asks the
-   README to choose.
+   everywhere" refers to; how a dimension is tied to a rank) is weighed like any other remark (the
+   section on writing remarks): a finding when the two readings give different objects or make a
+   stated result true under one and false under the other (the witness is an instance on which they
+   differ), a small correction that asks the README to choose when they provably agree.
 3. **In Lean.** Is the statement, or the definition it rests on, in `Suggested.lean`? When it is
    statable at the pins and absent, that is the finding of the rule on headline theorems. When the
    module docstring calls it not statable, check the reason against the suppliers as they are now: a
@@ -25,8 +27,14 @@ a full review (not an incremental one), test that directly, once:
    written is decided by the rule on imports. Where elaboration is available, write the statement in
    your scratch directory against the files that hold its carriers and report what the attempt
    showed: the instance arguments it needed, a hypothesis the README does not mention, a universe or
-   coercion the prose hides. Each is a question for the author or a small correction, with the
-   scratch statement (at most 15 lines) as its witness.
+   coercion the prose hides. The probe finds; the section on writing remarks weighs, as for anything
+   else. A hypothesis the statement needs and the README's statement lacks (verify it: an instance
+   on which the README's statement fails, or the supplier's declaration that requires it), a README
+   statement at a different generality from what can be written, and a supplier interface the
+   statement cannot be written against are findings. A detail of representation that changes no
+   statement (which instance carries a structure, an explicit coercion) is a small correction or a
+   format note. What you suspect and could not verify is a question for the author. The scratch
+   statement (at most 15 lines) is the witness in each case.
 4. **Record it.** Under `## Verified sound`, one line per statement: `Downstream use: <statement>,
    <n> clauses: <clause → provider; …>`. The line is evidence like a row of the adversarial table: a
    line that names no provider for a clause is a remark above it.
