@@ -3658,6 +3658,31 @@ def test_the_summary_is_written_when_the_prose_changed_under_the_repair(hub, mon
     assert "odd prime p, with the even prime left out" in payload["body"] and "even prime included" not in payload["body"]
 
 
+@needs_git
+def test_two_changes_of_the_description_are_merged_when_they_touch_different_lines(hub, monkeypatch, tmp_path):  # noqa: F811
+    """The repairs of two roadmap folders of one pull request run at once and each rewrites its own
+    paragraph of the description: the second one's text is merged with what the first left."""
+    rh, head, job = repair_setup(hub, monkeypatch, tmp_path)
+    mine = "Title: Foo: first layers\n\nAdds Layers 1 and 2 for every odd prime p. Validation: built at the first head.\n\n" \
+           "A stale paragraph between the blocks.\n"
+    repair_agent(monkeypatch, [], edit=False, description=[mine])
+    ctx = pool_ctx(rh)
+    lane = lane_for(job)
+    ws = reviewed(lane, job, ctx, head)
+    rh.text["body"] = PR_TEXT["body"].replace("A stale paragraph between the blocks.", "The other folder's repair rewrote this paragraph.")
+    result = lane.deliver(job, ctx, ws)
+    assert result.status == "submitted", result.detail
+    assert "description rewritten" in result.detail and "not written" not in result.detail
+    [(payload, _n)] = rh.patches
+    prose = ("Adds Layers 1 and 2 for every odd prime p. Validation: built at the first head.\n\n"
+             "The other folder's repair rewrote this paragraph.")
+    assert payload == {"body": f"{prose}\n\n{DEPENDS_BLOCK}\n\n{PR_MARKER_LINE}\n\n{FOOTER}\n"}
+    # Both rewrote the same line: nothing is merged (the next test), and the helper says so.
+    assert lane_prreview.merged_prose("a\n\nb\n", "A\n\nb\n", "a!\n\nb\n") is None
+    assert lane_prreview.merged_prose("a\n\nb\n", "A\n\nb\n", "a\n\nB\n") == "A\n\nB\n"
+    assert lane_prreview.raw_prose("One.\n\n" + DEPENDS_BLOCK + "\n\n\nTwo.\n\n" + FOOTER + "\n") == "One.\n\nTwo.\n"
+
+
 FAMILY_README = "TauCetiRoadmap/Family/README.md"
 
 
