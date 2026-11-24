@@ -988,6 +988,24 @@ is a small correction. Generated blocks are outside that check. It writes its re
 verdict (`packages/<Leaf>/reports/PRREVIEW-<Leaf>~k.md` and `.json`, the head, pull request and
 `folder` named in the verdict).
 
+A rule of the brief may leave a question to the project's human reviewers (whether a roadmap on main may
+hand a layer to a new roadmap under new numbers, say). A review cannot waive such a rule, and until
+it is told what they decided it finds the same thing in every round, and the folder never reaches the
+label. `[prreview] decisions` tells it: a table from the pull request's number (written as a string)
+to the sentences the human reviewers decided, for example
+
+```toml
+[prreview.decisions]
+"3027" = ["Foo: its Layer 6 and sections 5.4 to 5.6 leave it and are Layers 0 to 4 of Bar, under new numbers; the human reviewers allow this move."]
+```
+
+Every review of that pull request quotes them as binding (`lanes.prreview.decisions_text`): what a
+decision allows is not raised, the review checks that the head does what the decision says and no
+more, says under "For the human reviewers" that it was applied, and accounts for an earlier finding
+it settles as repaired. A decision excuses no mathematical error. Only the board's configuration
+carries decisions: the description and the comments of a pull request are its author's text and
+never count as one, so record a decision only when a human reviewer has taken it.
+
 A review is a referee's report with three kinds of remark, numbered apart (`prompts/sections/remarks.md`):
 
 - **findings** (`R01`… in the report, `F01`… in the comment; P1 or P2 only): what makes a stated

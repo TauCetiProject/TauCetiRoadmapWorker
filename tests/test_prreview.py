@@ -3887,6 +3887,28 @@ def test_a_description_is_read_only_in_the_form_asked(tmp_path, text, problem):
         assert got is None and any(problem in p for p in problems), problems
 
 
+def test_a_decision_of_the_human_reviewers_reaches_the_review_of_its_pull_request(tmp_path):
+    """2026-11-24: a review found, by the rules, that a pull request removed a layer of a roadmap on main, said
+    only the human reviewers could allow it, and found it again in every round after they had."""
+    from tauceti_roadmap_worker import config as config_mod
+    cfg = lane_ctx(tmp_path).cfg
+    assert lane_prreview.decisions_text(cfg, 12) == ""
+    cfg.prreview.decisions = {"12": ["Foo: Layer 6 moves to   Bar under new numbers; the human reviewers allow it."]}
+    text = lane_prreview.decisions_text(cfg, 12)
+    assert "- Foo: Layer 6 moves to Bar under new numbers; the human reviewers allow it." in text
+    assert "binding for this review" in text and "never excuses a mathematical error" in text
+    # an earlier finding the decision settles still counts as accounted for in an incremental re-review
+    assert lane_prreview.unaccounted_findings("## R01 (P1) — the layer is removed\n\ntext\n",
+                                              "## Previous findings\n\n- R01 — repaired: settled by a decision of "
+                                              "the human reviewers\n") == []
+    assert lane_prreview.decisions_text(cfg, 13) == "" and lane_prreview.decisions_text(cfg, None) == ""
+    config_mod.validate(cfg)
+    for bad in ({"x12": ["a"]}, {"12": []}, {"12": [""]}, {"12": ["see <!-- marker -->"]}, {"12": "a sentence"}):
+        cfg.prreview.decisions = bad
+        with pytest.raises(config_mod.ConfigError, match="prreview.decisions"):
+            config_mod.validate(cfg)
+
+
 def test_a_long_description_may_grow_and_is_never_asked_to_shrink(tmp_path):
     """2026-11-24: 11,905 characters of description under a fixed limit of 12,000: every repair with a
     sentence to add shortened what stood about other folders."""

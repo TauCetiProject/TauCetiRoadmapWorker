@@ -598,6 +598,34 @@ def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
     return text
 
 
+DECISIONS = """
+
+**Decisions of the project's human reviewers for this pull request.** The human reviewers have decided the \
+following, and the operator recorded it in the board's configuration (it is not text of the pull request, which \
+its author writes):
+
+{items}
+
+Each is binding for this review. Where a rule of this brief leaves a question to the human reviewers, or makes a \
+finding of something a decision above allows (an item of a roadmap on main that the head hands to another roadmap, \
+for example), raise no finding and no remark for it: check instead that the head does what the decision says and \
+nothing beyond it, and say under `## For the human reviewers`, in one line, that the decision was applied. A \
+finding of an earlier report that a decision settles is accounted for under `## Previous findings` as \
+`- R01 — repaired: settled by a decision of the human reviewers`, and is not written again. A decision never \
+excuses a mathematical error, a statement the head gets wrong, or anything it does not name: if the head goes \
+beyond what a decision says, that part is reviewed by the rules as usual."""
+
+
+def decisions_text(cfg, number) -> str:
+    """The paragraph of a reviewing brief on the decisions the human reviewers took for pull request `number`
+    (`[prreview] decisions`); '' when there is none. 2026-11-24: a review found, rightly by the rules, that a
+    pull request removed a layer of a roadmap on main (it handed the layer to a new roadmap), said that only the
+    human reviewers could allow it, and found it again in every later round after they had: nothing told a
+    review what they had decided, and the description, which did, is its author's text."""
+    items = [" ".join(str(x).split()) for x in (cfg.prreview.decisions.get(str(number)) or []) if str(x).strip()]
+    return DECISIONS.format(items="\n".join(f"- {x}" for x in items)) if items else ""
+
+
 def unaccounted_findings(previous: str, report: str) -> list[str]:
     """The findings of the previous report (`prreviews.report_finding_ids`) an incremental re-review's
     report does not account for: each must be named on a line that says it is repaired, partly
@@ -1503,7 +1531,8 @@ class PRReviewLane(Lane):
                 "GATE_REPORT": str(ws.scratch / GATE_REPORT), "PR_TEXT": str(ws.scratch / PULL_REQUEST_TEXT),
                 "OUTSIDE_CHECK": f"git -C {ws.workdir} diff --stat {pr_base(ctx, ws)}...HEAD -- . {excluded}",
                 "PREVIOUS": f"`{previous}`" if previous else "none", "CHANGES": since,
-                "MODE": mode_text(mode, job, cfg, ws.extra) + deferred_text(ws.extra.get("deferred") or []),
+                "MODE": (mode_text(mode, job, cfg, ws.extra) + decisions_text(cfg, ws.extra.get("pr"))
+                         + deferred_text(ws.extra.get("deferred") or [])),
                 "VERDICT_FILE": str(self.verdict_file(job, ctx, ws)),
                 "ELABORATE": elaborate_line(cfg, dataclasses.replace(ws, content=ws.workdir)),
                 "LIBRARY": library_description(ws.workdir)}
