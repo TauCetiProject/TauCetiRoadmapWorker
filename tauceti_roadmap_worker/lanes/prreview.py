@@ -117,6 +117,8 @@ REPAIR_EFFECTS = (REPAIR, CONTENT_PUSH, REPAIR_TEXT, REPAIR_COMMENT)
 # scratch directory), and as the worker checked and recorded it (in the job directory).
 DESCRIPTION, REPAIR_DESCRIPTION = "description.md", "repair-description.json"
 TITLE_LIMIT, DESCRIPTION_LIMIT = 200, 12000
+DESCRIPTION_GROWTH = 2000              # what one repair may add to a description that is already long
+BODY_LIMIT = 65536                     # GitHub's limit on a description, generated blocks included
 REPAIR_REPORT = "repair-report.md"        # in the job folder: the repair's report, H01… per finding
 REPAIR_GATE = "repair-gate.json"          # in the job folder: the gate's result at the repaired head
 CARRIES = 2                               # times a repair is carried onto a head that moved under it (`carry`)
@@ -908,6 +910,8 @@ def board_edits_brief(job: Job, ctx: Context, ws: Workspace) -> str:
 def description_brief(ws: Workspace, base: str, folder: str) -> str:
     """The paragraph of the repair brief on the pull request's title and description: for findings about
     them, and for what the repair's own change makes wrong in them (the next review would ask for it)."""
+    limit = ws.extra.get("description_limit", DESCRIPTION_LIMIT)
+    fits = len(raw_prose(ws.extra.get("pr_body") or "")) <= limit
     return (f"The pull request's title and description as well (the one exception to \"no pull-request text\"), "
             f"for findings about them (a description of an earlier head, a statement of the change that is "
             f"wrong or missing, a stale validation report, a title that no longer names the change) and for what "
@@ -925,13 +929,14 @@ def description_brief(ws: Workspace, base: str, folder: str) -> str:
             f"reader must know to review it; a `Closes #N` line and an attribution line that are still right stay, "
             f"and so does what it says of roadmap folders other than yours, unless a finding is about it. "
             f"No history of earlier heads, no review round, no build log, no local path, no @-mention, and at most "
-            f"{DESCRIPTION_LIMIT} characters. Write the prose only: the worker keeps, after your text and as they "
-            f"are, every generated block of the present description (`<!-- name -->` … `<!-- /name -->`: the "
-            f"dependency task list, the merge order) and every marker comment, so copy none of them and write no "
-            f"HTML comment. A finding about the content of the dependency task list or of the merge order is not "
-            f"yours to repair: say in its section that the block is generated. Check every statement of the new "
-            f"text against the head, as you would a README line. When neither a finding nor your repair makes "
-            f"the title or description wrong, do not write the file.")
+            f"{limit} characters" + (" (the present text fits: shorten nothing of it to make room)" if fits else "")
+            + ". Write the prose only: the worker keeps, after your text and as they "
+            "are, every generated block of the present description (`<!-- name -->` … `<!-- /name -->`: the "
+            "dependency task list, the merge order) and every marker comment, so copy none of them and write no "
+            "HTML comment. A finding about the content of the dependency task list or of the merge order is not "
+            "yours to repair: say in its section that the block is generated. Check every statement of the new "
+            "text against the head, as you would a README line. When neither a finding nor your repair makes "
+            "the title or description wrong, do not write the file.")
 
 
 def summary_brief(ws: Workspace) -> str:
@@ -1009,7 +1014,7 @@ HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 SUMMARY_BLOCK = "roadmap-summary"      # the block `summary` writes; it stays first in a description
 
 
-def read_description(path: Path, ctx: Context) -> tuple[dict | None, list[str]]:
+def read_description(path: Path, ctx: Context, limit: int = DESCRIPTION_LIMIT) -> tuple[dict | None, list[str]]:
     """(the title and description a repair wrote in `path`, why they cannot be delivered): None with no
     problem when the repair wrote none. The text goes onto a pull request under the author's name, so it
     is refused, for the repair's second pass to put right, when it is not in the form asked, carries an
@@ -1025,8 +1030,8 @@ def read_description(path: Path, ctx: Context) -> tuple[dict | None, list[str]]:
         problems.append(f"its title is over {TITLE_LIMIT} characters")
     if not body:
         problems.append("it has a title and no description")
-    if len(body) > DESCRIPTION_LIMIT:
-        problems.append(f"its description is over {DESCRIPTION_LIMIT} characters")
+    if len(body) > limit:
+        problems.append(f"its description is over {limit} characters")
     text = title + "\n" + body
     if "<!--" in text or "-->" in text:
         problems.append("it carries an HTML comment (the worker keeps the generated blocks and markers itself)")
@@ -1057,6 +1062,19 @@ def merged_description(prose: str, old: str) -> str:
     if last.startswith("🤖") and last not in prose:
         kept.append(last)
     return "\n\n".join([*first, prose.strip(), *kept]) + "\n"
+
+
+def description_limit(body: str) -> int:
+    """How long a description a repair may write for a pull request whose description is `body`:
+    `DESCRIPTION_LIMIT`, and for a description whose prose is already near or over it, that prose and
+    `DESCRIPTION_GROWTH` more, as far as GitHub's limit leaves room beside what the worker keeps (the
+    generated blocks, the markers, the attribution line). 2026-11-24: a pull request of 92 roadmap
+    folders had 11,905 characters of description under a fixed limit of 12,000, so each repair that had a
+    sentence to add shortened paragraphs about other folders to make room: text was lost, and two repairs
+    at once rewrote the same lines, which no merge can join (`merged_prose`)."""
+    prose = len(raw_prose(body))
+    room = BODY_LIMIT - (len(body) - prose) - 512
+    return max(0, min(max(DESCRIPTION_LIMIT, prose + DESCRIPTION_GROWTH), room))
 
 
 def description_prose(body: str) -> str:
@@ -1208,6 +1226,7 @@ class PRReviewLane(Lane):
         ws.extra["pr_text"] = str(ws.scratch / PULL_REQUEST_TEXT)
         ws.extra["pr_prose"] = description_prose(data.get("body") or "")
         ws.extra["pr_body"] = data.get("body") or ""
+        ws.extra["description_limit"] = description_limit(data.get("body") or "")
         ws.extra["pr_summary"] = summary.block_kind(data.get("body") or "")
         ws.extra["pr_text_digest"] = summary.text_digest(data.get("title") or "", data.get("body") or "")
         self.write_changes(job, ctx, ws)
@@ -2030,7 +2049,8 @@ class PRReviewLane(Lane):
                 self.note(ws, "board edits delivered with the review: " + ", ".join(sorted(edits)))
             if result.limited or result.exit_code != 0:
                 raise LaneError("the repair agent " + ("hit a usage limit" if result.limited else f"exited {result.exit_code}"))
-            text, text_problems = read_description(described, ctx) if with_text else (None, [])
+            text, text_problems = (read_description(described, ctx, ws.extra.get("description_limit", DESCRIPTION_LIMIT))
+                                   if with_text else (None, []))
             block, block_problems = (read_summary(summarised, ws.extra.get("pr_summary") or "", ctx)
                                      if with_text else ("", []))
             problems = (([] if report.is_file() else ["no repair report"]) + answer_problems(ws, report)
