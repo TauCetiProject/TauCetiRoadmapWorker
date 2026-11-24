@@ -933,7 +933,7 @@ an operator files by hand at an accepted head (inputs `operator_check`) is not c
 | `review_changes_of_merged` | `false` | a review that is not incremental, of a roadmap folder whose `README.md` is on the pull request's base branch, reviews the change instead of the whole folder (below): `changes.md` holds the folder's change since the merge base, every passage it adds or changes and every untouched passage it affects is reviewed, and a defect in other untouched text is a non-blocking remark (`Untouched text: …`) for a separate pull request, which a repair leaves alone; off: such a review is full |
 | `carry_minor` | `false` | an acceptance with small corrections applies them in one small commit on a pool author's pull request (and, in reviews before 2026-11-18, a review whose every finding is P3 ended with its repair): no further review of that folder is filed for the repaired head, and the pull request is labelled once every folder is settled (below) |
 | `carry_unchanged` | `true` | a head that moved without changing the pull request's roadmap folders (a rebase, a merge of the base branch) keeps the acceptance of the head it came from: the label stays and no review of the new head is filed (below) |
-| `carry_unchanged_folders` | `true` | the same folder by folder, on a pull request with several roadmap folders: a folder whose latest review settled the files it still holds is not reviewed again when another folder's repair moves the head, and counts as accepted there (below) |
+| `carry_unchanged_folders` | `true` | the same folder by folder, on a pull request with several roadmap folders: a folder whose latest review settled the files it still holds is not reviewed again when another folder's repair moves the head, and counts as accepted there; a waiting round of a folder whose files did not change stays on the board (below) |
 | `carry_layout` | `true` | with the two above, a roadmap folder whose README only had its top-level sections reordered, every other file unchanged, holds the same files: the acceptance carries however many lines moved, and the pull request gets one housekeeping note (below) |
 | `defer_outside` | `false` | a repair may settle a finding as `outside this folder: <where>`; the review's verdict records it and later reviews of the folder do not raise it again (below) |
 | `repair_pool` | `true` | a review that asks for changes on a pool author's pull request, by a pool operator, repairs it in the same job |
@@ -1141,6 +1141,17 @@ folder after a sibling folder changed: a citation from the accepted folder into 
 checked by the repaired folder's own review and by the gate, not by a new review of the accepted
 folder. Set `carry_unchanged_folders = false` to have every folder reviewed at every head again. The
 operator's own filing (`operator_prs`) should apply the same test: `intake.unchanged_folders`.
+
+The same test keeps the rounds that are waiting. A review nobody has taken, filed for a head the pull
+request has since left, stays on the board when its folder holds at the new head the files it held at
+the head the job names: it is neither closed nor filed again, and `board sync` says `N reviews nobody
+took kept at <sha7>`. A worker takes such a round and reviews the head the job names, as a review
+under way when the head moves does, and the review counts at the new head by the rule above. A round
+whose folder's files did change is closed as superseded and filed at the new head, as every round is
+with the switch off. Rounds that read the pull request's text or an answer given at their head
+(`text_check`, `operator_check`, `text_rereview`, `dispute_rereview`) belong to that head and are
+always closed when it moves. Without this, a pull request of many roadmap folders has all its waiting
+rounds closed and filed again at each repair of one folder, and no worker can take one in between.
 
 With `carry_layout` (on by default), a folder whose README only had its top-level sections reordered
 counts as holding the same files, for both rules above. The test is made on the two heads' files and
