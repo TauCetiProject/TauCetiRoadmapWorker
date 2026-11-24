@@ -3683,6 +3683,98 @@ def test_two_changes_of_the_description_are_merged_when_they_touch_different_lin
     assert lane_prreview.raw_prose("One.\n\n" + DEPENDS_BLOCK + "\n\n\nTwo.\n\n" + FOOTER + "\n") == "One.\n\nTwo.\n"
 
 
+# A paragraph is one line of a description, so two writers who each add a sentence to one paragraph
+# conflict line by line; `merged_prose` then merges by sentence.
+PARAGRAPHS = ("Adds Layers 1 and 2 of `Foo.layer_one` for every odd prime p. The statement reads "
+              "`theorem layer_one (p : ℕ) [Fact p.Prime] : Foo p`. Validation: built at the first head.\n\n"
+              "- Baz: the comparison with the classical form. It feeds the later layers.\n\n"
+              "Closes #5.\n")
+
+
+def test_a_line_of_prose_splits_into_sentences_outside_code_spans_and_abbreviations():
+    split = lane_prreview.prose_sentences
+    assert split("Adds `p. q` here; see Prop. 3.2 and Q. Zorvath, e.g. the case p. **Then.** It (as said.) ends: so.") \
+        == ["Adds `p. q` here;", "see Prop. 3.2 and Q. Zorvath, e.g. the case p.", "**Then.**", "It (as said.)",
+            "ends:", "so."]
+    assert split("Built at `theorem foo (p : ℕ) : p.Prime`. Then more.") == \
+        ["Built at `theorem foo (p : ℕ) : p.Prime`.", "Then more."]
+    assert split("- Baz: the first member. It stays.") == ["- Baz:", "the first member.", "It stays."]
+    assert split("1. The first step. Then 2. comes.") == ["1. The first step.", "Then 2. comes."]
+    assert split("Two spaces.  Not cut. A URL https://example.org/a. and a time 10:30 stay.") == \
+        ["Two spaces.  Not cut.", "A URL https://example.org/a.", "and a time 10:30 stay."]
+    assert split("") == [] and split("No end") == ["No end"]
+
+
+@pytest.mark.parametrize("text", [
+    PARAGRAPHS,
+    "One.\n\n\n\nTwo.  Three.\n" + DEPENDS_BLOCK + "\n\n- a: b. c.\n- d; e.\n  indented. line.\n\n" + FOOTER + "\n",
+    "Title\n=======\n\n<<<<<<< not a marker\n\nA `code span. with: stops` and an unclosed ` tick. Here.\n",
+    "",
+])
+def test_prose_split_into_sentences_and_joined_again_is_unchanged(text):
+    prose = lane_prreview.raw_prose(text)
+    lines = lane_prreview.sentence_lines(prose)
+    assert lane_prreview.prose_lines(lines) == prose
+    assert lane_prreview.PARAGRAPH_MARK not in prose and lines.endswith(lane_prreview.PARAGRAPH_MARK + "\n")
+
+
+@needs_git
+def test_two_sentences_appended_to_one_paragraph_are_both_kept_ours_first():
+    ours = PARAGRAPHS.replace("the later layers.", "the later layers. Its statement names the prime.")
+    theirs = PARAGRAPHS.replace("the later layers.", "the later layers. The proof is left to Layer 3.")
+    expected = PARAGRAPHS.replace(
+        "the later layers.", "the later layers. Its statement names the prime. The proof is left to Layer 3.")
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, theirs) == expected
+    # The same with the generated blocks, the marker and the attribution line around the prose.
+    bodies = [f"{x.strip()}\n\n{DEPENDS_BLOCK}\n\n{PR_MARKER_LINE}\n\n{FOOTER}\n" for x in (PARAGRAPHS, ours, theirs)]
+    assert lane_prreview.merged_prose(*bodies) == expected
+
+
+@needs_git
+@pytest.mark.parametrize("theirs, expected", [
+    # theirs changes a later sentence of the paragraph
+    (PARAGRAPHS.replace("the first head.", "the second head."),
+     PARAGRAPHS.replace("odd prime p. ", "odd prime p. It is the case n = 1 of the family. ")
+     .replace("the first head.", "the second head.")),
+    # theirs inserts a sentence later in the paragraph
+    (PARAGRAPHS.replace("Foo p`. ", "Foo p`. Layer 2 follows from it. "),
+     PARAGRAPHS.replace("odd prime p. ", "odd prime p. It is the case n = 1 of the family. ")
+     .replace("Foo p`. ", "Foo p`. Layer 2 follows from it. ")),
+])
+def test_a_sentence_inserted_mid_paragraph_merges_with_a_change_elsewhere_in_it(theirs, expected):
+    ours = PARAGRAPHS.replace("odd prime p. ", "odd prime p. It is the case n = 1 of the family. ")
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, theirs) == expected
+    assert lane_prreview.merged_prose(PARAGRAPHS, theirs, ours) == expected
+
+
+@needs_git
+def test_a_sentence_both_add_at_one_place_is_kept_once():
+    same = "odd prime p. Layer 2 needs p odd. "
+    ours = PARAGRAPHS.replace("odd prime p. ", same).replace("the first head.", "the first head. Ours ends here.")
+    theirs = PARAGRAPHS.replace("odd prime p. ", same).replace("the first head.", "the first head. Theirs too.")
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, theirs) == \
+        PARAGRAPHS.replace("odd prime p. ", same).replace("the first head.", "the first head. Ours ends here. Theirs too.")
+    # A conflict whose two sides are the same insertion is taken once.
+    conflict = "a\n<<<<<<< ours\nX.\n||||||| base\n=======\nX.\n>>>>>>> theirs\nb\n"
+    assert lane_prreview.insertions_resolved(conflict, 7) == "a\nX.\nb\n"
+    assert lane_prreview.insertions_resolved(conflict.replace("||||||| base\n", ""), 7) is None
+
+
+@needs_git
+def test_a_sentence_both_rewrote_is_not_merged_even_beside_one_that_merges():
+    # Ours adds a sentence the merge would keep, and both rewrite the statement in its code span (one
+    # sentence: the code span is not split at its `:` and `.`), each at a different end of it.
+    ours = PARAGRAPHS.replace("the first head.", "the first head. It took an hour.").replace("(p : ℕ)", "(q : ℕ)")
+    theirs = PARAGRAPHS.replace("Foo p`", "Bar p`")
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, theirs) is None
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, PARAGRAPHS.replace("Closes #5.", "Closes #6.")) == \
+        ours.replace("Closes #5.", "Closes #6.")
+    # Both append to the list item, and both rewrite its first sentence.
+    ours = PARAGRAPHS.replace("the later layers.", "the later layers. Ours.").replace("classical form", "old form")
+    theirs = PARAGRAPHS.replace("the later layers.", "the later layers. Theirs.").replace("classical form", "usual form")
+    assert lane_prreview.merged_prose(PARAGRAPHS, ours, theirs) is None
+
+
 FAMILY_README = "TauCetiRoadmap/Family/README.md"
 
 

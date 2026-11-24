@@ -1251,12 +1251,13 @@ description (`<!-- name -->` … `<!-- /name -->`: a dependency task list, the m
 every other HTML comment (the worker's marker) and the attribution line it ends with. Prose outside
 those blocks is replaced. A description whose prose is no longer the one the repair read (another
 folder's repair rewrote it meanwhile, or the author did) gets the two changes merged, line by line,
-when they touch different lines (a paragraph is one line; `merged_prose`): on a pull request with
-several roadmap folders the repairs of two folders often run at once, and each rewrites its own
-sentence. When both changed the same line the description is left as it is, since the repair's text
-would undo the other change. That, like a write GitHub refuses, is noted (`title and description not
-written: <why>`) and not retried; the files' repair and its reply stand. The round's summary says `title and
-description rewritten` (or which of the two).
+and where both fall in one line (a paragraph is one line) sentence by sentence, keeping two sentences
+added at the same place, the present description's first (`merged_prose`): on a pull request with
+several roadmap folders the repairs of two folders often run at once, and each rewrites or adds its
+own sentence. When both changed the same sentence the description is left as it is, since the
+repair's text would undo the other change. That, like a write GitHub refuses, is noted (`title and
+description not written: <why>`) and not retried; the files' repair and its reply stand. The
+round's summary says `title and description rewritten` (or which of the two).
 
 The summary block that opens a description (`<!-- roadmap-summary -->`, written once by
 `tauceti-roadmap summary`) is the one generated block a repair may answer for, since nothing else
