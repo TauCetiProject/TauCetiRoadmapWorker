@@ -1112,16 +1112,21 @@ class PRReviewLane(Lane):
         the base branch, and the round is still the review of those files (the intake keeps it,
         `intake.unmoved_rounds`). The review is then made at `recorded`, as one under way when the head
         moves is, and counts at `live` as that one does (`intake.unchanged_folders`). False for a round
-        that reads the pull request's text or an answer given at its head (`intake.folder_round`), and
-        when GitHub does not give both trees."""
-        from ..intake import folder_round  # here: the intake imports the lanes
+        that reads the pull request's text or an answer given at its head (`intake.folder_round`), when
+        something outside the active directory changed between the two heads (`intake.outside_unchanged`),
+        and when GitHub does not give the trees."""
+        from ..intake import folder_round, outside_unchanged  # here: the intake imports the lanes
         if not ctx.cfg.prreview.carry_unchanged_folders or not live or not folder_round(job):
             return False
+        repo, batch = ctx.cfg.repositories.content, ctx.cfg.board.graphql_batch
         path = f"{ctx.cfg.roadmap.active_dir.strip('/')}/{board.prreview_folder(job).strip('/')}"
-        ids = prbatch.tree_ids(ctx.gh, ctx.cfg.repositories.content, [(live, path), (recorded, path)],
-                               ctx.cfg.board.graphql_batch)
+        ids = prbatch.tree_ids(ctx.gh, repo, [(live, path), (recorded, path)], batch)
         here, there = ids.get((live, path)), ids.get((recorded, path))
-        return bool(here) and here == there
+        if not here or here != there:
+            return False
+        # ... and nothing outside the active directory moved (a merge of the base branch): `carry` would
+        # refuse the repair of such a round.
+        return outside_unchanged(ctx, repo, {(recorded, live)}, batch).get((recorded, live), False)
 
     # -- the workspace --
     def prepare(self, job: Job, ctx: Context) -> Workspace:

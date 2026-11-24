@@ -2858,6 +2858,25 @@ def passed_folders(ctx, repo: str, head: str, folders, jobs: list[Job], texts, b
             if ids.get((head, path_of[folder])) and ids.get((head, path_of[folder])) == ids.get((start, path_of[folder]))}
 
 
+def outside_unchanged(ctx, repo: str, pairs, batch: int) -> dict[tuple[str, str], bool]:
+    """For each pair of commits (old, new) of `pairs`: whether everything outside the active directory is
+    the same at both (the entries of the two root trees agree, the active directory's own entry apart).
+    A pair GitHub did not give a root tree for is left out: nothing is known about it. A merge of the base
+    branch changes files outside the active directory, and a repair is never carried over such a move
+    (`PRReviewLane.carry`), so a round is not kept across one (`unmoved_rounds`)."""
+    pairs = {(str(old), str(new)) for old, new in pairs}
+    if not pairs:
+        return {}
+    top = ctx.cfg.roadmap.active_dir.strip("/").split("/")[0]
+    roots = prbatch.tree_entries(ctx.gh, repo, [(sha, "") for sha in sorted({s for pair in pairs for s in pair})], batch)
+    out = {}
+    for old, new in pairs:
+        a, b = roots.get((old, "")), roots.get((new, ""))
+        if a is not None and b is not None:
+            out[(old, new)] = ({k: v for k, v in a.items() if k != top} == {k: v for k, v in b.items() if k != top})
+    return out
+
+
 def folder_round(job: Job) -> bool:
     """Whether a PRREVIEW job reads a roadmap folder's files and nothing that belongs to one head: not a
     check of the pull request's text (`text_check`, `operator_check`), and not a round that reads an
@@ -2876,19 +2895,31 @@ def unmoved_rounds(ctx, repo: str, moved: list[tuple[Job, str]], batch: int) -> 
     (`PRReviewLane.prepare` takes it at the head it names, and its review counts wherever the folder
     holds those files, `unchanged_folders`). 2026-11-24: a pull request of 92 roadmap folders had every
     queued round closed and filed again at each repair of one folder, and no worker could take a round
-    in between. A round GitHub gave no tree for is left as it is for this run: nothing is known."""
+    in between. A round is kept only when nothing outside the active directory changed between the two
+    heads either (`outside_unchanged`): across a merge of the base branch the review's repair could not
+    be carried onto the branch (`PRReviewLane.carry`), so such a round is closed and filed again at the
+    new head (2026-11-24: rounds kept across a merge of main reviewed, repaired, and could not push).
+    A round GitHub gave no tree for is left as it is for this run: nothing is known."""
     if not moved:
         return set(), set()
     base = ctx.cfg.roadmap.active_dir.strip("/")
     path_of = {job.id: f"{base}/{board.prreview_folder(job).strip('/')}" for job, _head in moved}
     wanted = dict.fromkeys((sha, path_of[job.id]) for job, head in moved for sha in (head, str(job.inputs["head"])))
     ids = prbatch.tree_ids(ctx.gh, repo, list(wanted), batch)
-    kept, unknown = set(), set()
+    same, unknown = [], set()
     for job, head in moved:
         here, there = (head, path_of[job.id]), (str(job.inputs["head"]), path_of[job.id])
         if here not in ids or there not in ids:
             unknown.add(job.id)
         elif ids[here] and ids[here] == ids[there]:
+            same.append((job, head))
+    outside = outside_unchanged(ctx, repo, {(str(job.inputs["head"]), head) for job, head in same}, batch)
+    kept = set()
+    for job, head in same:
+        pair = (str(job.inputs["head"]), head)
+        if pair not in outside:
+            unknown.add(job.id)
+        elif outside[pair]:
             kept.add(job.id)
     return kept, unknown
 
