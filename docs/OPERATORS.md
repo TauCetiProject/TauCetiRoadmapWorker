@@ -2103,12 +2103,13 @@ text still on main under the active directory, no correction holds: all of them 
 pull request is open, files none (`... wait for the next correction (...)`): reports confirmed meanwhile
 join the next round. The `correction` lane (`work --only correction`; an authoring lane, on the family
 defaults; stage `CORRECT`, right after `PORT`) first reads every open pull request of the content
-repository that changes a file under the roadmap directories, aggregates included, with all its changed
-files, from GitHub at that moment (one GraphQL query per 50 open pull requests, one REST listing more
-for a pull request with over 100 files), never from the host's index of open roadmap pull requests, which
-may be half an hour old and leaves out a pull request whose head it could not fetch; if any of it cannot
-be read, the round fails and nothing is opened. When another open pull request changes a file in the
-roadmap's folder (a rename out of it included), the job is parked as `state:blocked` with `waits_for` in
+repository with every path it changes, from GitHub at that moment (one GraphQL query per 50 open pull
+requests; GraphQL names a renamed file by its new path only, so a pull request with a renamed file, or
+with over 100 files, is read again by REST, which gives the old path too), never from the host's index of
+open roadmap pull requests, which may be half an hour old and leaves out a pull request whose head it could
+not fetch; if any of it cannot be read, the round fails and nothing is opened. When another open pull
+request changes a file in the roadmap's folder (a rename out of it included, wherever it moves the file),
+the job is parked as `state:blocked` with `waits_for` in
 its spec and a comment naming the pull request (a wait that cannot be recorded in the spec parks nothing:
 the round fails and is tried again), and `board sync` makes it available again once every one of them is
 merged or closed. Otherwise the worker checks out main in a worktree on `roadmap/<leaf>-correction-<k>`,
@@ -2130,7 +2131,10 @@ labels it `[roadmap] pr_label` and awaiting-review, and adds `Pull request: #N` 
 the board. The push and the pull request are effects of the job's record: a run that stops after either
 finishes on the next attempt without running the agent again, a second push or a second pull request,
 checked against the main it was built on (its report names that commit), however far main has moved
-since. A
+since. Only the rest of a submission whose pull request exists skips the collision check: a kept run that
+has not recorded its pull request first looks for one it opened and lost the answer to (taken up if
+found), and otherwise is admitted again before it opens one. The labels are an effect too, so a label write
+that fails is made by the next attempt. A
 correction whose every report is declined opens no pull request. The intake merges the report as any
 submission (refusing one whose applied correction names no pull request its author opened).
 

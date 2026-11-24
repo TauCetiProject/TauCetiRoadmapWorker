@@ -4,6 +4,8 @@ open pull request edits, and a round with a stub agent on local repositories, st
 
 import dataclasses
 import json
+import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -356,7 +358,13 @@ def test_dry_run_writes_a_complete_brief(live, tmp_path):  # noqa: F811
 
 
 @needs_git
-def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(live, tmp_path, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("stop, done", [
+    ("repos/TauCetiProject/TauCetiRoadmapJobs/pulls",
+     ["content-push", "content-pull-request", "content-labels", "push"]),
+    ("repos/TauCetiProject/TauCetiRoadmap/issues/99/labels", ["content-push", "content-pull-request"]),
+], ids=["board submission refused", "labels refused"])
+def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(  # noqa: F811
+        live, tmp_path, monkeypatch, stop, done):
     ctx, _board = live
     commit(tmp_path / "origin-content", content_files(), "the roadmap")
     forks = {}
@@ -379,7 +387,7 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(live
         report.write_text(correction(head=head))
         return agents.AgentResult(exit_code=0, seconds=1.0)
     monkeypatch.setattr(agents, "run_agent", agent)
-    monkeypatch.setattr(openroadmaps, "inventory", lambda gh, repo, dirs, **k: [])     # no other pull request
+    monkeypatch.setattr(lane_correction, "open_pull_requests", lambda ctx: [])     # no other pull request
 
     class StopsOnce(FakeGH):
         stop = True
@@ -392,7 +400,7 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(live
             return super().api(path, paginate)
 
         def write(self, method, path, payload=None):
-            if self.stop and path == f"repos/{ctx.cfg.repositories.packages_repo()}/pulls":
+            if self.stop and path == stop:
                 self.stop = False
                 raise GHError("gh api: HTTP 403")          # the board submission: after the content pull request
             return super().write(method, path, payload)
@@ -403,7 +411,7 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(live
 
     first = lane_for(job).run(job, ctx)
     assert first.status == "failed" and "next attempt finishes its submission" in first.detail, first.detail
-    assert read_pending(ctx, job)["done"] == ["content-push", "content-pull-request", "push"]
+    assert read_pending(ctx, job)["done"] == done
     commit(tmp_path / "origin-content", {"TauCetiRoadmap/Other/README.md": "# Other\n"}, "unrelated work on main")
     second = lane_for(job).run(job, ctx)
 
@@ -510,3 +518,112 @@ def test_a_done_correction_job_left_open_is_closed():
     out = reports.sync_reports(ctx, now=NOW)
     assert ("PATCH", "repos/TauCetiProject/TauCetiRoadmapJobs/issues/30", {"state": "closed"}) in gh.writes
     assert f"reports: {CJOB}: done, but its issue was open; closed" in out
+
+
+
+# --- review round 2 ----------------------------------------------------------------------------------------------
+
+class RenameGH(FakeGH):
+    """Open pull requests as GraphQL lists them (a renamed file by its new path only), and their REST file lists."""
+
+    def __init__(self, nodes, rest):
+        super().__init__()
+        self.nodes, self.rest, self.rest_reads = nodes, rest, []
+
+    def graphql(self, query, **variables):
+        return {"repository": {"pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": self.nodes}}}
+
+    def api(self, path, paginate=False):
+        m = re.fullmatch(r"repos/TauCetiProject/TauCetiRoadmap/pulls/(\d+)/files\?per_page=100", path)
+        if m:
+            self.rest_reads.append(int(m.group(1)))
+            return self.rest[int(m.group(1))]
+        return super().api(path, paginate)
+
+
+def renamed_node(number: int, path: str) -> dict:
+    node = pr_node(number, [path])
+    node["files"]["nodes"][0]["changeType"] = "RENAMED"
+    return node
+
+
+def test_a_pull_request_that_renames_a_file_out_of_the_folder_collides():
+    out_of_folder = "Archive/QuadraticFormInvariants/README.md"             # outside the roadmap directories
+    gh = RenameGH([renamed_node(51, out_of_folder), pr_node(52, ["TauCetiRoadmap/Other/README.md"])],
+                  {51: [{"filename": out_of_folder, "previous_filename": README, "status": "renamed"}]})
+    ctx = SimpleNamespace(cfg=example_config(), gh=gh)
+    prs = lane_correction.open_pull_requests(ctx)
+    assert lane_correction.colliding(prs, FOLDER) == [51]
+    assert gh.rest_reads == [51]                                 # REST only where GraphQL hides a previous path
+
+
+@needs_git
+def test_a_kept_run_with_no_pull_request_yet_checks_for_collisions_again(live, tmp_path, monkeypatch):  # noqa: F811
+    ctx, _board = live
+    commit(tmp_path / "origin-content", content_files(), "the roadmap")
+    forks = {}
+    for repo in (ctx.cfg.repositories.content, ctx.cfg.repositories.packages_repo()):
+        name = "alice/" + repo.split("/")[1]
+        forks[name] = tmp_path / (name.replace("/", "__") + ".git")
+        gitops.git(tmp_path, "init", "-q", "--bare", str(forks[name]))
+    origin_url = gitops.url
+    monkeypatch.setattr(gitops, "url", lambda repo: forks[repo].as_uri() if repo in forks else origin_url(repo))
+
+    def agent(task, base_env=None):
+        wt = task.workdir
+        (wt / README).write_text(TEXT.replace("of rank one are equivalent", "of rank at least two are equivalent"))
+        gitops.git(wt, "commit", "-qam", "QuadraticFormInvariants: correct 2.3", check=False)
+        head = gitops.git(wt.parent.parent / "content", "rev-parse", "HEAD").strip()[:7]
+        (wt.parent.parent / "board" / REPORT).parent.mkdir(parents=True, exist_ok=True)
+        (wt.parent.parent / "board" / REPORT).write_text(correction(head=head))
+        return agents.AgentResult(exit_code=0, seconds=1.0)
+    monkeypatch.setattr(agents, "run_agent", agent)
+    others = []
+    monkeypatch.setattr(lane_correction, "open_pull_requests", lambda ctx: others)
+
+    class RefusesThePullRequest(FakeGH):
+        refuse = True
+
+        def api(self, path, paginate=False):
+            if path.startswith("repos/TauCetiProject/TauCetiRoadmap/pulls?head="):
+                return []                                         # no pull request of ours is open
+            return super().api(path, paginate)
+
+        def write(self, method, path, payload=None):
+            if self.refuse and path == "repos/TauCetiProject/TauCetiRoadmap/pulls":
+                raise GHError("gh api: HTTP 403")
+            return super().write(method, path, payload)
+    gh = RefusesThePullRequest()
+    cfg = dataclasses.replace(ctx.cfg, gates=dataclasses.replace(ctx.cfg.gates, build="", elaborate=""))
+    ctx = dataclasses.replace(ctx, cfg=cfg, gh=gh, transport=FakeTransport())
+    job = correction_job()
+    first = lane_for(job).run(job, ctx)
+    assert first.status == "failed" and read_pending(ctx, job)["done"] == ["content-push"], first.detail
+    others.append({"pr": 60, "files": [{"path": README}]})        # another author's pull request, opened since
+    gh.refuse = False
+    with pytest.raises(LaneBlocked, match="pull request #60 on"):
+        lane_for(job).run(job, ctx)
+    assert not [w for w in gh.writes if w[1] == "repos/TauCetiProject/TauCetiRoadmap/pulls"]
+
+
+@needs_git
+def test_a_kept_run_whose_pull_request_was_opened_takes_it_up(live, tmp_path, monkeypatch):  # noqa: F811
+    ctx, _board = live
+    commit(tmp_path / "origin-content", content_files(), "the roadmap")
+    job = correction_job()
+    from tauceti_roadmap_worker.lanes import base as lane_base
+    lane_base.write_pending(ctx, job, {"issue": job.number, "outstanding": ["content-pull-request", "push",
+                                                                          "pull-request", "submitted"],
+                                       "done": ["content-push"], "content": {"sha": "", "base": "", "branch": ""}})
+
+    class Opened(FakeGH):
+        def api(self, path, paginate=False):
+            if path.startswith("repos/TauCetiProject/TauCetiRoadmap/pulls?head="):
+                return [{"number": 61, "head": {"label": "alice:roadmap/quadratic-form-invariants-correction-1"}}]
+            return super().api(path, paginate)
+    monkeypatch.setattr(lane_correction, "open_pull_requests",
+                        lambda ctx: [{"pr": 61, "files": [{"path": README}]}])     # our own, its answer lost
+    ctx = dataclasses.replace(ctx, gh=Opened())
+    lane_for(job).prepare(job, ctx)
+    entry = read_pending(ctx, job)
+    assert "content-pull-request" in entry["done"] and entry["content"]["pr"] == 61

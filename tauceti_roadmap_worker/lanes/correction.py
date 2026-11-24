@@ -56,6 +56,7 @@ from .pr import fresh_worktree, release_branch
 from .report import anchor_spans, excerpt
 
 CONTENT_PR = "content-pull-request"
+CONTENT_LABELS = "content-labels"
 WAITS = ("pull request #{n} on `{repo}` also edits `{folder}`: two pull requests editing one roadmap conflict, so "
          "this correction waits; `board sync` makes it available again once that pull request is merged or closed")
 
@@ -74,16 +75,33 @@ def colliding(prs: list[dict], folder: str) -> list[int]:
 
 
 def open_pull_requests(ctx) -> list[dict]:
-    """Every open pull request of the content repository that changes a file under the roadmap directories,
-    aggregates included, with all its changed files: read now (one GraphQL query per 50 open pull requests,
-    one REST listing more for a pull request with over 100 files), never from the host's index, which may be
-    half an hour old and leaves out a pull request whose head it could not fetch. Raises when any of it cannot
-    be read: a correction is never opened beside a pull request it cannot see."""
-    cfg = ctx.cfg
-    aggregates: list[dict] = []
-    prs = openroadmaps.inventory(ctx.gh, cfg.repositories.content, (cfg.roadmap.active_dir, cfg.roadmap.completed_dir),
-                                 any_file=True, skip=cfg.prreview.aggregate_prs, aggregates=aggregates)
-    return prs + aggregates
+    """Every open pull request of the content repository, with every path it changes and, for a renamed file,
+    the path it had: read now, never from the host's index, which may be half an hour old and leaves out a
+    pull request whose head it could not fetch. GraphQL lists the pull requests and their files (one query per
+    50), but names a renamed file by its new path only, so a pull request with a renamed file, or with over
+    100 files, is read again by REST (`pulls/N/files`, which gives `previous_filename`). No pull request is
+    left out for where its files now are (a pull request moving a roadmap out of the roadmap directories
+    collides with it). Raises when any of it cannot be read: a correction is never opened beside a pull
+    request it cannot see."""
+    repo = ctx.cfg.repositories.content
+    owner, name = repo.split("/", 1)
+    out, after = [], None
+    while True:
+        data = ctx.gh.graphql(openroadmaps.QUERY, owner=owner, name=name, after=after)
+        page = (data.get("repository") or {}).get("pullRequests") or {}
+        for node in page.get("nodes") or []:
+            files = node.get("files") or {}
+            nodes = [f for f in files.get("nodes") or [] if isinstance(f, dict)]
+            if int(files.get("totalCount") or 0) > len(nodes) or any(f.get("changeType") == "RENAMED" for f in nodes):
+                listed = ctx.gh.api(f"repos/{repo}/pulls/{node['number']}/files?per_page=100", paginate=True) or []
+                paths = [{"path": f.get("filename", ""), "previous": f.get("previous_filename", "")} for f in listed]
+            else:
+                paths = [{"path": f.get("path", "")} for f in nodes]
+            out.append({"pr": int(node["number"]), "files": paths})
+        info = page.get("pageInfo") or {}
+        if not info.get("hasNextPage"):
+            return out
+        after = info.get("endCursor")
 
 
 def corrections_document(cfg, job: Job, wt: Path, board_dir: Path) -> str:
@@ -158,8 +176,21 @@ class CorrectionLane(Lane):
                 or not job.inputs.get("entries"):
             raise LaneError(f"{job.id}: its spec names no roadmap folder under `{cfg.roadmap.active_dir}/` and no report")
         ws = super().prepare(job, ctx)
-        pending = read_pending(ctx, job)      # a kept run finishes its submission, whatever is open now
-        if pending is None:
+        j = board.parse_job_id(job.id)
+        branch = f"roadmap/{gitops.kebab(job.name)}-correction-{j.round}"
+        pending = read_pending(ctx, job)
+        if pending is not None and owes(ctx, job, CONTENT_PR) and ctx.gh is not None and not ctx.dry_run:
+            # A kept run that has not recorded its pull request: if an earlier attempt opened it and lost the
+            # answer, it is ours and is taken up; otherwise the run opens one, and must be admitted again.
+            try:
+                mine = gitops.open_pull_for(ctx.gh, cfg.repositories.content, f"{ctx.operator}:{branch}")
+            except GHError as exc:
+                raise LaneError(f"whether this correction's pull request is open could not be read "
+                                f"({str(exc).splitlines()[0][:120]})") from exc
+            if mine:
+                settle(ctx, job, CONTENT_PR, content={"pr": int(mine["number"])})
+        if pending is None or owes(ctx, job, CONTENT_PR):
+            # Only the rest of a submission whose pull request exists skips the admission.
             try:
                 prs = (open_pull_requests(ctx) if ctx.gh is not None and not ctx.dry_run
                        else openroadmaps.load(ctx.state).get("prs", []))      # a dry run writes the brief only
@@ -182,8 +213,6 @@ class CorrectionLane(Lane):
         if not (ws.content / folder / "README.md").is_file():
             raise LaneBlocked(f"`{folder}/README.md` is not on `{cfg.project.branch}` (moved under "
                               f"`{cfg.roadmap.completed_dir}/` or removed): this correction needs a human")
-        j = board.parse_job_id(job.id)
-        branch = f"roadmap/{gitops.kebab(job.name)}-correction-{j.round}"
         wt = fresh_worktree(ctx, ws.content, job.name, "correct", ws)
         release_branch(ws.content, branch, keep=wt)
         gitops.git(wt, "checkout", "-q", "-B", branch)
@@ -267,7 +296,7 @@ class CorrectionLane(Lane):
         new = gitops.git(ws.workdir, "rev-parse", "HEAD").strip()
         if ctx.dry_run:
             return f"[dry-run] would push {new[:7]} and open a pull request correcting {', '.join(done)}"
-        owe(ctx, job, ws, (CONTENT_PUSH, CONTENT_PR, PUSH, PULL_REQUEST, SUBMITTED),
+        owe(ctx, job, ws, (CONTENT_PUSH, CONTENT_PR, CONTENT_LABELS, PUSH, PULL_REQUEST, SUBMITTED),
             content={"sha": new, "base": ws.extra["base"], "branch": ws.extra["branch"]})
         fork = kept_commit(read_pending(ctx, job) or {}, "content").get("repo") or ""
         if owes(ctx, job, CONTENT_PUSH):
@@ -285,11 +314,12 @@ class CorrectionLane(Lane):
             if not number:
                 raise LaneError("the pull request was not opened (GitHub returned no number)")
             settle(ctx, job, CONTENT_PR, content={"pr": number})
-            try:
-                ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels",
-                             {"labels": [cfg.roadmap.pr_label, cfg.replies.awaiting_review]})
-            except GHError:
-                pass
+        if owes(ctx, job, CONTENT_LABELS):
+            # The labels the board's pull-request upkeep finds it by (its gate rounds): an effect like the others,
+            # so a write that fails is made by the next attempt rather than lost.
+            ctx.gh.write("POST", f"repos/{repo}/issues/{number}/labels",
+                         {"labels": [cfg.roadmap.pr_label, cfg.replies.awaiting_review]})
+            settle(ctx, job, CONTENT_LABELS)
         lines = [x for x in ws.report.read_text(encoding="utf-8").split("\n") if not x.startswith("Pull request: #")]
         lines.insert(1, f"Pull request: #{number} ({ws.extra['branch']} at {new[:7]})")
         ws.report.write_text("\n".join(lines), encoding="utf-8")
