@@ -103,11 +103,11 @@ def anchor_key(anchor: str) -> str:
     return normalise(anchor).casefold()
 
 
-def _names(data: dict, key: str) -> tuple[tuple[str, ...], str]:
+def _names(data: dict, key: str, limit: int | None = MAX_NAMES) -> tuple[tuple[str, ...], str]:
     value = data.get(key, [])
     if not isinstance(value, list):
         return (), f"`{key}` is not a list"
-    if len(value) > MAX_NAMES:
+    if limit is not None and len(value) > limit:
         return (), f"`{key}` lists more than {MAX_NAMES} names"
     bad = [x for x in value if not isinstance(x, str) or len(x) > MAX_DECL or not DECL.fullmatch(x)]
     if bad:
@@ -115,7 +115,7 @@ def _names(data: dict, key: str) -> tuple[tuple[str, ...], str]:
     return tuple(dict.fromkeys(value)), ""
 
 
-def validate(data) -> tuple[Report | None, str]:
+def validate(data, names: int | None = MAX_NAMES) -> tuple[Report | None, str]:
     """The report a decoded marker describes, or (None, why not). The rules are the shared ones (the worker's
     checker and the review runner apply the same): no value is trimmed or case-folded before it is checked,
     the anchor's length is counted as written, and only the anchor is stored normalised (for its identity)."""
@@ -139,10 +139,10 @@ def validate(data) -> tuple[Report | None, str]:
         return None, "`kind` is not a known kind"
     if data["effect"] not in EFFECTS:
         return None, "`effect` is not blocked or worked-around"
-    refutes, why = _names(data, "refutes")
+    refutes, why = _names(data, "refutes", names)
     if why:
         return None, why
-    replaces, why = _names(data, "replaces")
+    replaces, why = _names(data, "replaces", names)
     if why:
         return None, why
     return Report(roadmap, data["file"], sha, anchor, data["kind"], data["effect"], refutes, replaces), ""
@@ -230,6 +230,7 @@ class Source:
     updated: str
     body: str = ""
     bors: bool = False        # closed, titled `[Merged by Bors] - ...`: merged only once its closer is verified
+    closer: str | None = None # who closed it, when a read of the pull request said so already
 
     @property
     def number(self) -> int:
@@ -270,12 +271,47 @@ def source_of(forge: str, item: dict, prefix: str) -> Source | None:
 
 
 VERIFY_PER_RUN = 20       # closers of bors-titled pull requests read per run; the rest wait for later runs
+RETRY_PER_RUN = 20        # sources left for later that a run reads again by their number, oldest first
+
+
+def fetch_source(ctx, forge: str, url: str) -> Source | str | None:
+    """A queued source read again by its number: the Source, 'gone' when the forge says it is not there (404),
+    None when it cannot be read now. GitHub: one REST read (`issues/N`, which also names who closed it);
+    Forgejo: one request, no token."""
+    r = ctx.cfg.reports
+    library = r.library or ctx.cfg.repositories.library
+    number = Source(forge, url, "", False, False, "").number
+    if forge == GITHUB:
+        try:
+            item = ctx.gh.api(f"repos/{library}/issues/{number}") or {}
+        except GHError as exc:
+            return "gone" if "404" in str(exc) else None
+        source = source_of(GITHUB, item, f"https://github.com/{library}/")
+        if source is not None:
+            if item.get("state") == "closed":
+                source.closer = str((item.get("closed_by") or {}).get("login") or "")
+        return source or "gone"
+    transport = getattr(ctx, "transport", None) or fetcher.UrllibTransport(timeout=60, max_bytes=20 << 20)
+    base, repo = r.forgejo.rstrip("/"), r.forgejo_repository or library
+    try:
+        got = transport.request(f"{base}/api/v1/repos/{quote(repo, safe='/')}/issues/{number}",
+                                {"Accept": "application/json"})
+        if got.status == 404:
+            return "gone"
+        item = json.loads(got.body.decode("utf-8")) if got.status == 200 else None
+    except (fetcher.FetchError, ValueError):
+        return None
+    if not isinstance(item, dict):
+        return None
+    return source_of(FORGEJO, item, f"{base}/{repo}/") or "gone"
 
 
 def closer(ctx, source: Source) -> str | None:
     """The login that closed a pull request ('' when none is found), or None when it cannot be read: GitHub's
     `closed_by` (one REST request), Forgejo's last `close` event in its timeline (at most three pages)."""
     r = ctx.cfg.reports
+    if source.closer is not None:
+        return source.closer
     if source.forge == GITHUB:
         try:
             issue = ctx.gh.api(f"repos/{r.library or ctx.cfg.repositories.library}/issues/{source.number}") or {}
@@ -304,10 +340,14 @@ def closer(ctx, source: Source) -> str | None:
 def verify_merge(ctx, data: dict, run: Run, source: Source) -> bool | None:
     """Whether a bors-titled pull request was closed by a merge-queue account of its forge (`[reports]
     merge_bots`, `forgejo_merge_bots`): True, False, or None when that cannot be read now (at most
-    VERIFY_PER_RUN reads a run). A verified merge is kept in the register (`merges`), so each costs one read."""
-    known = data.setdefault("merges", {})
+    VERIFY_PER_RUN reads a run). A verified merge is kept in the register (`merges`), so each costs one read;
+    so is a refusal, for the revision of the pull request it read (`not_merges`: its update time), so pull
+    requests already decided never use up the reads a later one needs."""
+    known, refused = data.setdefault("merges", {}), data.setdefault("not_merges", {})
     if source.url in known:
         return True
+    if refused.get(source.url) == source.updated:
+        return False                          # decided for this revision of the pull request
     if run.verified >= VERIFY_PER_RUN:
         return None
     run.verified += 1
@@ -317,8 +357,11 @@ def verify_merge(ctx, data: dict, run: Run, source: Source) -> bool | None:
     bots = ctx.cfg.reports.merge_bots if source.forge == GITHUB else ctx.cfg.reports.forgejo_merge_bots
     if who.lower() in {b.lower() for b in bots}:
         known[source.url] = who
+        refused.pop(source.url, None)
         run.changed.append(f"{source.url} merged by {who}")
         return True
+    refused[source.url] = source.updated
+    run.changed.append(f"{source.url} not merged by the queue")
     return False
 
 
@@ -337,7 +380,7 @@ def midpoint(lower: str, upper: str) -> str:
     return stamp(a + (b - a) / 2)
 
 
-def next_marks(marks: dict, forge: str, items: list[Source], more: bool, deferred: list[str], now_s: str) -> str:
+def next_marks(marks: dict, forge: str, items: list[Source], more: bool, now_s: str) -> str:
     """The forge's marks after a search of `window(marks, forge)` (edited in place); returns a log line, or ''.
 
     A search that had more results than its pages is narrowed: its window is halved (`<forge>-until`; an
@@ -346,8 +389,8 @@ def next_marks(marks: dict, forge: str, items: list[Source], more: bool, deferre
     the mark to its end (or to the newest update read, for an unbounded one) and clears the narrowing. This
     holds for a listing in no order of change (Forgejo's), and for one oldest first (GitHub's). A window of one
     second that still has more results than the pages cannot be narrowed: the mark moves past it, and the
-    log says that some pull requests may be missed. A source left for a later run holds the mark at its own
-    update time."""
+    log says that some pull requests may be missed. A source left for a later run never holds the mark: it is
+    queued by its URL (`retry`) and read again by its number."""
     lower, upper = window(marks, forge)
     note = ""
     if more:
@@ -362,10 +405,7 @@ def next_marks(marks: dict, forge: str, items: list[Source], more: bool, deferre
         new, exact = upper, True
     else:
         new, exact = max((s.updated for s in items), default=str(marks.get(forge) or now_s)), False
-    if deferred:
-        new, exact = min(min(deferred), new), False
-    else:
-        marks.pop(f"{forge}-until", None)
+    marks.pop(f"{forge}-until", None)
     marks[forge] = new
     if exact:
         marks[f"{forge}-exact"] = True
@@ -485,11 +525,39 @@ def newer(job_id: str, than: str) -> bool:
 
 
 def report_of(job: board.Job) -> Report | None:
-    """The report a REPORT job's spec records (its inputs)."""
+    """The report a REPORT job's spec records (its inputs), validated as a marker is, except that its
+    declarations are those of all its sources (`project`): their number has no per-marker limit."""
     fields = ("roadmap", "file", "roadmap_sha", "anchor", "kind", "effect")
     report, _why = validate({k: job.inputs.get(k) for k in fields}
-                            | {k: job.inputs.get(k, []) for k in ("refutes", "replaces")})
+                            | {k: job.inputs.get(k, []) for k in ("refutes", "replaces")}, names=None)
     return report
+
+
+SPEC_FIELDS = ("kind", "effect", "refutes", "replaces", "sources")
+
+
+def project(entry: dict) -> dict:
+    """What a REPORT job's spec holds of its report: the register entry's fields, the one source of truth."""
+    return {k: list(entry.get(k, [])) if k in ("refutes", "replaces", "sources") else entry.get(k) for k in SPEC_FIELDS}
+
+
+def refresh_specs(ctx, run: "Run", jobs: dict, known: dict) -> None:
+    """Every open REPORT job's spec rewritten from its register entry where they differ: the one place that
+    copies the register into a job, each run, so an edited source, a later source, a reopened job or a write
+    that failed half-way all converge on what the register says (one read and one write per job changed)."""
+    for entry in known.values():
+        job = jobs.get(str(entry.get("job") or ""))
+        if job is None or job.closed or job.state == "done":
+            continue
+        want = project(entry)
+        changed = [k for k in SPEC_FIELDS if job.inputs.get(k) != want[k]]
+        if not changed:
+            continue
+        run.out.append(f"reports: {job.id}: spec rewritten from the register ({', '.join(changed)})"
+                       + (" (dry run: not written)" if ctx.dry_run else ""))
+        if not ctx.dry_run:
+            job.inputs.update(want)
+            ctx.board.update_spec(job)
 
 
 def stamp(at: dt.datetime | None = None) -> str:
@@ -569,7 +637,7 @@ class Run:
     """What one `sync_reports` decided, for its log and its register write."""
     out: list[str] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)    # what the register's commit message says
-    deferred: dict[str, list[str]] = field(default_factory=dict)    # forge -> update times left for later
+    deferred: dict[str, Source] = field(default_factory=dict)   # url -> a source left for a later run
     verified: int = 0         # closers of bors-titled pull requests read this run
 
 
@@ -640,6 +708,27 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             run.out.append(f"reports: the Forgejo listing of {r.forgejo} failed ({exc}); the next run tries again")
     for items, _more in searched.values():
         found += items
+    # Sources an earlier run left for later, read again by their number: at most RETRY_PER_RUN a run, oldest
+    # first; one that cannot be read now goes to the back of the queue, one the forge no longer has leaves it.
+    queue = [q for q in data.setdefault("retry", []) if isinstance(q, dict) and q.get("url")]
+    seen = {s.url for s in found}
+    retried, unread, again = [], [], []
+    for q in queue[:RETRY_PER_RUN]:
+        retried.append(q["url"])
+        if q["url"] in seen:
+            continue
+        got = fetch_source(ctx, str(q.get("forge") or GITHUB), q["url"])
+        if got is None:
+            unread.append(q)
+        elif got == "gone":
+            run.out.append(f"reports: {q['url']}: no longer on its forge; dropped from the queue")
+        else:
+            again.append(got)
+            seen.add(got.url)
+    # Queued sources first: the caps on filing (`per_run`, `per_author`) serve them before newer ones, so a
+    # steady stream of new reports cannot keep a queued one waiting for ever.
+    queued = {q["url"] for q in queue[:RETRY_PER_RUN]}
+    found = again + [s for s in found if s.url in queued] + [s for s in found if s.url not in queued]
 
     # 2. The markers: a report already recorded gains its source, a new one is a candidate.
     candidates: list[tuple[Source, Report]] = []
@@ -658,7 +747,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             if verdict is None:
                 run.out.append(f"reports: {source.url}: titled as a bors merge; who closed it could not be read; left "
                                "for a later run")
-                run.deferred.setdefault(source.forge, []).append(source.updated)
+                run.deferred[source.url] = source
                 continue
             if not verdict:
                 run.out.append(f"reports: {source.url}: titled as a bors merge, but not closed by a merge-queue account "
@@ -672,7 +761,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             if ok is None:
                 run.out.append(f"reports: {source.url}: may @{source.author} report? Unknown (the reporters' teams "
                                "could not be read); left for a later run")
-                run.deferred.setdefault(source.forge, []).append(source.updated)
+                run.deferred[source.url] = source
                 continue
             if not ok:
                 run.out.append(f"reports: {source.url}: {source.what()} of @{source.author}, who is not a listed "
@@ -720,14 +809,14 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             continue
         if place is None:
             run.out.append(f"reports: {source.url}: {what}: main could not be read; left for a later run")
-            run.deferred.setdefault(source.forge, []).append(source.updated)
+            run.deferred[source.url] = source
             continue
         if place == "absent":
             then = where(texts, report.roadmap_sha, paths(cfg, report), report.anchor)
             if then is None:
                 run.out.append(f"reports: {source.url}: {what}: the commit it read could not be read; left for a "
                                "later run")
-                run.deferred.setdefault(source.forge, []).append(source.updated)
+                run.deferred[source.url] = source
             elif then == "absent":
                 run.out.append(f"reports: {source.url}: {what}: the anchor is not in the file at "
                                f"{report.roadmap_sha[:7]} either; not a report")
@@ -748,7 +837,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
         if len(filed) >= r.per_run or per_author.get(author, 0) >= r.per_author:
             cap = "per_run" if len(filed) >= r.per_run else "per_author"
             run.out.append(f"reports: {source.url}: {what}: left for a later run ([reports] {cap})")
-            run.deferred.setdefault(source.forge, []).append(source.updated)
+            run.deferred[source.url] = source
             continue
         name = job_name(report.roadmap)
         rounds[name] = rounds.get(name, 0) + 1
@@ -805,11 +894,17 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
         run.out.append(f"reports: {entry.get('job') or roadmap}: the anchor is gone from {roadmap}/{file} on main; "
                        "fixed" + (", job done" if job else ""))
 
-    # 6. The marks, and the register.
+    refresh_specs(ctx, run, jobs, known)
+
+    # 6. The marks, the queue of sources left for later, and the register.
     moved = False
+    kept = [q for q in queue if q["url"] not in retried and q["url"] not in run.deferred]
+    data["retry"] = kept + unread + [{"url": u, "forge": src.forge} for u, src in run.deferred.items()]
+    if data["retry"] != queue:
+        moved = True
     for forge, (items, more) in searched.items():
         before = dict(marks)
-        line = next_marks(marks, forge, items, more, run.deferred.get(forge, []), now_s)
+        line = next_marks(marks, forge, items, more, now_s)
         if line:
             run.out.append(line)
         old = str(before.get(forge) or "")
@@ -817,7 +912,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             # A narrowing is written at once (it is progress the next run needs); a mark alone once a day.
             moved = (moved or not old or marks.get(f"{forge}-until") != before.get(f"{forge}-until")
                      or lag(old, str(marks[forge])) >= MARK_WRITE)
-    left = sum(len(v) for v in run.deferred.values())
+    left = len(run.deferred)
     run.out.append(f"reports: {len(found)} source(s) read, {recorded} report(s) recorded already, {len(filed)} "
                    f"filed, {fixed} fixed" + (f", {left} left for a later run" if left else ""))
     if not run.changed and not moved:
@@ -837,20 +932,24 @@ REOPEN = (" This report is recorded as rejected: to have it triaged again, reope
           "`state:available`.")
 
 
+def comment_once(ctx, job: board.Job, text: str) -> None:
+    """A note on a job, unless the job carries it already (a run that wrote it and then failed before the
+    register was written posts it again otherwise). Reads the job's comments first."""
+    if any((c.get("body") or "").strip() == text.strip() for c in ctx.board.comments(job.number) or []):
+        return
+    ctx.board.comment(job.number, text)
+
+
 def tell_job(ctx, jobs: dict, entry: dict, text: str) -> None:
-    """A note on the report's job: while it is open, its spec follows the entry (the evidence a triage reads);
-    on a rejected report's closed job too, with how a human reopens it, so new evidence is never silent."""
+    """A note on the report's job, while it is open (its spec follows the entry in `refresh_specs`), and on a
+    rejected report's closed job too, with how a human reopens it, so new evidence is never silent."""
     job = jobs.get(str(entry.get("job") or ""))
     if job is None or ctx.dry_run:
         return
     if not job.closed and job.state != "done":
-        for key in EVIDENCE:
-            job.inputs[key] = entry.get(key)
-        job.inputs["sources"] = list(entry.get("sources", []))
-        ctx.board.update_spec(job)
-        ctx.board.comment(job.number, text)
+        comment_once(ctx, job, text)
     elif entry.get("state") == "rejected":
-        ctx.board.comment(job.number, text + REOPEN)
+        comment_once(ctx, job, text + REOPEN)
 
 
 def revised(ctx, run: Run, jobs: dict, entry: dict, source: Source, changed: list[str]) -> None:

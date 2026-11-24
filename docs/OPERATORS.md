@@ -1890,7 +1890,9 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    `tauceti-queue[bot]`, read from GitHub's `closed_by`; `forgejo_merge_bots`, read from the last `close`
    event of the Forgejo timeline), else it is a pull request closed unmerged (`titled as a bors merge, but
    not closed by a merge-queue account`); a closer that cannot be read leaves the source for a later run.
-   A verified merge is kept in the register (`merges`), so each costs one read, at most twenty a run. An
+   A verified merge is kept in the register (`merges`), and so is a refusal, for the revision of the pull
+   request it read (`not_merges`: its update time), so each costs one read, at most twenty a run, and pull
+   requests already decided never use up the reads a later one needs. An
    open pull request counts only from `[reports] reporters` (GitHub logins or `team:<org>/<slug>`,
    resolved as `[board] target_filers` are) or `forgejo_reporters`; a pull request closed unmerged never.
 3. A report is its roadmap, file and anchor (whitespace runs as one space, case folded). The register
@@ -1898,10 +1900,15 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    report's declarations are those its sources name now, and its kind and effect those of the source
    revised last. A new source is added (logged `already reported (REPORT-<Leaf>~k, open); source added`);
    a source whose description was edited replaces its own evidence, so a declaration it corrected away is
-   dropped unless another source still names it (`evidence revised (refutes; ...)`). The job hears of
-   either: an open job's spec follows the report (what a triage reads) with one comment, `Reported again
-   in <url>` or `Revised in <url>: now ...`; a rejected report's closed job gets the same comment, saying
-   that reopening the issue and moving it to `state:available` has it triaged again.
+   dropped unless another source still names it (`evidence revised (refutes; ...)`). The register is the
+   one source of truth: every run rewrites the spec of each open REPORT job from its entry where they
+   differ (kind, effect, declarations, sources: `spec rewritten from the register`), so what a triage
+   reads converges whatever happened in between (an edit, a later source, a reopened job, a write that
+   failed half-way). The spec holds the declarations of all the sources, so their number has no
+   per-marker limit there. The job hears of a new source or an edit in one comment, `Reported again in
+   <url>` or `Revised in <url>: now ...`, posted once (the job's comments are read first); a rejected
+   report's closed job gets the same comment, saying that reopening the issue and moving it to
+   `state:available` has it triaged again.
 4. A new one is checked against the roadmap repository's main: the file under the active directory, else
    under the completed one, read as GraphQL blobs (one query for up to sixty files, no REST request unless
    a file is too large for GraphQL), the anchor sought in it with whitespace normalised. Still there: a
@@ -1927,21 +1934,26 @@ mention anyone, link an issue, close its quoting or carry a marker the board rea
 The register, `reports/register.json` on the board's main, is the step's only state (the hosted workflow
 keeps none between runs): `{"version": 1, "roadmaps": {"<roadmap>": [{"job", "file", "anchor", "kind",
 "effect", "state", "sources", "refutes", "replaces", "evidence"}]}, "scanned": {"github": ...,
-"forgejo": ...}, "merges": {"<url>": "<closer>"}}` (`scanned` also holds `<forge>-until`, the end of a
-narrowed window, and `<forge>-exact`), the
+"forgejo": ...}, "merges": {"<url>": "<closer>"}, "not_merges": {"<url>": "<updated>"}, "retry": [{"url",
+"forge"}]}` (`scanned` also holds `<forge>-until`, the end of a narrowed window, and `<forge>-exact`), the
 states `open`, `confirmed`, `rejected` and `fixed` (a fixed report recorded without a job has `"job": ""`).
 The library's workers read it so as not to report one thing twice. It is written in one commit when a
 report changed, when a window was narrowed, or when a forge's mark is a day behind; a mark left in memory
-only costs the next search a few more hits, all of them recorded already. The mark stops at the first
-source a run left for later (a cap, an unreadable file or closer, a team it could not read), so the next
-search reads it again. A job that a run filed without writing the register (the write failed) is recorded
+only costs the next search a few more hits, all of them recorded already. A source a run leaves for later
+(a cap, an unreadable file or closer, a team it could not read) never holds the mark: it is queued by its
+URL (`retry`), and every run reads up to twenty queued sources again by their number, oldest first (one
+REST request each on GitHub, which also names who closed it); one that cannot be read now goes to the back
+of the queue, and one its forge no longer has leaves it. Queued sources come before newer ones, so the caps
+on filing serve them first. No set of undecided sources can keep a later one from being read, and no stream
+of new ones can keep a queued one waiting. A job that a run filed without writing the register (the write failed) is recorded
 from its spec by the next run: a first report as a new entry, a later round of a report (a recurrence) as
 that entry's new round, so it is never filed twice. With
 `--yes` absent, the step logs every decision with `would file ... (dry run)` and writes nothing.
 
 A run costs the board's budget the read of the register, the listing of `kind:report` jobs (from the
-listing the sync holds already), one read per bors-titled source not verified yet (at most twenty a run,
-once per source) and its writes; the search (one to three pages; a narrowed window adds runs, not pages)
+listing the sync holds already), one read per bors-titled source not decided yet (at most twenty a run,
+once per revision), up to twenty reads of queued sources, a read of a job's comments before each note,
+and its writes; the search (one to three pages; a narrowed window adds runs, not pages)
 comes from GitHub's search budget (30 a minute), the reads of main from GraphQL's, Forgejo nothing.
 To turn it on: set `[reports] enabled = true`, the
 reporters, and `forgejo` if the library has pull requests there; create the label `kind:report` on the

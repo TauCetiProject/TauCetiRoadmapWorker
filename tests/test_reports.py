@@ -180,7 +180,8 @@ class ReportsGH:
             who = self.closers.get(int(m.group(1)), "tauceti-queue[bot]")
             if who is None:
                 raise GHError(f"GET {path}: HTTP 502")
-            return {"number": int(m.group(1)), "closed_by": {"login": who}}
+            listed = next((i for i in self.search if i["number"] == int(m.group(1))), {})
+            return {**copy.deepcopy(listed), "number": int(m.group(1)), "closed_by": {"login": who}}
         raise GHError(f"GET {path}: not faked")
 
     def graphql(self, query, **variables):
@@ -325,8 +326,9 @@ def test_caps_per_run_and_per_author_leave_the_rest_for_later_runs():
            "per_author)" in out
     assert f"reports: {LIBRARY}/pull/4: QuadraticFormInvariants README.md: left for a later run ([reports] " \
            "per_run)" in out
-    # The mark stays at the first report left over, so the next search reads it again.
-    assert gh.register()["scanned"]["github"] == "2026-11-24T10:02:00Z"
+    # The mark moves on; the reports left over are queued and read again by their number.
+    assert gh.register()["scanned"]["github"] == "2026-11-24T10:04:00Z"
+    assert [q["url"] for q in gh.register()["retry"]] == [f"{LIBRARY}/pull/2", f"{LIBRARY}/pull/4"]
     assert out[-2].endswith("2 filed, 0 fixed, 2 left for a later run")
 
 
@@ -379,7 +381,7 @@ def test_main_that_cannot_be_read_decides_nothing():
     ctx = context(gh)
     out = reports.sync_reports(ctx, now=NOW)
     assert ctx.board.created == [] and gh.register()["roadmaps"] == {}     # only the verified merge is recorded
-    assert gh.register()["scanned"]["github"] == "2026-11-24T10:00:00Z"        # held at the source left for later
+    assert gh.register()["retry"] == [{"url": f"{LIBRARY}/pull/1", "forge": "github"}]     # queued for later
     assert f"reports: {LIBRARY}/pull/1: QuadraticFormInvariants README.md: main could not be read; left for a later " \
            "run" in out
 
@@ -540,7 +542,7 @@ def test_a_search_with_more_than_its_pages_narrows_its_window():
 
 def test_a_window_of_one_second_is_passed_with_a_warning():
     marks = {"github": "2026-11-24T10:00:00Z", "github-exact": True, "github-until": "2026-11-24T10:00:01Z"}
-    line = reports.next_marks(marks, "github", [], True, [], "2026-11-24T12:00:00Z")
+    line = reports.next_marks(marks, "github", [], True, "2026-11-24T12:00:00Z")
     assert line == ("reports: more github results updated within one second (2026-11-24T10:00:01Z) than 3 pages; "
                     "some may be missed")
     assert marks == {"github": "2026-11-24T10:00:01Z", "github-exact": True}
@@ -696,12 +698,12 @@ def test_a_bors_title_counts_as_merged_only_when_the_queue_closed_it():
     assert any(line.startswith(f"reports: {LIBRARY}/pull/3: titled as a bors merge; who closed it could not be read")
                for line in out)
     assert gh.register()["merges"] == {f"{LIBRARY}/pull/1": "tauceti-queue[bot]"}
-    assert gh.register()["scanned"]["github"] == "2026-11-24T10:00:00Z"        # held at the source left for later
-    # A verified merge is read once.
+    assert gh.register()["retry"] == [{"url": f"{LIBRARY}/pull/3", "forge": "github"}]     # queued for later
+    # A verified merge is read once, and so is a refusal for the revision it read.
     reads = len(gh.closer_reads)
     gh.closers = {2: "stranger"}
     reports.sync_reports(ctx, now=NOW)
-    assert sorted(gh.closer_reads[reads:]) == [2, 3]
+    assert sorted(gh.closer_reads[reads:]) == [3]
 
 
 # --- the field rules shared with the worker's checker and the review runner (SPEC "Exact field rules") -------
@@ -757,3 +759,121 @@ def test_a_body_the_reader_cannot_read_is_logged_and_passed(monkeypatch):
     out = reports.sync_reports(ctx, now=NOW)
     assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{LIBRARY}/pull/2"]]
     assert f"reports: {LIBRARY}/pull/1: its body could not be read (MemoryError); passed" in out
+
+
+
+# --- review round 2 ----------------------------------------------------------------------------------------------
+
+def test_negative_merge_checks_are_kept_and_cannot_starve_a_later_report():
+    fakes = [item(k, login="stranger", body=marker(anchor=f"Two forms {k}"), updated=f"2026-11-24T10:00:{k:02d}Z")
+             for k in range(20)]
+    genuine = item(21, login="stranger", body=marker(anchor="diagonal chains"), updated="2026-11-24T10:01:00Z")
+    gh = WindowGH(fakes + [genuine])
+    gh.closers = {k: "stranger" for k in range(20)}
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T10:00:00Z"},
+                                             "roadmaps": {}})
+    ctx = context(gh)
+    for _run in range(6):
+        reports.sync_reports(ctx, now=NOW)
+    assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{LIBRARY}/pull/21"]]
+    assert sorted(gh.closer_reads).count(0) == 1                 # a decided closer is read once per revision
+
+
+def test_a_source_left_for_later_is_queued_and_never_holds_the_mark():
+    stuck = item(3, login="stranger", body=marker(anchor="diagonal chains"), updated="2026-11-24T10:00:00Z")
+    gh = WindowGH([stuck, item(4, body=marker(anchor="rank one"), updated="2026-11-24T10:30:00Z")])
+    gh.closers = {3: None}                                       # its closer cannot be read
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {}})
+    ctx = context(gh)
+    reports.sync_reports(ctx, now=NOW)
+    register = gh.register()
+    assert register["scanned"]["github"] == "2026-11-24T10:30:00Z"        # the mark moves past it
+    assert register["retry"] == [{"url": f"{LIBRARY}/pull/3", "forge": "github"}]
+    # Later runs read it by its number, outside every search window, until it is decided.
+    gh.search = [stuck]                                           # (the fake's issue read)
+    gh.closers = {}
+    gh.queries.clear()
+    reports.sync_reports(ctx, now=NOW)
+    assert f"{LIBRARY}/pull/3" in [j.inputs["sources"][0] for j, _s, _p in ctx.board.created]
+    assert gh.register()["retry"] == []
+
+
+def test_a_queued_source_that_cannot_be_read_goes_to_the_back_of_the_queue():
+    queue = [{"url": f"{LIBRARY}/pull/{n}", "forge": "github"} for n in range(1, 26)]
+    old = [item(n, login="stranger", state="closed", title="feat: x", body="no marker",
+                updated="2026-11-01T00:00:00Z") for n in range(1, 26)]     # outside the search window
+    gh = WindowGH(old)
+    gh.closers = {1: None}                                        # the first cannot be read now
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T11:59:00Z"},
+                                             "roadmaps": {}, "retry": queue})
+    reports.sync_reports(context(gh), now=NOW)
+    assert gh.closer_reads == list(range(1, 21))                  # at most twenty a run, oldest first
+    assert [q["url"].rsplit("/", 1)[1] for q in gh.register()["retry"]] == [str(n) for n in range(21, 26)] + ["1"]
+
+
+def test_an_aggregated_report_beyond_one_markers_limits_stays_a_valid_job():
+    six = [f"TauCeti.a{i}" for i in range(6)]
+    other = [f"TauCeti.b{i}" for i in range(6)]
+    gh = ReportsGH([item(1, body=marker(refutes=six)), item(2, body=marker(refutes=other),
+                                                             updated="2026-11-24T10:05:00Z")])
+    ctx = context(gh)
+    reports.sync_reports(ctx, now=NOW)
+    [(job, _s, _p)] = ctx.board.created
+    job.number, job.state = 501, "available"
+    ctx.board.jobs = [job]
+    gh.search = [item(2, body=marker(refutes=other), updated="2026-11-24T10:06:00Z")]
+    reports.sync_reports(ctx, now=NOW)
+    assert len(job.inputs["refutes"]) == 12
+    report = reports.report_of(job)
+    assert report is not None and len(report.refutes) == 12
+
+
+def test_a_job_note_is_posted_once_even_when_the_register_write_fails():
+    gh = ReportsGH([item(1)])
+    ctx = context(gh)
+    reports.sync_reports(ctx, now=NOW)
+    [(job, _s, _p)] = ctx.board.created
+    job.number, job.state = 501, "available"
+    ctx.board.jobs = [job]
+    gh.search = [item(2, body=marker(), updated="2026-11-24T11:00:00Z")]
+    write = gh.write
+    gh.write = lambda m, p, payload=None: (_ for _ in ()).throw(GHError("PUT: HTTP 502"))
+    with pytest.raises(GHError):
+        reports.sync_reports(ctx, now=NOW)
+    gh.write = write
+    reports.sync_reports(ctx, now=NOW)
+    notes = [t for n, t in ctx.board.posted if n == 501 and t.startswith("Reported again in")]
+    assert notes == [f"Reported again in {LIBRARY}/pull/2 (a merged pull request)."]
+
+
+def test_an_open_jobs_spec_is_rewritten_from_the_register():
+    gh = ReportsGH([])
+    entry = reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1", "open",
+                              f"{LIBRARY}/pull/1")
+    entry["refutes"], entry["evidence"][f"{LIBRARY}/pull/1"]["refutes"] = ["TauCeti.now"], ["TauCeti.now"]
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+    report = reports.parse(marker())[0][0]
+    job = new_job("REPORT-QuadraticFormInvariants~1", inputs={
+        "roadmap": report.roadmap, "file": report.file, "roadmap_sha": report.roadmap_sha, "anchor": report.anchor,
+        "kind": report.kind, "effect": report.effect, "refutes": ["TauCeti.then"], "replaces": [],
+        "sources": [f"{LIBRARY}/pull/1"]})
+    job.number, job.state = 12, "available"
+    ctx = context(gh, jobs=[job])
+    out = reports.sync_reports(ctx, now=NOW)
+    assert job.inputs["refutes"] == ["TauCeti.now"] and ctx.board.specs[-1][0] == job.id
+    assert f"reports: {job.id}: spec rewritten from the register (refutes, replaces)" in out
+
+
+
+def test_queued_sources_are_served_before_newer_ones():
+    old = item(3, body=marker(anchor="iff their"), updated="2026-11-01T00:00:00Z")     # outside the window
+    anchors = ["Two forms", "rank one", "are equivalent", "diagonal", "chains are"]
+    new = [item(10 + k, body=marker(anchor=a), updated=f"2026-11-24T11:0{k}:00Z") for k, a in enumerate(anchors)]
+    gh = WindowGH([old] + new)
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T10:59:00Z"},
+                                             "roadmaps": {}, "retry": [{"url": f"{LIBRARY}/pull/3", "forge": "github"}]})
+    ctx = context(gh, per_run=1, per_author=5)
+    reports.sync_reports(ctx, now=NOW)
+    assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{LIBRARY}/pull/3"]]
