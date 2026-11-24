@@ -1,0 +1,523 @@
+"""Roadmap reports: the marker, the harvest from the library on GitHub and Forgejo, the REPORT jobs and
+the register `board sync` keeps (reports.py), and the safety of a job kind no lane takes."""
+
+import base64
+import copy
+import datetime as dt
+import json
+import re
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+
+from tauceti_roadmap_worker import board, cli, intake, reports, watch, worker
+from tauceti_roadmap_worker.board import Board, Job, new_job
+from tauceti_roadmap_worker.gh import GHError
+from tauceti_roadmap_worker.lanes import Context
+
+from .fakes import FakeBoard, FakeClaims, FakeIssuesGH, FakeTransport, example_config, job_issue
+
+SHA = "a" * 40
+LIBRARY = "https://github.com/TauCetiProject/TauCeti"
+FORGEJO = "https://git.taucetiproject.org"
+README = "TauCetiRoadmap/QuadraticFormInvariants/README.md"
+ANCHOR = "Two forms of rank one are equivalent iff their diagonal chains are"
+
+
+def marker(**over) -> str:
+    data = {"roadmap": "QuadraticFormInvariants", "file": "README.md", "roadmap_sha": SHA, "anchor": ANCHOR,
+            "kind": "false-statement", "effect": "worked-around",
+            "refutes": ["TauCeti.exists_rankOne_equivalent_not_diagonalChain"],
+            "replaces": ["TauCeti.diagonalChain_iff_equivalent_of_two_le"]} | over
+    return reports.MARKER + json.dumps({k: v for k, v in data.items() if v is not None}) + "-->"
+
+
+BODY = f"""This PR proves the Witt chain equivalence in rank at least two.
+
+### Roadmap report
+
+The roadmap states the chain equivalence for every rank; it is false in rank one (see
+`TauCeti.exists_rankOne_equivalent_not_diagonalChain`). @someone please look. <!-- a comment -->
+
+### Test plan
+
+- lake build
+
+{marker()}
+"""
+
+
+# --- the marker ------------------------------------------------------------------------------------------
+
+def test_a_valid_marker_is_read_and_its_unknown_fields_ignored():
+    found, problems = reports.parse("text\n" + marker(future="ignored", anchor="  Two  forms\nof rank one ") + "\nmore")
+    assert problems == [] and len(found) == 1
+    r = found[0]
+    assert (r.roadmap, r.file, r.roadmap_sha, r.kind, r.effect) == ("QuadraticFormInvariants", "README.md", SHA,
+                                                                   "false-statement", "worked-around")
+    assert r.anchor == "Two forms of rank one" and r.identity[2] == "two forms of rank one"
+    assert r.refutes == ("TauCeti.exists_rankOne_equivalent_not_diagonalChain",)
+
+
+def test_braces_and_quotes_inside_an_anchor_are_read():
+    anchor = "theorem foo {R : Type*} [CommRing R] (x : R) : f {x} = \"}\""
+    found, problems = reports.parse(marker(file="Suggested.lean", anchor=anchor))
+    assert problems == [] and found[0].anchor == anchor
+
+
+@pytest.mark.parametrize("over, why", [
+    ({"roadmap": None}, "`roadmap` is missing"),
+    ({"roadmap": "Quadratic-Forms"}, "`roadmap` is not a roadmap folder"),
+    ({"roadmap": "1Forms"}, "`roadmap` is not a roadmap folder"),
+    ({"file": "STATUS.md"}, "`file` is not one of"),
+    ({"roadmap_sha": "abc123"}, "`roadmap_sha` is not a 40-hex commit"),
+    ({"anchor": "x" * 301}, "longer than 300"),
+    ({"anchor": "   "}, "`anchor` is missing"),
+    ({"kind": "typo"}, "`kind` is not a known kind"),
+    ({"effect": "fixed"}, "`effect` is not blocked or worked-around"),
+    ({"refutes": "TauCeti.x"}, "`refutes` is not a list"),
+    ({"replaces": [f"TauCeti.x{i}" for i in range(11)]}, "more than 10 names"),
+    ({"replaces": ["TauCeti.x y"]}, "not a declaration name"),
+    ({"refutes": ["`TauCeti.x`"]}, "not a declaration name"),
+    ({"refutes": [3]}, "not a declaration name"),
+])
+def test_a_marker_with_a_missing_or_bad_field_is_not_read(over, why):
+    found, problems = reports.parse(marker(**over))
+    assert found == [] and len(problems) == 1 and problems[0].startswith("marker 1: ") and why in problems[0]
+
+
+def test_malformed_markers_do_not_stop_the_others():
+    body = "\n".join([reports.MARKER + "{not json}-->", reports.MARKER + "[1, 2]-->", marker(),
+                      reports.MARKER + '{"anchor": "an arrow --> inside"}-->', marker(roadmap="A/B")])
+    found, problems = reports.parse(body)
+    assert [r.roadmap for r in found] == ["QuadraticFormInvariants", "A/B"]
+    assert problems == ["marker 1: not valid JSON", "marker 2: not a JSON object", "marker 4: not valid JSON"]
+    assert reports.parse(reports.MARKER + '{"roadmap": "A"')[1] == ["marker 1: not closed by -->"]
+    assert reports.parse("<!--tauceti-roadmap-report:v2 {}-->") == ([], [])
+
+
+def test_more_than_five_markers_leaves_the_sixth_out():
+    body = "\n".join(marker(anchor=f"statement {i}") for i in range(7))
+    found, problems = reports.parse(body)
+    assert [r.anchor for r in found] == [f"statement {i}" for i in range(5)]
+    assert problems == ["marker 6: more than 5 markers in one body", "marker 7: more than 5 markers in one body"]
+
+
+def test_the_prose_is_the_section_up_to_the_next_heading():
+    assert reports.prose(BODY).startswith("The roadmap states") and "Test plan" not in reports.prose(BODY)
+    assert reports.prose("no section") == ""
+
+
+def test_quoted_text_cannot_break_out_mention_or_carry_a_marker():
+    text = "```\nescaped? @alice #12\n````` and <!-- tauceti-roadmap-job {\"id\": \"PORT-X\"} -->\n" + "x" * 3000
+    block = reports.quoted_block(text)
+    fence = block.split("\n", 1)[0].removesuffix("text")
+    assert fence == "`" * 6 and block.endswith("\n" + fence) and block.count(fence) == 2
+    assert "<!--" not in block and "-->" not in block and "[... cut at 2000 characters]" in block
+    assert reports.code("a `b` c") == "`` a `b` c ``" and reports.code("plain") == "`plain`"
+    assert board.decode_spec(reports.code('<!-- tauceti-roadmap-job {"id": "PORT-X"} -->')) is None
+
+
+@pytest.mark.parametrize("item, merged", [
+    ({"state": "closed", "title": "[Merged by Bors] - feat: x", "pull_request": {"merged_at": None}}, True),
+    ({"state": "closed", "title": "feat: x", "pull_request": {"merged_at": "2026-11-20T00:00:00Z"}}, True),
+    ({"state": "closed", "title": "feat: x", "pull_request": {"merged_at": None}}, False),
+    ({"state": "open", "title": "[Merged by Bors] - feat: x", "pull_request": {"merged_at": None}}, False),
+    ({"state": "closed", "title": "[Merged by Bors] - feat: x", "pull_request": {"merged": False, "merged_at": None}},
+     True),                                                                     # Forgejo's shape, bors merged it
+    ({"state": "closed", "title": "feat: x", "pull_request": {"merged": True}}, True),
+    ({"state": "closed", "title": "[Merged by Bors] - x", "pull_request": None}, False),     # a Forgejo issue
+    ({"state": "closed", "title": "[Merged by Bors] - x"}, False),                           # a GitHub issue
+])
+def test_merged_pull_requests_on_both_forges(item, merged):
+    assert reports.merged(item) is merged
+
+
+# --- the harvest -------------------------------------------------------------------------------------------
+
+def item(number: int, body: str = BODY, login: str = "tauceti-ai-for-science", state: str = "closed",
+         title: str = "[Merged by Bors] - feat: rank two", pull: bool = True, updated: str = "2026-11-24T10:00:00Z",
+         base: str = LIBRARY) -> dict:
+    kind = ("pull" if base == LIBRARY else "pulls") if pull else "issues"
+    return {"number": number, "html_url": f"{base}/{kind}/{number}", "user": {"login": login}, "state": state,
+            "title": title, "body": body, "updated_at": updated,
+            **({"pull_request": {"merged_at": None, "html_url": f"{base}/{kind}/{number}"}} if pull else {})}
+
+
+class ReportsGH:
+    """GitHub for the reports step: the issue search of the library, the board's register by the contents
+    API, the roadmap repository's files by GraphQL blobs (at `main` and at full commits)."""
+
+    def __init__(self, search=(), main=None, at=None):
+        self.search = list(search)
+        self.main = dict(main if main is not None else {README: "intro\n- Two forms of rank one are equivalent\n"
+                                                        "  iff their diagonal   chains are equal.\n"})
+        self.at = dict(at or {})
+        self.files: dict[str, str] = {}
+        self.writes: list[tuple[str, str, dict]] = []
+        self.queries: list[str] = []
+        self.dry_run, self.fence = False, None
+
+    def api(self, path, paginate=False):
+        if path.startswith("search/issues?"):
+            q = parse_qs(urlsplit(path).query)
+            self.queries.append(q["q"][0])
+            page = int(q["page"][0])
+            return {"total_count": len(self.search), "items": copy.deepcopy(self.search[(page - 1) * 100:page * 100])}
+        if "/contents/" in path:
+            name = path.split("/contents/", 1)[1]
+            if name not in self.files:
+                raise GHError(f"GET {path}: 404")
+            return {"content": base64.b64encode(self.files[name].encode()).decode(), "sha": "s-" + name}
+        raise GHError(f"GET {path}: not faked")
+
+    def graphql(self, query, **variables):
+        out = {}
+        for alias, expr in re.findall(r'(b\d+): object\(expression: ("(?:[^"\\]|\\.)*")\)', query):
+            ref, _, path = json.loads(expr).partition(":")
+            text = self.main.get(path) if ref == "main" else self.at.get((ref, path))
+            out[alias] = None if text is None else {"text": text, "isTruncated": False}
+        return {"repository": out}
+
+    def write(self, method, path, payload=None):
+        self.writes.append((method, path, payload or {}))
+        if method == "PUT" and "/contents/" in path:
+            self.files[path.split("/contents/", 1)[1]] = base64.b64decode(payload["content"]).decode()
+        return {}
+
+    def register(self) -> dict:
+        return json.loads(self.files[reports.REGISTER])
+
+
+def context(gh, jobs=(), dry_run=False, transport=None, **over):
+    cfg = example_config()
+    cfg.reports.enabled = True
+    for key, value in over.items():
+        setattr(cfg.reports, key, value)
+    fb = FakeBoard(jobs=list(jobs))
+    return SimpleNamespace(cfg=cfg, gh=gh, board=fb, operator="maintainer", dry_run=dry_run, transport=transport,
+                           state=cfg.state_dir())
+
+
+NOW = dt.datetime(2026, 11, 24, 12, 0, tzinfo=dt.UTC)
+
+
+def test_a_merged_bors_pull_request_files_one_job_and_the_register_records_it():
+    gh = ReportsGH([item(6903)])
+    ctx = context(gh)
+    out = reports.sync_reports(ctx, now=NOW)
+    [(job, state, preamble)] = ctx.board.created
+    assert job.id == "REPORT-QuadraticFormInvariants~1" and state == "available"
+    assert job.inputs["anchor"] == ANCHOR and job.inputs["sources"] == [f"{LIBRARY}/pull/6903"]
+    assert f"reports: {LIBRARY}/pull/6903: filed REPORT-QuadraticFormInvariants~1 (#501) (QuadraticFormInvariants " \
+           "README.md, false-statement, state:available)" in out
+    # The job's text is the board's own; the prose is quoted data with no live mention or comment.
+    assert "`TauCeti.exists_rankOne_equivalent_not_diagonalChain`" in preamble and "a merged pull request" in preamble
+    assert "```text\nThe roadmap states" in preamble and "<!--" not in preamble and "Test plan" not in preamble
+    entry = gh.register()["roadmaps"]["QuadraticFormInvariants"][0]
+    assert entry == {"job": "REPORT-QuadraticFormInvariants~1", "file": "README.md", "anchor": ANCHOR,
+                     "kind": "false-statement", "effect": "worked-around", "state": "open",
+                     "sources": [f"{LIBRARY}/pull/6903"],
+                     "refutes": ["TauCeti.exists_rankOne_equivalent_not_diagonalChain"],
+                     "replaces": ["TauCeti.diagonalChain_iff_equivalent_of_two_le"]}
+    assert gh.register()["version"] == 1 and gh.register()["scanned"] == {"github": "2026-11-24T10:00:00Z"}
+    assert gh.queries == ['repo:TauCetiProject/TauCeti is:pr "tauceti-roadmap-report:v1" in:body']
+    # The next run searches from the mark, finds the same source recorded, and writes nothing.
+    ctx.board.jobs = [Job(job.id, "report", job.name, 1, inputs=job.inputs, number=501, state="available")]
+    writes = len(gh.writes)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert gh.queries[-1].endswith(" updated:>=2026-11-24T09:55:00Z")
+    assert len(ctx.board.created) == 1 and len(gh.writes) == writes
+    assert out == ["reports: 1 source(s) read, 1 report(s) recorded already, 0 filed, 0 fixed"]
+
+
+def test_the_feature_is_off_by_default():
+    gh = ReportsGH([item(1)])
+    ctx = context(gh, enabled=False)
+    assert example_config().reports.enabled is False
+    assert reports.sync_reports(ctx) == [] and gh.queries == [] and gh.writes == []
+
+
+def test_open_pull_requests_count_only_from_listed_reporters_and_issues_never():
+    gh = ReportsGH([item(1, state="open", title="feat: a", login="stranger"),
+                    item(2, state="open", title="feat: b", login="Worker-Bot", body=marker(anchor="diagonal chains")),
+                    item(3, pull=False, state="open", title="Roadmap report", login="worker-bot",
+                         body=marker(anchor="rank one are equivalent")),
+                    item(4, state="closed", title="feat: abandoned", login="worker-bot", body=marker(anchor="intro")),
+                    item(5, state="open", title="feat: c", login="worker-bot", body=marker(anchor="rank one"))])
+    ctx = context(gh, reporters=["worker-bot"])
+    out = reports.sync_reports(ctx, now=NOW)
+    assert [j.id for j, _s, _p in ctx.board.created] == ["REPORT-QuadraticFormInvariants~1",
+                                                          "REPORT-QuadraticFormInvariants~2"]
+    assert f"reports: {LIBRARY}/pull/1: an open pull request of @stranger, who is not a listed reporter; not " \
+           "harvested" in out
+    assert f"reports: {LIBRARY}/pull/4: a pull request closed unmerged; not harvested" in out
+    # An issue's marker is never read, even from a listed reporter: reports travel only in pull requests.
+    assert not any("/issues/3" in line for line in out)
+    assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{LIBRARY}/pull/2"], [f"{LIBRARY}/pull/5"]]
+
+
+def test_the_same_report_from_two_sources_is_one_job_with_both_sources():
+    other = marker(anchor="two forms of RANK one  are equivalent iff their diagonal chains are")
+    gh = ReportsGH([item(1), item(2, body=other, updated="2026-11-24T10:05:00Z")])
+    ctx = context(gh)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert len(ctx.board.created) == 1
+    entry = gh.register()["roadmaps"]["QuadraticFormInvariants"][0]
+    assert entry["sources"] == [f"{LIBRARY}/pull/1", f"{LIBRARY}/pull/2"]
+    assert any("pull/2: QuadraticFormInvariants README.md: already reported" in line for line in out)
+    # A later source of an open report: its job says so in one comment.
+    ctx.board.jobs = [Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1, number=501,
+                          state="available", inputs=ctx.board.created[0][0].inputs)]
+    gh.search = [item(3, body=other, updated="2026-11-24T11:00:00Z")]
+    reports.sync_reports(ctx, now=NOW)
+    assert ctx.board.posted == [(501, f"Reported again in {LIBRARY}/pull/{n} (a merged pull request).") for n in (2, 3)]
+    assert gh.register()["roadmaps"]["QuadraticFormInvariants"][0]["sources"][-1] == f"{LIBRARY}/pull/3"
+
+
+def test_an_anchor_gone_from_main_is_recorded_fixed_and_one_never_there_is_not_a_report():
+    path = README
+    gh = ReportsGH([item(1, body=marker(anchor="an old statement")), item(2, body=marker(anchor="never written"))],
+                   main={path: "a rewritten roadmap\n"}, at={(SHA, path): "it had an old\nstatement once"})
+    ctx = context(gh)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert ctx.board.created == []
+    [entry] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert entry["state"] == "fixed" and entry["job"] == "" and entry["anchor"] == "an old statement"
+    assert f"reports: {LIBRARY}/pull/2: QuadraticFormInvariants README.md: the anchor is not in the file at " \
+           f"{SHA[:7]} either; not a report" in out
+
+
+def test_a_report_against_a_completed_roadmap_is_parked_for_a_human():
+    gh = ReportsGH([item(1)], main={"Completed/QuadraticFormInvariants/README.md": ANCHOR + "."})
+    ctx = context(gh)
+    reports.sync_reports(ctx, now=NOW)
+    [(job, state, preamble)] = ctx.board.created
+    assert state == "blocked" and job.inputs["place"] == "completed"
+    assert "`Completed/QuadraticFormInvariants/README.md`" in preamble and "needs a human" in preamble
+
+
+def test_caps_per_run_and_per_author_leave_the_rest_for_later_runs():
+    gh = ReportsGH([item(1, body=marker(anchor="intro"), updated="2026-11-24T10:01:00Z"),
+                    item(2, body=marker(anchor="Two forms"), updated="2026-11-24T10:02:00Z"),
+                    item(3, login="other", body=marker(anchor="diagonal chains"), updated="2026-11-24T10:03:00Z"),
+                    item(4, login="third", body=marker(anchor="rank one"), updated="2026-11-24T10:04:00Z")])
+    ctx = context(gh, per_run=2, per_author=1)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{LIBRARY}/pull/1"], [f"{LIBRARY}/pull/3"]]
+    assert f"reports: {LIBRARY}/pull/2: QuadraticFormInvariants README.md: left for a later run ([reports] " \
+           "per_author)" in out
+    assert f"reports: {LIBRARY}/pull/4: QuadraticFormInvariants README.md: left for a later run ([reports] " \
+           "per_run)" in out
+    # The mark stays at the first report left over, so the next search reads it again.
+    assert gh.register()["scanned"]["github"] == "2026-11-24T10:02:00Z"
+    assert out[-2].endswith("2 filed, 0 fixed, 2 left for a later run")
+
+
+def test_a_dry_run_decides_everything_and_writes_nothing():
+    gh = ReportsGH([item(1)])
+    ctx = context(gh, dry_run=True)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert ctx.board.created == [] and gh.writes == [] and reports.REGISTER not in gh.files
+    assert f"reports: {LIBRARY}/pull/1: would file REPORT-QuadraticFormInvariants~1 (QuadraticFormInvariants " \
+           "README.md, false-statement, state:available) (dry run)" in out
+    assert out[-1] == f"reports: {reports.REGISTER} not written (dry run)"
+
+
+def test_an_open_report_whose_anchor_left_main_is_fixed_and_its_job_done():
+    gh = ReportsGH([], main={README: "corrected text"})
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"}, "roadmaps": {
+        "QuadraticFormInvariants": [reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1",
+                                                      "open", f"{LIBRARY}/pull/1")]}})
+    job = Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1, number=77, state="available",
+              inputs={**json.loads(json.dumps(reports.new_entry(reports.parse(marker())[0][0], "", "", ""))),
+                      "roadmap": "QuadraticFormInvariants", "roadmap_sha": SHA})
+    ctx = context(gh, jobs=[job])
+    out = reports.sync_reports(ctx, now=NOW)
+    assert ctx.board.states == [("REPORT-QuadraticFormInvariants~1", "done")]
+    assert ("PATCH", "repos/TauCetiProject/TauCetiRoadmapJobs/issues/77", {"state": "closed"}) in gh.writes
+    assert gh.register()["roadmaps"]["QuadraticFormInvariants"][0]["state"] == "fixed"
+    assert "reports: REPORT-QuadraticFormInvariants~1: the anchor is gone from QuadraticFormInvariants/README.md on " \
+           "main; fixed, job done" in out
+    # A report fixed once, whose text comes back to main, is filed again as the next round.
+    gh.main[README] = ANCHOR
+    ctx.board.jobs[0].state, ctx.board.jobs[0].closed = "done", True
+    gh.search = [item(9, updated="2026-11-24T11:00:00Z")]
+    reports.sync_reports(ctx, now=NOW)
+    assert [j.id for j, _s, _p in ctx.board.created] == ["REPORT-QuadraticFormInvariants~2"]
+    entry = gh.register()["roadmaps"]["QuadraticFormInvariants"][0]
+    assert entry["state"] == "open" and entry["job"] == "REPORT-QuadraticFormInvariants~2"
+    assert entry["sources"] == [f"{LIBRARY}/pull/1", f"{LIBRARY}/pull/9"]
+
+
+def test_main_that_cannot_be_read_decides_nothing():
+    class Down(ReportsGH):
+        def graphql(self, query, **variables):
+            raise GHError("graphql: HTTP 502")
+
+        def raw_file(self, repo, path, ref=""):
+            raise GHError("HTTP 502")
+    gh = Down([item(1, updated="2026-11-24T10:00:00Z")])
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T08:00:00Z"},
+                                             "roadmaps": {}})
+    ctx = context(gh)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert ctx.board.created == [] and gh.writes == []
+    assert f"reports: {LIBRARY}/pull/1: QuadraticFormInvariants README.md: main could not be read; left for a later " \
+           "run" in out
+
+
+def test_a_failed_register_write_is_recovered_from_the_job_on_the_board():
+    report = reports.parse(marker())[0][0]
+    job = new_job("REPORT-QuadraticFormInvariants~1", inputs={
+        "roadmap": report.roadmap, "file": report.file, "roadmap_sha": report.roadmap_sha, "anchor": report.anchor,
+        "kind": report.kind, "effect": report.effect, "refutes": list(report.refutes), "replaces": [],
+        "sources": [f"{LIBRARY}/pull/1"]})
+    job.number, job.state = 12, "available"
+    gh = ReportsGH([item(1)])
+    ctx = context(gh, jobs=[job])
+    reports.sync_reports(ctx, now=NOW)
+    assert ctx.board.created == []
+    [entry] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert entry["job"] == job.id and entry["sources"] == [f"{LIBRARY}/pull/1"] and entry["state"] == "open"
+
+
+def test_forgejo_pull_requests_are_harvested_by_their_bors_title():
+    transport = FakeTransport()
+    base = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues?type=pulls&state=all&q=tauceti-roadmap-report%3Av1&limit=50"
+    forgejo_pr = item(3668, base=f"{FORGEJO}/TauCetiProject/TauCeti", updated="2026-11-23T11:40:44Z")
+    forgejo_pr["pull_request"] = {"merged": False, "merged_at": None, "draft": False,
+                                  "html_url": forgejo_pr["html_url"]}
+    open_one = item(3700, base=f"{FORGEJO}/TauCetiProject/TauCeti", state="open", title="feat: y", login="kim",
+                    body=marker(anchor="diagonal chains"), updated="2026-11-23T11:00:00Z")
+    open_one["pull_request"] = {"merged": False, "merged_at": None}
+    transport.add(f"{base}&page=1", json.dumps([forgejo_pr, open_one]).encode())
+    gh = ReportsGH([])
+    ctx = context(gh, transport=transport, forgejo=FORGEJO, forgejo_reporters=["Kim"])
+    out = reports.sync_reports(ctx, now=NOW)
+    assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [
+        [f"{FORGEJO}/TauCetiProject/TauCeti/pulls/3700"], [f"{FORGEJO}/TauCetiProject/TauCeti/pulls/3668"]]
+    assert gh.register()["scanned"]["forgejo"] == "2026-11-23T11:40:44Z" and "2 filed" in out[-2]
+    # The next listing asks for what changed since the mark, less the margin.
+    transport.add(f"{base}&page=1&since=2026-11-23T11%3A35%3A44Z", b"[]")
+    reports.sync_reports(ctx, now=NOW)
+    assert transport.requests[-1].endswith("&since=2026-11-23T11%3A35%3A44Z")
+
+
+def test_a_forge_that_does_not_answer_keeps_its_mark_and_the_other_goes_on():
+    transport = FakeTransport()           # every URL a 404
+    gh = ReportsGH([item(1)])
+    ctx = context(gh, transport=transport, forgejo=FORGEJO)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert any(line.startswith(f"reports: the Forgejo listing of {FORGEJO} failed") for line in out)
+    assert len(ctx.board.created) == 1 and "forgejo" not in gh.register()["scanned"]
+
+
+def test_the_configuration_is_checked():
+    from tauceti_roadmap_worker import config
+    text = (config.paths.HERE / "tauceti-roadmap.toml.example").read_text(encoding="utf-8")
+    def with_(old: str, new: str) -> str:
+        assert text.count(old) == 1
+        return text.replace(old, new)
+    with pytest.raises(config.ConfigError, match="reports.reporters"):
+        config.parse(with_("\nreporters = []\n", '\nreporters = ["team:Org"]\n'))
+    with pytest.raises(config.ConfigError, match="reports.forgejo must"):
+        config.parse(with_('\nforgejo = ""', '\nforgejo = "http://git.example.org"'))
+    cfg = config.parse(with_("\nreporters = []\n", '\nreporters = ["team:TauCetiProject/workers", "bot-1"]\n')
+                       .replace("enabled = false\n# The library on GitHub", "enabled = true\n# The library on GitHub"))
+    assert cfg.reports.enabled and cfg.reports.per_run == 5 and cfg.reports.per_author == 2
+
+
+# --- a kind no lane takes ----------------------------------------------------------------------------------
+
+def test_report_job_ids_titles_and_issue_text():
+    job = new_job("REPORT-QuadraticFormInvariants~1", inputs={"roadmap": "QuadraticFormInvariants"})
+    assert job.kind == "report" and board.make_id("report", "Foo") == "REPORT-Foo~1"
+    assert board.title_for(job) == "[Report] QuadraticFormInvariants (round 1)"
+    assert board.stage_of(job.id) == "REPORT" and "report" in board.NO_LANE
+    body = board.issue_body(job, "o/board", "packages", preamble="text")
+    assert "No worker lane takes `report` jobs yet" in body and "work --only" not in body
+    assert board.decode_spec(body).id == job.id
+    assert reports.job_name("RepresentationTheory/compactGroups") == "CompactGroups"
+
+
+def test_a_worker_never_takes_a_report_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    cfg = example_config()
+    gh = FakeIssuesGH([job_issue(1, "REPORT-Foo~1", "available", inputs={"roadmap": "Foo"})])
+    ns = FakeClaims()
+    ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=ns, worker_id="w1", operator="alice", agent="codex",
+                  model="m")
+    monkeypatch.setattr(worker, "lane_for", lambda job: pytest.fail(f"a lane was asked for {job.id}"))
+    assert worker.work_once(ctx, None, log=lambda line: None).status == "idle"
+    assert worker.work_once(ctx, None, job_id="REPORT-Foo~1", log=lambda line: None).status == "idle"
+    assert ns.acquired == [] and gh.writes == [] and gh.states(1) == ["available"]
+
+
+def test_work_only_and_overflow_refuse_the_report_kind(monkeypatch):
+    monkeypatch.setattr(cli.GH, "login", lambda self: "alice")
+    with pytest.raises(SystemExit, match="no lane takes report jobs"):
+        cli.main(["--conf", str(cli.paths.HERE / "tauceti-roadmap.toml.example"), "--dry-run", "work", "--worker-id",
+                  "w", "--only", "report"])
+    with pytest.raises(SystemExit, match="unknown kind 'report'"):
+        cli._overflow("report=30")
+
+
+def test_status_lists_report_jobs_and_resume_ignores_them():
+    cfg = example_config()
+    gh = FakeIssuesGH([job_issue(1, "REPORT-Foo~1", "available"), job_issue(2, "PKG-Foo", "done")])
+    issues = gh.api("repos/o/board/issues?labels=roadmap-job&state=open")
+    text = watch.status(Board(cfg, gh), [i | {"updated_at": "2026-11-24T10:00:00+00:00"} for i in issues], {}, "P",
+                        at=NOW)
+    assert "available (1)" in text and "REPORT-Foo~1" in text
+    jobs = Board(cfg, gh).all_jobs()
+    # A REPORT job of the roadmap neither holds its resumption nor is taken for its last job.
+    ctx = SimpleNamespace(cfg=cfg, gh=gh, board=Board(cfg, gh))
+    assert "REPORT" not in intake.resume_roadmap(ctx, "Foo", jobs, yes=False)
+
+
+def test_the_intake_takes_no_submission_for_a_report_job(monkeypatch):
+    cfg = example_config()
+    gh = FakeIssuesGH([job_issue(1, "REPORT-Foo~1", "available")])
+    ctx = SimpleNamespace(cfg=cfg, gh=gh, board=Board(cfg, gh))
+    for name, value in (("admission_problems", lambda *a, **k: []), ("submission_files", lambda *a, **k: ([], [])),
+                        ("deliverable_problems", lambda *a, **k: []), ("_checks", lambda *a, **k: ([], False))):
+        monkeypatch.setattr(intake, name, value)
+    pr = {"number": 5, "state": "open", "draft": False, "labels": [], "user": {"login": "alice"},
+          "head": {"sha": "b" * 40, "repo": {"full_name": "alice/board"}},
+          "body": "Refs #1\n\n" + board.encode_submission("REPORT-Foo~1", "w1", "alice", "codex")}
+    out = intake.intake(ctx, 5, yes=True, pr=pr)
+    assert out == "#5: not merged: REPORT-Foo~1 is a report job, which no lane takes and no submission answers"
+
+
+def test_searches_read_at_most_three_pages_and_marks_follow_what_was_read():
+    stamps = [f"2026-11-2{1 + k // 200}T{(k // 60) % 24:02d}:{k % 60:02d}:00Z" for k in range(350)]
+    gh = ReportsGH([item(k, body="no marker here", updated=stamps[k]) for k in range(350)])
+    transport = FakeTransport()
+    base = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues?type=pulls&state=all&q=tauceti-roadmap-report%3Av1&limit=50"
+    page = [item(k, body="no marker", base=f"{FORGEJO}/TauCetiProject/TauCeti") for k in range(50)]
+    for n in (1, 2, 3):
+        transport.add(f"{base}&page={n}&since=2026-10-31T23%3A55%3A00Z", json.dumps(page).encode())
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "roadmaps": {},
+                                             "scanned": {"forgejo": "2026-11-01T00:00:00Z"}})
+    ctx = context(gh, transport=transport, forgejo=FORGEJO)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert len(gh.queries) == 3 and len(transport.requests) == 3
+    assert "reports: more github results than 3 pages; the rest are read by the next run" in out
+    assert "reports: more forgejo results than 3 pages; its mark stays where it was (Forgejo lists in no order of " \
+           "change)" in out
+    scanned = gh.register()["scanned"]
+    assert scanned == {"github": stamps[299], "forgejo": "2026-11-01T00:00:00Z"}
+
+
+def test_the_origin_upkeep_leaves_report_jobs_alone():
+    target = new_job("TARGET-Foo", inputs={"origin": "target:3"})
+    target.number, target.state = 3, "done"
+    report = new_job("REPORT-Foo~1", inputs={"roadmap": "Foo"})
+    report.number, report.state = 9, "available"
+    design = new_job("DESIGN-Foo")
+    design.number, design.state = 4, "available"
+    fb = FakeBoard(jobs=[target, report, design])
+    assert intake.sync_origins(SimpleNamespace(cfg=example_config(), board=fb)) == ["DESIGN-Foo: origin target:3"]
+    assert [jid for jid, _spec in fb.specs] == ["DESIGN-Foo"]

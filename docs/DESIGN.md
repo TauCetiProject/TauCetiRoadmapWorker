@@ -199,6 +199,24 @@ checkout, submits a PR to the board, and the intake advances the state.
     text is not that text (edited since, or reviewed before the record) gets one incremental check
     round of the text, at most `[prreview] text_per_run` a run, the pull requests that wait for
     nothing first (OPERATORS.md, "AI review of every roadmap pull request").
+11. `report` — what the library found wrong in a roadmap. A Tau Ceti worker that meets a wrong
+    roadmap statement (false, short of a hypothesis, an unprovable pin, a wrong definition, a circular
+    route, a renamed declaration) proves what it can and leaves a roadmap report in the body of its pull
+    request on the library (never in an issue): a `### Roadmap report` section and a marker
+    `<!--tauceti-roadmap-report:v1 {...}-->` naming the roadmap, the file (`README.md` or
+    `Suggested.lean`), the commit it read, the quoted text that is wrong, the kind, whether it blocked
+    the worker, and the declarations that refute and replace it. With `[reports] enabled`, `board sync`
+    searches the library's pull requests once per forge per run (GitHub, and Forgejo when configured)
+    and files one
+    `REPORT-<Leaf>~k` per new report: from a merged pull request whoever wrote it (a bors merge, a
+    closed pull request titled `[Merged by Bors] - `, counts), from an open pull request only when its
+    author is in `[reports] reporters`, from a pull request closed unmerged never. The roadmap, file and quoted text (whitespace
+    normalised, case folded) are one report whatever its sources; a report whose text main no longer
+    holds is recorded as fixed and files nothing, and an open report is fixed, its job done, once its
+    text leaves main. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
+    `rejected`, `fixed`), which the library's workers read so as not to report one twice. The job's text
+    is the board's own; the worker's prose is quoted as data. No lane takes the kind yet (section 8):
+    no worker lists, claims or runs a REPORT job, and a human answers it with a roadmap pull request.
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.
@@ -334,7 +352,10 @@ Agents fetch what they need themselves, within rules:
    board's pull requests: the pinned "Review queue" issue lists them, each pull request's first
    comment is the brief, and a review is a comment in the shape the brief gives.
 4. Review and merge the roadmap PR; comments on it feed the `gate` lane automatically.
-5. Maintain `tauceti-roadmap.toml` and the prompts (CODEOWNERS-protected).
+5. Answer a `REPORT` job: correct the roadmap with a pull request (the job closes once the quoted text
+   leaves main), or close the job with a comment when the report is wrong. A report against a completed
+   roadmap is parked as `state:blocked`: no lane works there.
+6. Maintain `tauceti-roadmap.toml` and the prompts (CODEOWNERS-protected).
 
 ## 8. Not done
 
@@ -343,6 +364,10 @@ Agents fetch what they need themselves, within rules:
 - The two-operator pilot: two operators, four targets, one week, with the resulting PRs compared
   with the hand-run campaign on review rounds needed and reviewer findings per PR.
 - The weekly digest issue of open `needs-references` requests.
+- The lanes of roadmap reports: a read-only triage lane that confirms or rejects each `REPORT` job
+  against the roadmap and the library (setting the register's `confirmed` and `rejected`), and a
+  correction lane that batches a roadmap's confirmed reports into one pull request on the roadmap
+  repository, which the pull-request review, the gate lane and a human merge take from there.
 
 ## 9. Decisions
 

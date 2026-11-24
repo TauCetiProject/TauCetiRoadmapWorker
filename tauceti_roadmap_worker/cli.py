@@ -58,12 +58,13 @@ from . import (
     prbatch,
     prompts,
     references,
+    reports,
     sources,
     watch, throttle
 )
 from . import targets as target_files
 from . import usage as usage_mod
-from .board import KINDS, Board
+from .board import KINDS, NO_LANE, Board
 from .gh import GH, GHError, GHHalt, GHRateLimited
 
 OK, WARN, FAIL = "ok", "warn", "FAIL"
@@ -116,8 +117,9 @@ def _overflow(text: str) -> dict[str, int]:
             continue
         kind, _, minutes = item.partition("=")
         kind = kind.strip()
-        if kind not in KINDS:
-            raise SystemExit(f"--overflow: unknown kind {kind!r} (kinds: {', '.join(KINDS)})")
+        if kind not in KINDS or kind in NO_LANE:
+            kinds = ", ".join(k for k in KINDS if k not in NO_LANE)
+            raise SystemExit(f"--overflow: unknown kind {kind!r} (kinds: {kinds})")
         if not minutes.strip().isdigit() or int(minutes) <= 0:
             raise SystemExit(f"--overflow: {item!r} must be <kind>=<minutes>, the minutes a positive number")
         out[kind] = int(minutes)
@@ -411,6 +413,9 @@ def work(args) -> int:
     unknown = [k for k in only or () if k not in KINDS]
     if unknown:
         raise SystemExit(f"--only: unknown kind(s) {', '.join(unknown)} (kinds: {', '.join(KINDS)})")
+    laneless = [k for k in only or () if k in NO_LANE]
+    if laneless:
+        raise SystemExit(f"--only: no lane takes {', '.join(laneless)} jobs (a human answers them)")
     overflow = _overflow(getattr(args, "overflow", ""))
     agent = args.agent or cfg.agents.default
     model = args.model or cfg.model_for(agent)
@@ -1225,7 +1230,7 @@ def _board_steps(args, cfg, ctx, intake, write: bool, lock=None) -> int:
                  ("max rounds", lambda: intake.repark_capped(ctx)), ("origins", lambda: intake.sync_origins(ctx)),
                  ("gap registry", lambda: intake.note_gap_registry_blocks(ctx)),
                  ("review queue", lambda: boardpr.review_queue(ctx, yes=write)),
-                 ("errata", lambda: errata.sync_errata(ctx, shared))]
+                 ("errata", lambda: errata.sync_errata(ctx, shared)), ("reports", lambda: reports.sync_reports(ctx))]
         if args.prune_order:      # only when asked: a deliberate, one-off clean-up of the merge order
             steps.insert(0, ("merge order prune", lambda: intake.prune_order(ctx, yes=write)))
         failed = []

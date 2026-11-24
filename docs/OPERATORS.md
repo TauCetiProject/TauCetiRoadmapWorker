@@ -561,6 +561,13 @@ events, a holding state wins (`done`, `blocked`, `needs-references`, `submitted`
 carries a machine-readable spec in an HTML comment; the rest of the issue is for humans and is never
 read as an instruction.
 
+`REPORT-<Leaf>~k` jobs stand outside the graph: `board sync` files them from the library's roadmap
+reports ("Roadmap reports" below), nothing follows them, and no lane takes them yet (`board.NO_LANE`): a
+worker leaves them out of its listing whether or not `--only` or a job id names them, `work --only
+report` and `--overflow report=...` are refused, and the intake takes in no submission that names one.
+`board stale` and the lease upkeep, which touch claimed and submitted jobs only, never meet one, the
+origin upkeep skips them, and `board resume` does not count them among a roadmap's jobs. `status` lists them with the others.
+
 ## Lanes
 
 | Kind | Reads | Writes | Who may take it | Checked before submission |
@@ -1719,7 +1726,9 @@ tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; on
                                                    # with [prreview] enabled: a PRREVIEW job per
                                                    # roadmap folder and new head of every open roadmap
                                                    # PR, ai-found-no-errors upkeep;
-                                                   # the errata register (submitted ERRATA jobs → done)
+                                                   # the errata register (submitted ERRATA jobs → done);
+                                                   # with [reports] enabled: REPORT jobs from the
+                                                   # library's roadmap reports, reports/register.json
 tauceti-roadmap --conf $CONF board sync --prune-order --yes   # first remove from the merge order every
                                                    # roadmap on the content repository's main
 tauceti-roadmap --conf $CONF board intake --yes    # take in submissions (designs and packages stay open
@@ -1836,6 +1845,80 @@ got furthest, not the older one: the twin an open submission pull request names 
 parked one, else the oldest; the kept twin takes over the closed twin's pull request and state
 (`submitted` while its submission is open, `claimed` while its lease is live), and the job's lease
 is left alone (it is keyed by the job id, so it belongs to the worker on the kept twin).
+
+### Roadmap reports
+
+A Tau Ceti worker that finds a roadmap statement wrong leaves a report in the body of its pull request
+on the library (reports travel only in pull requests: a marker in an issue is never read): a
+`### Roadmap report` section in prose and, per report (at most five a body), one marker line
+
+```text
+<!--tauceti-roadmap-report:v1 {"roadmap":"QuadraticFormInvariants","file":"README.md","roadmap_sha":"<40 hex>","anchor":"...","kind":"false-statement","effect":"worked-around","refutes":["TauCeti...."],"replaces":["TauCeti...."]}-->
+```
+
+`roadmap` is the folder under the active directory (`/`-separated when nested), `file` is `README.md` or
+`Suggested.lean`, `roadmap_sha` the commit of the roadmap repository the worker read, `anchor` the
+declaration's name or a verbatim quote of the statement (at most 300 characters), `kind` one of
+`false-statement`, `missing-hypothesis`, `unprovable-pin`, `wrong-definition`, `circular-dependency`,
+`stale-name`, `effect` `blocked` or `worked-around`, and `refutes` and `replaces` at most ten declaration
+names each. A marker that does not parse or validate is logged and skipped; the others of the body still
+count; unknown fields are ignored.
+
+With `[reports] enabled` (off by default), every `board sync` ends with the reports step:
+
+1. One search per forge, for pull requests whose body changed since the mark the register keeps, less five
+   minutes: GitHub's search (`repo:<library> is:pr "tauceti-roadmap-report:v1" in:body updated:>=<mark>`,
+   oldest change first, at most three pages of 100), and with `[reports] forgejo` the instance's listing of
+   pull requests (`type=pulls`, its keyword search, `since=<mark>`, three pages of 50, no token). Both
+   searches are fuzzy: every hit is read again by parsing its body, and one that is not a pull request is
+   ignored.
+2. A merged pull request counts from anyone; GitHub's `merged_at`, Forgejo's `merged`, or a bors merge (the
+   pull request is closed and its title starts `[Merged by Bors] - `) is merged. An open pull request
+   counts only from `[reports] reporters` (GitHub logins or `team:<org>/<slug>`, resolved as
+   `[board] target_filers` are) or `forgejo_reporters`; a pull request closed unmerged never.
+3. A report is its roadmap, file and anchor (whitespace runs as one space, case folded). One the register
+   holds gains the source (logged `already reported (REPORT-<Leaf>~k, open); source added`, and an open job
+   gets one comment `Reported again in <url>`).
+4. A new one is checked against the roadmap repository's main: the file under the active directory, else
+   under the completed one, read as GraphQL blobs (one query for up to sixty files, no REST request unless
+   a file is too large for GraphQL), the anchor sought in it with whitespace normalised. Still there: a
+   `REPORT-<Leaf>~k` job is filed (`state:available`; `state:blocked` under the completed directory, with
+   a note that it needs a human), at most `[reports] per_run` a run and `per_author` per author per run
+   (`left for a later run ([reports] per_run)`). Not there: the same file at `roadmap_sha` is read; an
+   anchor that was there then is recorded `fixed` with no job (`recorded as fixed, no job`), one that was
+   not is no report (`the anchor is not in the file at <sha7> either; not a report`). A file that could not
+   be read decides nothing (`main could not be read; left for a later run`). A fixed report whose anchor is
+   back on main is filed again, as the next round.
+5. Every `open` or `confirmed` report whose anchor has left main becomes `fixed`; its job is set done with
+   one comment and closed (`REPORT-<Leaf>~k: the anchor is gone from <roadmap>/<file> on main; fixed, job
+   done`).
+
+The step ends with `reports: N source(s) read, R report(s) recorded already, F filed, X fixed[, L left for a
+later run]`. The job's issue is written by the board from the validated fields: the roadmap and file, the
+kind and effect, the anchor and the declarations as inline code, the commit read and a link to each
+source; the worker's prose (the `### Roadmap report` section, at most 2,000 characters) is quoted in a code
+block behind a fence longer than any it holds, with no HTML comment left in it, so nothing harvested can
+mention anyone, link an issue, close its quoting or carry a marker the board reads.
+
+The register, `reports/register.json` on the board's main, is the step's only state (the hosted workflow
+keeps none between runs): `{"version": 1, "roadmaps": {"<roadmap>": [{"job", "file", "anchor", "kind",
+"effect", "state", "sources", "refutes", "replaces"}]}, "scanned": {"github": ..., "forgejo": ...}}`, the
+states `open`, `confirmed`, `rejected` and `fixed` (a fixed report recorded without a job has `"job": ""`).
+The library's workers read it so as not to report one thing twice. It is written in one commit when a
+report changed, or when a forge's mark is a day behind; a mark left in memory only costs the next search a
+few more hits, all of them recorded already. The mark stops at the first source a run left for later (a
+cap, an unreadable file, a team it could not read), so the next search reads it again; a Forgejo listing
+longer than three pages leaves the Forgejo mark where it was (it lists in no order of change). A job that a run
+filed without writing the register (the write failed) is recorded from its spec by the next run. With
+`--yes` absent, the step logs every decision with `would file ... (dry run)` and writes nothing.
+
+A run costs the board's budget the read of the register, the listing of `kind:report` jobs (from the
+listing the sync holds already) and its writes; the search comes from GitHub's search budget (30 a minute),
+the reads of main from GraphQL's, Forgejo nothing. To turn it on: set `[reports] enabled = true`, the
+reporters, and `forgejo` if the library has pull requests there; create the label `kind:report` on the
+board beforehand to give it a colour (GitHub creates it on the first job otherwise). A team in
+`reporters` is read as the target filers' teams are, `board/filers.json` included. Workers of an older
+version do not read a `REPORT-` id and leave such a job alone.
 
 ### The board workflow
 
@@ -2138,6 +2221,14 @@ reach) is not built yet.
   awaiting-author and creates its GATE job, and the gate lane answers it with its inline comments.
   Every other comment of that login on its own drafts stays a reply; the gate lane's replies open
   with `Fixed in`, never with the prefix.
+* **A `REPORT` job**: a Tau Ceti worker found a roadmap statement wrong (the job quotes it, names the
+  declarations that refute and replace it, and links the pull request). No lane takes the job
+  yet. Read the report against the roadmap; when it is right, correct the roadmap with a pull request on
+  the roadmap repository (an operator's agent may write it), and `board sync` closes the job as done once
+  the quoted text is gone from main. When it is wrong, close the job with a comment saying why (the
+  register keeps the report `open`, so the library's workers do not file it again). A report
+  against a completed roadmap is filed as `state:blocked`: no lane works there, so it is a human's in any
+  case.
 * **The configuration and the prompts** are CODEOWNERS-protected; changes go through review.
 
 ## Known limits of this version
