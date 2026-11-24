@@ -47,7 +47,19 @@ CHANGES = re.compile(
     r"changes are needed|would not approve|[Rr]equest changes|"
     # a reviewer who moves the pull request to the author, or makes the settled state conditional on
     # repairs ("once these are addressed"), is asking for changes however the sentence ends
-    r"[Mm]oving this to `?awaiting-author|switch it back to `?awaiting-review|(?:once|until|after|when) (?:these|this|they|it) (?:are|is) addressed")
+    r"[Mm]oving this to `?awaiting-author|switch it back to `?awaiting-review|(?:once|until|after|when) (?:these|this|they|it) (?:are|is) addressed|"
+    # a referee's report that lists what it asks for under its own heading or verdict, whatever its state
+    # on GitHub (2026-11-19: a COMMENTED review with "Verdict: minor changes" and seven numbered items
+    # under "Requested changes" was never answered)
+    r"(?m:^[#*_\s]*[Rr]equested (?:changes|corrections|revisions)[*_:.\s]*$)|"
+    r"[Vv]erdict\W{0,6}(?:minor|major|some|small|substantial) (?:changes|revisions?|corrections)")
+# A settled phrase inside a condition ("the boundary is clean once item 3 is addressed", "I would approve
+# when these are resolved") says what is still asked for, not that it was done: it settles nothing.
+CONDITIONAL = re.compile(
+    r"\b(?:once|until|after|when|if|provided(?: that)?|as soon as|assuming)\b[^.;:!?\n]{0,80}?"
+    r"\b(?:(?:are|is|has been|have been|gets?|being) (?:fully )?(?:addressed|resolved|fixed|repaired|done|made|applied)"
+    r"|comments? (?:addressed|resolved))"
+    r"|\b(?:would|will|can) approve\b[^.;:!?\n]{0,40}?\b(?:once|when|if|after|provided|as soon as)\b")
 SETTLED = re.compile(
     r"[Nn]o further change|ready for manual approval|recommend(?:ing)? manual (?:content )?approval|accepted all|"
     r"would not request another revision|found no issues|[Nn]o remaining blocking|no blocking issue|previous findings closed|"
@@ -146,7 +158,13 @@ def is_review(e: Event, ours: set[str], markers: list[str], ignore: set[str] = f
         return False
     if APPROVE_VERDICT.search(body):
         return False
-    return bool(CHANGES.search(body)) or not SETTLED.search(body)
+    return bool(CHANGES.search(body)) or not settles(body)
+
+
+def settles(body: str) -> bool:
+    """Whether the text says the matter is settled (`SETTLED`), conditions aside: a settled phrase that
+    only appears inside a condition (`CONDITIONAL`: "once item 3 is addressed") does not count."""
+    return bool(SETTLED.search(CONDITIONAL.sub(" ", body or "")))
 
 
 def is_reply(e: Event, ours: set[str], markers: list[str], housekeeping: list[str],
