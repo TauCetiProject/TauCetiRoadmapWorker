@@ -3954,6 +3954,16 @@ def test_the_description_keeps_blocks_markers_and_the_attribution_line_in_their_
         PR_MARKER_LINE, FOOTER]) + "\n"
     assert lane_prreview.merged_description("New prose.", "Old prose, no block.") == "New prose.\n"
     assert lane_prreview.merged_description(f"New prose.\n\n{FOOTER}", f"Old.\n\n{FOOTER}") == f"New prose.\n\n{FOOTER}\n"
+    # the attribution line is the last line whatever the repair wrote and wherever the blocks stood: a repair
+    # that copies it into its prose does not leave it above the blocks, where the next rewrite would drop it
+    block = "<!-- merge-order -->\n**Merge order.** #77 → this.\n<!-- /merge-order -->"
+    want = f"New prose.\n\n{DEPENDS_BLOCK}\n\n{block}\n\n{FOOTER}\n"
+    assert lane_prreview.merged_description(f"New prose.\n\n{FOOTER}\n", f"Old.\n\n{DEPENDS_BLOCK}\n\n{block}\n\n{FOOTER}") == want
+    assert lane_prreview.merged_description("New prose.", f"Old.\n\n{FOOTER}\n\n{DEPENDS_BLOCK}\n\n{block}") == want
+    assert lane_prreview.merged_description(f"New prose.\n\n{FOOTER}", f"Old.\n\n{DEPENDS_BLOCK}\n\n{block}") == want
+    again = lane_prreview.merged_description(lane_prreview.raw_prose(want), want)
+    assert again == want and lane_prreview.attribution_line(again) == FOOTER
+    assert lane_prreview.attribution_line("Prose.\n\n" + block) == ""
     # an unclosed marker is kept as a comment; the line under it is prose and goes
     assert lane_prreview.merged_description("New.", "Old.\n\n<!-- x -->\nits line\n") == "New.\n\n<!-- x -->\n"
 
