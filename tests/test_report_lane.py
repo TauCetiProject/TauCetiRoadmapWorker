@@ -385,8 +385,10 @@ class ReplayGH(FakeIssuesGH):
 
 def test_an_earlier_merged_needs_human_triage_is_not_replayed_over_its_replacement():
     from .fakes import job_issue
-    issue = job_issue(7, JOB, "submitted", inputs={**report_job().inputs, "completed": [5]})
-    gh = ReplayGH([issue], triage("needs-human"))
+    # The job was triaged (needs-human, merged as #5 at 10:00), answered, and submitted again at 11:00 (#6, its
+    # checks still running): the earlier merged submission does not complete the new attempt.
+    gh = SubmittedGH([job_issue(7, JOB, "submitted", inputs=report_job().inputs)], triage("needs-human"),
+                     "2026-11-24T11:00:00Z")
     gh.pulls = [{"number": 5, "state": "closed", "merged_at": "2026-11-24T10:00:00Z", "user": {"login": "alice"},
                  "body": "Refs #7\n\n" + board.encode_submission(JOB, "w1", "alice", "codex")}]
     cfg = example_config()
@@ -396,43 +398,51 @@ def test_an_earlier_merged_needs_human_triage_is_not_replayed_over_its_replaceme
     assert gh.states(7) == ["submitted"]
 
 
-def test_a_needs_human_completion_records_the_submission_it_completed():
-    gh, fb = MergedGH(triage("needs-human")), StatesBoard()
-    job = report_job(state="submitted")
-    ctx = Context(cfg=example_config(), gh=gh, board=fb, claims=None, worker_id="board", operator="bot", agent="",
+# --- review round 2 ----------------------------------------------------------------------------------------------
+
+class SubmittedGH(ReplayGH):
+    """The board's issue with its label events timed, and a note POST that fails once."""
+
+    def __init__(self, issues, text, submitted_at, fail_note=False):
+        super().__init__(issues, text)
+        self.fail_note = fail_note
+        for e in self.events[7]:
+            e["created_at"] = submitted_at
+
+    def write(self, method, path, payload=None):
+        if self.fail_note and path.endswith("/issues/7/comments") and payload["body"].startswith("Triage:"):
+            self.fail_note = False
+            raise GHError("POST comments: HTTP 502")
+        return super().write(method, path, payload)
+
+
+def test_a_completion_that_stops_half_way_is_finished_by_reconciliation():
+    from .fakes import job_issue
+    gh = SubmittedGH([job_issue(7, JOB, "submitted", inputs=report_job().inputs)], triage(), "2026-11-24T09:00:00Z",
+                     fail_note=True)
+    gh.pulls = [{"number": 5, "state": "closed", "merged_at": "2026-11-24T10:00:00Z", "user": {"login": "alice"},
+                 "body": "Refs #7\n\n" + board.encode_submission(JOB, "w1", "alice", "codex")}]
+    cfg = example_config()
+    ctx = Context(cfg=cfg, gh=gh, board=Board(cfg, gh), claims=None, worker_id="board", operator="bot", agent="",
                   model="")
-    intake.complete_merged(ctx, job, {"number": 5, "user": {"login": "alice"}}, [job])
-    assert job.inputs["completed"] == [5] and fb.specs[-1][0] == JOB
+    with pytest.raises(GHError):
+        intake.reconcile_merged(ctx, yes=True)                  # the triage note fails, after the intake note
+    assert gh.states(7) == ["submitted"]
+    out = intake.reconcile_merged(ctx, yes=True)
+    assert out == [f"#5: merged; finished {JOB}; triage confirmed"]
+    assert gh.states(7) == ["done"] and gh.issues[7]["state"] == "closed"
+    notes = [b for b in gh.comments[7] if b.startswith("Triage: `confirmed`")]
+    assert len(notes) == 1
 
 
-def test_the_triage_reads_the_report_as_its_sources_say_it_now(ctx):
-    place(ctx)
-    job = report_job(refutes=["TauCeti.right_one"])          # the spec as the harvest revised it
-    job.inputs["sources"] = [f"{LIBRARY}/pull/6903", f"{LIBRARY}/pull/7000"]
-    ctx.board.threads[7].append({"user": {"login": "github-actions[bot]"},
-                                 "body": f"Revised in {LIBRARY}/pull/6903 (an open pull request): now refutes: "
-                                         "`TauCeti.right_one`."})
-    ctx.board.threads[7].append({"user": {"login": "github-actions[bot]"},
-                                 "body": f"Reported again in {LIBRARY}/pull/7000 (a merged pull request)."
-                                         + reports.REOPEN})
-    lane_for(job).run(job, ctx)
-    brief = (ctx.wdir / "jobs" / "REPORT-QuadraticFormInvariants_r1" / "brief.md").read_text()
-    assert "Refutes (as the reporter names them): `TauCeti.right_one`" in brief
-    assert "exists_rankOne" not in brief.split("The text it says is wrong")[0]       # the fields: names now
-    assert f"Reported in: {LIBRARY}/pull/6903, {LIBRARY}/pull/7000" in brief
-    assert (f"Since it was filed (the board's notes; the fields above are the report as its sources say it now): "
-            f"Revised in {LIBRARY}/pull/6903") in brief
-    assert f"Reported again in {LIBRARY}/pull/7000 (a merged pull request)." in brief
-    assert "To have it triaged again" not in brief and "Claimed for" not in brief
-
-
-def test_a_rejected_report_whose_job_a_human_reopens_is_open_again():
+def test_a_reopened_rejected_job_takes_the_evidence_received_while_it_was_closed():
     gh = ReportsGH([])
-    entry = reports.new_entry(reports.parse(marker())[0][0], JOB, "rejected", f"{LIBRARY}/pull/1") | {
-        "triage": {"job": JOB, "verdict": "rejected", "reason": "x"}}
+    entry = reports.new_entry(reports.parse(marker())[0][0], JOB, "rejected", f"{LIBRARY}/pull/1")
+    entry["refutes"] = entry["evidence"][f"{LIBRARY}/pull/1"]["refutes"] = ["TauCeti.corrected_counterexample"]
     gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
                                              "roadmaps": {"QuadraticFormInvariants": [entry]}})
-    out = reports.sync_reports(context(gh, jobs=[report_job(state="available")]), now=NOW)
-    [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
-    assert e["state"] == "open" and "triage" not in e and e["triages"][0]["verdict"] == "rejected"
-    assert f"reports: {JOB}: reopened by a human; the report is open again" in out
+    job = report_job(state="available")                         # reopened by a human, its spec as when it closed
+    ctx = context(gh, jobs=[job])
+    reports.sync_reports(ctx, now=NOW)
+    assert reports.report_of(job).refutes == ("TauCeti.corrected_counterexample",)
+    assert ctx.board.specs[-1][0] == JOB

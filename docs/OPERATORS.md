@@ -2016,11 +2016,14 @@ needs-human`, then `## Statement`, `## Evidence` (for a verdict that settles the
 `## Correction`, `## Reason` or `## Missing`; it is submitted as a board pull request. The intake merges it
 and, for `confirmed` or `rejected`, comments `Triage: <verdict> (<path>)`, sets the job done and closes
 it; for `needs-human` it parks the job as `state:blocked`, open, with what the triage lacks quoted. The
-job's spec records the submission each completion took in (`completed`): when the job runs again under its
-id (a human answered and moved it to `state:available`), an earlier merged submission never completes the
-new attempt. A merged triage whose report cannot be read leaves the job submitted; a later intake finishes
-it. The triage reads the report as its sources say it now (the harvest keeps the job's spec current) and
-the board's own notes of later sources and revisions.
+note is posted once (the job's comments are read first) before the state label, so a completion that stops
+half-way leaves the job submitted and the next intake does the rest. When the job runs again under its id
+(a human answered and moved it to `state:available`), an earlier merged submission never completes the new
+attempt: the intake finishes a REPORT job from a merged submission only when the job's `state:submitted`
+label was added before that merge (one read of the issue's events per such job). A merged triage whose
+report cannot be read leaves the job submitted; a later intake finishes it. The triage reads the report as
+its sources say it now (the board sync rewrites an open job's spec from the register every run, a reopened
+one included) and the board's own notes of later sources and revisions.
 
 The next `board sync` records the verdict, after it has recorded what left main: a report still `open`
 whose text is still on main becomes `confirmed` or `rejected`, with `"triage": {"job", "verdict",
