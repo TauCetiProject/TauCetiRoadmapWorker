@@ -4609,3 +4609,42 @@ def test_the_brief_of_a_supplier_check_names_the_suppliers_and_widens_the_change
     plain = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "text_check": True})
     assert "merged since its review" not in lane_prreview.mode_text(
         "incremental", plain, example_config(), {"previous_report": "r.md", "changes": "c.md", "change_lines": 0})
+
+
+def test_the_plans_of_the_accepted_pull_requests_are_read_in_one_batched_pass():
+    class Plans(ContentGH):
+        """Serves the board's files by the batch query (`prbatch.verdict_texts`) and counts those that ask for a plan."""
+        plan_queries, plan_paths = 0, 0
+
+        def graphql(self, query, **variables):
+            asked = re.findall(r'(f\d+): object\(expression: "main:([^"]+)"\) \{ \.\.\. on Blob \{ text \} \}', query)
+            if not asked:
+                return super().graphql(query, **variables)
+            plans = [path for _alias, path in asked if path.endswith("/design/plan.json")]
+            self.plan_queries += bool(plans)
+            self.plan_paths += len(plans)
+            return {"repository": {alias: ({"text": self.files[path]} if path in self.files else None)
+                                   for alias, path in asked}}
+
+        def raw_file(self, repo, path, ref=""):
+            assert not path.endswith("plan.json"), "a plan read one by one"
+            return super().raw_file(repo, path, ref)
+
+    names = [f"Roadmap{chr(65 + k // 26)}{chr(65 + k % 26)}" for k in range(120)]
+    jobs, files, listing, pulls = [], {}, [], {}
+    for k, name in enumerate(names):
+        number = 100 + k
+        done = review_job(1000 + k, 1, number, H1, "done", name=name)
+        done.inputs["suppliers_read"] = ["Sup"]
+        pulls.update(text_pr(number, title=f"Roadmap: {name}"))
+        digest = summary.text_digest(f"Roadmap: {name}", pulls[number]["body"])
+        files.update(verdict_read(done, "accepted", H1, digest))
+        files.update(plan_file(name, "Sup"))
+        listing.append(node(number, H1, paths=(f"TauCetiRoadmap/{name}/README.md",),
+                            labels=["ai-found-no-errors", "awaiting-review"]))
+        jobs.append(done)
+    gh = Plans(listing, pulls=pulls, files=files, tree=["Sup"])
+    out, fake = sync(gh, jobs, text_per_run=10, supplier_checks=True)
+    assert fake.created == []
+    batch = example_config().board.graphql_batch
+    assert gh.plan_paths == 120 and gh.plan_queries <= -(-120 // (max(batch, 1) * 4))

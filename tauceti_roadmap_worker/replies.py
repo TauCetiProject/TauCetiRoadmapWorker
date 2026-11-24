@@ -58,8 +58,11 @@ CHANGES = re.compile(
 CONDITIONAL = re.compile(
     r"\b(?:once|until|after|when|if|provided(?: that)?|as soon as|assuming)\b[^.;:!?\n]{0,80}?"
     r"\b(?:(?:are|is|has been|have been|gets?|being) (?:fully )?(?:addressed|resolved|fixed|repaired|done|made|applied)"
-    r"|comments? (?:addressed|resolved))"
-    r"|\b(?:would|will|can) approve\b[^.;:!?\n]{0,40}?\b(?:once|when|if|after|provided|as soon as)\b")
+    r"|comments? (?:addressed|resolved))")
+# An approval promised on a condition ("I would approve once …") is not an approval. Only the promise is
+# matched: the conjunction stays for `CONDITIONAL`, which removes the condition after it.
+CONDITIONAL_APPROVAL = re.compile(
+    r"\b(?:would|will|can) approve\b(?=[^.;:!?\n]{0,40}?\b(?:once|until|after|when|if|provided|as soon as|assuming)\b)")
 SETTLED = re.compile(
     r"[Nn]o further change|ready for manual approval|recommend(?:ing)? manual (?:content )?approval|accepted all|"
     r"would not request another revision|found no issues|[Nn]o remaining blocking|no blocking issue|previous findings closed|"
@@ -163,8 +166,9 @@ def is_review(e: Event, ours: set[str], markers: list[str], ignore: set[str] = f
 
 def settles(body: str) -> bool:
     """Whether the text says the matter is settled (`SETTLED`), conditions aside: a settled phrase that
-    only appears inside a condition (`CONDITIONAL`: "once item 3 is addressed") does not count."""
-    return bool(SETTLED.search(CONDITIONAL.sub(" ", body or "")))
+    only appears inside a condition (`CONDITIONAL`: "once item 3 is addressed"), or that promises an
+    approval on one (`CONDITIONAL_APPROVAL`: "I would approve when these are resolved"), does not count."""
+    return bool(SETTLED.search(CONDITIONAL.sub(" ", CONDITIONAL_APPROVAL.sub(" ", body or ""))))
 
 
 def is_reply(e: Event, ours: set[str], markers: list[str], housekeeping: list[str],

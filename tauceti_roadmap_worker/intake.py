@@ -3691,17 +3691,19 @@ def file_text_checks(ctx, listed: list[dict], due: list, texts: dict, file_round
     bodies = read or prbatch.pull_texts(ctx.gh, cfg.repositories.content, [int(e["pr"]) for e in listed],
                                         cfg.board.graphql_batch)
     ready = []
+    # The plans of every candidate's folders in one batched pass: read folder by folder, an accepted pull
+    # request with one roadmap costs a query of its own on every run, whatever is filed.
+    on_main = merged_suppliers(list(dict.fromkeys(
+        str(folder).rsplit("/", 1)[-1] for _n, _e, heads, _m in due for folder in heads))) if merged_suppliers else {}
     for number, entry, heads, mine in due:
         got, head = bodies.get(number), entry.get("head", "")
         if got is None:
             out.append(f"#{number}: text not checked (its title and description could not be read)")
             continue
         digest = summary.text_digest(got["title"], got["body"])
-        leaves = {folder: str(folder).rsplit("/", 1)[-1] for folder in heads}
-        on_main = merged_suppliers(list(leaves.values())) if merged_suppliers else {}
         for folder, at in heads.items():
             ours = [j for j in mine if board.prreview_folder(j) == folder]
-            merged = suppliers_due(ours, on_main.get(leaves[folder]) or [])
+            merged = suppliers_due(ours, on_main.get(str(folder).rsplit("/", 1)[-1]) or [])
             read, reviewed = text_read(ctx, ours, at, head, digest, texts)
             if merged:
                 ready.append((number, entry, folder, digest, mine,

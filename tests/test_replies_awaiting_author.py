@@ -34,6 +34,10 @@ def test_a_referee_report_with_a_settled_phrase_inside_a_condition_is_a_review()
                  "Verdict: major changes. The earlier comments are addressed.",
                  "The ownership line is clean once item 3 is addressed.",
                  "I would approve once the Needs lines are fixed.",
+                 "I would approve when these are resolved.",
+                 "I would approve once item 3 is addressed.",
+                 "The proof has a missing hypothesis. I would approve when these findings are resolved.",
+                 "Happy to approve; I will approve as soon as the two comments are addressed.",
                  "Fine by me if the second bullet of §2.10 is resolved."):
         assert replies.is_review(replies.Event("t", "referee", body), {"carol"}, []), body
 
@@ -43,6 +47,15 @@ def test_a_settled_note_stays_settled():
                  "The requested changes are resolved.",
                  "Thanks, the other finding is addressed.",
                  "If anything else comes up I will say; previous findings closed.",
-                 "I checked the head once more; comments resolved."):
+                 "I checked the head once more; comments resolved.",
+                 "I would approve. If you rebase, nothing further is needed."):
         assert replies.settles(body) and not replies.CHANGES.search(body), body
         assert not replies.is_review(replies.Event("t", "referee", body), {"carol"}, []), body
+
+
+def test_a_conditional_approval_that_states_an_error_is_an_unanswered_error():
+    body = "The proof has a missing hypothesis. I would approve when these findings are resolved."
+    event = replies.Event("2026-11-24T06:00:00Z", "referee", body, ref="comment-1")
+    assert not replies.settles(body)
+    assert replies.wanted_label([event], {"carol"}, "1" * 40, markers=[], housekeeping=[], approvers=[])[0] == "awaiting-author"
+    assert [e.ref for e, _why in replies.unanswered_errors([event], {"carol"}, [], [], ["missing hypothesis"])] == ["comment-1"]
