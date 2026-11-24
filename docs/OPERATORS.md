@@ -895,8 +895,10 @@ round when the supplier of one of its gaps (the `gaps` of `design/plan.json` on 
 suppliers on the base branch when it was filed (`suppliers_read`); a folder none of whose rounds has
 the record is due once for each supplier already there. The round carries `supplier_check` (the
 suppliers to read against) besides `text_check`, and its brief makes every passage that cites, contracts
-with or waits for one of them a changed passage (`lanes.prreview.SUPPLIER_CHECK`), so a defect there is
-a finding although the previous review passed the text. These rounds count within `text_per_run` and
+with or waits for one of them changed text, in whatever mode the round runs
+(`lanes.prreview.supplier_scope`), so a defect there is a finding although the previous review passed the
+text. A first review of a roadmap on the base branch that reads its change only
+(`review_changes_of_merged`) records no `suppliers_read`: the check follows its acceptance. These rounds count within `text_per_run` and
 are filed in the same order; a plan GitHub does not serve leaves the folder as it is for the run. The
 log reads `#N: PRREVIEW-<Leaf>~k created (a check against a supplier now on main: <Supplier>;
 dependency depth 0)`. (2026-11-13: QuasiregularMaps was accepted two days before its only gap supplier

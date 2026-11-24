@@ -4605,7 +4605,7 @@ def test_the_brief_of_a_supplier_check_names_the_suppliers_and_widens_the_change
     text = lane_prreview.mode_text("incremental", job, example_config(),
                                    {"previous_report": "r.md", "changes": "c.md", "change_lines": 0, "pr_text": "t.md"})
     assert "merged since its review" in text and "Sup, Later" in text and "`t.md`" in text
-    assert "is a changed passage of step 2" in text and "checks the pull request's title and description" not in text
+    assert "counts as changed text in this round, never as untouched text" in text and "checks the pull request's title and description" not in text
     plain = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "text_check": True})
     assert "merged since its review" not in lane_prreview.mode_text(
         "incremental", plain, example_config(), {"previous_report": "r.md", "changes": "c.md", "change_lines": 0})
@@ -4648,3 +4648,40 @@ def test_the_plans_of_the_accepted_pull_requests_are_read_in_one_batched_pass():
     assert fake.created == []
     batch = example_config().board.graphql_batch
     assert gh.plan_paths == 120 and gh.plan_queries <= -(-120 // (max(batch, 1) * 4))
+
+
+def test_a_review_of_the_change_to_a_roadmap_on_main_does_not_count_as_reading_its_suppliers():
+    # A first review of a roadmap on the base branch reads its change only (`review_changes_of_merged`): an
+    # untouched passage that speaks of a merged supplier is outside it, so the round records nothing and the
+    # supplier check follows the acceptance.
+    files = plan_file("Foo", "Sup")
+    on = {"supplier_checks": True, "review_changes_of_merged": True}
+    [(first, _s, _p)] = sync(ContentGH([node(12, H1)], files=files, tree=["Sup", "Foo"]), **on)[1].created
+    assert "suppliers_read" not in first.inputs and first.inputs["rereview"] is False
+    first.number, first.state, first.labels = 40, "done", ["roadmap-job", "kind:prreview", "state:done"]
+    pulls = text_pr(12)
+    digest = summary.text_digest("Roadmap: Foo", pulls[12]["body"])
+    listing = [node(12, H1, labels=["ai-found-no-errors", "awaiting-review"])]
+    gh = ContentGH(listing, pulls=pulls, files={**files, **verdict_read(first, "accepted", H1, digest)}, tree=["Sup", "Foo"])
+    [(check, _s, _p)] = sync(gh, [first], text_per_run=10, **on)[1].created
+    assert check.inputs["supplier_check"] == ["Sup"] and check.inputs["suppliers_read"] == ["Sup"]
+    # A roadmap the pull request adds, or the setting off: the first review reads the whole folder.
+    for tree, over in ((["Sup"], on), (["Sup", "Foo"], {"supplier_checks": True})):
+        [(whole, _s, _p)] = sync(ContentGH([node(12, H1)], files=files, tree=tree), **over)[1].created
+        assert whole.inputs["suppliers_read"] == ["Sup"]
+
+
+def test_a_supplier_check_keeps_its_scope_in_every_review_mode():
+    job = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "rereview": True,
+                                            "text_check": True, "supplier_check": ["Sup"]})
+    cfg = example_config()
+    extra = {"previous_report": "r.md", "changes": "c.md", "change_lines": 0, "pr_text": "t.md",
+             "base_ref": "main", "base_lines": 2, "merge_base": H2}
+    for mode in ("incremental", "change"):
+        text = lane_prreview.mode_text(mode, job, cfg, extra)
+        assert "counts as changed text in this round, never as untouched text" in text and "reached the base branch: Sup" in text, mode
+    full = lane_prreview.mode_text("full", job, cfg, extra)
+    assert "reached the base branch since a review of this folder last read them: Sup" in full
+    plain = new_job("PRREVIEW-Foo~2", inputs={"pr": 12, "head": H1, "previous_head": H1, "rereview": True})
+    assert all("base branch since" not in lane_prreview.mode_text(m, plain, cfg, extra) and "merged since its review"
+               not in lane_prreview.mode_text(m, plain, cfg, extra) for m in ("incremental", "change", "full"))

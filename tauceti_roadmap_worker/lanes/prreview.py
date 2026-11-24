@@ -559,8 +559,8 @@ repaired since. Since a review of this folder last read them, these roadmaps it 
 against have reached the base branch: {suppliers}. Their merge is this round's change: every passage of \
 the folder that cites one of them, states a contract with it (`gap:<slug>`, `What <Supplier> must \
 provide`), names it in a `*Needs:*` line, or says that a statement cannot be written without it (the \
-module docstring of `Suggested.lean` included) is a changed passage of step 2, and a defect there is a \
-finding or a small correction as in a full review, whatever the previous review said of it. Read each \
+module docstring of `Suggested.lean` included) counts as changed text in this round, never as untouched text, and a \
+defect there is a finding or a small correction as in a full review, whatever an earlier review said of it. Read each \
 such passage against the supplier's README and `Suggested.lean` as they are on the base branch (the \
 roadmap repository at its main branch, in the context below):
 
@@ -578,6 +578,27 @@ The title and description are quoted in `{pr_text}`; apply step 8 to them as wel
 of the supplier too."""
 
 
+SUPPLIER_FULL = """ This round was filed because roadmaps this one declares supplier gaps against have \
+reached the base branch since a review of this folder last read them: {suppliers}. Read every passage \
+that cites one of them, states a contract with it or says that a statement cannot be written without it \
+(the module docstring of `Suggested.lean` included) against the supplier's README and `Suggested.lean` as \
+they are on the base branch."""
+
+
+def supplier_scope(job: Job, extra: dict, mode: str) -> str:
+    """What a supplier check (`inputs.supplier_check`) adds to the brief's MODE, whatever mode the round
+    runs in: a review of changed passages only (`incremental`, `change`) is told that the passages about
+    the merged suppliers are changed passages (`SUPPLIER_CHECK`); a full review reads them anyway and is
+    told why it was filed (`SUPPLIER_FULL`). '' for any other round."""
+    suppliers = ", ".join(str(s) for s in job.inputs.get("supplier_check") or [])
+    if not suppliers:
+        return ""
+    if mode == "full":
+        return SUPPLIER_FULL.format(suppliers=suppliers)
+    return SUPPLIER_CHECK.format(since=str(job.inputs.get("previous_head") or "")[:7], suppliers=suppliers,
+                                 pr_text=extra.get("pr_text") or "the pull request's text")
+
+
 PASS_NOTE = ("This is a pass before the final review. It does not decide `{label}`: the final review, on "
              "another model, follows it.")
 
@@ -593,9 +614,7 @@ def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
         if job.inputs.get("text_rereview"):
             text += TEXT_ROUND.format(since=since, pr_text=extra.get("pr_text") or "the pull request's text")
         elif job.inputs.get("supplier_check"):
-            text += SUPPLIER_CHECK.format(
-                since=since, pr_text=extra.get("pr_text") or "the pull request's text",
-                suppliers=", ".join(str(s) for s in job.inputs["supplier_check"]))
+            text += supplier_scope(job, extra, mode)
         elif job.inputs.get("text_check"):
             text += TEXT_CHECK.format(since=since, pr_text=extra.get("pr_text") or "the pull request's text")
         return text
@@ -612,7 +631,7 @@ def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
                     "does not affect is a remark of step 2. Then review the change as below." if previous else ""))
         return CHANGE.format(base=extra.get("base_ref") or cfg.project.branch, lines=extra.get("base_lines"),
                              merge_base=str(extra.get("merge_base") or "")[:7], changes=changes, previous=first,
-                             untouched=UNTOUCHED)
+                             untouched=UNTOUCHED) + supplier_scope(job, extra, mode)
     text = "**A full review.**"
     if why:
         text += f" This re-review of a repaired head is not incremental: {why}."
@@ -622,7 +641,7 @@ def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
     if changes:
         text += (f" The change set `{changes}` is context: it shows where the author worked, and every passage is "
                  "reviewed, changed or not.")
-    return text
+    return text + supplier_scope(job, extra, mode)
 
 
 def unaccounted_findings(previous: str, report: str) -> list[str]:

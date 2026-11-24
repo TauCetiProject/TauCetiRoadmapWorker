@@ -3404,8 +3404,12 @@ def sync_pr_reviews(ctx) -> list[str]:
             inputs.update({"rereview": False, "dispute_rereview": True})
         inputs.update(extra)
         # What a review that reads the whole folder, or the supplier contracts (`supplier_check`), reads of
-        # the suppliers of its declared gaps: those on the base branch now (`suppliers_due`).
-        if extra.get("supplier_check") or not (inputs["rereview"] or dispute):
+        # the suppliers of its declared gaps: those on the base branch now (`suppliers_due`). A first review
+        # of a roadmap on the base branch reads its change only under `review_changes_of_merged`
+        # (`lanes.prreview.review_mode`), and may leave what the untouched text says of a supplier: it
+        # records nothing, and the check round follows its acceptance.
+        whole = not (inputs["rereview"] or dispute) and not (p.review_changes_of_merged and folder in on_main)
+        if extra.get("supplier_check") or whole:
             if on_now := merged_suppliers([leaf]).get(leaf):
                 inputs["suppliers_read"] = on_now
         # A pass before the final review, or the final review after the passes: a full review on the
@@ -3647,7 +3651,8 @@ def gap_suppliers(ctx, names: list[str], batch: int, known: dict[str, set[str] |
 def suppliers_due(ours: list[Job], on_main: list[str]) -> list[str]:
     """The suppliers of a roadmap folder's declared gaps that are on the base branch (`on_main`) and that
     no review of the folder read there: a round records the suppliers on the base branch when it was
-    filed (`suppliers_read`) when it reads the whole folder or checks the supplier contracts; a round
+    filed (`suppliers_read`) when it reads the whole folder (not a review of the change to a roadmap on
+    the base branch, `review_changes_of_merged`) or checks the supplier contracts; a round
     closed as superseded read nothing. A folder none of whose rounds has the record (they predate it) is
     due for every supplier on the base branch: nothing says a review read the merged supplier.
     2026-11-13: a roadmap accepted two days before its only gap supplier merged kept saying that its
