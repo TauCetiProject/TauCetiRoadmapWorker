@@ -524,6 +524,39 @@ def test_the_first_rounds_of_a_pool_pull_request_are_passes_before_the_final_rev
     assert job.inputs["previous_job"] == "PRREVIEW-Foo~3"
 
 
+def test_a_pass_that_asked_for_nothing_brings_the_final_review_when_the_head_moved_in_another_folder():
+    """A repair of one roadmap folder moves the head for all of them. A folder whose pass asked for
+    nothing, and which holds the files that pass read, gets its final review at the new head."""
+    def passed(status="accepted"):
+        foo = review_job(41, 1, 1164, H1, "done", folder="Foo")
+        foo.inputs["pre"] = True
+        bar = review_job(42, 1, 1164, H1, "claimed", name="Bar", folder="Bar")     # under way: no round of Bar
+        return foo, bar, verdict_file(foo, status, H1)
+    moved_elsewhere = {(H1, "TauCetiRoadmap/Foo"): "foo", (H2, "TauCetiRoadmap/Foo"): "foo"}
+    foo, bar, files = passed()
+    out, fake = sync(ContentGH([two_folder_pr(H2)], files=files, trees=moved_elsewhere), [foo, bar], **PASSES)
+    [(job, _state, _p)] = fake.created
+    assert (job.id, job.inputs["head"], job.inputs["rereview"]) == ("PRREVIEW-Foo~2", H2, False)
+    assert "pre" not in job.inputs and job.requires_model == ""
+    assert out == ["#1164: PRREVIEW-Foo~2 created (the final review, after 1 pass)"]
+    # The folder's own files changed since the pass (its repair, or an edit): another pass, as before.
+    foo, bar, files = passed()
+    _out, fake = sync(ContentGH([two_folder_pr(H2)], files=files), [foo, bar], **PASSES)
+    assert fake.created[0][0].inputs.get("pre") is True
+    # A pass that asked for changes and whose folder did not move (no repair was made) gets another pass.
+    foo, bar, files = passed("needs_changes")
+    _out, fake = sync(ContentGH([two_folder_pr(H2)], files=files, trees=moved_elsewhere), [foo, bar], **PASSES)
+    assert fake.created[0][0].inputs.get("pre") is True
+    # Trees GitHub did not give, or the folder rule switched off: another pass.
+    foo, bar, files = passed()
+    _out, fake = sync(ContentGH([two_folder_pr(H2)], files=files, trees=moved_elsewhere), [foo, bar],
+                      carry_unchanged_folders=False, **PASSES)
+    assert fake.created[0][0].inputs.get("pre") is True
+    foo, bar, files = passed()
+    assert intake.passed_folders(SimpleNamespace(cfg=example_config(), gh=ContentGH(files=files, trees="unread")),
+                                 REPO, H2, ["Foo"], [foo], None, 5) == set()
+
+
 def test_a_pass_verdict_never_accepts_or_settles():
     review = {"status": "accepted", "head": H1, "carried": {"head": H2}, "findings": 0}
     assert intake.pass_verdict(review) == {"status": "passed", "head": H1, "findings": 0, "pre": True}

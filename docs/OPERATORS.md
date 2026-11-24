@@ -903,7 +903,10 @@ read as `passed` where it accepts and without the record of a P3-only repair (`i
 nothing is labelled, settled or carried on it, and the lane leaves the label alone and says in its comment
 that the final review follows. When a pass leaves the head where it was (it asked for nothing, or its points
 were answered without a push), or after `pre_passes` of them, the next round is the final review: a full
-review on the lane's review models, which alone decides `label`. Once a review model has reviewed a folder
+review on the lane's review models, which alone decides `label`. On a pull request with several roadmap
+folders the head also moves when another folder is repaired or the base branch is merged; with
+`carry_unchanged_folders`, a folder whose latest pass asked for nothing and which still holds the files
+that pass read gets its final review at the new head, not another pass (`intake.passed_folders`). Once a review model has reviewed a folder
 every later round of it is final (`intake.review_stage`), so pull requests reviewed before the setting was
 turned on are unchanged; another author's pull request gets no pass, since nobody repairs it between the two
 reviewers. A worker takes passes when it runs the pass model on the `prreview` lane (`--model`); a review
