@@ -360,10 +360,36 @@ def named_job(base: Context, job_id: str, only: tuple[str, ...] | None, jobs: li
 
 
 ORIGINS_TTL = 30 * 60      # seconds one reading of the whole board's origins is reused by the workers of a host
+ORIGINS_RETRY = 5 * 60     # seconds after a reading that failed before a worker of the host tries again
 
 
 def origins_path(ctx: Context) -> Path:
     return ctx.state / "board-origins.json"
+
+
+def kept_origins(path: Path, now=time.time) -> tuple[dict[str, str], float | None, float | None]:
+    """(the origins of the reading kept in `path`, its age in seconds, the seconds since a reading last
+    failed): an age of None when there is no usable reading, a None last when none is recorded."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        kept, at = dict(data["origins"]), float(data["at"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}, None, None
+    try:
+        failed = now() - float(data["failed"])
+    except (KeyError, TypeError, ValueError):
+        failed = None
+    return kept, (now() - at if at else None), failed
+
+
+def keep_origins(path: Path, data: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except (OSError, AttributeError):
+        pass
 
 
 def board_origins(ctx: Context, jobs: list[Job], now=time.time) -> dict[str, str]:
@@ -374,29 +400,55 @@ def board_origins(ctx: Context, jobs: list[Job], now=time.time) -> dict[str, str
     quota on listings. One reading is kept in `<state>/board-origins.json` and reused by every
     worker of the host for ORIGINS_TTL: an origin does not change once it is set, and a roadmap
     newer than the reading ranks as imported until the next one. A reading that fails leaves the
-    older one in use; a state directory that cannot be written costs a reading a round, as before."""
+    older one in use; a state directory that cannot be written costs a reading a round, as before.
+
+    One worker of the host reads at a time (a lock beside the file, never waited for: the others rank
+    with the older reading meanwhile), and after a reading that failed none tries again for
+    ORIGINS_RETRY. 2026-11-24: a board of 22,000 issues is 220 pages a reading; when the kept reading
+    ran out, the workers that started a round in the minutes one reading takes each made their own,
+    and once GitHub's limit was hit every reading failed part-way and every round began another: nine
+    workers spent the hour's quota of the App and then of the operator on listings."""
     known = board.origins(jobs)
     if all(board.origin_of(j, known) for j in jobs):
         return known
-    path, kept, age = None, {}, None
     try:
         path = origins_path(ctx)
-        data = json.loads(path.read_text(encoding="utf-8"))
-        kept, age = dict(data["origins"]), now() - float(data["at"])
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        pass
-    if age is None or not 0 <= age < ORIGINS_TTL:
+    except AttributeError:
+        path = None
+    kept, age, failed = kept_origins(path, now) if path is not None else ({}, None, None)
+
+    def due(age: float | None, failed: float | None) -> bool:
+        return (age is None or not 0 <= age < ORIGINS_TTL) and not (failed is not None and 0 <= failed < ORIGINS_RETRY)
+
+    if not due(age, failed):
+        return {**kept, **known}
+    lock = None
+    try:
+        if path is not None:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                lock = open(path.with_name(path.name + ".lock"), "a", encoding="utf-8")      # noqa: SIM115
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {**kept, **known}            # another worker of the host is reading the board now
+            except OSError:
+                lock = None                         # no lock can be had here: a reading a round, as before
+            else:
+                kept, age, failed = kept_origins(path, now)      # a reading that ended while this one was deciding
+                if not due(age, failed):
+                    return {**kept, **known}
         try:
-            kept = board.origins(ctx.board.all_jobs())
+            read = board.origins(ctx.board.all_jobs())
         except (GHError, AttributeError):
+            if path is not None:
+                keep_origins(path, {"at": (now() - age) if age is not None else 0, "origins": kept, "failed": now()})
             return {**kept, **known}
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-            tmp.write_text(json.dumps({"at": now(), "origins": kept}) + "\n", encoding="utf-8")
-            os.replace(tmp, path)
-        except (OSError, AttributeError):
-            pass
+        kept = read
+        if path is not None:
+            keep_origins(path, {"at": now(), "origins": kept})
+    finally:
+        if lock is not None:
+            lock.close()
     return {**kept, **known}
 
 
