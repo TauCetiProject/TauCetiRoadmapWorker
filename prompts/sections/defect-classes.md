@@ -39,13 +39,21 @@ hit is a finding, a small correction or a format note is decided by what it does
    the junk value matters; `ULift` used to move morphisms where objects had to change universe.
 10. **Source locators**: the wrong chapter or page, a source whose hypothesis the target drops, a
     misprint in the source copied into the roadmap, a locator into a text that does not contain the
-    statement, a survey cited for a theorem that needs the primary source.
+    statement, a survey cited for a theorem that needs the primary source; a locator only the
+    worker can resolve (`<source id> line N` of its text extraction) in the README or a docstring,
+    or a line number of a library file after a declaration's name (it drifts with the next commit):
+    the repair is the source's own number or page, and the declaration's name and file alone.
 11. **Build order**: a target that needs a later one, a layer-level dependency that creates a
-    coarse cycle, one `*Needs:*` line covering several theorems with different needs.
+    coarse cycle, one `*Needs:*` line covering several theorems with different needs; a target
+    whose statement, proof plan or Check uses a section its `*Needs:*` line does not list (a
+    forward reference is listed when it creates no cycle, or marked as used by the Check only).
 12. **Policy**: process words or pull-request numbers in the README or docstrings, `lemma`, a target
     without a locator, a `set_option`, an edit outside the roadmap folder.
 13. **Overclaims in prose**: "every", "canonical", "unique", "for any scheme" where the source
-    proves less; a scope paragraph that excludes something the proof plan then uses.
+    proves less; a scope paragraph that excludes something the proof plan then uses; ownership
+    given to a roadmap that does not exist ("Part II owns …" when Part II is neither on main, nor
+    an open pull request, nor a package on the board): say that it is outside this roadmap and
+    planned, and what the planned roadmap would still need that nobody owns.
 14. **Upward dependency**: a `*Needs:*`, supplier-table or "Supplied by" citation of a roadmap later
     in the merge order, or two roadmaps citing each other. Repair by repointing to the earliest
     owner or moving the consumed target down.

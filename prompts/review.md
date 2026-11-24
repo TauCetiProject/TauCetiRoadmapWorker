@@ -119,7 +119,9 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
    available. A declaration that closes that way, restates a definition, mirrors a README Check,
    computes a small value or treats a boundary case is padding: report it as a small correction with
    the repair "delete it from `Suggested.lean`" (the README keeps the statement), never as "prove it
-   in place".
+   in place". Then, for a design as for a package, the downstream-use check (the section of that
+   name below): the statements the roadmap exists for, clause by clause, against the README, the
+   Lean file where there is one and the suppliers as they are now.
 8. **Copyright, licences and scope** (the section of that name below). The wording against the
    sources, the arrangement against the table of contents of the source cited most, and reuse: each
    is a finding as that section says. Close with the line `Source independence:` and the line
@@ -182,6 +184,8 @@ nowhere); the merge order `__ORDER__`; the pinned libraries: __LIBRARY__.
 <!-- include: sections/gaps-and-order.md -->
 
 <!-- include: sections/adversarial.md -->
+
+<!-- include: sections/downstream.md -->
 
 <!-- include: sections/defect-classes.md -->
 
