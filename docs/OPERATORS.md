@@ -1884,11 +1884,15 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    mark to its end, and the window after it starts there exactly (it is past the search index's lag). So
    dense updates and ties cannot hold the mark, on either forge, whatever order the listing has; only more
    than three pages updated within one second are passed with a warning (`some may be missed`).
+   A read that is not whole is a failed read and moves no mark: GitHub's `incomplete_results` (its search
+   timed out on part of the index), a Forgejo answer that is not a list (an error object, a proxy's page)
+   or a page shorter than both its limit and the instance's `X-Total-Count`; the step says the search
+   failed and the next run reads the same window again.
 2. A merged pull request counts from anyone; GitHub's `merged_at` and Forgejo's `merged` are merged. A
    bors merge is a pull request closed and titled `[Merged by Bors] - `, which its author can also do by
    hand: it counts as merged only when a merge-queue account closed it (`[reports] merge_bots`, default
    `tauceti-queue[bot]`, read from GitHub's `closed_by`; `forgejo_merge_bots`, read from the last `close`
-   event of the Forgejo timeline), else it is a pull request closed unmerged (`titled as a bors merge, but
+   event of the Forgejo timeline, three pages at most: a longer timeline is a closer not read), else it is a pull request closed unmerged (`titled as a bors merge, but
    not closed by a merge-queue account`); a closer that cannot be read leaves the source for a later run.
    A verified merge is kept in the register (`merges`), and so is a refusal, for the revision of the pull
    request it read (`not_merges`: its update time), so each costs one read, at most twenty a run, and pull
@@ -1932,7 +1936,7 @@ block behind a fence longer than any it holds, with no HTML comment left in it, 
 mention anyone, link an issue, close its quoting or carry a marker the board reads.
 
 The register, `reports/register.json` on the board's main, is the step's only state (the hosted workflow
-keeps none between runs): `{"version": 1, "roadmaps": {"<roadmap>": [{"job", "file", "anchor", "kind",
+keeps none between runs; a register GitHub does not serve, for any reason but a 404, skips the step): `{"version": 1, "roadmaps": {"<roadmap>": [{"job", "file", "anchor", "kind",
 "effect", "state", "sources", "refutes", "replaces", "evidence"}]}, "scanned": {"github": ...,
 "forgejo": ...}, "merges": {"<url>": "<closer>"}, "not_merges": {"<url>": "<updated>"}, "retry": [{"url",
 "forge"}]}` (`scanned` also holds `<forge>-until`, the end of a narrowed window, and `<forge>-exact`), the

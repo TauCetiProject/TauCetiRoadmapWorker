@@ -216,7 +216,9 @@ checkout, submits a PR to the board, and the intake advances the state.
     evidence) is what the report and its open job carry; a report whose text main no longer
     holds is recorded as fixed and files nothing, and an open report is fixed, its job done, once its
     text leaves main. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
-    `rejected`, `fixed`), which the library's workers read so as not to report one twice. The job's text
+    `rejected`, `fixed`), which the library's workers read so as not to report one twice. A read that is
+    not whole (an incomplete search, an error object or a cut page of a listing, a register GitHub does not
+    serve) is a failed read: it moves no mark and decides nothing, and the next run reads again. The job's text
     is the board's own; the worker's prose is quoted as data. No lane takes the kind yet (section 8):
     no worker lists, claims or runs a REPORT job, and a human answers it with a roadmap pull request.
 

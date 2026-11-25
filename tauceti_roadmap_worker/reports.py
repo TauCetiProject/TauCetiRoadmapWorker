@@ -41,6 +41,7 @@ prose quoted in a code block.
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import json
 import re
@@ -283,9 +284,11 @@ def fetch_source(ctx, forge: str, url: str) -> Source | str | None:
     number = Source(forge, url, "", False, False, "").number
     if forge == GITHUB:
         try:
-            item = ctx.gh.api(f"repos/{library}/issues/{number}") or {}
+            item = ctx.gh.api(f"repos/{library}/issues/{number}")
         except GHError as exc:
-            return "gone" if "404" in str(exc) else None
+            return "gone" if NOT_FOUND.search(str(exc)) else None     # never the 404 of `issues/404`
+        if not isinstance(item, dict) or item.get("number") != number:
+            return None                        # not the issue asked for: nothing is known of it
         source = source_of(GITHUB, item, f"https://github.com/{library}/")
         if source is not None:
             if item.get("state") == "closed":
@@ -301,8 +304,8 @@ def fetch_source(ctx, forge: str, url: str) -> Source | str | None:
         item = json.loads(got.body.decode("utf-8")) if got.status == 200 else None
     except (fetcher.FetchError, ValueError):
         return None
-    if not isinstance(item, dict):
-        return None
+    if not isinstance(item, dict) or item.get("number") != number:
+        return None                            # an error object (a proxy's, say) is no answer about the issue
     return source_of(FORGEJO, item, f"{base}/{repo}/") or "gone"
 
 
@@ -334,7 +337,7 @@ def closer(ctx, source: Source) -> str | None:
                       if isinstance(e, dict) and e.get("type") == "close"), found)
         if len(events) < 50:
             return found
-    return found
+    return None                 # more events than the pages read: a later `close` may be another account's
 
 
 def verify_merge(ctx, data: dict, run: Run, source: Source) -> bool | None:
@@ -424,7 +427,13 @@ def github_sources(gh, repo: str, lower: str, upper: str = "", pages: int = PAGE
     for page in range(1, pages + 1):
         data = gh.api("search/issues?" + urlencode({"q": q, "sort": "updated", "order": "asc", "per_page": 100,
                                                     "page": page})) or {}
-        items = data.get("items") or []
+        if data.get("incomplete_results"):
+            # GitHub's search timed out on some shards: the page may lack pull requests of the window, and
+            # nothing tells which. The window is read again whole next run; its mark does not move.
+            raise GHError(f"search/issues: incomplete results for {q!r} (page {page})")
+        items = data.get("items")
+        if not isinstance(items, list):
+            raise GHError(f"search/issues: no list of items for {q!r} (page {page})")
         out += [s for s in (source_of(GITHUB, i, f"https://github.com/{repo}/") for i in items) if s]
         if len(items) < 100:
             break
@@ -454,7 +463,15 @@ def forgejo_sources(transport, base: str, repo: str, lower: str, upper: str = ""
             items = json.loads(got.body.decode("utf-8"))
         except ValueError as exc:
             raise fetcher.FetchError(f"{url}: not JSON", permanent=False) from exc
-        items = items if isinstance(items, list) else []
+        if not isinstance(items, list):
+            # A proxy's or the instance's error object parses as JSON too: it is no empty page.
+            raise fetcher.FetchError(f"{url}: not a list of issues", permanent=False)
+        total = got.headers.get("x-total-count", "")
+        left = int(total) - (page - 1) * FORGEJO_LIMIT if total.isdigit() else 0
+        if len(items) < min(left, FORGEJO_LIMIT):
+            # A page shorter than both the limit and what the instance counts for the query (its X-Total-Count)
+            # was cut short: without the count, a cut page would read as the last one and the mark would move.
+            raise fetcher.FetchError(f"{url}: {len(items)} issues on page {page} of {total}", permanent=False)
         out += [s for s in (source_of(FORGEJO, i, f"{base}/{repo}/") for i in items if isinstance(i, dict)) if s]
         if len(items) < FORGEJO_LIMIT:
             break
@@ -653,6 +670,33 @@ def reporter(ctx, source: Source) -> bool | None:
     return ok
 
 
+NOT_FOUND = re.compile(r"\bHTTP 404\b")     # the status GitHub answers, never a 404 inside a path or a sha
+
+
+def read_register(ctx, repo: str) -> tuple[dict, str | None]:
+    """The register and its blob sha: ({}, None) only when GitHub says the file is not there (HTTP 404).
+    Any other failure raises GHError: a register that could not be read is not an empty one (a run that took
+    it for empty would file every report again as new, and its write, lacking the sha, would be refused only
+    after the jobs were filed). A file over 1 MB comes without content and is read by its blob sha."""
+    try:
+        current = ctx.gh.api(f"repos/{repo}/contents/{REGISTER}")
+    except GHError as exc:
+        if NOT_FOUND.search(str(exc)):
+            return {}, None
+        raise
+    try:
+        sha = current["sha"]
+        raw = base64.b64decode(current["content"]) if current.get("content") else b""
+        if not raw and sha:
+            raw = base64.b64decode(ctx.gh.api(f"repos/{repo}/git/blobs/{sha}")["content"])
+        data = json.loads(raw.decode("utf-8"))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GHError(f"{REGISTER}: unreadable ({type(exc).__name__})") from exc
+    if not isinstance(data, dict):
+        raise GHError(f"{REGISTER}: not a JSON object")
+    return data, sha
+
+
 def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
     """`board sync`: harvest the roadmap reports of the library and keep the register (module doc)."""
     cfg = ctx.cfg
@@ -661,7 +705,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
         return []
     run, now_s = Run(), stamp(now)
     board_repo = cfg.repositories.board_repo()
-    data, sha = errata._read_json(ctx, board_repo, REGISTER)
+    data, sha = read_register(ctx, board_repo)
     if data and data.get("version") != 1:
         return [f"reports: {REGISTER} is not version 1; nothing done"]
     data.setdefault("version", 1)

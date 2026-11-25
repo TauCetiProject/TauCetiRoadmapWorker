@@ -172,7 +172,7 @@ class ReportsGH:
         if "/contents/" in path:
             name = path.split("/contents/", 1)[1]
             if name not in self.files:
-                raise GHError(f"GET {path}: 404")
+                raise GHError(f"GET {path}: gh: Not Found (HTTP 404)")
             return {"content": base64.b64encode(self.files[name].encode()).decode(), "sha": "s-" + name}
         m = re.fullmatch(r"repos/TauCetiProject/TauCeti/issues/(\d+)", path)
         if m:
@@ -877,3 +877,94 @@ def test_queued_sources_are_served_before_newer_ones():
     ctx = context(gh, per_run=1, per_author=5)
     reports.sync_reports(ctx, now=NOW)
     assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{LIBRARY}/pull/3"]]
+
+
+# --- review round 3: partial reads are never complete answers -------------------------------------------------
+
+def test_an_incomplete_github_search_never_moves_the_mark():
+    early = item(3, body=marker(anchor="diagonal chains"), updated="2026-11-24T10:00:00Z")
+    late = item(4, body=marker(anchor="rank one"), updated="2026-11-24T10:30:00Z")
+
+    class Incomplete(WindowGH):
+        partial = True
+
+        def api(self, path, paginate=False):
+            got = super().api(path, paginate)
+            if path.startswith("search/issues?") and self.partial:
+                self.partial = False
+                return {**got, "items": [i for i in got["items"] if i["number"] == 4], "incomplete_results": True}
+            return got
+    gh = Incomplete([early, late])
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {}})
+    ctx = context(gh)
+    out = reports.sync_reports(ctx, now=NOW)
+    assert any("incomplete" in line for line in out) and ctx.board.created == []
+    assert gh.register()["scanned"]["github"] == "2026-11-24T09:00:00Z"
+    reports.sync_reports(ctx, now=NOW)
+    assert sorted(j.inputs["sources"][0] for j, _s, _p in ctx.board.created) == [f"{LIBRARY}/pull/3",
+                                                                               f"{LIBRARY}/pull/4"]
+
+
+def test_a_register_that_cannot_be_read_stops_the_step():
+    class Down(ReportsGH):
+        def api(self, path, paginate=False):
+            if path.endswith("/contents/" + reports.REGISTER):
+                raise GHError(f"GET {path}: HTTP 502")
+            return super().api(path, paginate)
+    gh = Down([item(1)])
+    ctx = context(gh)
+    with pytest.raises(GHError):
+        reports.sync_reports(ctx, now=NOW)
+    assert ctx.board.created == [] and gh.writes == []
+
+
+@pytest.mark.parametrize("body, headers", [
+    (json.dumps({"message": "upstream error"}).encode(), {}),           # an error page that parses as JSON
+    (json.dumps([item(1, base=f"{FORGEJO}/TauCetiProject/TauCeti")]).encode(), {"X-Total-Count": "7"}),   # short
+], ids=["an object, not a list", "fewer items than its total"])
+def test_a_forgejo_listing_that_is_not_whole_is_a_failure(body, headers):
+    transport = FakeTransport()
+    base = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues?type=pulls&state=all&limit=50"
+    transport.add(f"{base}&page=1&since=2026-11-24T08%3A55%3A00Z", body, headers=headers)
+    gh = ReportsGH([])
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "roadmaps": {},
+                                             "scanned": {"github": "2026-11-24T09:00:00Z", "forgejo": "2026-11-24T09:00:00Z"}})
+    out = reports.sync_reports(context(gh, transport=transport, forgejo=FORGEJO), now=NOW)
+    assert transport.requests[0] == f"{base}&page=1&since=2026-11-24T08%3A55%3A00Z"
+    assert any(line.startswith(f"reports: the Forgejo listing of {FORGEJO} failed") and "HTTP" not in line
+               for line in out)
+    assert gh.register()["scanned"]["forgejo"] == "2026-11-24T09:00:00Z"
+
+
+def test_a_closer_beyond_the_pages_read_is_unknown_not_refused():
+    transport = FakeTransport()
+    page = json.dumps([{"type": "comment", "user": {"login": "x"}}] * 50).encode()
+    for n in range(1, 11):
+        transport.add(f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues/7/timeline?limit=50&page={n}", page)
+    ctx = context(ReportsGH([]), transport=transport, forgejo=FORGEJO)
+    source = reports.Source("forgejo", f"{FORGEJO}/TauCetiProject/TauCeti/pulls/7", "a", False, False, "t", bors=True)
+    assert reports.closer(ctx, source) is None
+
+
+def test_a_queued_source_that_cannot_be_read_is_never_gone():
+    """Pull request 404 failing for another reason than a 404, and answers that are no issue, are unknown."""
+    class Flaky(ReportsGH):
+        answer = None
+
+        def api(self, path, paginate=False):
+            if path == "repos/TauCetiProject/TauCeti/issues/404":
+                if self.answer is None:
+                    raise GHError(f"GET {path}: HTTP 502")
+                return self.answer
+            return super().api(path, paginate)
+    gh = Flaky([])
+    ctx = context(gh)
+    url = f"{LIBRARY}/pull/404"
+    assert reports.fetch_source(ctx, reports.GITHUB, url) is None
+    gh.answer = {"message": "Server Error"}
+    assert reports.fetch_source(ctx, reports.GITHUB, url) is None
+    transport = FakeTransport()
+    transport.add(f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues/7", json.dumps({"message": "x"}).encode())
+    ctx = context(ReportsGH([]), transport=transport, forgejo=FORGEJO)
+    assert reports.fetch_source(ctx, reports.FORGEJO, f"{FORGEJO}/TauCetiProject/TauCeti/pulls/7") is None
