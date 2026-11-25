@@ -14,3 +14,51 @@ def test_a_settled_comment_without_an_instruction_is_not_a_review():
     body = "Thanks, the two findings are addressed at the new head; no further change requested."
     assert not replies.CHANGES.search(body)
     assert replies.SETTLED.search(body)
+
+
+REFEREE = (":robot: Claude says:\n\nAI-assisted review (Claude). What I checked: the whole README.\n\n"
+           "**Verdict: minor changes.** The mathematics I checked is right.\n\n**Requested changes**\n\n"
+           "1. **`Suggested.lean`: prototype §2.1 against the merged supplier.** Please add the definition.\n"
+           "2. **Needs lines.** §7.1 uses §4.3, which is not listed.\n\n"
+           "**Overlaps.** The boundary in §2.10 is clean once item 3 is addressed.\n")
+
+
+def test_a_referee_report_with_a_settled_phrase_inside_a_condition_is_a_review():
+    # 2026-11-19: this report was read as a note that its findings were addressed, and never answered.
+    event = replies.Event("2026-11-19T00:54:28Z", "referee", REFEREE, ref="review-1")
+    assert replies.SETTLED.search(REFEREE) and not replies.settles(REFEREE)
+    assert replies.is_review(event, {"carol"}, [])
+    assert replies.wanted_label([event], {"carol"}, "1" * 40, markers=[], housekeeping=[], approvers=[])[0] == "awaiting-author"
+    # Each reading holds on its own: the heading and the verdict ask for changes, and the condition settles nothing.
+    for body in ("**Requested changes**\n\n1. Rebase onto main.\n\nThe rest is fine; previous findings closed.",
+                 "Verdict: major changes. The earlier comments are addressed.",
+                 "The ownership line is clean once item 3 is addressed.",
+                 "I would approve once the Needs lines are fixed.",
+                 "I would approve when these are resolved.",
+                 "Once item 3 is addressed this is clean.",            # the condition opens the sentence
+                 "WHEN THESE ARE RESOLVED I would approve.",
+                 "If the second bullet is fixed, I would approve.",
+                 "I would approve once item 3 is addressed.",
+                 "The proof has a missing hypothesis. I would approve when these findings are resolved.",
+                 "Happy to approve; I will approve as soon as the two comments are addressed.",
+                 "Fine by me if the second bullet of §2.10 is resolved."):
+        assert replies.is_review(replies.Event("t", "referee", body), {"carol"}, []), body
+
+
+def test_a_settled_note_stays_settled():
+    for body in ("Thanks, the two findings are addressed at the new head; no further change requested.",
+                 "The requested changes are resolved.",
+                 "Thanks, the other finding is addressed.",
+                 "If anything else comes up I will say; previous findings closed.",
+                 "I checked the head once more; comments resolved.",
+                 "I would approve. If you rebase, nothing further is needed."):
+        assert replies.settles(body) and not replies.CHANGES.search(body), body
+        assert not replies.is_review(replies.Event("t", "referee", body), {"carol"}, []), body
+
+
+def test_a_conditional_approval_that_states_an_error_is_an_unanswered_error():
+    body = "The proof has a missing hypothesis. I would approve when these findings are resolved."
+    event = replies.Event("2026-11-24T06:00:00Z", "referee", body, ref="comment-1")
+    assert not replies.settles(body)
+    assert replies.wanted_label([event], {"carol"}, "1" * 40, markers=[], housekeeping=[], approvers=[])[0] == "awaiting-author"
+    assert [e.ref for e, _why in replies.unanswered_errors([event], {"carol"}, [], [], ["missing hypothesis"])] == ["comment-1"]

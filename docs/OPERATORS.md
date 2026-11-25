@@ -888,6 +888,33 @@ non-drafts before drafts, and the oldest first. The titles and descriptions are 
 batches (`prbatch.pull_texts`). The log reads `#N: PRREVIEW-<Leaf>~k created (a check of its title and
 description: changed since its review; dependency depth 0)`.
 
+**A supplier that merged after the acceptance** (`[prreview] supplier_checks`, off by default). An
+accepted folder is not read again when a roadmap it declares supplier gaps against reaches the base
+branch: its files did not change, so its acceptance carries, while what it says of the supplier (the
+contracts, the section numbers, what `Suggested.lean` calls not statable for want of the supplier's
+carriers) was written against a design. With the setting on:
+
+- Every round filed for a folder records the suppliers of its gaps (the `gaps` of `design/plan.json`
+  on the board's main, `intake.gap_suppliers`) that are on the base branch at that moment, as
+  `suppliers_read`, and its brief has it read what the folder says of them in the mode the lane then
+  runs it in (`lanes.prreview.supplier_scope`): a full review and a review of the change against the
+  base read all of them, the second being told that those passages are changed text; an incremental
+  re-review reads what changed since the round it follows, and is told to read as well the suppliers
+  that round did not record (`supplier_check`). The record is true whatever mode is chosen, because
+  the brief is written from it.
+- An accepted folder is due for the check round above when a gap supplier on the base branch has no
+  such record at the head its acceptance comes from or at the head now (`intake.suppliers_due`): the
+  supplier merged after those rounds were filed, or they predate the record. A round of another head
+  never counts, so a head that restores the files of an earlier acceptance is checked again. The round
+  carries `supplier_check` besides `text_check`.
+
+These rounds count within `text_per_run` and are filed in the same order; the plans are read in one
+batched pass a run, and a plan GitHub does not serve leaves the folder as it is for the run. The log
+reads `#N: PRREVIEW-<Leaf>~k created (a check against a supplier now on main: <Supplier>; dependency
+depth 0)`. A folder whose rounds have no record is due once for each supplier already on the base
+branch. (2026-11-13: QuasiregularMaps was accepted two days before its only gap supplier merged, and
+merged eight days later still saying its definitions could not be stated without it.)
+
 The fourth needs no record: a title or description that is not the text the head's latest review read,
 when that review does not accept (`intake.text_moved`: the verdict's `text` against the digest of the
 text now). An author outside the worker pool leaves no answered record and answers a review of the text
@@ -924,6 +951,7 @@ an operator files by hand at an accepted head (inputs `operator_check`) is not c
 | `approval_label` | `""` | the label the same run keeps on an accepted pull request that needs only a human approval, when given no `--approval-label` (below); empty: none |
 | `per_run` | `3` | new review jobs (one per roadmap folder) per `board sync` run, oldest pull request first |
 | `text_per_run` | `10` | of those, check rounds of an accepted head's title and description that its review did not read (above), filed last, least deep in the dependency graph first; `0` files none |
+| `supplier_checks` | `false` | a roadmap folder of an accepted pull request that declares supplier gaps gets one check round (within `text_per_run`) when the supplier of a gap has reached the base branch and no review of the folder read it there (below) |
 | `pre_passes` | `0` | passes before the final review of a pull request the pool repairs (below); `0`: none |
 | `pre_agent`, `pre_model` | `"claude"`, `""` | the family and the model the passes run on; `pre_model` is required with `pre_passes` |
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
@@ -2152,6 +2180,10 @@ reach) is not built yet.
   `targets import-intentions`; there is nothing else to do.
 * **A draft pull request**: review it on GitHub. Your comments feed the gate lane; the reply answers
   every point, and the labels flip between awaiting-author and awaiting-review. Merging is yours.
+  A long review is read as a whole: a settled phrase inside a condition ("the boundary is clean once
+  item 3 is addressed", "I would approve if ...") settles nothing, and a report with a `Requested
+  changes` heading or a verdict of minor or major changes waits for an answer whatever else it says
+  (`replies.settles`, `replies.CHANGES`).
   A review that points out errors (requested changes, an inline comment, or words such as "false" or
   "please fix") takes `ai-found-no-errors` off until it is answered; one that found no errors and asks a
   question leaves it (see the AI review section).

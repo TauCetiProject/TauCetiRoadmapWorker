@@ -307,6 +307,12 @@ class PRReview:
     # text is not the text its review read (`summary.text_digest`), filed after the other rounds, least
     # deep in the dependency graph first (0: none).
     text_per_run: int = 10
+    # Every round filed for a roadmap folder that declares supplier gaps (the `gaps` of its plan on the
+    # board) records the suppliers on the base branch then and reads what the folder says of them; an
+    # accepted folder with a gap supplier on the base branch that no round of its accepted head recorded
+    # gets one such check round against the merged supplier (`intake.suppliers_due`), counted within
+    # `text_per_run`. Off: none is filed and nothing is recorded.
+    supplier_checks: bool = False
     # Passes before the final review (0: none; with any, `pre_model` names their model, of the family
     # `pre_agent`). The first rounds of a roadmap folder of a pull request the pool repairs run on that
     # model, each ending with its repair, and never accept or settle the folder. When one leaves the

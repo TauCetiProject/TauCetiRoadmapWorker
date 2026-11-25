@@ -555,6 +555,70 @@ description longer than the quote is cut; what follows the cut is outside this c
 to them."""
 
 
+SUPPLIER_CHECK = """
+
+**This round checks the folder against suppliers that merged since its review.** The folder's files at \
+this head count as settled: the review of `{since}` accepted them, or found P3 points only that were \
+repaired since. The title and description are quoted in `{pr_text}`; apply step 8 to them as well, since \
+they may speak of the suppliers too."""
+
+SUPPLIER_SCOPE = """
+
+**Suppliers on the base branch.** This roadmap declares supplier gaps against roadmaps that have reached \
+the base branch: {suppliers}. In this round every passage of the folder that cites one of them, states a \
+contract with it (`gap:<slug>`, `What <Supplier> must provide`), names it in a `*Needs:*` line, or says \
+that a statement cannot be written without it (the module docstring of `Suggested.lean` included) counts \
+as changed text, never as untouched text, wherever it stands and whether or not the diff touches it: a \
+defect there is a finding or a small correction as in a full review, whatever an earlier review said of \
+it. Read each such passage against the supplier's README and `Suggested.lean` as they are on the base \
+branch (the roadmap repository at its main branch, in the context below):
+
+- a contract the merged supplier does not provide as stated (a missing statement, a weaker hypothesis \
+or conclusion, another section) is a finding;
+- a cited section, target or declaration that is not there under that id is a finding (supplier drift);
+- a contract the supplier now states under a Lean name is cited by that name (a small correction), so \
+that the two roadmaps use one vocabulary;
+- a headline theorem the module docstring calls not statable for want of a carrier the merged supplier's \
+`Suggested.lean` now declares: say so under `## For the human reviewers`, with the carrier's name (the \
+rule on what `Suggested.lean` may import decides whether it is stated now);
+- a sentence that speaks of the supplier as unmerged, absent or still a pull request is a small correction."""
+
+SUPPLIER_FULL = """ This roadmap declares supplier gaps against roadmaps that have reached the base \
+branch: {suppliers}. Read every passage that cites one of them, states a contract with it or says that a \
+statement cannot be written without it (the module docstring of `Suggested.lean` included) against the \
+supplier's README and `Suggested.lean` as they are on the base branch."""
+
+
+def scoped_suppliers(job: Job, mode: str) -> list[str]:
+    """The gap suppliers on the base branch that a round run in `mode` reads the folder against: those the
+    round it follows did not record in an incremental re-review (`inputs.supplier_check`), every one the
+    job records otherwise (`inputs.suppliers_read`). What the review's brief names (`supplier_scope`) and
+    what its repair may touch (`remarks_brief`) are both written from this list."""
+    check = [str(s) for s in job.inputs.get("supplier_check") or []]
+    return check if mode == "incremental" else sorted({*check, *(str(s) for s in job.inputs.get("suppliers_read") or [])})
+
+
+def supplier_scope(job: Job, extra: dict, mode: str) -> str:
+    """What the gap suppliers on the base branch add to the brief's MODE, so that a round reads what its
+    job records (`inputs.suppliers_read`, `intake.suppliers_due`) in the mode it actually runs in. A
+    review of the change against the base (`change`) and a full review read every such supplier: the
+    first is told that the passages about them are changed text (`SUPPLIER_SCOPE`), the second reads
+    them anyway and is told which they are (`SUPPLIER_FULL`). An incremental re-review reads what
+    changed since the round it follows, which read its own: it is told to read the suppliers that round
+    did not record (`inputs.supplier_check`). A check round filed for them says so first
+    (`SUPPLIER_CHECK`). '' when there is none to read."""
+    check = [str(s) for s in job.inputs.get("supplier_check") or []]
+    names = scoped_suppliers(job, mode)
+    if not names:
+        return ""
+    if mode == "full":
+        return SUPPLIER_FULL.format(suppliers=", ".join(names))
+    lead = (SUPPLIER_CHECK.format(since=str(job.inputs.get("previous_head") or "")[:7],
+                                  pr_text=extra.get("pr_text") or "the pull request's text")
+            if check and job.inputs.get("text_check") else "")
+    return lead + SUPPLIER_SCOPE.format(suppliers=", ".join(names))
+
+
 PASS_NOTE = ("This is a pass before the final review. It does not decide `{label}`: the final review, on "
              "another model, follows it.")
 
@@ -569,9 +633,9 @@ def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
         text = INCREMENTAL.format(previous=previous, since=since, lines=lines, small=small, changes=changes)
         if job.inputs.get("text_rereview"):
             text += TEXT_ROUND.format(since=since, pr_text=extra.get("pr_text") or "the pull request's text")
-        elif job.inputs.get("text_check"):
+        elif job.inputs.get("text_check") and not job.inputs.get("supplier_check"):
             text += TEXT_CHECK.format(since=since, pr_text=extra.get("pr_text") or "the pull request's text")
-        return text
+        return text + supplier_scope(job, extra, mode)
     why = ""
     if job.inputs.get("rereview"):
         why = (f"the head the previous review read, `{since}`, cannot be compared with this one" if lines is None
@@ -585,7 +649,7 @@ def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
                     "does not affect is a remark of step 2. Then review the change as below." if previous else ""))
         return CHANGE.format(base=extra.get("base_ref") or cfg.project.branch, lines=extra.get("base_lines"),
                              merge_base=str(extra.get("merge_base") or "")[:7], changes=changes, previous=first,
-                             untouched=UNTOUCHED)
+                             untouched=UNTOUCHED) + supplier_scope(job, extra, mode)
     text = "**A full review.**"
     if why:
         text += f" This re-review of a repaired head is not incremental: {why}."
@@ -595,7 +659,7 @@ def mode_text(mode: str, job: Job, cfg, extra: dict) -> str:
     if changes:
         text += (f" The change set `{changes}` is context: it shows where the author worked, and every passage is "
                  "reviewed, changed or not.")
-    return text
+    return text + supplier_scope(job, extra, mode)
 
 
 DECISIONS = """
@@ -675,12 +739,24 @@ CHANGE_REPAIR = ("**This review is of a change to a roadmap on the base branch.*
                  "leave that text as it is, and write no H section for it.")
 
 
-def remarks_brief(status: str, small: int, mode: str = "full") -> str:
+SUPPLIER_REPAIR = ("**Suppliers on the base branch.** The review read what the folder says of these roadmaps, which "
+                   "it declares supplier gaps against and which have reached the base branch, as changed text, "
+                   "although the pull request does not change it: {suppliers}. A finding or a small correction about "
+                   "a passage that cites one of them, states a contract with it, names it in a `*Needs:*` line or says "
+                   "that a statement cannot be written without it is repaired here like one about changed text, "
+                   "with an H section of its own. Every other passage the pull request did not change stays as it is.")
+
+
+def remarks_brief(status: str, small: int, mode: str = "full", suppliers: list[str] | tuple[str, ...] = ()) -> str:
     """The paragraph of the repair brief on the review's three kinds of remark: an acceptance's repair
     applies its small corrections only; a repair of findings applies the small corrections and the
     format notes too. After a review of a change (`change` mode), neither touches the untouched text a
-    remark only points at (`CHANGE_REPAIR`)."""
+    remark only points at (`CHANGE_REPAIR`), except what the folder says of the gap suppliers the review
+    was told to read as changed text (`suppliers`, the review's own list, `scoped_suppliers`): the repair
+    may change what the review could raise (`SUPPLIER_REPAIR`)."""
     after = f" {CHANGE_REPAIR}" if mode == "change" else ""
+    if after and suppliers:
+        after += " " + SUPPLIER_REPAIR.format(suppliers=", ".join(suppliers))
     if status == "accepted":
         return ("**This review accepts the head.** Apply its small corrections (C01, C02, …) and nothing else, each "
                 "in an H section of its own (`applied`, or `disputed` with the evidence); leave its format notes "
@@ -2192,7 +2268,7 @@ class PRReviewLane(Lane):
         index = family_index_changed(ctx, ws, folder) if ctx.cfg.prreview.repair_index else []
         edits_brief = "\n\n".join(x for x in (
             remarks_brief(ws.extra.get("status") or "needs_changes", ctx.cfg.prreview.small_change_lines,
-                          ws.extra.get("mode") or "full"),
+                          ws.extra.get("mode") or "full", scoped_suppliers(job, ws.extra.get("mode") or "full")),
             family_brief(index, folder), board_edits_brief(job, ctx, ws),
             description_brief(ws, pr_base(ctx, ws), f"{ctx.cfg.roadmap.active_dir}/{folder}") if with_text else "",
             summary_brief(ws) if with_text else "",

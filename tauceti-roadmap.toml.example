@@ -271,6 +271,12 @@ per_run = 3
 # no open pull request their description names), then by how deep the open pull requests they wait for
 # go, `awaiting-review` before the rest, non-drafts before drafts, oldest first. 0: none.
 text_per_run = 10
+# Supplier gaps and merged suppliers. Every round filed for a roadmap folder that declares supplier gaps
+# (the `gaps` of its plan on the board) records the suppliers on the base branch then and reads what the
+# folder says of them (contracts, `*Needs:*` lines, what `Suggested.lean` calls not statable). An accepted
+# folder with a gap supplier on the base branch that no round of its accepted head recorded gets one check
+# round against it, within `text_per_run`: once for each such supplier when the setting is first switched on.
+supplier_checks = false
 # Passes before the final review: the first rounds of a roadmap folder of a pull request the pool repairs run
 # on `pre_model` (family `pre_agent`), each ending with its repair, and never decide the label. When a pass
 # leaves the head where it was, or after `pre_passes` of them, the final review follows on the lane's review
