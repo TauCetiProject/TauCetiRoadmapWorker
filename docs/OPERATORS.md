@@ -2131,14 +2131,18 @@ labels it `[roadmap] pr_label` and awaiting-review, and adds `Pull request: #N` 
 the board. The push and the pull request are effects of the job's record: a run that stops after either
 finishes on the next attempt without running the agent again, a second push or a second pull request,
 checked against the main it was built on (its report names that commit), however far main has moved
-since. Only the rest of a submission whose pull request exists skips the collision check: a kept run that
-has not recorded its pull request first looks for one it opened and lost the answer to, open or not (taken
-up if found), and otherwise is admitted again before it opens one. The labels are an effect too, so a label write
-that fails is made by the next attempt. The run's own pull request merged, or closed unmerged, before the
-board submission finished is that effect completed, never a reason to drop the run: the content effects
-are settled (a closed pull request is not labelled), and the outcomes and `Pull request: #N` still reach
-the board, so the next sync fixes the reports (merged) or frees them (closed; rejected with the stop
-label). Only another pull request, or an open one whose head moved, supersedes the run. A
+since. A kept run is checked against one observation of its own pull request, read once per attempt:
+by its recorded number, or, when an earlier attempt pushed and lost the answer to the pull request it
+opened, by its branch (in any state). A read that fails decides nothing: the attempt fails and the run is
+kept for the next. A pull request other than the one the job names, or one whose head is not the commit
+the run pushed (somebody pushed on its branch), supersedes the run: it is dropped, nothing of it is
+submitted, and the next round starts afresh (waiting, while that pull request is open, as for any other
+that edits the folder). At the run's commit, an open pull request is the run's own (taken up if its answer
+was lost); a merged one, or one closed unmerged, is that effect completed, never a reason to drop the run:
+the content effects are settled (a closed pull request is not labelled), and the outcomes and `Pull
+request: #N` still reach the board, so the next sync fixes the reports (merged) or frees them (closed;
+rejected with the stop label). A kept run with no pull request yet is admitted again before it opens one.
+The labels are an effect too, so a label write that fails is made by the next attempt. A
 correction whose every report is declined opens no pull request. The intake merges the report as any
 submission (refusing one whose applied correction names no pull request its author opened).
 
@@ -2154,7 +2158,11 @@ closed as done, and a correction job that is done but whose issue a failed write
 correction job filed by a run whose register write failed is attached again to its confirmed reports
 (those no correction holds), before anything else, so no second round is filed beside its pull request.
 A report that comes back to main after it was fixed starts a new round with its earlier triage and
-correction kept as history (`triages`, `corrections`): neither holds back the new round's correction.
+correction kept as history (`triages`, `corrections`): neither holds back the new round's correction. A
+request to triage a report again (`triage again`) while its correction has not ended (its job available,
+blocked or running, or its pull request open) waits: the job says so once (`Asked again: ...`), the
+register keeps the request (`asked_waiting`), and the next round is filed once the correction has ended
+(merged, closed, declined or closed by hand), so a correction never loses the report it follows.
 The pull request itself is reviewed by the pull-request review, which never runs under
 the operator who opened it (its author), answered by gate rounds of that operator, and merged by a human.
 
@@ -2464,8 +2472,9 @@ reach) is not built yet.
   them; the register records its verdict. A triage that could not settle it (`needs-human`) closes its
   job with a comment quoting what is missing: answer in a comment on the issue that has a line `triage
   again` (the issue stays closed; reopening it does nothing), and `board sync` files the report's next
-  triage round, which reads your comment as data (a rejected report is asked again the same way). You meet one in `state:blocked` when the roadmap is under the completed directory, where no
-  lane works. Either way you may also correct the roadmap with a pull request on the roadmap repository
+  triage round, which reads your comment as data (a rejected report is asked again the same way; a
+  confirmed one whose correction is still under way waits until that correction ends). You meet one in
+  `state:blocked` when the roadmap is under the completed directory, where no lane works. Either way you may also correct the roadmap with a pull request on the roadmap repository
   (`board sync` closes the job once the quoted text is gone from main), or close an open job with a
   comment saying why the report is wrong (the register records it as rejected, so the library's workers do
   not file it again). With `[reports] corrections` on, a confirmed report is corrected by a `CORRECT` job;

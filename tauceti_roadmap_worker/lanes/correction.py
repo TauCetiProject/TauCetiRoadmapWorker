@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .. import board, gates, gitops, openroadmaps, prompts, references, reports, summary
 from ..board import Job
-from ..gh import GHError, transient
+from ..gh import GHError
 from .base import (
     CONTENT_PUSH,
     PR_MARKER,
@@ -188,22 +188,50 @@ class CorrectionLane(Lane):
     prompt = "correction"
 
     def reconcile(self, job: Job, ctx: Context, pending: dict) -> str:
-        """`Lane.reconcile`, except for the run's own pull request once it is merged or closed: that is the
-        run's content effect completed (`ended`), not a reason to drop the run, and the board submission goes
-        on. A pull request other than the run's, or an open one whose head moved, still supersedes it."""
+        """A kept run against one observation of its own content pull request (`observe`): by its recorded
+        number, or, when an earlier attempt pushed and lost the answer to the pull request it opened, by its
+        branch. Everything is decided from that one record, and `Lane.reconcile` is left only the board part:
+        - a pull request other than the one the job names, or whose head is not the commit the run pushed
+          (somebody pushed on its branch), supersedes the run: it is dropped, and the next round starts afresh;
+        - open, at the run's commit: the run's (taken up when its answer was lost); the submission goes on;
+        - merged or closed unmerged, at the run's commit: the content effect completed (`ended`), and the board
+          submission goes on, so the register records the pull request.
+        A read that fails decides nothing (LaneError: the run is kept for the next attempt)."""
         kept = kept_commit(pending, "content")
-        number, named = int(kept.get("pr") or 0), int(job.inputs.get("pr") or 0)
-        if number and kept.get("base") and not owes(ctx, job, CONTENT_PR) and not (named and named != number):
-            try:
-                pr = ctx.gh.api(f"repos/{ctx.cfg.repositories.content}/pulls/{number}") or {}
-            except GHError as exc:
-                if not transient(exc):
-                    raise
-                pr = {}
-            if pr.get("state") == "closed" and int(pr.get("number") or number) == number:
-                ended(ctx, job, {**pr, "number": number})
-                return super().reconcile(job, ctx, {k: v for k, v in pending.items() if k != "content"})
-        return super().reconcile(job, ctx, pending)
+        pr = self.observe(job, ctx, kept)
+        if pr is not None:
+            number, named = int(pr["number"]), int(job.inputs.get("pr") or 0)
+            head = str((pr.get("head") or {}).get("sha") or "")
+            if named and named != number:
+                return f"the job is now on #{named}, the run was for #{number}"
+            if kept.get("sha") and head != kept["sha"]:
+                return f"#{number} is at {head[:7] or 'an unknown head'}, not the {kept['sha'][:7]} the run pushed"
+            if pr.get("state") == "closed":
+                ended(ctx, job, pr)
+            else:
+                settle(ctx, job, CONTENT_PUSH)
+                settle(ctx, job, CONTENT_PR, content={"pr": number})
+        return super().reconcile(job, ctx, {k: v for k, v in pending.items() if k != "content"})
+
+    @staticmethod
+    def observe(job: Job, ctx: Context, kept: dict) -> dict | None:
+        """The run's own content pull request as GitHub has it now, read once, or None when the run has none yet
+        (nothing pushed, or pushed with no pull request opened). LaneError when it cannot be read."""
+        repo, number = ctx.cfg.repositories.content, int(kept.get("pr") or 0)
+        if ctx.gh is None or ctx.dry_run or not kept.get("sha") or (not number and owes(ctx, job, CONTENT_PUSH)):
+            return None
+        try:
+            pr = (ctx.gh.api(f"repos/{repo}/pulls/{number}") if number
+                  else own_pull(ctx, str(kept.get("branch") or "")))
+        except GHError as exc:
+            raise LaneError(f"this correction's pull request could not be read ({str(exc).splitlines()[0][:120]}); "
+                            "the run is kept for the next attempt") from exc
+        if pr is None and not number:
+            return None
+        if not isinstance(pr, dict) or (number and int(pr.get("number") or number) != number):
+            raise LaneError(f"this correction's pull request #{number} could not be read (no pull request in the "
+                            "answer); the run is kept for the next attempt")
+        return {**pr, "number": int(pr.get("number") or number)}
 
     def records_author(self, job: Job) -> bool:
         return False
@@ -220,19 +248,6 @@ class CorrectionLane(Lane):
         j = board.parse_job_id(job.id)
         branch = f"roadmap/{gitops.kebab(job.name)}-correction-{j.round}"
         pending = read_pending(ctx, job)
-        if pending is not None and owes(ctx, job, CONTENT_PR) and ctx.gh is not None and not ctx.dry_run:
-            # A kept run that has not recorded its pull request: if an earlier attempt opened it and lost the
-            # answer, it is ours and is taken up, open, merged or closed since (`ended`); otherwise the run opens
-            # one, and must be admitted again.
-            try:
-                mine = own_pull(ctx, branch)
-            except GHError as exc:
-                raise LaneError(f"whether this correction's pull request was opened could not be read "
-                                f"({str(exc).splitlines()[0][:120]})") from exc
-            if mine and mine.get("state") == "closed":
-                ended(ctx, job, mine)
-            elif mine:
-                settle(ctx, job, CONTENT_PR, content={"pr": int(mine["number"])})
         if pending is None or owes(ctx, job, CONTENT_PR):
             # Only the rest of a submission whose pull request exists skips the admission.
             try:

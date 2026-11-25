@@ -13,11 +13,11 @@ from tauceti_roadmap_worker import agents, board, gitops, intake, openroadmaps, 
 from tauceti_roadmap_worker.board import Job, new_job
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes import correction as lane_correction
-from tauceti_roadmap_worker.lanes import lane_for
+from tauceti_roadmap_worker.lanes import Context, lane_for
 from tauceti_roadmap_worker.lanes.base import LaneBlocked, LaneError, read_pending
 from tauceti_roadmap_worker.lanes.prreview import PRReviewLane
 
-from .fakes import FakeGH, FakeTransport, example_config
+from .fakes import FakeBoard, FakeGH, FakeTransport, example_config
 from .test_checkout import commit, live, needs_git  # noqa: F401 - the shared fixture
 from .test_reports import ANCHOR, LIBRARY, NOW, ReportsGH, context, item, marker
 
@@ -363,12 +363,13 @@ def test_dry_run_writes_a_complete_brief(live, tmp_path):  # noqa: F811
      ["content-push", "content-pull-request", "content-labels", "push"]),
     ("repos/TauCetiProject/TauCetiRoadmap/issues/99/labels", ["content-push", "content-pull-request"]),
 ], ids=["board submission refused", "labels refused"])
-@pytest.mark.parametrize("then", ["open", "merged", "closed"])
+@pytest.mark.parametrize("then", ["open", "merged", "closed", "unreadable, then merged", "closes while read"])
 def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(  # noqa: F811
         live, tmp_path, monkeypatch, stop, done, then):
     """(u) Between the two attempts the correction's pull request stays open, is merged, or is closed unmerged:
     either way it is this run's own, its effects are done, and the outcomes and the pull request reach the
-    board (a merge never supersedes the run that opened it)."""
+    board (a merge never supersedes the run that opened it). (z) The attempt reads its pull request once: a read
+    that fails keeps the run for the next attempt, and a close after that read never drops it."""
     ctx, _board = live
     commit(tmp_path / "origin-content", content_files(), "the roadmap")
     forks = {}
@@ -393,14 +394,22 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(  # 
     monkeypatch.setattr(agents, "run_agent", agent)
     monkeypatch.setattr(lane_correction, "open_pull_requests", lambda ctx: [])     # no other pull request
 
+    states = {"open": ["open"], "merged": ["merged"], "closed": ["closed"],
+              "unreadable, then merged": ["503", "merged"], "closes while read": ["open", "closed"]}[then]
+
     class StopsOnce(FakeGH):
         stop = True
+        reads = 0
 
         def api(self, path, paginate=False):
             if path == "repos/TauCetiProject/TauCetiRoadmap/pulls/99":      # what the next attempt reconciles with
+                self.reads += 1
+                now = states[min(self.reads, len(states)) - 1]
+                if now == "503":
+                    raise GHError("GET pulls/99: HTTP 503")
                 fork = forks["alice/TauCetiRoadmap"]
-                return {"state": "open" if then == "open" else "closed", "number": 99,
-                        "merged_at": "2026-11-24T12:00:00Z" if then == "merged" else None,
+                return {"state": "open" if now == "open" else "closed", "number": 99,
+                        "merged_at": "2026-11-24T12:00:00Z" if now == "merged" else None,
                         "head": {"label": "alice:roadmap/quadratic-form-invariants-correction-1", "sha": gitops.git(
                             fork, "rev-parse", "roadmap/quadratic-form-invariants-correction-1").strip()}}
             return super().api(path, paginate)
@@ -419,11 +428,17 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(  # 
     assert first.status == "failed" and "next attempt finishes its submission" in first.detail, first.detail
     assert read_pending(ctx, job)["done"] == done
     commit(tmp_path / "origin-content", {"TauCetiRoadmap/Other/README.md": "# Other\n"}, "unrelated work on main")
-    if then == "merged":                                     # squashed onto main by the merge
+    if "merged" in then:                                     # squashed onto main by the merge
         commit(tmp_path / "origin-content", {README: TEXT.replace("of rank one are equivalent",
                                                                  "of rank at least two are equivalent")}, "#99")
     labels_before = len([w for w in gh.writes if w[1].endswith("/issues/99/labels")])
+    if then == "unreadable, then merged":
+        with pytest.raises(LaneError, match="could not be read"):
+            lane_for(job).run(job, ctx)
+        assert read_pending(ctx, job)["done"] == done          # kept: nothing is decided on a read that failed
+    reads = gh.reads
     second = lane_for(job).run(job, ctx)
+    assert gh.reads - reads <= 1                             # one observation of the pull request an attempt
 
     assert second.status == "submitted", second.detail
     assert len(runs) == 1                                    # the agent ran once
@@ -433,7 +448,7 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(  # 
     assert content_prs[0]["head"] == "alice:roadmap/quadratic-form-invariants-correction-1"
     assert "Validation:" in content_prs[0]["body"] and '"job": "CORRECT-QuadraticFormInvariants~1"' in content_prs[0]["body"]
     labelled = [w for w in gh.writes if w[1].endswith("/issues/99/labels")]
-    if then == "open" or "labels" not in stop:
+    if then in ("open", "closes while read") or "labels" not in stop:
         assert labelled == [("POST", "repos/TauCetiProject/TauCetiRoadmap/issues/99/labels",
                              {"labels": ["roadmap-worker", "awaiting-review"]})]
     else:
@@ -620,56 +635,53 @@ def test_a_kept_run_with_no_pull_request_yet_checks_for_collisions_again(live, t
     assert not [w for w in gh.writes if w[1] == "repos/TauCetiProject/TauCetiRoadmap/pulls"]
 
 
-@needs_git
-def test_a_kept_run_whose_pull_request_was_opened_takes_it_up(live, tmp_path, monkeypatch):  # noqa: F811
-    ctx, _board = live
-    commit(tmp_path / "origin-content", content_files(), "the roadmap")
+KEPT, OTHER = "a" * 40, "b" * 40            # the commit the run pushed; one somebody else pushed on its branch
+
+
+@pytest.mark.parametrize("state, merged, head, outcome", [
+    ("open", False, KEPT, "adopted"),
+    ("closed", True, KEPT, "ended"),
+    ("closed", False, KEPT, "ended"),
+    ("open", False, OTHER, "superseded"),
+    ("closed", True, OTHER, "superseded"),
+], ids=["open", "merged", "closed unmerged", "open, head moved", "merged, head moved"])
+def test_a_kept_run_whose_answer_was_lost_is_decided_by_one_observation_of_its_pull_request(
+        tmp_path, monkeypatch, state, merged, head, outcome):
+    """(u, aa) An earlier attempt pushed and opened the pull request, and lost the answer. The pull request of its
+    branch, open, merged or closed since, is the run's own only at the commit the run pushed: then its content
+    effects are taken up (no admission check, no second pull request of the branch). A head somebody else moved
+    supersedes the run, so its stale outcomes are never submitted for a head it did not check."""
+    monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
+    ctx = Context(cfg=example_config(), gh=None, board=FakeBoard(), claims=None, worker_id="w1", operator="alice",
+                  agent="codex", model="m")
     job = correction_job()
     from tauceti_roadmap_worker.lanes import base as lane_base
-    lane_base.write_pending(ctx, job, {"issue": job.number, "outstanding": ["content-pull-request", "push",
-                                                                          "pull-request", "submitted"],
-                                       "done": ["content-push"], "content": {"sha": "", "base": "", "branch": ""}})
-
-    class Opened(FakeGH):
-        def api(self, path, paginate=False):
-            if path.startswith("repos/TauCetiProject/TauCetiRoadmap/pulls?head="):
-                return [{"number": 61, "head": {"label": "alice:roadmap/quadratic-form-invariants-correction-1"}}]
-            return super().api(path, paginate)
-    monkeypatch.setattr(lane_correction, "open_pull_requests",
-                        lambda ctx: [{"pr": 61, "files": [{"path": README}]}])     # our own, its answer lost
-    ctx = dataclasses.replace(ctx, gh=Opened())
-    lane_for(job).prepare(job, ctx)
-    entry = read_pending(ctx, job)
-    assert "content-pull-request" in entry["done"] and entry["content"]["pr"] == 61
-
-
-@needs_git
-@pytest.mark.parametrize("merged", [True, False], ids=["merged", "closed unmerged"])
-def test_a_kept_run_whose_lost_pull_request_has_since_ended_takes_it_up(live, tmp_path, monkeypatch, merged):  # noqa: F811
-    """(u) An earlier attempt opened the pull request and lost the answer, and it was merged (or closed) before
-    this attempt: it is still the run's own. Its content effects are done, no collision check runs (it is not
-    open, and a new pull request of the same branch could not be opened), and the board submission is owed."""
-    ctx, _board = live
-    commit(tmp_path / "origin-content", content_files(), "the roadmap")
-    job = correction_job()
-    from tauceti_roadmap_worker.lanes import base as lane_base
+    branch = "roadmap/quadratic-form-invariants-correction-1"
     lane_base.write_pending(ctx, job, {"issue": job.number, "outstanding": [
         "content-pull-request", "content-labels", "push", "pull-request", "submitted"],
-        "done": ["content-push"], "content": {"sha": "", "base": "", "branch": ""}})
+        "done": ["content-push"], "content": {"sha": KEPT, "base": "c" * 40, "branch": branch}})
 
-    class Ended(FakeGH):
+    class Lost(FakeGH):
+        reads = 0
+
         def api(self, path, paginate=False):
-            if path.startswith("repos/TauCetiProject/TauCetiRoadmap/pulls?head=alice:roadmap/quadratic-form-"
-                               "invariants-correction-1&state=all"):
-                return [{"number": 61, "state": "closed", "merged_at": "2026-11-24T12:00:00Z" if merged else None,
-                         "head": {"label": "alice:roadmap/quadratic-form-invariants-correction-1"}}]
+            if path.startswith(f"repos/TauCetiProject/TauCetiRoadmap/pulls?head=alice:{branch}&state=all"):
+                self.reads += 1
+                return [{"number": 61, "state": state, "merged_at": "2026-11-24T12:00:00Z" if merged else None,
+                         "head": {"label": f"alice:{branch}", "sha": head}}]
             return super().api(path, paginate)
     monkeypatch.setattr(lane_correction, "open_pull_requests", lambda ctx: pytest.fail("an admission check ran"))
-    ctx = dataclasses.replace(ctx, gh=Ended())
-    lane_for(job).prepare(job, ctx)
+    ctx = dataclasses.replace(ctx, gh=Lost())
+    dropped = lane_for(job).reconcile(job, ctx, read_pending(ctx, job))
     entry = read_pending(ctx, job)
-    assert entry["content"]["pr"] == 61 and entry["outstanding"] == ["push", "pull-request", "submitted"]
-    assert not [w for w in ctx.gh.writes if "TauCetiRoadmap/" in w[1]]
+    assert ctx.gh.reads == 1 and not ctx.gh.writes
+    if outcome == "superseded":
+        assert dropped == f"#61 is at {head[:7]}, not the {KEPT[:7]} the run pushed"
+        assert "content-pull-request" in entry["outstanding"]
+    else:
+        assert dropped == "" and entry["content"]["pr"] == 61
+        assert entry["outstanding"] == (["content-labels", "push", "pull-request", "submitted"] if outcome == "adopted"
+                                        else ["push", "pull-request", "submitted"])
 
 
 @needs_git
@@ -684,3 +696,46 @@ def test_an_answer_without_the_repository_opens_nothing(live, tmp_path):  # noqa
     job = correction_job()
     with pytest.raises(LaneError, match="the open roadmap pull requests could not be read"):
         lane_for(job).prepare(job, ctx)
+
+
+class IssueBodyGH(PullsGH):
+    """With the board's issue of the REPORT job (its body, which the next round quotes)."""
+
+    def api(self, path, paginate=False):
+        if path == "repos/TauCetiProject/TauCetiRoadmapJobs/issues/7":
+            return {"number": 7, "body": ""}
+        return super().api(path, paginate)
+
+
+def test_a_request_to_triage_again_waits_for_a_correction_in_flight():
+    """(bb) A confirmed report whose correction is still available (or blocked, or its pull request open) is not
+    triaged again under it: the request waits, said once on the job, and is served when the correction ends, so the
+    correction never loses its report."""
+    gh = IssueBodyGH([], main=dict(MAIN))
+    register(gh, entry(correction={"job": CJOB}))
+    report = new_job(RJOB, inputs={**{k: v for k, v in entry().items() if k in reports.SPEC_FIELDS},
+                                   "roadmap": "QuadraticFormInvariants", "file": "README.md", "anchor": ANCHOR,
+                                   "roadmap_sha": "a" * 40})
+    report.number, report.state, report.closed = 7, "done", True
+    ask = {"id": 4242, "user": {"login": "maintainer"}, "author_association": "MEMBER",
+           "html_url": "https://example.invalid/7#issuecomment-4242", "body": "Rank one is fine.\n\ntriage again"}
+    ctx = context(gh, jobs=[report, correction_job()], corrections=True)
+    ctx.board.threads = {7: [ask]}
+    report.comments = 1
+    out = reports.sync_reports(ctx, now=NOW)
+    assert [j.id for j, _s, _p in ctx.board.created] == []
+    [e] = entries_of(gh)
+    assert e["correction"] == {"job": CJOB} and e["asked_waiting"]["id"] == 4242
+    assert any(f"reports: {RJOB}: a human asked for another triage; it waits for {CJOB}" in x for x in out)
+    waits = [b for n, b in ctx.board.posted if n == 7 and b.startswith("Asked again: ")]
+    reports.sync_reports(ctx, now=NOW)
+    assert len([b for n, b in ctx.board.posted if n == 7 and b.startswith("Asked again: ")]) == len(waits) == 1
+    # The correction ends (declined): the request is served, once, and the correction is history.
+    register(gh, entry(correction={"job": CJOB, "declined": "a new layer is needed"},
+                       asked_waiting=e["asked_waiting"], asked_seen=e.get("asked_seen")))
+    reports.sync_reports(ctx, now=NOW)
+    [(new, _s, _p)] = ctx.board.created
+    assert new.id == RJOB.replace("~1", "~2") and new.inputs["asked"] == 4242
+    [e] = entries_of(gh)
+    assert e["job"] == new.id and "correction" not in e and e["corrections"][0]["declined"]
+    assert "asked_waiting" not in e

@@ -1469,7 +1469,9 @@ def ask_again(ctx, run: Run, jobs: dict, known: dict) -> None:
     with that comment's id in its spec (`asked`) and the earlier rounds named (`previous`). The entry moves
     to the new round, so the old job's comments are never read for a request again: each round is asked for
     once. A job's comments are read only when its issue's `updated_at` (from the listing) is not the one of the
-    last read (`asked_seen`): a new comment and an edited one both move it; comments that cannot be read decide nothing."""
+    last read (`asked_seen`): a new comment and an edited one both move it; comments that cannot be read decide nothing. While the
+    report's correction has not ended (`in_flight`), the request waits (`asked_waiting`, said once on the job)
+    and is served when it ends."""
     cfg = ctx.cfg
     bots = {b.lower() for b in cfg.board.bot_logins}
     trusted = set(cfg.sources.answer_associations)
@@ -1479,19 +1481,32 @@ def ask_again(ctx, run: Run, jobs: dict, known: dict) -> None:
             continue
         if (entry.get("triage") or {}).get("job") != job.id:
             continue                          # its verdict is not recorded yet
-        seen = [job.id, job.updated]
-        if entry.get("asked_seen") == seen:
-            continue
-        try:
-            comments = ctx.board.comments(job.number) or []
-        except GHError:
-            continue
-        request = next((c for c in comments if ASK.search(str(c.get("body") or ""))
-                        and c.get("author_association") in trusted
-                        and str((c.get("user") or {}).get("login") or "").lower() not in bots), None)
+        request = entry.get("asked_waiting")
         if request is None:
-            entry["asked_seen"] = seen
-            run.changed.append(f"{job.id} comments read")
+            seen = [job.id, job.updated]
+            if entry.get("asked_seen") == seen:
+                continue
+            try:
+                comments = ctx.board.comments(job.number) or []
+            except GHError:
+                continue
+            found = next((c for c in comments if ASK.search(str(c.get("body") or ""))
+                          and c.get("author_association") in trusted
+                          and str((c.get("user") or {}).get("login") or "").lower() not in bots), None)
+            if found is None:
+                entry["asked_seen"] = seen
+                run.changed.append(f"{job.id} comments read")
+                continue
+            request = {"id": int(found.get("id") or 0), "html_url": str(found.get("html_url") or "")}
+        flight = in_flight(entry)
+        if flight:
+            # The report's correction has not ended: a new round now would leave it with no report to follow.
+            if entry.get("asked_waiting") != request and not ctx.dry_run:
+                entry["asked_waiting"] = request
+                run.changed.append(f"{job.id} asked again; waits for {flight}")
+                comment_once(ctx, job, f"Asked again: the next triage round is filed once `{flight}` has ended (its "
+                                       "pull request merged or closed, or the correction declined or closed by hand).")
+            run.out.append(f"reports: {job.id}: a human asked for another triage; it waits for {flight}")
             continue
         if ctx.dry_run:
             run.out.append(f"reports: {job.id}: a human asked for another triage; would file its next round (dry run)")
@@ -1503,13 +1518,22 @@ def ask_again(ctx, run: Run, jobs: dict, known: dict) -> None:
             " This round reads the earlier rounds' triages and what people wrote on their issues."))
         if new is None:
             continue
-        retire(entry)                         # the earlier round's triage and correction are history
+        retire(entry)                         # the earlier round's triage and its ended correction are history
         entry.pop("asked_seen", None)
+        entry.pop("asked_waiting", None)
         entry.update(job=new.id, state="open")
         run.changed.append(f"{new.id} filed (asked again)")
         comment_once(ctx, job, f"Triaged again as #{new.number} (`{new.id}`), as asked in "
                                f"{request.get('html_url') or 'a comment here'}.")
         run.out.append(f"reports: {job.id}: a human asked for another triage; filed {new.id} (#{new.number})")
+
+
+def in_flight(entry: dict) -> str:
+    """The correction job of the entry that has not ended yet ('' for none): one recorded with no pull request
+    merged or closed, not declined, not closed by hand (a job still available, blocked or running, or a pull
+    request still open)."""
+    c = entry.get("correction") or {}
+    return str(c.get("job") or "") if c and not {"merged", "closed", "declined", "by"} & set(c) else ""
 
 
 def next_round(ctx, jobs: dict, entry: dict, job: board.Job, lead: str, asked: int = 0) -> board.Job | None:
