@@ -16,10 +16,12 @@ with `## Evidence` and the section its verdict needs (`## Correction`, `## Reaso
 `reports.triage_problems`). It is submitted as a board pull request; the intake merges it and closes the
 job, whatever the verdict, and the next `board sync` records the verdict in the register. A job id is
 triaged once: a job whose triage is on the board's main already is not run again (it waits on that merged
-submission, which `reconcile_merged` finishes), and a triage asked again (a human reopens the finished job)
-is the report's next round, filed by `board sync`, whose inputs name the earlier rounds (`previous`): their
-triages and what people wrote on their issues. The reporter is an agent of another project, so there is no
-author to be independent of: any operator may triage.
+submission, which `reconcile_merged` finishes), and a triage asked again (a comment with a line `triage
+again` on the finished job) is the report's next round, filed by `board sync`, whose inputs name the
+earlier rounds (`previous`) and the comment that asked (`asked`): the brief quotes that comment first, then
+the other comments newest first within its bound, and `history.md` in the scratch holds them all. The
+reporter is an agent of another project, so there is no author to be independent of: any operator may
+triage.
 """
 
 from __future__ import annotations
@@ -157,8 +159,13 @@ class ReportLane(Lane):
         anchor_file = ws.scratch / "anchor.md"
         anchor_file.write_text(f"# `{place}` at `{head[:7]}`: where the reported text stands (data)\n\n"
                                + excerpt(text, spans), encoding="utf-8")
+        people, later = self.notes(job, ctx)
+        history = ws.scratch / "history.md"
+        history.write_text("# What people wrote on this report's issues, oldest first (data)\n\n"
+                           + ("\n\n---\n\n".join(text for _id, text in people) or "(nothing)") + "\n", encoding="utf-8")
         ws.extra.update(head=head, report=report, place=place, folder=folder, spans=spans, anchor_file=anchor_file,
-                        readme=folder / "README.md", prose=self.prose(job, ctx), job_notes=self.notes(job, ctx),
+                        readme=folder / "README.md", prose=self.prose(job, ctx), history=history,
+                        job_notes=(shown(people, job.inputs.get("asked"), NOTES_LIMIT, history), later),
                         decls=declaration_lines(pinned_library(ws.content),
                                                 list(dict.fromkeys([*report.refutes, *report.replaces]))))
         return ws
@@ -178,9 +185,9 @@ class ReportLane(Lane):
         return reports.quoted_prose(issue.get("body") or "")
 
     @staticmethod
-    def notes(job: Job, ctx: Context) -> tuple[str, list[str]]:
+    def notes(job: Job, ctx: Context) -> tuple[list[tuple[int, str]], list[str]]:
         """(what people other than the board wrote on the issues of the report's earlier rounds and on the job's
-        own, oldest round first (an answer to an earlier `needs-human` triage), as one text; the board's own
+        own, oldest first, as (comment id, text): an answer to an earlier triage among them; the board's own
         notes of later sources and revisions, `Reported again in ...` and `Revised in ...`). An issue whose
         comments cannot be read fails the round (LaneError, tried again): a later round's human answer is the
         reason it runs."""
@@ -199,10 +206,10 @@ class ReportLane(Lane):
                 who, body = ((c.get("user") or {}).get("login") or ""), str(c.get("body") or "")
                 if who.lower() not in bots:
                     on = f" on #{number} (`{name}`)" if name else ""
-                    people.append(f"{who or '?'} at {c.get('created_at', '?')}{on}:\n{body}")
+                    people.append((int(c.get("id") or 0), f"{who or '?'} at {c.get('created_at', '?')}{on}:\n{body}"))
                 elif body.startswith(reports.LATER_NOTES) and number == job.number:
-                    board_notes.append(body.split(reports.REOPEN.strip(), 1)[0].strip())
-        return "\n\n".join(people), board_notes
+                    board_notes.append(body.split(reports.ASK_AGAIN.strip(), 1)[0].strip())
+        return people, board_notes
 
     def missing_references(self, job: Job, ctx: Context, ws: Workspace) -> list[references.MissingReference]:
         """None: a triage never waits for a source. What it could not read is in its `## Missing`, with a
@@ -237,7 +244,8 @@ class ReportLane(Lane):
                 "PREVIOUS": ("this round was asked for by a human after the earlier round(s), whose triage(s) are on "
                              "the board's main (read them in the board checkout): " + ", ".join(earlier)
                              + "; what people wrote on their issues is below." if earlier else "none"),
-                "HUMAN_NOTES": (f"```text\n{prompts.quote_untrusted(notes, NOTES_LIMIT)}\n```" if notes else "none")}
+                "HUMAN_NOTES": (f"```text\n{prompts.quote_untrusted(notes, NOTES_LIMIT + 400)}\n```" if notes
+                                else "none")}
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
         problems = super().check(job, ctx, ws)
@@ -266,3 +274,22 @@ def previous(job: Job) -> list[dict]:
         except board.JobIdError:
             continue
     return out
+
+
+def shown(people: list[tuple[int, str]], asked, limit: int, history: Path) -> str:
+    """What the brief quotes of people's comments ('' for none): the comment that asked for this round first,
+    then the others newest first, within `limit` characters, and where the complete history is (`history`)."""
+    first = [text for cid, text in people if asked and cid == asked]
+    rest = [text for cid, text in reversed(people) if not (asked and cid == asked)]
+    out, used, left = [], 0, 0
+    for k, text in enumerate(first + rest):
+        if out and used + len(text) > limit:
+            left = len(first) + len(rest) - k
+            break
+        out.append(text[:limit])
+        used += len(out[-1]) + 2
+    if not out:
+        return ""
+    tail = (f"\n\n({left} older comment(s) not shown here: the complete history, oldest first, is `{history}`)"
+            if left else f"\n\n(the complete history, oldest first, is also in `{history}`)")
+    return "\n\n".join(out) + tail

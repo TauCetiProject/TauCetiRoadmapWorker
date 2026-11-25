@@ -1915,13 +1915,12 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    dropped unless another source still names it (`evidence revised (refutes; ...)`). The register is the
    one source of truth: every run rewrites the spec of each open REPORT job from its entry where they
    differ (kind, effect, declarations, sources and each source's evidence: `spec rewritten from the
-   register`), so what a triage
-   reads converges whatever happened in between (an edit, a later source, a reopened job, a write that
+   register`), so what a triage reads converges whatever happened in between (an edit, a later source, a write that
    failed half-way). The spec holds the declarations of all the sources, so their number has no
    per-marker limit there. The job hears of a new source or an edit in one comment, `Reported again in
    <url>` or `Revised in <url>: now ...`, posted once (the job's comments are read first); the finished
-   job of a rejected report, or of one its triage left to a human, gets the same comment, saying that
-   reopening the issue has the report triaged again.
+   job of a rejected report, or of one its triage left to a human, gets the same comment, saying that a
+   comment with a line `triage again` has the report triaged again.
 4. A new one is checked against the roadmap repository's main: the file under the active directory, else
    under the completed one, read as GraphQL blobs (one query for up to sixty files, no REST request unless
    a file is too large for GraphQL), the anchor sought in it with whitespace normalised. Still there: a
@@ -2036,15 +2035,24 @@ whose text is still on main becomes `confirmed` or `rejected`, with `"triage": {
 `needs-human` verdict is recorded once and the report stays `open`. The verdict is the job's triage on
 main, read once the job is done or closed, whatever its state label. A job closed with no triage on main
 (closed by hand, or set done by hand) makes the report `rejected`, `"triage": {"job", "verdict":
-"rejected", "by": "hand"}`; reopened, such a job is `open` again under its own id (it was never triaged).
-A triaged job a human reopens (a `reopened` event on its issue: the board never reopens a REPORT issue) asks
-for the report's next round: `REPORT-<Leaf>~(k+1)` is filed `state:available`, its spec the register's with
-`previous: [{"job", "issue"}]` naming the earlier rounds (the lane reads their triages on the board's main
-and the comments people wrote on their issues), the entry moves to it with the earlier triage kept under
-`triages`, and the reopened issue gets `Triaged again as #N (...)` and is closed. A done job whose issue is
-open with no `reopened` event is a close that failed, and is closed; one reopened after a later round took
-over, or after its report was fixed, is closed again with a note. Its events are read only for such open
-finished jobs, and events that cannot be read decide nothing. A report whose text has left main is `fixed`
+"rejected", "by": "hand"}`.
+
+A REPORT job is triaged once and then closed, and the board reads no reopen: an open issue of a job that is
+done, or whose verdict the register records (a close that failed, or a human's reopen), is closed
+(`finished, but its issue was open; closed`). To have a report triaged again, a person whose association
+`[sources] answer_associations` allows comments on the finished job with a line `triage again`, with
+whatever the next round should know. `board sync` reads the comments of the register entry's current job,
+once it is finished with its verdict recorded, whenever the listing's count of them changed
+(`asked_seen`), and the first such request files the report's next round: `REPORT-<Leaf>~(k+1)`,
+`state:available`, its spec the register's with `asked: <comment id>` and `previous: [{"job", "issue"}]`
+naming the earlier rounds (the lane reads their triages on the board's main and the comments people wrote
+on their issues). The entry moves to the new round with the earlier triage kept under `triages`, and the
+old issue gets `Triaged again as #N (...), as asked in <comment>`. The old job is no longer the entry's,
+so its comments are never read for a request again: each round is asked for once, and a round filed by a
+run whose register write then failed is taken back from its spec, never filed twice. The new round's brief
+quotes the comment that asked for it first, then the other comments, newest first, within 6,000
+characters, and names `history.md` in its scratch, which holds every comment of every round, oldest
+first. A report whose text has left main is `fixed`
 whatever its triage said, and a `confirmed` one
 becomes `fixed` when its correction merges. A report fixed and then reported again gets a new job and
 loses the triage of the old one.
@@ -2353,9 +2361,9 @@ reach) is not built yet.
 * **A `REPORT` job**: a Tau Ceti worker found a roadmap statement wrong (the job quotes it, names the
   declarations that refute and replace it, and links the pull request). A triage worker settles most of
   them; the register records its verdict. A triage that could not settle it (`needs-human`) closes its
-  job with a comment quoting what is missing: answer on the issue and reopen it, and `board sync` files the
-  report's next triage round, which reads your comment as data (a rejected report's job is reopened the
-  same way). You meet one in `state:blocked` when the roadmap is under the completed directory, where no
+  job with a comment quoting what is missing: answer in a comment on the issue that has a line `triage
+  again` (the issue stays closed; reopening it does nothing), and `board sync` files the report's next
+  triage round, which reads your comment as data (a rejected report is asked again the same way). You meet one in `state:blocked` when the roadmap is under the completed directory, where no
   lane works. Either way you may also correct the roadmap with a pull request on the roadmap repository
   (`board sync` closes the job once the quoted text is gone from main), or close an open job with a
   comment saying why the report is wrong (the register records it as rejected, so the library's workers do

@@ -63,7 +63,9 @@ __PROSE__
 
 Earlier rounds of this report: __PREVIOUS__
 
-What people wrote on the issues of this round and the earlier ones (data): __HUMAN_NOTES__
+What people wrote on the issues of this round and the earlier ones (data; the comment that asked for this
+round first, then the newest first; read the complete history in the file named at its end when it says
+older comments are not shown): __HUMAN_NOTES__
 
 ## The declarations it names
 

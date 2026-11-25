@@ -373,7 +373,7 @@ def complete_merged(ctx, job: Job, pr: dict, jobs: list[Job]) -> str:
     job becomes done last, so a run stopped on the way leaves it unfinished with its pull request
     merged, and `reconcile_merged` finishes it (the board creates no job twice). A roadmap report's triage
     releases nothing: every verdict ends the job (the next `board sync` records it in the register), and a
-    triage asked again is the report's next round, filed by `board sync` (`reports.triage_again`): a REPORT job id
+    triage asked again is the report's next round, filed by `board sync` (`reports.ask_again`): a REPORT job id
     is triaged once."""
     if job.kind == "report":
         outcome = outcome_for(ctx, job, pr, jobs)
@@ -395,14 +395,16 @@ def complete_merged(ctx, job: Job, pr: dict, jobs: list[Job]) -> str:
 
 def triage_note(ctx, job: Job, outcome: Outcome) -> str:
     """The note on a REPORT job whose triage was merged. A `needs-human` triage quotes what it lacks: a human
-    answers on the issue and reopens it, and `board sync` files the report's next round, which reads the answer."""
+    answers on the issue with a line `triage again`, and `board sync` files the report's next round, which
+    reads the answer."""
     path = reports.triage_path(ctx.cfg, job)
     if outcome.verdict == "needs-human":
         missing = reports.parse_triage(outcome.report).get("missing", "")
         return (f"Needs a human: the triage (`{path}`) could not settle this report. What it lacks, in the triage's "
-                "words:\n\n" + reports.quoted_block(missing) + "\n\nAnswer here, then reopen this issue: `board sync` "
-                "files the report's next triage round, which reads what is written here. Or correct the roadmap; "
-                f"the report stays open in `{reports.REGISTER}` meanwhile.")
+                "words:\n\n" + reports.quoted_block(missing) + "\n\nAnswer in a comment here that has a line "
+                "`triage again`: `board sync` files the report's next triage round, which reads what is written here "
+                f"(the issue stays closed). Or correct the roadmap; the report stays open in `{reports.REGISTER}` "
+                "meanwhile.")
     return (f"Triage: `{outcome.verdict}` (`{path}`). `board sync` records it in `{reports.REGISTER}`"
             + (", and the correction it states waits there for a pull request on the roadmap repository."
                if outcome.verdict == "confirmed" else "."))
@@ -419,7 +421,7 @@ def triaged_already(ctx, job: Job, report: str) -> list[str]:
             return []
         return [f"the board's main could not be read for {report} ({str(exc).splitlines()[0][:120]})"]
     return [f"{job.id} has a triage on main already ({report}): a job is triaged once, and a new triage is the "
-            "report's next round (`board sync` files it when a human reopens the job)"]
+            "report's next round (`board sync` files it when a human asks with a `triage again` comment)"]
 
 
 RECONCILE_WINDOW = 50   # the most recently closed pull requests a run looks through
