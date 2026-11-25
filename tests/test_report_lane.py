@@ -882,3 +882,83 @@ def test_a_request_added_by_editing_a_comment_is_seen(ctx):
     job.updated = "2026-11-25T09:05:00Z"
     reports.sync_reports(sync, now=NOW)
     assert [j.inputs["asked"] for j, _s, _p in sync.board.created] == [4242]
+
+
+def test_a_round_asked_again_and_recovered_keeps_each_sources_own_evidence(ctx):
+    """(ee) on this lane: a `triage again` round whose register write fails is taken back with each source's own
+    evidence, not the union of their declarations."""
+    gh = EventsGH(issue_body=ctx.gh.body, reopened=False)
+    gh.main[TRIAGE] = triage("needs-human")
+    entry = reports.new_entry(reports.parse(marker())[0][0], JOB, "open", f"{LIBRARY}/pull/6903")
+    reports.revise(entry, f"{LIBRARY}/pull/2", reports.parse(marker(refutes=["TauCeti.otherWitness"]))[0][0])
+    entry["triage"] = {"job": JOB, "verdict": "needs-human", "report": TRIAGE, "missing": "x"}
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+    job = report_job(state="done")
+    job.closed = True
+    sync = context(gh, jobs=[job])
+    sync.board.threads = asked(job, ASK)
+    write = gh.write
+    gh.write = lambda m, p, payload=None: (_ for _ in ()).throw(GHError("PUT: HTTP 502")) \
+        if p.endswith(reports.REGISTER) else write(m, p, payload)
+    with pytest.raises(GHError):
+        reports.sync_reports(sync, now=NOW)
+    [(new, _s, _p)] = sync.board.created
+    new.number, new.state = 501, "available"
+    sync.board.jobs.append(new)
+    gh.write = write
+    reports.sync_reports(sync, now=NOW)
+    e = entry_of(gh)
+    assert e["job"] == new.id and e["evidence"][f"{LIBRARY}/pull/2"]["refutes"] == ["TauCeti.otherWitness"]
+    assert e["evidence"][f"{LIBRARY}/pull/6903"]["refutes"] == ["TauCeti.exists_rankOne_equivalent_not_diagonalChain"]
+
+
+@needs_git
+@pytest.mark.parametrize("stop", ["push", "pull request"])
+@pytest.mark.parametrize("revised", [False, True], ids=["evidence unchanged", "evidence revised"])
+def test_a_resumed_triage_keeps_the_digest_of_the_brief_its_agent_read(live, tmp_path, monkeypatch, stop, revised):
+    """(ff) The first attempt stops at its push (or, past it, at the pull request); a source edit may revise the
+    job's spec before the next attempt, which finishes the kept run without the agent. The triage carries the
+    digest of the brief the agent read, never one recomputed from the revised spec: unchanged evidence is recorded,
+    revised evidence makes the sync file the next round."""
+    from tauceti_roadmap_worker.lanes import base as lane_base
+    ctx, _board_origin = live
+    commit(tmp_path / "origin-content", {README: TEXT}, "the roadmap")
+    fork, fork_repo = tmp_path / "fork.git", "alice/" + ctx.cfg.repositories.packages_repo().split("/")[1]
+    gitops.git(tmp_path, "init", "-q", "--bare", str(fork))
+    origin_url = gitops.url
+    monkeypatch.setattr(gitops, "url", lambda repo: fork.as_uri() if repo == fork_repo else origin_url(repo))
+    monkeypatch.setattr(lane_base.Lane, "sleep", staticmethod(lambda s: None))
+    runs = []
+
+    def agent(task, base_env=None):
+        runs.append(1)
+        head = gitops.git(task.workdir.parent / "content", "rev-parse", "HEAD").strip()[:7]
+        (task.workdir / TRIAGE).write_text(triage("rejected", head=head, digest=""))
+        return agents.AgentResult(exit_code=0, seconds=1.0)
+    monkeypatch.setattr(agents, "run_agent", agent)
+    real_push, refused = gitops.push, {"on": True}
+
+    def push(*a, **k):
+        if stop == "push" and refused["on"]:
+            raise gitops.PushError("git push: ! [remote rejected] (failed)")
+        return real_push(*a, **k)
+    monkeypatch.setattr(gitops, "push", push)
+
+    class Refuses(IssueGH):
+        def write(self, method, path, payload=None):
+            if stop == "pull request" and refused["on"] and path.endswith("/pulls"):
+                raise GHError("POST pulls: HTTP 502")
+            return super().write(method, path, payload)
+    ctx = dataclasses.replace(ctx, gh=Refuses(""), transport=FakeTransport())
+    job = report_job()
+    briefed = reports.evidence_digest(job.inputs)
+    assert lane_for(job).run(job, ctx).status == "failed"
+    if revised:                                           # `refresh_specs` after a source edit
+        job.inputs.update(kind="missing-hypothesis", refutes=["TauCeti.other_counterexample"])
+    refused["on"] = False
+    assert lane_for(job).run(job, ctx).status == "submitted" and runs == [1]
+    pushed = gitops.git(fork, "show", f"w1/REPORT-QuadraticFormInvariants_r1:{TRIAGE}")
+    assert reports.parse_triage(pushed)["digest"] == briefed
+    # What the sync then does with it: the digest is the entry's only when nothing was revised.
+    assert (reports.evidence_digest(job.inputs) == briefed) is (not revised)

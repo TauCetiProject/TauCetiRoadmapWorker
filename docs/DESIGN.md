@@ -244,7 +244,7 @@ checkout, submits a PR to the board, and the intake advances the state.
     line `triage again`, which `board sync` turns into the report's next round once (the comment's id in
     its spec); that round reads the earlier rounds' triages and what people wrote on their issues. A
     verdict is bound to the evidence it judged: the worker writes the digest of the report its brief
-    stated into the triage, and a verdict on evidence a source revised since is not recorded; the report's
+    stated into the triage (a stopped submission finished later keeps it), and a verdict on evidence a source revised since is not recorded; the report's
     next round is filed instead. A verdict recorded is never undone by a later revision: the job is told,
     and a human asks again if it matters.
 

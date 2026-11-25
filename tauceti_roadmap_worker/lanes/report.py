@@ -34,7 +34,8 @@ from pathlib import Path
 from .. import board, gitops, prompts, references, reports
 from ..board import Job
 from ..gh import GHError
-from .base import TEMP_ROOTS, Context, Lane, LaneBlocked, LaneError, LaneResult, Workspace, clear_pending
+from .base import (TEMP_ROOTS, Context, Lane, LaneBlocked, LaneError, LaneResult, Workspace, clear_pending,
+                   read_pending)
 
 CONTEXT_LINES = 12      # lines of the file shown around each place the anchor stands
 PROSE_LIMIT = 4000      # characters of the reporter's prose a brief quotes
@@ -163,7 +164,9 @@ class ReportLane(Lane):
         history = ws.scratch / "history.md"
         history.write_text("# What people wrote on this report's issues, oldest first (data)\n\n"
                            + ("\n\n---\n\n".join(text for _id, text in people) or "(nothing)") + "\n", encoding="utf-8")
-        ws.extra.update(evidence=reports.evidence_digest(job.inputs))           # the spec the brief shows
+        # The digest of the report the brief states, decided here once per agent run: a kept run (a submission
+        # that stopped, finished by `resume_push` without the agent) keeps the one its report carries already.
+        ws.extra.update(evidence=None if read_pending(ctx, job) else reports.evidence_digest(job.inputs))
         ws.extra.update(head=head, report=report, place=place, folder=folder, spans=spans, anchor_file=anchor_file,
                         readme=folder / "README.md", prose=self.prose(job, ctx), history=history,
                         job_notes=(shown(people, job.inputs.get("asked"), NOTES_LIMIT, history), later),
@@ -262,10 +265,13 @@ class ReportLane(Lane):
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """The report gets the digest of the report this triage was briefed on (`Evidence: <digest>`, second
-        line, written by the worker, never the agent): the sync records the verdict only for that evidence."""
-        lines = [x for x in ws.report.read_text(encoding="utf-8").split("\n") if not x.startswith("Evidence:")]
-        lines.insert(1, f"Evidence: {ws.extra['evidence']}")
-        ws.report.write_text("\n".join(lines), encoding="utf-8")
+        line, written by the worker, never the agent): the sync records the verdict only for that evidence. A kept
+        run's report is left as its first attempt wrote it, digest included."""
+        lines = ws.report.read_text(encoding="utf-8").split("\n")
+        if ws.extra["evidence"] is not None:
+            lines = [x for x in lines if not x.startswith("Evidence:")]
+            lines.insert(1, f"Evidence: {ws.extra['evidence']}")
+            ws.report.write_text("\n".join(lines), encoding="utf-8")
         verdict = reports.parse_triage("\n".join(lines))["verdict"]
         return f"triage of {job.id} at {ws.extra['head'][:7]}: {verdict}"
 
