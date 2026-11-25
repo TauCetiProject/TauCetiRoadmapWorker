@@ -589,6 +589,15 @@ statement cannot be written without it (the module docstring of `Suggested.lean`
 supplier's README and `Suggested.lean` as they are on the base branch."""
 
 
+def scoped_suppliers(job: Job, mode: str) -> list[str]:
+    """The gap suppliers on the base branch that a round run in `mode` reads the folder against: those the
+    round it follows did not record in an incremental re-review (`inputs.supplier_check`), every one the
+    job records otherwise (`inputs.suppliers_read`). What the review's brief names (`supplier_scope`) and
+    what its repair may touch (`remarks_brief`) are both written from this list."""
+    check = [str(s) for s in job.inputs.get("supplier_check") or []]
+    return check if mode == "incremental" else sorted({*check, *(str(s) for s in job.inputs.get("suppliers_read") or [])})
+
+
 def supplier_scope(job: Job, extra: dict, mode: str) -> str:
     """What the gap suppliers on the base branch add to the brief's MODE, so that a round reads what its
     job records (`inputs.suppliers_read`, `intake.suppliers_due`) in the mode it actually runs in. A
@@ -599,7 +608,7 @@ def supplier_scope(job: Job, extra: dict, mode: str) -> str:
     did not record (`inputs.supplier_check`). A check round filed for them says so first
     (`SUPPLIER_CHECK`). '' when there is none to read."""
     check = [str(s) for s in job.inputs.get("supplier_check") or []]
-    names = check if mode == "incremental" else sorted({*check, *(str(s) for s in job.inputs.get("suppliers_read") or [])})
+    names = scoped_suppliers(job, mode)
     if not names:
         return ""
     if mode == "full":
@@ -730,12 +739,24 @@ CHANGE_REPAIR = ("**This review is of a change to a roadmap on the base branch.*
                  "leave that text as it is, and write no H section for it.")
 
 
-def remarks_brief(status: str, small: int, mode: str = "full") -> str:
+SUPPLIER_REPAIR = ("**Suppliers on the base branch.** The review read what the folder says of these roadmaps, which "
+                   "it declares supplier gaps against and which have reached the base branch, as changed text, "
+                   "although the pull request does not change it: {suppliers}. A finding or a small correction about "
+                   "a passage that cites one of them, states a contract with it, names it in a `*Needs:*` line or says "
+                   "that a statement cannot be written without it is repaired here like one about changed text, "
+                   "with an H section of its own. Every other passage the pull request did not change stays as it is.")
+
+
+def remarks_brief(status: str, small: int, mode: str = "full", suppliers: list[str] | tuple[str, ...] = ()) -> str:
     """The paragraph of the repair brief on the review's three kinds of remark: an acceptance's repair
     applies its small corrections only; a repair of findings applies the small corrections and the
     format notes too. After a review of a change (`change` mode), neither touches the untouched text a
-    remark only points at (`CHANGE_REPAIR`)."""
+    remark only points at (`CHANGE_REPAIR`), except what the folder says of the gap suppliers the review
+    was told to read as changed text (`suppliers`, the review's own list, `scoped_suppliers`): the repair
+    may change what the review could raise (`SUPPLIER_REPAIR`)."""
     after = f" {CHANGE_REPAIR}" if mode == "change" else ""
+    if after and suppliers:
+        after += " " + SUPPLIER_REPAIR.format(suppliers=", ".join(suppliers))
     if status == "accepted":
         return ("**This review accepts the head.** Apply its small corrections (C01, C02, …) and nothing else, each "
                 "in an H section of its own (`applied`, or `disputed` with the evidence); leave its format notes "
@@ -2247,7 +2268,7 @@ class PRReviewLane(Lane):
         index = family_index_changed(ctx, ws, folder) if ctx.cfg.prreview.repair_index else []
         edits_brief = "\n\n".join(x for x in (
             remarks_brief(ws.extra.get("status") or "needs_changes", ctx.cfg.prreview.small_change_lines,
-                          ws.extra.get("mode") or "full"),
+                          ws.extra.get("mode") or "full", scoped_suppliers(job, ws.extra.get("mode") or "full")),
             family_brief(index, folder), board_edits_brief(job, ctx, ws),
             description_brief(ws, pr_base(ctx, ws), f"{ctx.cfg.roadmap.active_dir}/{folder}") if with_text else "",
             summary_brief(ws) if with_text else "",

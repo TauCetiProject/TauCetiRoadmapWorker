@@ -35,6 +35,9 @@ def test_a_referee_report_with_a_settled_phrase_inside_a_condition_is_a_review()
                  "The ownership line is clean once item 3 is addressed.",
                  "I would approve once the Needs lines are fixed.",
                  "I would approve when these are resolved.",
+                 "Once item 3 is addressed this is clean.",            # the condition opens the sentence
+                 "WHEN THESE ARE RESOLVED I would approve.",
+                 "If the second bullet is fixed, I would approve.",
                  "I would approve once item 3 is addressed.",
                  "The proof has a missing hypothesis. I would approve when these findings are resolved.",
                  "Happy to approve; I will approve as soon as the two comments are addressed.",

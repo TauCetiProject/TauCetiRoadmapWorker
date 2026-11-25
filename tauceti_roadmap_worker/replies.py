@@ -58,11 +58,15 @@ CHANGES = re.compile(
 CONDITIONAL = re.compile(
     r"\b(?:once|until|after|when|if|provided(?: that)?|as soon as|assuming)\b[^.;:!?\n]{0,80}?"
     r"\b(?:(?:are|is|has been|have been|gets?|being) (?:fully )?(?:addressed|resolved|fixed|repaired|done|made|applied)"
-    r"|comments? (?:addressed|resolved))")
-# An approval promised on a condition ("I would approve once …") is not an approval. Only the promise is
-# matched: the conjunction stays for `CONDITIONAL`, which removes the condition after it.
+    r"|comments? (?:addressed|resolved))", re.IGNORECASE)
+# An approval promised on a condition is not an approval, whichever comes first in the sentence. When the
+# promise comes first ("I would approve once …") only the promise is matched: the conjunction stays for
+# `CONDITIONAL`, which removes the condition after it. When the condition comes first ("If the second
+# bullet is fixed, I would approve") the clause is matched from its conjunction to the promise.
 CONDITIONAL_APPROVAL = re.compile(
-    r"\b(?:would|will|can) approve\b(?=[^.;:!?\n]{0,40}?\b(?:once|until|after|when|if|provided|as soon as|assuming)\b)")
+    r"\b(?:would|will|can) approve\b(?=[^.;:!?\n]{0,40}?\b(?:once|until|after|when|if|provided|as soon as|assuming)\b)"
+    r"|\b(?:once|until|after|when|if|provided(?: that)?|as soon as|assuming)\b[^.;:!?\n]{0,80}?\b(?:would|will|can) approve\b",
+    re.IGNORECASE)
 SETTLED = re.compile(
     r"[Nn]o further change|ready for manual approval|recommend(?:ing)? manual (?:content )?approval|accepted all|"
     r"would not request another revision|found no issues|[Nn]o remaining blocking|no blocking issue|previous findings closed|"
