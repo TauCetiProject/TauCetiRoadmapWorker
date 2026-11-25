@@ -232,7 +232,7 @@ class Job:
     title: str = ""
     closed: bool = False     # the issue is closed: whatever state its label names, the round is over
     filed: str = ""          # when the issue was created (ISO 8601): the longest the job can have waited
-    comments: int = 0        # how many comments the issue has, as the listing counts them
+    updated: str = ""        # the issue's `updated_at`: a comment written or edited moves it
 
     def under_way(self, states: tuple[str, ...]) -> bool:
         """The job is in one of `states` on an open issue. A closed issue left with the label of a
@@ -242,7 +242,7 @@ class Job:
 
     def spec(self) -> dict:
         data = asdict(self)
-        for transient in ("number", "state", "labels", "title", "closed", "filed", "comments"):
+        for transient in ("number", "state", "labels", "title", "closed", "filed", "updated"):
             data.pop(transient)
         return {k: v for k, v in data.items() if v not in ("", [], {}) or k in ("id", "kind", "name")}
 
@@ -1039,7 +1039,7 @@ class Board:
         job.state = state_from_labels(job.labels)
         job.closed = issue.get("state") == "closed"
         job.filed = str(issue.get("created_at") or "")
-        job.comments = int(issue.get("comments") or 0)
+        job.updated = str(issue.get("updated_at") or "")
         return job
 
     def list_jobs(self, states: tuple[str, ...] = ("available",), kinds: tuple[str, ...] | None = None,

@@ -2013,7 +2013,8 @@ the report comes from, as data). It never runs Lean, waits for no source (what i
 `## Missing`) and changes neither checkout. Its report, `packages/<Leaf>/reports/REPORT-<Leaf>~k.md`,
 opens `Triage (<agent>) of REPORT-<Leaf>~k at <sha7 of main>` and `Verdict: confirmed | rejected |
 needs-human`, then `## Statement`, `## Evidence` (for a verdict that settles the report) and
-`## Correction`, `## Reason` or `## Missing`; it is submitted as a board pull request. The intake merges it
+`## Correction`, `## Reason` or `## Missing`; the worker adds `Evidence: <digest>` as its second line (the
+digest of the report its brief stated), and it is submitted as a board pull request. The intake merges it
 and comments `Triage: <verdict> (<path>)` (for `needs-human`, `Needs a human: ...` with what the triage
 lacks quoted and how to ask again), sets the job done and closes it, whatever the verdict. The note is
 posted once (the job's comments are read first) before the state label, so a completion that stops
@@ -2033,17 +2034,26 @@ whose text is still on main becomes `confirmed` or `rejected`, with `"triage": {
 "report", "head", "correction" | "reason"}` (the section kept to 2,000 characters; the whole triage is
 `report` in the packages repository), logged `REPORT-<Leaf>~k: triage confirmed; recorded`; a
 `needs-human` verdict is recorded once and the report stays `open`. The verdict is the job's triage on
-main, read once the job is done or closed, whatever its state label. A job closed with no triage on main
+main, read once the job is done or closed, whatever its state label, and only for the evidence it judged:
+the worker writes `Evidence: <digest>` into the triage, the digest of the report as its brief stated it
+(file, anchor, kind, effect and declarations; not the sources), and the intake refuses a triage without
+one. A source revised after the brief was written makes the register entry's digest another: the verdict is
+not recorded, the job gets `Not recorded: this triage judged the report as it stood when its brief was
+written ...`, the triage is kept under `triages` with `judged` and `now`, and the report's next round is
+filed (as a request to triage again files it). A verdict already recorded is never undone by a later
+revision: the finished job gets the `Revised in ...` note with how to ask for another triage, and a human
+decides. A job closed with no triage on main
 (closed by hand, or set done by hand) makes the report `rejected`, `"triage": {"job", "verdict":
 "rejected", "by": "hand"}`.
 
 A REPORT job is triaged once and then closed, and the board reads no reopen: an open issue of a job that is
 done, or whose verdict the register records (a close that failed, or a human's reopen), is closed
 (`finished, but its issue was open; closed`). To have a report triaged again, a person whose association
-`[sources] answer_associations` allows comments on the finished job with a line `triage again`, with
-whatever the next round should know. `board sync` reads the comments of the register entry's current job,
-once it is finished with its verdict recorded, whenever the listing's count of them changed
-(`asked_seen`), and the first such request files the report's next round: `REPORT-<Leaf>~(k+1)`,
+`[sources] answer_associations` allows comments on the finished job with a line `triage again` (a new
+comment, or an edit of one), with whatever the next round should know. `board sync` reads the comments of
+the register entry's current job, once it is finished with its verdict recorded, whenever the issue's
+`updated_at` in the listing it holds is not the one of its last read (`asked_seen`; GitHub moves it when a
+comment is written or edited, checked read-only on 2026-11-25), and the first such request files the report's next round: `REPORT-<Leaf>~(k+1)`,
 `state:available`, its spec the register's with `asked: <comment id>` and `previous: [{"job", "issue"}]`
 naming the earlier rounds (the lane reads their triages on the board's main and the comments people wrote
 on their issues). The entry moves to the new round with the earlier triage kept under `triages`, and the

@@ -19,7 +19,7 @@ from tauceti_roadmap_worker.paths import HERE
 
 from .fakes import FakeBoard, FakeGH, FakeIssuesGH, FakeTransport, example_config
 from .test_checkout import commit, live, needs_git  # noqa: F401 - the shared fixture
-from .test_reports import ANCHOR, BODY, LIBRARY, NOW, ReportsGH, context, marker
+from .test_reports import ANCHOR, BODY, LIBRARY, NOW, ReportsGH, context, item, marker
 
 SHA = "abc1234" + "0" * 33
 JOB = "REPORT-QuadraticFormInvariants~1"
@@ -29,13 +29,23 @@ TRIAGE = f"packages/QuadraticFormInvariants/reports/{JOB}.md"
 TEXT = "# Quadratic forms\n\n## Layer 2\n\n- Two forms of rank one are equivalent\n  iff their diagonal chains are.\n"
 
 
-def triage(verdict: str = "confirmed", job: str = JOB, head: str = "abc1234", **sections) -> str:
+def judged(**over) -> str:
+    """The evidence digest of the report `marker(**over)` states (what a triage of it was briefed on)."""
+    r = reports.parse(marker(**over))[0][0]
+    return reports.evidence_digest({"file": r.file, "anchor": r.anchor, "kind": r.kind, "effect": r.effect,
+                                    "refutes": list(r.refutes), "replaces": list(r.replaces)})
+
+
+def triage(verdict: str = "confirmed", job: str = JOB, head: str = "abc1234", digest: str | None = None,
+           **sections) -> str:
     body = {"confirmed": {"evidence": "A counterexample in rank one, checked by hand.",
                           "correction": "State it for rank at least two."},
             "rejected": {"evidence": "The README assumes rank at least two in its conventions.",
                          "reason": "The convention of Layer 1 excludes rank one."},
             "needs-human": {"missing": "The refuting declaration is in no readable place."}}[verdict] | sections
-    return (f"Triage (codex) of {job} at {head}\nVerdict: {verdict}\n\n## Statement\n\nLayer 2 states the "
+    digest = judged() if digest is None else digest
+    return (f"Triage (codex) of {job} at {head}\n" + (f"Evidence: {digest}\n" if digest else "")
+            + f"Verdict: {verdict}\n\n## Statement\n\nLayer 2 states the "
             "equivalence for every rank.\n\n" + "".join(f"## {k.capitalize()}\n\n{v}\n\n" for k, v in body.items() if v))
 
 
@@ -202,7 +212,7 @@ def test_a_round_with_a_stub_agent_submits_the_triage(live, tmp_path, monkeypatc
     def agent(task, base_env=None):
         seen["brief"] = task.brief
         head = gitops.git(task.workdir.parent / "content", "rev-parse", "HEAD").strip()[:7]
-        (task.workdir / TRIAGE).write_text(triage(head=head))
+        (task.workdir / TRIAGE).write_text(triage(head=head, digest=""))      # the agent writes no digest
         return agents.AgentResult(exit_code=0, seconds=1.0)
     monkeypatch.setattr(agents, "run_agent", agent)
     gh = IssueGH("")                                      # the job's issue, with no prose
@@ -215,7 +225,9 @@ def test_a_round_with_a_stub_agent_submits_the_triage(live, tmp_path, monkeypatc
     assert result.detail.startswith(f"triage of {JOB} at ") and result.detail.endswith(": confirmed")
     [pr] = [payload for method, path, payload in gh.writes if path.endswith("/pulls")]
     assert f"`{TRIAGE}`" in pr["body"] and pr["title"] == "[Report] QuadraticFormInvariants (round 1): submission"
-    assert "Verdict: confirmed" in gitops.git(fork, "show", f"w1/REPORT-QuadraticFormInvariants_r1:{TRIAGE}")
+    pushed = gitops.git(fork, "show", f"w1/REPORT-QuadraticFormInvariants_r1:{TRIAGE}")
+    assert "Verdict: confirmed" in pushed
+    assert f"\nEvidence: {reports.evidence_digest(job.inputs)}\n" in pushed      # (cc) what the brief judged
     assert ("state", "submitted") in ctx.board.calls and "Read-only." in seen["brief"]
 
 
@@ -624,8 +636,8 @@ ASK = {"id": 4242, "user": {"login": "maintainer"}, "author_association": "MEMBE
 
 
 def asked(job, *comments):
-    """The job's issue with these comments, as GitHub's listing counts them."""
-    job.comments = len(comments)
+    """The job's issue with these comments, last updated when the newest was written."""
+    job.updated = f"2026-11-25T09:{len(comments):02d}:00Z"
     return {job.number: [dict(c) for c in comments]}
 
 
@@ -781,3 +793,92 @@ def test_a_triage_never_runs_on_inputs_it_could_not_read(ctx):
     later.number = 9
     with pytest.raises(lane_report.LaneError, match="the comments of #7 could not be read"):
         lane_report.ReportLane.notes(later, dataclasses.replace(ctx, board=Flaky()))
+
+
+# --- review round 5 -----------------------------------------------------------------------------------------------
+
+def test_a_verdict_on_evidence_revised_since_its_brief_is_not_recorded_and_the_report_is_triaged_again(ctx):
+    """(cc) The worker was briefed on the report as a false statement and rejected it; meanwhile the source's
+    description was edited to another kind and counterexample. The merged rejection judged evidence the report no
+    longer states: it is not recorded, and the report's next round triages it as it stands."""
+    edited = marker(kind="missing-hypothesis", refutes=["TauCeti.other_counterexample"])
+    gh = ReportsGH([item(6903, body=edited)])
+    gh.main[TRIAGE] = triage("rejected")                  # judged the report as filed (`judged()`)
+    register_with(gh)
+    sync_gh = gh
+    sync_gh.api = (lambda api: lambda path, paginate=False: {"number": 7, "body": ctx.gh.body}
+                   if path.endswith("/issues/7") else api(path, paginate))(sync_gh.api)
+    job = report_job(state="done")
+    job.closed = True
+    sync = context(sync_gh, jobs=[job])
+    out = reports.sync_reports(sync, now=NOW)
+    entry = entry_of(gh)
+    later = JOB.replace("~1", "~2")
+    assert entry["kind"] == "missing-hypothesis" and entry["state"] == "open" and entry["job"] == later
+    assert "triage" not in entry and entry["triages"][-1] == {
+        "job": JOB, "verdict": "rejected", "report": TRIAGE, "judged": judged(),
+        "now": reports.evidence_digest(entry)}
+    [(new, state, preamble)] = sync.board.created
+    assert new.id == later and state == "available" and new.inputs["kind"] == "missing-hypothesis"
+    assert new.inputs["previous"] == [{"job": JOB, "issue": 7}] and "asked" not in new.inputs
+    assert preamble.startswith(f"Triaged again: the triage of `{JOB}` (`rejected`, `{TRIAGE}`) judged the report as "
+                               "it stood before it was revised.")
+    assert any(b.startswith("Not recorded: this triage judged the report as it stood when its brief was written")
+               for n, b in sync.board.posted if n == 7)
+    assert f"reports: {JOB}: triage rejected judged evidence since revised; not recorded, filed {later} (#501)" in out
+    sync.board.jobs.append(new)
+    reports.sync_reports(sync, now=NOW)                   # nothing filed twice
+    assert len(sync.board.created) == 1
+
+
+def test_a_verdict_on_the_evidence_it_was_briefed_on_is_recorded():
+    gh = ReportsGH([])
+    gh.main[TRIAGE] = triage("rejected")
+    register_with(gh)
+    job = report_job(state="done")
+    job.closed = True
+    sync = context(gh, jobs=[job])
+    reports.sync_reports(sync, now=NOW)
+    assert entry_of(gh)["state"] == "rejected" and sync.board.created == []
+
+
+def test_the_intake_refuses_a_triage_that_names_no_evidence():
+    ctx = Context(cfg=example_config(), gh=HeadGH(""), board=FakeBoard(), claims=None, worker_id="board",
+                  operator="bot", agent="", model="")
+    pr = {"head": {"sha": SHA, "repo": {"full_name": "alice/board"}}, "user": {"login": "alice"}}
+    assert intake.deliverable_problems(ctx, report_job(), pr, {TRIAGE: triage(digest="")}, []) == [
+        "report: no `Evidence: <digest>` line (the worker writes the digest of the report it was briefed on)"]
+
+
+def test_evidence_revised_after_a_recorded_verdict_is_said_on_the_finished_job():
+    """A verdict validly recorded stays: a later revision is said on the finished job, with how to ask again."""
+    edited = marker(kind="missing-hypothesis")
+    gh = ReportsGH([item(6903, body=edited)])
+    register_with(gh, state="confirmed", triage={"job": JOB, "verdict": "confirmed", "report": TRIAGE})
+    job = report_job(state="done")
+    job.closed = True
+    sync = context(gh, jobs=[job])
+    reports.sync_reports(sync, now=NOW)
+    assert entry_of(gh)["state"] == "confirmed" and sync.board.created == []
+    [(number, text)] = [(n, b) for n, b in sync.board.posted if b.startswith("Revised in ")]
+    assert number == 7 and text.endswith(reports.ASK_AGAIN)
+
+
+def test_a_request_added_by_editing_a_comment_is_seen(ctx):
+    """(dd) The comment is read, then edited to add the request: GitHub moves the issue's `updated_at` on a comment
+    edit (checked read-only), and the sync reads the comments again when it moved, whatever their count."""
+    gh = EventsGH(issue_body=ctx.gh.body, reopened=False)
+    gh.main[TRIAGE] = triage("needs-human")
+    needs_human_entry(gh)
+    job = report_job(state="done")
+    job.closed = True
+    sync = context(gh, jobs=[job])
+    answer = {**ASK, "body": "Rank one is excluded by the convention on line 3."}
+    sync.board.threads = {7: [answer]}
+    job.updated = "2026-11-25T09:00:00Z"
+    reports.sync_reports(sync, now=NOW)
+    assert sync.board.created == []
+    sync.board.threads = {7: [{**answer, "body": answer["body"] + "\n\ntriage again"}]}      # edited, same count
+    job.updated = "2026-11-25T09:05:00Z"
+    reports.sync_reports(sync, now=NOW)
+    assert [j.inputs["asked"] for j, _s, _p in sync.board.created] == [4242]

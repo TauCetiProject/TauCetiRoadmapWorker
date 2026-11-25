@@ -1144,8 +1144,9 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
 
 
 LATER_NOTES = ("Reported again in ", "Revised in ")     # the board's notes on a job, read by the triage lane
-ASK_AGAIN = (" To have this report triaged again, comment on this issue with a line `triage again` (and what the "
-             "next round should know): `board sync` files its next triage round, which reads this issue.")
+ASK_AGAIN = (" To have this report triaged again, comment on this issue (or edit your comment) with a line `triage "
+             "again` and what the next round should know: `board sync` files its next triage round, which reads this "
+             "issue.")
 ASK = re.compile(r"^[ \t]*triage again\b", re.I | re.M)     # a request for another triage, on a line of its own
 
 
@@ -1159,15 +1160,15 @@ def comment_once(ctx, job: board.Job, text: str) -> None:
 
 def tell_job(ctx, jobs: dict, entry: dict, text: str) -> None:
     """A note on the report's job, while it is open (its spec follows the entry in `refresh_specs`), and on the
-    finished job of a rejected report or of one a triage left to a human, with how a human asks for another
-    triage, so new evidence is never silent."""
+    finished job of a report not fixed, with how a human asks for another triage, so new evidence is never
+    silent (a verdict recorded is never undone automatically)."""
     job = jobs.get(str(entry.get("job") or ""))
     if job is None or ctx.dry_run:
         return
     if not job.closed and job.state != "done":
         comment_once(ctx, job, text)
-    elif entry.get("state") == "rejected" or (entry.get("triage") or {}).get("verdict") == "needs-human":
-        comment_once(ctx, job, text + ASK_AGAIN)
+    elif entry.get("state") != "fixed":       # a verdict recorded stays: the job hears of the change, and a human
+        comment_once(ctx, job, text + ASK_AGAIN)  # asks for another triage if it matters
 
 
 def revised(ctx, run: Run, jobs: dict, entry: dict, source: Source, changed: list[str]) -> None:
@@ -1223,6 +1224,19 @@ def sections(text: str) -> dict[str, str]:
     return {k: "\n".join(v).strip() for k, v in out.items()}
 
 
+EVIDENCE_FIELDS = ("file", "anchor", "kind", "effect", "refutes", "replaces")     # what a verdict judges
+
+
+def evidence_digest(fields: dict) -> str:
+    """The digest of the report a verdict judges: its file, anchor (as `anchor_key` compares it), kind, effect and
+    declarations, from a register entry or a REPORT job's spec alike. Not its sources: a later source that says
+    the same changes nothing a triage decided."""
+    data = {k: anchor_key(str(fields.get(k) or "")) if k == "anchor" else
+            [str(x) for x in fields.get(k) or []] if k in ("refutes", "replaces") else str(fields.get(k) or "")
+            for k in EVIDENCE_FIELDS}
+    return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
+
+
 def parse_triage(text: str) -> dict[str, str]:
     """A triage report's first line (agent, job, head read), verdict and sections."""
     first = (text or "").split("\n", 1)[0].strip().strip("*").strip()
@@ -1230,7 +1244,9 @@ def parse_triage(text: str) -> dict[str, str]:
     m = re.search(r"^Verdict:\s*`?([a-z-]+)`?\s*$", text or "", re.M)
     out = {key: head[group] if head else "" for key, group in (("agent", "agent"), ("job", "job"), ("head", "sha"))}
     out["verdict"] = m.group(1) if m else ""
-    return out | sections(text)
+    e = re.search(r"^Evidence:\s*([0-9a-f]{12})\s*$", text or "", re.M)
+    out["digest"] = e.group(1) if e else ""
+    return sections(text) | out              # a section never stands in for a header field
 
 
 def triage_problems(text: str, job_id: str, head: str = "") -> list[str]:
@@ -1272,7 +1288,9 @@ def record_triage(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: 
     """`sync_reports`: the verdicts of triaged REPORT jobs into the register. A report still `open`, whose
     anchor main still holds (read this run), takes the verdict of its job's triage once the job is finished
     (`done`) or closed: the triage on the board's main is that job's one triage (a job id is triaged once),
-    whatever state label a late write left. `confirmed` and `rejected` settle the report; `needs-human` is
+    whatever state label a late write left, and only for the evidence it judged: a triage whose `Evidence`
+    digest is not the entry's now (`evidence_digest`: a source revised the report after the brief was written)
+    is not recorded, and the report's next round is filed. `confirmed` and `rejected` settle the report; `needs-human` is
     recorded with the report staying `open`. A job closed or set done with no triage on main (a human did it)
     makes the report `rejected`, `"by": "hand"`. Returns how many reports changed."""
     cfg, wanted, todo = ctx.cfg, {}, []
@@ -1298,6 +1316,32 @@ def record_triage(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: 
             continue                          # not read: the next run tries again
         text = found[key]
         verdict = parse_triage(text)["verdict"] if text else ""
+        judged, now = (parse_triage(text)["digest"] if text else ""), evidence_digest(entry)
+        if verdict in TRIAGE_VERDICTS and judged != now:
+            # The job's one triage judged the report as it stood when the brief was written, and its evidence was
+            # revised since: that id was never triaged for the report as it is, so the next round is.
+            line = f"{job.id}: triage {verdict} judged evidence since revised; not recorded"
+            if ctx.dry_run:
+                run.out.append(f"reports: {line} (dry run: no round filed)")
+                continue
+            new = next_round(ctx, jobs, entry, job, lead=(
+                f"Triaged again: the triage of `{job.id}` (`{verdict}`, `{triage_path(cfg, job)}`) judged the report as "
+                "it stood before it was revised. This round reads the report as its sources say it now, and the "
+                "earlier rounds' triages and what people wrote on their issues."))
+            if new is None:
+                continue                      # its issue could not be read: the next run tries again
+            retire_triage(entry)
+            entry.setdefault("triages", []).append({"job": job.id, "verdict": verdict, "report": triage_path(cfg, job),
+                                                    "judged": judged, "now": now})
+            entry.update(job=new.id, state="open")
+            entry.pop("asked_seen", None)
+            comment_once(ctx, job, f"Not recorded: this triage judged the report as it stood when its brief was "
+                                   f"written (evidence `{judged or 'none'}`), and its sources revised it since (now "
+                                   f"`{now}`). It is triaged again as #{new.number} (`{new.id}`).")
+            changed += 1
+            run.changed.append(f"{new.id} filed (evidence revised)")
+            run.out.append(f"reports: {line}, filed {new.id} (#{new.number})")
+            continue
         if verdict == "needs-human":
             entry["triage"] = triage_record(cfg, job, text)
             line = f"{job.id}: triage needs a human; recorded, the report stays open"
@@ -1344,8 +1388,8 @@ def ask_again(ctx, run: Run, jobs: dict, known: dict) -> None:
     of `[sources] answer_associations`; the first one files the report's next round, `REPORT-<Leaf>~(k+1)`,
     with that comment's id in its spec (`asked`) and the earlier rounds named (`previous`). The entry moves
     to the new round, so the old job's comments are never read for a request again: each round is asked for
-    once. A job's comments are read only when the listing's count of them changed since the last read
-    (`asked_seen`); comments that cannot be read decide nothing."""
+    once. A job's comments are read only when its issue's `updated_at` (from the listing) is not the one of the
+    last read (`asked_seen`): a new comment and an edited one both move it; comments that cannot be read decide nothing."""
     cfg = ctx.cfg
     bots = {b.lower() for b in cfg.board.bot_logins}
     trusted = set(cfg.sources.answer_associations)
@@ -1355,7 +1399,7 @@ def ask_again(ctx, run: Run, jobs: dict, known: dict) -> None:
             continue
         if (entry.get("triage") or {}).get("job") != job.id:
             continue                          # its verdict is not recorded yet
-        seen = [job.id, job.comments]
+        seen = [job.id, job.updated]
         if entry.get("asked_seen") == seen:
             continue
         try:
@@ -1372,7 +1416,11 @@ def ask_again(ctx, run: Run, jobs: dict, known: dict) -> None:
         if ctx.dry_run:
             run.out.append(f"reports: {job.id}: a human asked for another triage; would file its next round (dry run)")
             continue
-        new = next_round(ctx, jobs, entry, job, request)
+        triage = entry.get("triage") or {}
+        new = next_round(ctx, jobs, entry, job, asked=int(request.get("id") or 0), lead=(
+            f"Triaged again, as a human asked on #{job.number} ({request.get('html_url') or 'a comment'}), after the "
+            f"triage of `{job.id}` (`{triage.get('verdict', '?')}`, `{triage.get('report', triage_path(cfg, job))}`)."
+            " This round reads the earlier rounds' triages and what people wrote on their issues."))
         if new is None:
             continue
         retire_triage(entry)
@@ -1385,11 +1433,11 @@ def ask_again(ctx, run: Run, jobs: dict, known: dict) -> None:
         run.out.append(f"reports: {job.id}: a human asked for another triage; filed {new.id} (#{new.number})")
 
 
-def next_round(ctx, jobs: dict, entry: dict, job: board.Job, request: dict) -> board.Job | None:
+def next_round(ctx, jobs: dict, entry: dict, job: board.Job, lead: str, asked: int = 0) -> board.Job | None:
     """The report's next REPORT round after `job`, filed `state:available` (the board files a title once, and
     a round filed by a run whose register write failed is taken back from its spec, so nothing is filed
     twice). Its spec is the register entry's, with the rounds before it (`previous`) and the comment that
-    asked for it (`asked`); its issue quotes the reporter's prose as `job`'s does (None when that issue cannot
+    asked for it (`asked`, when a human did); its issue opens with `lead` and quotes the reporter's prose as `job`'s does (None when that issue cannot
     be read: nothing is filed)."""
     try:
         issue = ctx.gh.api(f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}")
@@ -1402,14 +1450,10 @@ def next_round(ctx, jobs: dict, entry: dict, job: board.Job, request: dict) -> b
     earlier = [p for p in job.inputs.get("previous", []) if isinstance(p, dict)] + [{"job": job.id,
                                                                                       "issue": job.number}]
     new = board.new_job(board.make_id("report", name, k), inputs={**job.inputs, **project(entry), "previous": earlier,
-                                                                  "asked": int(request.get("id") or 0)})
+                                                                  **({"asked": asked} if asked else {})})
     report = report_of(new)
     if report is None:
         return None
-    triage = entry.get("triage") or {}
-    lead = (f"Triaged again, as a human asked on #{job.number} ({request.get('html_url') or 'a comment'}), after the "
-            f"triage of `{job.id}` (`{triage.get('verdict', '?')}`, `{triage.get('report', triage_path(ctx.cfg, job))}`)."
-            " This round reads the earlier rounds' triages and what people wrote on their issues.")
     new.number = ctx.board.create(new, state="available", preamble=describe(
         ctx.cfg, report, None, str(new.inputs.get("place") or "active"), lead=lead,
         text=quoted_prose(str(issue.get("body") or "")), sources=list(entry.get("sources", []))))

@@ -163,6 +163,7 @@ class ReportLane(Lane):
         history = ws.scratch / "history.md"
         history.write_text("# What people wrote on this report's issues, oldest first (data)\n\n"
                            + ("\n\n---\n\n".join(text for _id, text in people) or "(nothing)") + "\n", encoding="utf-8")
+        ws.extra.update(evidence=reports.evidence_digest(job.inputs))           # the spec the brief shows
         ws.extra.update(head=head, report=report, place=place, folder=folder, spans=spans, anchor_file=anchor_file,
                         readme=folder / "README.md", prose=self.prose(job, ctx), history=history,
                         job_notes=(shown(people, job.inputs.get("asked"), NOTES_LIMIT, history), later),
@@ -260,7 +261,12 @@ class ReportLane(Lane):
         return problems
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
-        verdict = reports.parse_triage(ws.report.read_text(encoding="utf-8"))["verdict"]
+        """The report gets the digest of the report this triage was briefed on (`Evidence: <digest>`, second
+        line, written by the worker, never the agent): the sync records the verdict only for that evidence."""
+        lines = [x for x in ws.report.read_text(encoding="utf-8").split("\n") if not x.startswith("Evidence:")]
+        lines.insert(1, f"Evidence: {ws.extra['evidence']}")
+        ws.report.write_text("\n".join(lines), encoding="utf-8")
+        verdict = reports.parse_triage("\n".join(lines))["verdict"]
         return f"triage of {job.id} at {ws.extra['head'][:7]}: {verdict}"
 
 

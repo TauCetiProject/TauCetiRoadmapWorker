@@ -250,6 +250,9 @@ def deliverable_problems(ctx, job: Job, pr: dict, texts: dict[str, str], jobs: l
             pass
     if job.kind == "report" and report in texts:
         out += reports.triage_problems(texts[report], job.id)
+        if not reports.parse_triage(texts[report])["digest"]:
+            out.append("report: no `Evidence: <digest>` line (the worker writes the digest of the report it was "
+                       "briefed on)")
         out += triaged_already(ctx, job, report)
     if job.kind == "port" and report in texts:
         number = pr_number_from_report(texts[report])
@@ -401,8 +404,8 @@ def triage_note(ctx, job: Job, outcome: Outcome) -> str:
     if outcome.verdict == "needs-human":
         missing = reports.parse_triage(outcome.report).get("missing", "")
         return (f"Needs a human: the triage (`{path}`) could not settle this report. What it lacks, in the triage's "
-                "words:\n\n" + reports.quoted_block(missing) + "\n\nAnswer in a comment here that has a line "
-                "`triage again`: `board sync` files the report's next triage round, which reads what is written here "
+                "words:\n\n" + reports.quoted_block(missing) + "\n\nAnswer in a comment here (a new one, or one you "
+                "edit) that has a line `triage again`: `board sync` files the report's next triage round, which reads what is written here "
                 f"(the issue stays closed). Or correct the roadmap; the report stays open in `{reports.REGISTER}` "
                 "meanwhile.")
     return (f"Triage: `{outcome.verdict}` (`{path}`). `board sync` records it in `{reports.REGISTER}`"

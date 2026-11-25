@@ -242,7 +242,11 @@ checkout, submits a PR to the board, and the intake advances the state.
     whose triage is on main, and the intake refuses a second triage of it. The finished job is closed and
     stays closed: the board reads no reopen. A triage asked again is a comment on the finished job with a
     line `triage again`, which `board sync` turns into the report's next round once (the comment's id in
-    its spec); that round reads the earlier rounds' triages and what people wrote on their issues.
+    its spec); that round reads the earlier rounds' triages and what people wrote on their issues. A
+    verdict is bound to the evidence it judged: the worker writes the digest of the report its brief
+    stated into the triage, and a verdict on evidence a source revised since is not recorded; the report's
+    next round is filed instead. A verdict recorded is never undone by a later revision: the job is told,
+    and a human asks again if it matters.
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.
