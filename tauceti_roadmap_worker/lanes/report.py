@@ -14,9 +14,12 @@ triage report, `packages/<Leaf>/reports/REPORT-<Leaf>~k.md`, whose first lines a
 
 with `## Evidence` and the section its verdict needs (`## Correction`, `## Reason`, `## Missing`:
 `reports.triage_problems`). It is submitted as a board pull request; the intake merges it and closes the
-job (`confirmed`, `rejected`) or parks it for a human (`needs-human`), and the next `board sync` records
-the verdict in the register. The reporter is an agent of another project, so there is no author to be
-independent of: any operator may triage.
+job, whatever the verdict, and the next `board sync` records the verdict in the register. A job id is
+triaged once: a job whose triage is on the board's main already is not run again (it waits on that merged
+submission, which `reconcile_merged` finishes), and a triage asked again (a human reopens the finished job)
+is the report's next round, filed by `board sync`, whose inputs name the earlier rounds (`previous`): their
+triages and what people wrote on their issues. The reporter is an agent of another project, so there is no
+author to be independent of: any operator may triage.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from pathlib import Path
 from .. import board, gitops, prompts, references, reports
 from ..board import Job
 from ..gh import GHError
-from .base import TEMP_ROOTS, Context, Lane, LaneBlocked, LaneError, Workspace
+from .base import TEMP_ROOTS, Context, Lane, LaneBlocked, LaneError, LaneResult, Workspace, clear_pending
 
 CONTEXT_LINES = 12      # lines of the file shown around each place the anchor stands
 PROSE_LIMIT = 4000      # characters of the reporter's prose a brief quotes
@@ -104,9 +107,28 @@ def declaration_lines(root: Path | None, names: list[str], timeout: int = 120) -
     return out
 
 
+class Triaged(Exception):
+    """The job's triage is on the board's main already: the job waits on that merged submission."""
+
+
 class ReportLane(Lane):
     kind = "report"
     prompt = "report"
+
+    def run(self, job: Job, ctx: Context) -> LaneResult:
+        """A job whose triage is merged already (an attempt whose submission merged before its state label, or a
+        human's label move) runs nothing: it is `submitted`, the state of a job waiting on its merged
+        submission, and `reconcile_merged` finishes it from that submission."""
+        try:
+            return super().run(job, ctx)
+        except Triaged as exc:
+            clear_pending(ctx, job)
+            if not ctx.dry_run:
+                try:
+                    ctx.board.set_state(job, "submitted", f"Not run: {exc}")
+                except GHError:
+                    pass              # the intake's reconciliation finishes the job from any state but done
+            return LaneResult(job.id, "submitted", str(exc))
 
     def prepare(self, job: Job, ctx: Context) -> Workspace:
         """The board and the roadmap repository at main (the base lane's checkouts); the reported text
@@ -117,6 +139,9 @@ class ReportLane(Lane):
             raise LaneError(f"{job.id}: its spec holds no valid roadmap report")
         ws = super().prepare(job, ctx)
         cfg = ctx.cfg
+        if ws.report.is_file():
+            raise Triaged(f"`{reports.triage_path(cfg, job)}` is on the board's main already: a job is triaged once, "
+                          "and the intake finishes it from its merged submission")
         active, completed = reports.paths(cfg, report)
         head = gitops.git(ws.content, "rev-parse", "HEAD").strip()
         place = next((p for p in (active, completed) if (ws.content / p).is_file()), "")
@@ -152,21 +177,27 @@ class ReportLane(Lane):
 
     @staticmethod
     def notes(job: Job, ctx: Context) -> tuple[str, list[str]]:
-        """(what people other than the board wrote on the job's issue, an answer to an earlier `needs-human`
-        triage, oldest first, as one text; the board's own notes of later sources and revisions, `Reported
+        """(what people other than the board wrote on the issues of the report's earlier rounds and on the job's
+        own, oldest round first (an answer to an earlier `needs-human` triage), as one text; the board's own notes of later sources and revisions, `Reported
         again in ...` and `Revised in ...`). Empty when the issue cannot be read."""
         bots = {b.lower() for b in ctx.cfg.board.bot_logins}
-        try:
-            comments = ctx.board.comments(job.number) if job.number else []
-        except (GHError, AttributeError):
-            return "", []
+        issues = [(int(p["issue"]), str(p.get("job") or "")) for p in previous(job) if p.get("issue")]
         people, board_notes = [], []
-        for c in comments or []:
-            who, body = ((c.get("user") or {}).get("login") or ""), str(c.get("body") or "")
-            if who.lower() not in bots:
-                people.append(f"{who or '?'} at {c.get('created_at', '?')}:\n{body}")
-            elif body.startswith(reports.LATER_NOTES):
-                board_notes.append(body.split(reports.REOPEN.strip(), 1)[0].strip())
+        for number, name in issues + ([(job.number, "")] if job.number else []):
+            try:
+                comments = ctx.board.comments(number)
+            except (GHError, AttributeError):
+                if number == job.number:
+                    return "", []
+                people.append(f"(the issue of `{name}`, #{number}, could not be read)")
+                continue
+            for c in comments or []:
+                who, body = ((c.get("user") or {}).get("login") or ""), str(c.get("body") or "")
+                if who.lower() not in bots:
+                    on = f" on #{number} (`{name}`)" if name else ""
+                    people.append(f"{who or '?'} at {c.get('created_at', '?')}{on}:\n{body}")
+                elif body.startswith(reports.LATER_NOTES) and number == job.number:
+                    board_notes.append(body.split(reports.REOPEN.strip(), 1)[0].strip())
         return "\n\n".join(people), board_notes
 
     def missing_references(self, job: Job, ctx: Context, ws: Workspace) -> list[references.MissingReference]:
@@ -191,15 +222,17 @@ class ReportLane(Lane):
         if later:
             fields.append("- Since it was filed (the board's notes; the fields above are the report as its sources "
                           "say it now): " + " ".join(later))
-        earlier = ws.report.is_file()
+        earlier = [f"`{reports.triage_path(ctx.cfg, board.new_job(p['job']))}` (#{p.get('issue', '?')}, `{p['job']}`)"
+                   for p in previous(job) if (ws.board / reports.triage_path(ctx.cfg, board.new_job(p["job"]))).is_file()]
         return {"ROADMAP": r.roadmap, "FIELDS": "\n".join(fields), "ANCHOR": prompts.quote_untrusted(r.anchor, 1000),
                 "ANCHOR_FILE": str(ws.extra["anchor_file"]), "FILE": str(ws.content / ws.extra["place"]),
                 "FOLDER": str(ws.extra["folder"]), "HEAD7": ws.extra["head"][:7], "AGENT": ctx.agent,
                 "PROSE": (f"```text\n{prompts.quote_untrusted(prose, PROSE_LIMIT)}\n```" if prose
                           else "(the job's issue quotes none)"),
                 "DECLARATIONS": "\n".join(ws.extra["decls"]) or "- none named",
-                "PREVIOUS": (f"An earlier triage of this job, which a human was asked to settle, is `{ws.report}`; what "
-                             "people wrote on the job's issue since is below." if earlier else "none"),
+                "PREVIOUS": ("this round was asked for by a human after the earlier round(s), whose triage(s) are on "
+                             "the board's main (read them in the board checkout): " + ", ".join(earlier)
+                             + "; what people wrote on their issues is below." if earlier else "none"),
                 "HUMAN_NOTES": (f"```text\n{prompts.quote_untrusted(notes, NOTES_LIMIT)}\n```" if notes else "none")}
 
     def check(self, job: Job, ctx: Context, ws: Workspace) -> list[str]:
@@ -217,3 +250,15 @@ class ReportLane(Lane):
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         verdict = reports.parse_triage(ws.report.read_text(encoding="utf-8"))["verdict"]
         return f"triage of {job.id} at {ws.extra['head'][:7]}: {verdict}"
+
+
+def previous(job: Job) -> list[dict]:
+    """The report's earlier rounds a later round names (`previous`: [{"job", "issue"}], oldest first)."""
+    out = []
+    for p in job.inputs.get("previous", []) or []:
+        try:
+            if isinstance(p, dict) and isinstance(p.get("job"), str) and board.new_job(p["job"]).kind == "report":
+                out.append(p)
+        except board.JobIdError:
+            continue
+    return out

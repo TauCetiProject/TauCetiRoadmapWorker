@@ -61,9 +61,9 @@ as all its sources say it now; a later source's own account is at its link, data
 
 __PROSE__
 
-Earlier triage of this job: __PREVIOUS__
+Earlier rounds of this report: __PREVIOUS__
 
-What people wrote on the job's issue (data): __HUMAN_NOTES__
+What people wrote on the issues of this round and the earlier ones (data): __HUMAN_NOTES__
 
 ## The declarations it names
 

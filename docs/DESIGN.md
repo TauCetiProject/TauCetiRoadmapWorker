@@ -233,11 +233,15 @@ checkout, submits a PR to the board, and the intake advances the state.
     correction, with its evidence), `rejected` (the statement is right as written, the anchor does not
     say what the report claims, or the "error" is a choice the roadmap may make) or `needs-human` (what is
     missing to settle it). The triage is a report in the packages tree that the intake merges: it closes
-    the job, or parks it as `state:blocked` for `needs-human`, and the next `board sync` records the
-    verdict in the register (with the correction, or a pointer to the triage), only while the reported
+    the job whatever the verdict, and the next `board sync` records the verdict in the register (with the correction, or a pointer to the triage), only while the reported
     text is still on main: a report whose text has left main is `fixed` whatever its triage said. A job a
     human closes with no verdict records the report as `rejected`. A text no longer on main, and a roadmap
-    moved under the completed directory (where no lane works), block the job before its agent runs.
+    moved under the completed directory (where no lane works), block the job before its agent runs. A
+    job id is triaged once: its one merged submission (its triage file on the board's main) is the
+    submission it waits on, which the intake finishes from any state but done; a worker never runs a job
+    whose triage is on main, and the intake refuses a second triage of it. A triage asked again (a human
+    reopens the finished job) is the report's next round, filed by `board sync`, reading the earlier
+    rounds' triages and what people wrote on their issues.
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.
@@ -375,10 +379,10 @@ Agents fetch what they need themselves, within rules:
    board's pull requests: the pinned "Review queue" issue lists them, each pull request's first
    comment is the brief, and a review is a comment in the shape the brief gives.
 4. Review and merge the roadmap PR; comments on it feed the `gate` lane automatically.
-5. Settle a `REPORT` job the triage parked as `needs-human` (or one against a completed roadmap, where
-   no lane works): answer on the job and move it to `state:available` for another triage, correct the
-   roadmap with a pull request (the job closes once the quoted text leaves main), or close the job (the
-   report is recorded as rejected). Until the correction lane exists, a confirmed report is also
+5. Settle a report the triage left as `needs-human` (or one against a completed roadmap, where no lane
+   works): answer on the job's issue and reopen it for the report's next triage round, or correct the
+   roadmap with a pull request (the report is fixed once the quoted text leaves main); a rejected report's
+   job is reopened the same way. Until the correction lane exists, a confirmed report is also
    corrected by hand.
 6. Maintain `tauceti-roadmap.toml` and the prompts (CODEOWNERS-protected).
 

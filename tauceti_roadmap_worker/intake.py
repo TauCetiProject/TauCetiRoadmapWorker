@@ -250,6 +250,7 @@ def deliverable_problems(ctx, job: Job, pr: dict, texts: dict[str, str], jobs: l
             pass
     if job.kind == "report" and report in texts:
         out += reports.triage_problems(texts[report], job.id)
+        out += triaged_already(ctx, job, report)
     if job.kind == "port" and report in texts:
         number = pr_number_from_report(texts[report])
         if not number:
@@ -371,21 +372,18 @@ def complete_merged(ctx, job: Job, pr: dict, jobs: list[Job]) -> str:
     """What follows a submission's merge: its successors, then the job done and its issue closed. The
     job becomes done last, so a run stopped on the way leaves it unfinished with its pull request
     merged, and `reconcile_merged` finishes it (the board creates no job twice). A roadmap report's triage
-    releases nothing: `confirmed` and `rejected` end the job (the next `board sync` records the verdict in
-    the register), and `needs-human` parks it, open, for a human (`triage_note`)."""
+    releases nothing: every verdict ends the job (the next `board sync` records it in the register), and a
+    triage asked again is the report's next round, filed by `board sync` (`reports.triage_again`): a REPORT job id
+    is triaged once."""
     if job.kind == "report":
         outcome = outcome_for(ctx, job, pr, jobs)
         if outcome.verdict not in reports.TRIAGE_VERDICTS:
             # The merged report could not be read (outcome_for reads '' on a GitHub error): nothing is decided,
             # and `reconcile_merged` finishes the job from the merged pull request on a later run.
-            return "triage merged, but its report could not be read; the job stays submitted"
-        # Each write can fail and leave the job submitted; `reconcile_merged` then does it all again: the note is
+            return "triage merged, but its report could not be read; the job stays unfinished"
+        # Each write can fail and leave the job unfinished; `reconcile_merged` then does it all again: the note is
         # posted once, the state label is set, the issue closed (and a done job left open is closed by the sync).
-        note, parked = triage_note(ctx, job, outcome)
-        reports.comment_once(ctx, job, note)
-        if parked:
-            ctx.board.set_state(job, "blocked")
-            return f"triage {outcome.verdict}: parked for a human"
+        reports.comment_once(ctx, job, triage_note(ctx, job, outcome))
         ctx.board.set_state(job, "done")
         ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}", {"state": "closed"})
         return f"triage {outcome.verdict}"
@@ -395,43 +393,43 @@ def complete_merged(ctx, job: Job, pr: dict, jobs: list[Job]) -> str:
     return note
 
 
-def triage_note(ctx, job: Job, outcome: Outcome) -> tuple[str, bool]:
-    """(the note on a REPORT job whose triage was merged, whether the job is parked for a human). A
-    `needs-human` triage parks it with what it lacks quoted: a human answers on the issue and moves the job
-    to `state:available` to triage it again, corrects the roadmap, or closes the issue (recorded as rejected)."""
+def triage_note(ctx, job: Job, outcome: Outcome) -> str:
+    """The note on a REPORT job whose triage was merged. A `needs-human` triage quotes what it lacks: a human
+    answers on the issue and reopens it, and `board sync` files the report's next round, which reads the answer."""
     path = reports.triage_path(ctx.cfg, job)
     if outcome.verdict == "needs-human":
         missing = reports.parse_triage(outcome.report).get("missing", "")
-        return (f"Parked for a human: the triage (`{path}`) could not settle this report. What it lacks, in the "
-                "triage's words:\n\n" + reports.quoted_block(missing) + "\n\nAnswer here, then move the job to "
-                "`state:available` to triage it again; or correct the roadmap, or close this issue (the report is "
-                "then recorded as rejected).", True)
+        return (f"Needs a human: the triage (`{path}`) could not settle this report. What it lacks, in the triage's "
+                "words:\n\n" + reports.quoted_block(missing) + "\n\nAnswer here, then reopen this issue: `board sync` "
+                "files the report's next triage round, which reads what is written here. Or correct the roadmap; "
+                f"the report stays open in `{reports.REGISTER}` meanwhile.")
     return (f"Triage: `{outcome.verdict}` (`{path}`). `board sync` records it in `{reports.REGISTER}`"
             + (", and the correction it states waits there for a pull request on the roadmap repository."
-               if outcome.verdict == "confirmed" else "."), False)
+               if outcome.verdict == "confirmed" else "."))
+
+
+def triaged_already(ctx, job: Job, report: str) -> list[str]:
+    """Why a REPORT job's submission is refused because the job has a triage on the board's main already (a
+    job id is triaged once: its one merged submission is the one the job waits on, and a triage asked again
+    is the report's next round), or because main could not be read to tell."""
+    try:
+        ctx.gh.raw_file(ctx.cfg.repositories.packages_repo(), report, "")
+    except GHError as exc:
+        if NOT_FOUND.search(str(exc)):
+            return []
+        return [f"the board's main could not be read for {report} ({str(exc).splitlines()[0][:120]})"]
+    return [f"{job.id} has a triage on main already ({report}): a job is triaged once, and a new triage is the "
+            "report's next round (`board sync` files it when a human reopens the job)"]
 
 
 RECONCILE_WINDOW = 50   # the most recently closed pull requests a run looks through
-
-
-def attempt_after(ctx, job: Job, merged_at: str) -> bool:
-    """Whether the job's current attempt began after a submission of it was merged at `merged_at`: its
-    `state:submitted` label was added last after that time (the issue's events; GitHub's clock on both). Such a
-    merged submission is an earlier attempt's, already taken in (a REPORT job is triaged again under its id after
-    a needs-human triage), and never completes the current one; a submission whose job is still submitted from
-    before its merge (a completion that stopped half-way) is finished."""
-    events = ctx.gh.api(f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}/events?per_page=100",
-                        paginate=True) or []
-    added = max((str(e.get("created_at") or "") for e in events if e.get("event") == "labeled"
-                 and (e.get("label") or {}).get("name") == "state:submitted"), default="")
-    return bool(added and merged_at and added > merged_at)
 
 
 def reconcile_merged(ctx, yes: bool) -> list[str]:
     """Merged submissions whose job is still `submitted`, finished as the intake would have: a run
     stopped between a merge and the end of its transition (`complete_merged`), or a maintainer who
     merged a submission by hand. A job in any other state is left alone (a human may have reopened
-    it). Their authorship record is written when the job's issue lacks it. A design or package (whose
+    it), except a REPORT job, finished from its merged triage in any state but `done`. Their authorship record is written when the job's issue lacks it. A design or package (whose
     review followed its submission) is only marked done. One listing of the most recently closed
     pull requests; a job the board already finished costs nothing more."""
     repo = ctx.cfg.repositories.packages_repo()
@@ -445,10 +443,10 @@ def reconcile_merged(ctx, yes: bool) -> list[str]:
         named = board.submission_issue(pr.get("body") or "")
         job = next((j for j in jobs if j.id == sub["job"] and (not named or j.number == named)), None) \
             or ctx.board.find(sub["job"], jobs)
-        if not job or job.state != "submitted":
+        if not job or job.state == "done" or (job.state != "submitted" and job.kind != "report"):
             continue
-        if job.kind == "report" and attempt_after(ctx, job, str(pr.get("merged_at") or "")):
-            continue                  # (the one kind that runs again under its id after a merged submission)
+        # A REPORT job is triaged once under its id (a triage asked again is a new round): its merged submission
+        # is the one it waits on, whatever state a late or failed label write left it in.
         number, author = int(pr["number"]), pr["user"]["login"]
         if not yes:
             out.append(f"#{number}: merged, but {job.id} is {job.state}; would finish it (dry run)")

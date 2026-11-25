@@ -597,7 +597,7 @@ def test_new_evidence_for_a_rejected_report_is_posted_on_its_closed_job():
     ctx = context(gh, jobs=[job])
     reports.sync_reports(ctx, now=NOW)
     [(number, text)] = ctx.board.posted
-    assert number == 40 and "rejected" in text and "reopen" in text
+    assert number == 40 and text.endswith(reports.REOPEN) and "reopen this issue" in text
 
 
 def test_a_recurrence_filed_before_a_failed_register_write_is_not_filed_again():

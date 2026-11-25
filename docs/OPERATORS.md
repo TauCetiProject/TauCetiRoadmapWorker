@@ -1919,9 +1919,9 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    reads converges whatever happened in between (an edit, a later source, a reopened job, a write that
    failed half-way). The spec holds the declarations of all the sources, so their number has no
    per-marker limit there. The job hears of a new source or an edit in one comment, `Reported again in
-   <url>` or `Revised in <url>: now ...`, posted once (the job's comments are read first); a rejected
-   report's closed job gets the same comment, saying that reopening the issue and moving it to
-   `state:available` has it triaged again.
+   <url>` or `Revised in <url>: now ...`, posted once (the job's comments are read first); the finished
+   job of a rejected report, or of one its triage left to a human, gets the same comment, saying that
+   reopening the issue has the report triaged again.
 4. A new one is checked against the roadmap repository's main: the file under the active directory, else
    under the completed one, read as GraphQL blobs (one query for up to sixty files, no REST request unless
    a file is too large for GraphQL), the anchor sought in it with whitespace normalised. Still there: a
@@ -2014,25 +2014,36 @@ the report comes from, as data). It never runs Lean, waits for no source (what i
 opens `Triage (<agent>) of REPORT-<Leaf>~k at <sha7 of main>` and `Verdict: confirmed | rejected |
 needs-human`, then `## Statement`, `## Evidence` (for a verdict that settles the report) and
 `## Correction`, `## Reason` or `## Missing`; it is submitted as a board pull request. The intake merges it
-and, for `confirmed` or `rejected`, comments `Triage: <verdict> (<path>)`, sets the job done and closes
-it; for `needs-human` it parks the job as `state:blocked`, open, with what the triage lacks quoted. The
-note is posted once (the job's comments are read first) before the state label, so a completion that stops
-half-way leaves the job submitted and the next intake does the rest. When the job runs again under its id
-(a human answered and moved it to `state:available`), an earlier merged submission never completes the new
-attempt: the intake finishes a REPORT job from a merged submission only when the job's `state:submitted`
-label was added before that merge (one read of the issue's events per such job). A merged triage whose
-report cannot be read leaves the job submitted; a later intake finishes it. The triage reads the report as
-its sources say it now (the board sync rewrites an open job's spec from the register every run, a reopened
-one included) and the board's own notes of later sources and revisions.
+and comments `Triage: <verdict> (<path>)` (for `needs-human`, `Needs a human: ...` with what the triage
+lacks quoted and how to ask again), sets the job done and closes it, whatever the verdict. The note is
+posted once (the job's comments are read first) before the state label, so a completion that stops
+half-way leaves the job unfinished and the next intake does the rest. A job id is triaged once: its triage
+file on the board's main is written only by its one merged submission, so that submission is the one the
+job waits on, whatever order the worker's `state:submitted` label, the merge and the completion's writes
+came in. The intake finishes a REPORT job from its merged triage in any state but `done` (a worker's label
+that lands after the merge and the completion, a label write that failed, a human's move), and refuses a
+second submission of a job whose triage is on main; a worker given such a job runs nothing and sets it
+`submitted` (`... is on the board's main already`). A merged triage whose report cannot be read leaves the
+job unfinished; a later intake finishes it. The triage reads the report as its sources say it now (the
+board sync rewrites an open job's spec from the register every run) and the board's own notes of later
+sources and revisions.
 
 The next `board sync` records the verdict, after it has recorded what left main: a report still `open`
 whose text is still on main becomes `confirmed` or `rejected`, with `"triage": {"job", "verdict",
 "report", "head", "correction" | "reason"}` (the section kept to 2,000 characters; the whole triage is
-`report` in the packages repository), logged `REPORT-<Leaf>~k: triage confirmed; recorded`; a parked job's
-`needs-human` is recorded once and the report stays `open`. A job closed with no verdict merged (closed by
-hand, or set done by hand) makes the report `rejected`, `"triage": {"job", "verdict": "rejected", "by":
-"hand"}`. A rejected report whose job a human reopens (the issue open again, not done) is `open` again, its
-earlier triage kept under `triages`, and is triaged anew. A report whose text has left main is `fixed`
+`report` in the packages repository), logged `REPORT-<Leaf>~k: triage confirmed; recorded`; a
+`needs-human` verdict is recorded once and the report stays `open`. The verdict is the job's triage on
+main, read once the job is done or closed, whatever its state label. A job closed with no triage on main
+(closed by hand, or set done by hand) makes the report `rejected`, `"triage": {"job", "verdict":
+"rejected", "by": "hand"}`; reopened, such a job is `open` again under its own id (it was never triaged).
+A triaged job a human reopens (a `reopened` event on its issue: the board never reopens a REPORT issue) asks
+for the report's next round: `REPORT-<Leaf>~(k+1)` is filed `state:available`, its spec the register's with
+`previous: [{"job", "issue"}]` naming the earlier rounds (the lane reads their triages on the board's main
+and the comments people wrote on their issues), the entry moves to it with the earlier triage kept under
+`triages`, and the reopened issue gets `Triaged again as #N (...)` and is closed. A done job whose issue is
+open with no `reopened` event is a close that failed, and is closed; one reopened after a later round took
+over, or after its report was fixed, is closed again with a note. Its events are read only for such open
+finished jobs, and events that cannot be read decide nothing. A report whose text has left main is `fixed`
 whatever its triage said, and a `confirmed` one
 becomes `fixed` when its correction merges. A report fixed and then reported again gets a new job and
 loses the triage of the old one.
@@ -2340,11 +2351,12 @@ reach) is not built yet.
   with `Fixed in`, never with the prefix.
 * **A `REPORT` job**: a Tau Ceti worker found a roadmap statement wrong (the job quotes it, names the
   declarations that refute and replace it, and links the pull request). A triage worker settles most of
-  them; the register records its verdict. You meet one in `state:blocked`: either the triage could not
-  settle it (`needs-human`; the job's last comment quotes what is missing), or the roadmap is under the
-  completed directory, where no lane works. Answer on the job and move it to `state:available` for
-  another triage (it reads your comment as data), correct the roadmap with a pull request on the roadmap
-  repository (`board sync` closes the job once the quoted text is gone from main), or close the job with a
+  them; the register records its verdict. A triage that could not settle it (`needs-human`) closes its
+  job with a comment quoting what is missing: answer on the issue and reopen it, and `board sync` files the
+  report's next triage round, which reads your comment as data (a rejected report's job is reopened the
+  same way). You meet one in `state:blocked` when the roadmap is under the completed directory, where no
+  lane works. Either way you may also correct the roadmap with a pull request on the roadmap repository
+  (`board sync` closes the job once the quoted text is gone from main), or close an open job with a
   comment saying why the report is wrong (the register records it as rejected, so the library's workers do
   not file it again). Until the correction lane exists, the correction a confirmed report states (in the
   register and in its triage under `packages/`) is also made by a hand-written pull request.
