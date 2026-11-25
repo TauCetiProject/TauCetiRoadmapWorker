@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .. import board, gates, gitops, openroadmaps, prompts, references, reports, summary
 from ..board import Job
-from ..gh import GHError
+from ..gh import GHError, transient
 from .base import (
     CONTENT_PUSH,
     PR_MARKER,
@@ -88,7 +88,10 @@ def open_pull_requests(ctx) -> list[dict]:
     out, after = [], None
     while True:
         data = ctx.gh.graphql(openroadmaps.QUERY, owner=owner, name=name, after=after)
-        page = (data.get("repository") or {}).get("pullRequests") or {}
+        page = ((data or {}).get("repository") or {}).get("pullRequests")
+        if not isinstance(page, dict) or not isinstance(page.get("nodes"), list):
+            # No repository or no listing in the answer is no answer: never "no pull request is open".
+            raise GHError(f"graphql: no pull requests of {repo} in the answer")
         for node in page.get("nodes") or []:
             files = node.get("files") or {}
             nodes = [f for f in files.get("nodes") or [] if isinstance(f, dict)]
@@ -160,9 +163,47 @@ def compose_body(cfg, job: Job, c: dict, gate: gates.GateResult, agent: str, mod
     return "\n\n".join(parts) + "\n"
 
 
+def own_pull(ctx, branch: str) -> dict | None:
+    """The pull request of the correction's own branch (`<operator>:<branch>`, one branch per job round), open
+    or not, or None. An entry naming another head is never taken."""
+    head = f"{ctx.operator}:{branch}"
+    for found in ctx.gh.api(f"repos/{ctx.cfg.repositories.content}/pulls?head={head}&state=all&per_page=10") or []:
+        if str((found.get("head") or {}).get("label") or "").lower() == head.lower():
+            return found
+    return None
+
+
+def ended(ctx, job: Job, pr: dict) -> None:
+    """The run's own pull request is merged or closed unmerged: what the run owes the content repository is
+    done (nothing more is pushed to it, and a closed pull request is not labelled for the board's upkeep).
+    What it owes the board is not: the outcomes and the pull request still reach the register, which then
+    settles the reports (a merge fixes them; a close frees them, or rejects them with the stop label)."""
+    for effect in (CONTENT_PUSH, CONTENT_PR, CONTENT_LABELS):
+        if owes(ctx, job, effect):
+            settle(ctx, job, effect, **({"content": {"pr": int(pr["number"])}} if effect == CONTENT_PR else {}))
+
+
 class CorrectionLane(Lane):
     kind = "correction"
     prompt = "correction"
+
+    def reconcile(self, job: Job, ctx: Context, pending: dict) -> str:
+        """`Lane.reconcile`, except for the run's own pull request once it is merged or closed: that is the
+        run's content effect completed (`ended`), not a reason to drop the run, and the board submission goes
+        on. A pull request other than the run's, or an open one whose head moved, still supersedes it."""
+        kept = kept_commit(pending, "content")
+        number, named = int(kept.get("pr") or 0), int(job.inputs.get("pr") or 0)
+        if number and kept.get("base") and not owes(ctx, job, CONTENT_PR) and not (named and named != number):
+            try:
+                pr = ctx.gh.api(f"repos/{ctx.cfg.repositories.content}/pulls/{number}") or {}
+            except GHError as exc:
+                if not transient(exc):
+                    raise
+                pr = {}
+            if pr.get("state") == "closed" and int(pr.get("number") or number) == number:
+                ended(ctx, job, {**pr, "number": number})
+                return super().reconcile(job, ctx, {k: v for k, v in pending.items() if k != "content"})
+        return super().reconcile(job, ctx, pending)
 
     def records_author(self, job: Job) -> bool:
         return False
@@ -181,13 +222,16 @@ class CorrectionLane(Lane):
         pending = read_pending(ctx, job)
         if pending is not None and owes(ctx, job, CONTENT_PR) and ctx.gh is not None and not ctx.dry_run:
             # A kept run that has not recorded its pull request: if an earlier attempt opened it and lost the
-            # answer, it is ours and is taken up; otherwise the run opens one, and must be admitted again.
+            # answer, it is ours and is taken up, open, merged or closed since (`ended`); otherwise the run opens
+            # one, and must be admitted again.
             try:
-                mine = gitops.open_pull_for(ctx.gh, cfg.repositories.content, f"{ctx.operator}:{branch}")
+                mine = own_pull(ctx, branch)
             except GHError as exc:
-                raise LaneError(f"whether this correction's pull request is open could not be read "
+                raise LaneError(f"whether this correction's pull request was opened could not be read "
                                 f"({str(exc).splitlines()[0][:120]})") from exc
-            if mine:
+            if mine and mine.get("state") == "closed":
+                ended(ctx, job, mine)
+            elif mine:
                 settle(ctx, job, CONTENT_PR, content={"pr": int(mine["number"])})
         if pending is None or owes(ctx, job, CONTENT_PR):
             # Only the rest of a submission whose pull request exists skips the admission.

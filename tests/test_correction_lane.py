@@ -363,8 +363,12 @@ def test_dry_run_writes_a_complete_brief(live, tmp_path):  # noqa: F811
      ["content-push", "content-pull-request", "content-labels", "push"]),
     ("repos/TauCetiProject/TauCetiRoadmap/issues/99/labels", ["content-push", "content-pull-request"]),
 ], ids=["board submission refused", "labels refused"])
+@pytest.mark.parametrize("then", ["open", "merged", "closed"])
 def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(  # noqa: F811
-        live, tmp_path, monkeypatch, stop, done):
+        live, tmp_path, monkeypatch, stop, done, then):
+    """(u) Between the two attempts the correction's pull request stays open, is merged, or is closed unmerged:
+    either way it is this run's own, its effects are done, and the outcomes and the pull request reach the
+    board (a merge never supersedes the run that opened it)."""
     ctx, _board = live
     commit(tmp_path / "origin-content", content_files(), "the roadmap")
     forks = {}
@@ -395,8 +399,10 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(  # 
         def api(self, path, paginate=False):
             if path == "repos/TauCetiProject/TauCetiRoadmap/pulls/99":      # what the next attempt reconciles with
                 fork = forks["alice/TauCetiRoadmap"]
-                return {"state": "open", "head": {"sha": gitops.git(
-                    fork, "rev-parse", "roadmap/quadratic-form-invariants-correction-1").strip()}}
+                return {"state": "open" if then == "open" else "closed", "number": 99,
+                        "merged_at": "2026-11-24T12:00:00Z" if then == "merged" else None,
+                        "head": {"label": "alice:roadmap/quadratic-form-invariants-correction-1", "sha": gitops.git(
+                            fork, "rev-parse", "roadmap/quadratic-form-invariants-correction-1").strip()}}
             return super().api(path, paginate)
 
         def write(self, method, path, payload=None):
@@ -413,6 +419,10 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(  # 
     assert first.status == "failed" and "next attempt finishes its submission" in first.detail, first.detail
     assert read_pending(ctx, job)["done"] == done
     commit(tmp_path / "origin-content", {"TauCetiRoadmap/Other/README.md": "# Other\n"}, "unrelated work on main")
+    if then == "merged":                                     # squashed onto main by the merge
+        commit(tmp_path / "origin-content", {README: TEXT.replace("of rank one are equivalent",
+                                                                 "of rank at least two are equivalent")}, "#99")
+    labels_before = len([w for w in gh.writes if w[1].endswith("/issues/99/labels")])
     second = lane_for(job).run(job, ctx)
 
     assert second.status == "submitted", second.detail
@@ -422,8 +432,12 @@ def test_a_round_with_a_stub_agent_opens_one_pull_request_even_when_stopped(  # 
     assert content_prs[0]["title"] == "QuadraticFormInvariants: state the chain equivalence for rank at least two"
     assert content_prs[0]["head"] == "alice:roadmap/quadratic-form-invariants-correction-1"
     assert "Validation:" in content_prs[0]["body"] and '"job": "CORRECT-QuadraticFormInvariants~1"' in content_prs[0]["body"]
-    assert ("POST", "repos/TauCetiProject/TauCetiRoadmap/issues/99/labels",
-            {"labels": ["roadmap-worker", "awaiting-review"]}) in gh.writes
+    labelled = [w for w in gh.writes if w[1].endswith("/issues/99/labels")]
+    if then == "open" or "labels" not in stop:
+        assert labelled == [("POST", "repos/TauCetiProject/TauCetiRoadmap/issues/99/labels",
+                             {"labels": ["roadmap-worker", "awaiting-review"]})]
+    else:
+        assert len(labelled) == labels_before == 0          # a closed pull request is not labelled for upkeep
     pushed = gitops.git(forks["alice/TauCetiRoadmap"], "show", f"roadmap/quadratic-form-invariants-correction-1:{README}")
     assert "rank at least two" in pushed
     report = gitops.git(forks["alice/TauCetiRoadmapJobs"], "show", f"w1/CORRECT-QuadraticFormInvariants_r1:{REPORT}")
@@ -627,3 +641,46 @@ def test_a_kept_run_whose_pull_request_was_opened_takes_it_up(live, tmp_path, mo
     lane_for(job).prepare(job, ctx)
     entry = read_pending(ctx, job)
     assert "content-pull-request" in entry["done"] and entry["content"]["pr"] == 61
+
+
+@needs_git
+@pytest.mark.parametrize("merged", [True, False], ids=["merged", "closed unmerged"])
+def test_a_kept_run_whose_lost_pull_request_has_since_ended_takes_it_up(live, tmp_path, monkeypatch, merged):  # noqa: F811
+    """(u) An earlier attempt opened the pull request and lost the answer, and it was merged (or closed) before
+    this attempt: it is still the run's own. Its content effects are done, no collision check runs (it is not
+    open, and a new pull request of the same branch could not be opened), and the board submission is owed."""
+    ctx, _board = live
+    commit(tmp_path / "origin-content", content_files(), "the roadmap")
+    job = correction_job()
+    from tauceti_roadmap_worker.lanes import base as lane_base
+    lane_base.write_pending(ctx, job, {"issue": job.number, "outstanding": [
+        "content-pull-request", "content-labels", "push", "pull-request", "submitted"],
+        "done": ["content-push"], "content": {"sha": "", "base": "", "branch": ""}})
+
+    class Ended(FakeGH):
+        def api(self, path, paginate=False):
+            if path.startswith("repos/TauCetiProject/TauCetiRoadmap/pulls?head=alice:roadmap/quadratic-form-"
+                               "invariants-correction-1&state=all"):
+                return [{"number": 61, "state": "closed", "merged_at": "2026-11-24T12:00:00Z" if merged else None,
+                         "head": {"label": "alice:roadmap/quadratic-form-invariants-correction-1"}}]
+            return super().api(path, paginate)
+    monkeypatch.setattr(lane_correction, "open_pull_requests", lambda ctx: pytest.fail("an admission check ran"))
+    ctx = dataclasses.replace(ctx, gh=Ended())
+    lane_for(job).prepare(job, ctx)
+    entry = read_pending(ctx, job)
+    assert entry["content"]["pr"] == 61 and entry["outstanding"] == ["push", "pull-request", "submitted"]
+    assert not [w for w in ctx.gh.writes if "TauCetiRoadmap/" in w[1]]
+
+
+@needs_git
+def test_an_answer_without_the_repository_opens_nothing(live, tmp_path):  # noqa: F811
+    ctx, _board = live
+    commit(tmp_path / "origin-content", content_files(), "the roadmap")
+
+    class NoRepository(InventoryGH):
+        def graphql(self, query, **variables):
+            return {"repository": None}
+    ctx = dataclasses.replace(ctx, gh=NoRepository([]))
+    job = correction_job()
+    with pytest.raises(LaneError, match="the open roadmap pull requests could not be read"):
+        lane_for(job).prepare(job, ctx)

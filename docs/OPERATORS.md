@@ -2132,9 +2132,13 @@ the board. The push and the pull request are effects of the job's record: a run 
 finishes on the next attempt without running the agent again, a second push or a second pull request,
 checked against the main it was built on (its report names that commit), however far main has moved
 since. Only the rest of a submission whose pull request exists skips the collision check: a kept run that
-has not recorded its pull request first looks for one it opened and lost the answer to (taken up if
-found), and otherwise is admitted again before it opens one. The labels are an effect too, so a label write
-that fails is made by the next attempt. A
+has not recorded its pull request first looks for one it opened and lost the answer to, open or not (taken
+up if found), and otherwise is admitted again before it opens one. The labels are an effect too, so a label write
+that fails is made by the next attempt. The run's own pull request merged, or closed unmerged, before the
+board submission finished is that effect completed, never a reason to drop the run: the content effects
+are settled (a closed pull request is not labelled), and the outcomes and `Pull request: #N` still reach
+the board, so the next sync fixes the reports (merged) or frees them (closed; rejected with the stop
+label). Only another pull request, or an open one whose head moved, supersedes the run. A
 correction whose every report is declined opens no pull request. The intake merges the report as any
 submission (refusing one whose applied correction names no pull request its author opened).
 

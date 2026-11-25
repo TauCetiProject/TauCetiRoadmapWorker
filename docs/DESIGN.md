@@ -268,7 +268,9 @@ checkout, submits a PR to the board, and the intake advances the state.
     pull request: the pull-request review (never by the author's operator), the gate lane, a human merge.
     The register records the correction's job and pull request on each report; a merged correction makes
     the report `fixed`, one closed unmerged frees it for the next round (or, with `[reports] stop_label`,
-    records it `rejected`), and a declined one is not tried again.
+    records it `rejected`), and a declined one is not tried again. A correction pull request merged or
+    closed before the job's board submission finished is the run's content effect completed: the outcomes
+    and the pull request still reach the board.
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.
