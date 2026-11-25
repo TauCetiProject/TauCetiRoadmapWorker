@@ -502,13 +502,20 @@ def revise(entry: dict, url: str, report: Report) -> list[str]:
         return []
     before = {k: entry.get(k) for k in EVIDENCE}
     evidence[url] = evidence_of(report)
-    said = [evidence[u] for u in entry["sources"] if u in evidence]
-    legacy = any(u not in evidence for u in entry["sources"])     # a source recorded before its evidence was
+    restate(entry)
+    entry["kind"], entry["effect"] = report.kind, report.effect
+    return [k for k in EVIDENCE if entry.get(k) != before[k]]
+
+
+def restate(entry: dict) -> None:
+    """The entry's declarations from its sources' own evidence, in the order of the sources (names of a source
+    recorded before its evidence was, a legacy one, are kept as the entry has them)."""
+    evidence = entry.setdefault("evidence", {})
+    said = [evidence[u] for u in entry.get("sources", []) if u in evidence]
+    legacy = any(u not in evidence for u in entry.get("sources", []))
     for key in ("refutes", "replaces"):
         names = [n for e in said for n in e[key]] + (list(entry.get(key, [])) if legacy else [])
         entry[key] = list(dict.fromkeys(names))
-    entry["kind"], entry["effect"] = report.kind, report.effect
-    return [k for k in EVIDENCE if entry.get(k) != before[k]]
 
 
 def add_source(entry: dict, report: Report, url: str) -> list[str]:
@@ -534,12 +541,15 @@ def report_of(job: board.Job) -> Report | None:
     return report
 
 
-SPEC_FIELDS = ("kind", "effect", "refutes", "replaces", "sources")
+SPEC_FIELDS = ("kind", "effect", "refutes", "replaces", "sources", "evidence")
 
 
 def project(entry: dict) -> dict:
-    """What a REPORT job's spec holds of its report: the register entry's fields, the one source of truth."""
-    return {k: list(entry.get(k, [])) if k in ("refutes", "replaces", "sources") else entry.get(k) for k in SPEC_FIELDS}
+    """What a REPORT job's spec holds of its report: the register entry's fields, the one source of truth,
+    each source's own evidence included, so that a job filed by a run whose register write failed gives back
+    what each source said, never the union as any source's statement."""
+    return {k: list(entry.get(k, [])) if k in ("refutes", "replaces", "sources") else
+            dict(entry.get(k) or {}) if k == "evidence" else entry.get(k) for k in SPEC_FIELDS}
 
 
 def refresh_specs(ctx, run: "Run", jobs: dict, known: dict) -> None:
@@ -699,6 +709,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
     jobs = {j.id: j for j in ctx.board.kind_jobs("report")}
     # A job filed by a run whose register write failed: the register takes it back, a first report as a
     # new entry, a recurrence (a round newer than the one the entry names) as the entry's new round.
+    lost: list[str] = []
     for job in sorted(jobs.values(), key=lambda j: j.number):
         report = report_of(job)
         if report is None:
@@ -714,9 +725,26 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             entry.update(job=job.id, state="open")
             for key in ("triage", "correction"):
                 entry.pop(key, None)
+        # Each source's evidence: the register's where it has it, else the spec's (what that source said when the
+        # job was filed or its spec last rewritten); a source neither records is read again (`retry`), and its
+        # names stay as the spec has them meanwhile. The spec's union is never any source's statement.
+        recorded = job.inputs.get("evidence") if isinstance(job.inputs.get("evidence"), dict) else {}
+        evidence = entry.setdefault("evidence", {})
         for url in (u for u in job.inputs.get("sources", []) if isinstance(u, str)):
-            revise(entry, url, report)
+            if url not in entry.setdefault("sources", []):
+                entry["sources"].append(url)
+            if url not in evidence and isinstance(recorded.get(url), dict):
+                evidence[url] = {k: recorded[url].get(k) for k in EVIDENCE}
+            elif url not in evidence:
+                lost.append(url)
+        entry["kind"], entry["effect"] = report.kind, report.effect
+        entry["refutes"], entry["replaces"] = list(report.refutes), list(report.replaces)
+        restate(entry)
         run.changed.append(f"{job.id} recorded")
+    queued = {q.get("url") for q in data.setdefault("retry", []) if isinstance(q, dict)}
+    for url in dict.fromkeys(lost):
+        if url not in queued:
+            data["retry"].append({"url": url, "forge": GITHUB if url.startswith("https://github.com/") else FORGEJO})
 
     # 1. The sources, one search per forge.
     library = r.library or cfg.repositories.library
@@ -882,7 +910,8 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
         job = board.new_job(board.make_id("report", name, rounds[name]), inputs={
             "roadmap": report.roadmap, "file": report.file, "roadmap_sha": report.roadmap_sha, "anchor": report.anchor,
             "kind": report.kind, "effect": report.effect, "refutes": list(report.refutes),
-            "replaces": list(report.replaces), "sources": [source.url], "place": place})
+            "replaces": list(report.replaces), "sources": [source.url], "evidence": {source.url: evidence_of(report)},
+            "place": place})
         state = "blocked" if place == "completed" else "available"
         filed.append(job.id)
         per_author[author] = per_author.get(author, 0) + 1

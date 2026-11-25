@@ -890,7 +890,7 @@ def test_an_open_jobs_spec_is_rewritten_from_the_register():
     ctx = context(gh, jobs=[job])
     out = reports.sync_reports(ctx, now=NOW)
     assert job.inputs["refutes"] == ["TauCeti.now"] and ctx.board.specs[-1][0] == job.id
-    assert f"reports: {job.id}: spec rewritten from the register (refutes, replaces)" in out
+    assert f"reports: {job.id}: spec rewritten from the register (refutes, replaces, evidence)" in out
 
 
 
@@ -985,3 +985,57 @@ def test_a_queued_source_that_cannot_be_read_is_never_gone():
     transport.add(f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues/7", json.dumps({"message": "x"}).encode())
     ctx = context(ReportsGH([]), transport=transport, forgejo=FORGEJO)
     assert reports.fetch_source(ctx, reports.FORGEJO, f"{FORGEJO}/TauCetiProject/TauCeti/pulls/7") is None
+
+
+# --- review round 6 -----------------------------------------------------------------------------------------------
+
+def test_recovering_a_round_keeps_each_sources_own_evidence():
+    """(ee) A and B were recorded with their own counterexamples; C files round 2, whose register write fails. The
+    recovery from round 2's spec must not give B (or anyone) the union of the declarations: when A later
+    withdraws its counterexample, it leaves the report, though B stays out of every search window."""
+    def says(n, witness, updated="2026-11-24T10:00:00Z"):
+        return item(n, body=marker(refutes=[f"TauCeti.{witness}"]), updated=updated)
+    a, b = reports.parse(marker(refutes=["TauCeti.wrongWitness"]))[0][0], \
+        reports.parse(marker(refutes=["TauCeti.otherWitness"]))[0][0]
+    entry = reports.new_entry(a, "REPORT-QuadraticFormInvariants~1", "fixed", f"{LIBRARY}/pull/1")
+    reports.revise(entry, f"{LIBRARY}/pull/2", b)
+    gh = ReportsGH([says(9, "newWitness", "2026-11-24T11:00:00Z")])
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+    old = Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1, number=40, state="done",
+              closed=True)
+    ctx = context(gh, jobs=[old])
+    write = gh.write
+    gh.write = lambda m, p, payload=None: (_ for _ in ()).throw(GHError("PUT: HTTP 502")) \
+        if p.endswith(reports.REGISTER) else write(m, p, payload)
+    with pytest.raises(GHError):
+        reports.sync_reports(ctx, now=NOW)                  # round 2 filed (and its spec refreshed); no register
+    [(round2, _s, _p)] = ctx.board.created
+    round2.number, round2.state = 41, "available"
+    ctx.board.jobs.append(round2)
+    gh.write = write
+    gh.search = [says(1, "correctWitness", "2026-11-24T12:00:00Z")]    # A corrects itself; B and C out of window
+    reports.sync_reports(ctx, now=NOW)
+    [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert e["job"] == "REPORT-QuadraticFormInvariants~2"
+    assert e["evidence"][f"{LIBRARY}/pull/2"]["refutes"] == ["TauCeti.otherWitness"]
+    assert e["evidence"][f"{LIBRARY}/pull/9"]["refutes"] == ["TauCeti.newWitness"]
+    assert "TauCeti.wrongWitness" not in e["refutes"] and "TauCeti.correctWitness" in e["refutes"]
+    assert "TauCeti.wrongWitness" not in round2.inputs["refutes"]
+
+
+def test_a_recovered_source_with_no_recorded_evidence_is_read_again():
+    """(ee) A job whose spec records no source's own evidence (filed before it did): its sources are queued to be
+    read again, never credited with the job's union of declarations."""
+    report = reports.parse(marker())[0][0]
+    job = new_job("REPORT-QuadraticFormInvariants~1", inputs={
+        "roadmap": report.roadmap, "file": report.file, "roadmap_sha": report.roadmap_sha, "anchor": report.anchor,
+        "kind": report.kind, "effect": report.effect, "refutes": list(report.refutes), "replaces": [],
+        "sources": [f"{LIBRARY}/pull/1", f"{LIBRARY}/pull/2"]})
+    job.number, job.state = 12, "available"
+    gh = ReportsGH([])
+    ctx = context(gh, jobs=[job])
+    reports.sync_reports(ctx, now=NOW)
+    [entry] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert entry["evidence"] == {} and entry["refutes"] == list(report.refutes)
+    assert sorted(gh.closer_reads) == [1, 2]                 # queued, and read again by number in the same run

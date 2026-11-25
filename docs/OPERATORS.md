@@ -1909,7 +1909,8 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    a source whose description was edited replaces its own evidence, so a declaration it corrected away is
    dropped unless another source still names it (`evidence revised (refutes; ...)`). The register is the
    one source of truth: every run rewrites the spec of each open REPORT job from its entry where they
-   differ (kind, effect, declarations, sources: `spec rewritten from the register`), so what a triage
+   differ (kind, effect, declarations, sources and each source's evidence: `spec rewritten from the
+   register`), so what a triage
    reads converges whatever happened in between (an edit, a later source, a reopened job, a write that
    failed half-way). The spec holds the declarations of all the sources, so their number has no
    per-marker limit there. The job hears of a new source or an edit in one comment, `Reported again in
@@ -1954,7 +1955,10 @@ of the queue, and one its forge no longer has leaves it. Queued sources come bef
 on filing serve them first. No set of undecided sources can keep a later one from being read, and no stream
 of new ones can keep a queued one waiting. A job that a run filed without writing the register (the write failed) is recorded
 from its spec by the next run: a first report as a new entry, a later round of a report (a recurrence) as
-that entry's new round, so it is never filed twice. With
+that entry's new round, so it is never filed twice. Each source keeps its own evidence in that recovery:
+the register's where it has it, else the spec's (the spec carries every source's evidence, `evidence`,
+rewritten from the register with the rest); a source neither records is queued to be read again
+(`retry`), and the job's union of declarations is never taken as any source's statement. With
 `--yes` absent, the step logs every decision with `would file ... (dry run)` and writes nothing.
 
 A run costs the board's budget the read of the register, the listing of `kind:report` jobs (from the
