@@ -33,8 +33,9 @@ def pinned_rev(content: Path, package: str) -> str:
         manifest = json.loads((content / "lake-manifest.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return ""
-    return next((str(p.get("rev") or "") for p in manifest.get("packages") or []
-                 if str(p.get("name") or "").lower() == package.lower()), "")
+    packages = manifest.get("packages") if isinstance(manifest, dict) else None
+    return next((str(p.get("rev") or "") for p in (packages if isinstance(packages, list) else [])
+                 if isinstance(p, dict) and str(p.get("name") or "").lower() == package.lower()), "")
 
 
 def lean_files(gh, repo: str, sha: str, cache: Path | None) -> tuple[set[str], bool]:

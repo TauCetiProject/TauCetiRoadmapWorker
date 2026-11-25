@@ -879,10 +879,10 @@ class Lane:
             return
         repo = ctx.cfg.repositories.library
         package = repo.rsplit("/", 1)[-1]
-        pin = librarymain.pinned_rev(ws.workdir, package) or librarymain.pinned_rev(ws.content, package)
-        if not pin:
-            return
         try:
+            pin = librarymain.pinned_rev(ws.workdir, package) or librarymain.pinned_rev(ws.content, package)
+            if not pin:
+                return
             text, count = librarymain.report(
                 ctx.gh, repo, pin, "main",
                 readme.read_text(encoding="utf-8") + (lean.read_text(encoding="utf-8") if lean.is_file() else ""),

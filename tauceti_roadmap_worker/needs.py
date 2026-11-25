@@ -21,8 +21,11 @@ from dataclasses import dataclass, field
 HEADING = re.compile(r"^(#{2,3})\s+(.*?)\s*$", re.M)
 ID = r"(?:[A-Z]{1,3}\.?)?\d+(?:\.\d+)+[a-z]?"       # 2.1, 2.3a, P1.2, R3.1.2, RD.1.2
 NUMBERED = re.compile(r"^(?:§\s*)?(" + ID + r")(?=[\s.:]|$)")
-REF = re.compile(r"§\s*(" + ID + r")(?:\([a-z0-9]+\))?")
-RANGE = re.compile(r"§\s*(" + ID + r")\s*[–-]\s*§?\s*(" + ID + r")")
+ITEM = r"(?:§+\s*)?" + ID + r"(?:\([a-z0-9]+\))?"
+# One citation: "§1.1", "§1.1–§1.3", "§§4.1–4.2, 1.2 and 3.3". A number with no sign of its own is part
+# of it after a dash, or anywhere in a chain opened with "§§".
+CHAIN = re.compile(r"§+\s*" + ID + r"(?:\([a-z0-9]+\))?(?:\s*(?:,|–|-|\band\b|\bto\b|\bor\b)\s*" + ITEM + r")*")
+LINK = re.compile(r"(,|–|-|\band\b|\bto\b|\bor\b)?\s*(§+)?\s*(" + ID + r")(?:\([a-z0-9]+\))?")
 # A roadmap, a library or a source named before a section sign: a word with two capitals (`PDE`,
 # `TeichmullerGeometry`), a backticked name, or a bracketed source key. The chain of references that
 # follows it (", §4.3", "–§6.3", "and §5.1", and after "§§" the bare "–4.6", ", 4.8") belongs to it.
@@ -51,12 +54,17 @@ def _own(text: str, ids: dict[str, int]) -> tuple[set[str], set[str]]:
     not), references to other roadmaps removed and ranges within one layer filled in."""
     text = FOREIGN.sub(" ", text)
     found, unknown = set(), set()
-    for m in RANGE.finditer(text):
-        a, b = m.group(1), m.group(2)
-        if a in ids and b in ids and a.rsplit(".", 1)[0] == b.rsplit(".", 1)[0]:
-            found.update(k for k, i in ids.items() if ids[a] <= i <= ids[b] and k.rsplit(".", 1)[0] == a.rsplit(".", 1)[0])
-    for m in REF.finditer(text):
-        (found if m.group(1) in ids else unknown).add(m.group(1))
+    for chain in CHAIN.finditer(text):
+        plural, last = chain.group(0).startswith("§§"), ""
+        for sep, sign, sid in LINK.findall(chain.group(0)):
+            dash = sep in ("–", "-")
+            if last and not (sign or plural or dash):
+                break                                   # "§1.1 and 2.5 times": the chain ended at the sign
+            layer = sid.rsplit(".", 1)[0]
+            if dash and last in ids and sid in ids and last.rsplit(".", 1)[0] == layer:
+                found.update(k for k, i in ids.items() if ids[last] <= i <= ids[sid] and k.rsplit(".", 1)[0] == layer)
+            (found if sid in ids else unknown).add(sid)
+            last = sid
     return found, unknown
 
 
@@ -76,7 +84,7 @@ def targets(readme: str) -> list[Target]:
         plain = NEEDS.sub("\n\n", body)
         checks = "\n".join(m.group(0) for m in CHECK.finditer(plain))
         rest = CHECK.sub(" ", plain)
-        listed, _ = _own(needs, ids)
+        listed, unknown_n = _own(needs, ids)
         used, unknown = _own(rest, ids)
         in_checks, unknown_c = _own(checks, ids)
         used.discard(sid)
@@ -87,7 +95,7 @@ def targets(readme: str) -> list[Target]:
             unlisted=sorted(used - listed, key=key),
             check_only=sorted(in_checks - used - listed, key=key),
             later_listed=sorted((x for x in listed if ids[x] > ids[sid]), key=key),
-            unknown=sorted(unknown | unknown_c)))
+            unknown=sorted(unknown | unknown_c | unknown_n)))
     return out
 
 

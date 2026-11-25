@@ -89,7 +89,20 @@ def test_an_inline_needs_annotation_and_a_plural_supplier_citation_are_read_as_s
         f"### 4.{k} T\n\nProse.\n\n" for k in (1, 2, 3, 5))
     found = needs.targets(later)[1]
     assert (found.later_listed, found.unknown) == ([], [])
-    assert needs.targets(later.replace("ShimuraVarieties ", "")).__getitem__(1).later_listed == ["4.1", "4.2", "4.3"]
+    assert needs.targets(later.replace("ShimuraVarieties ", ""))[1].later_listed == ["4.1", "4.2", "4.3", "4.5"]
+
+
+def test_a_local_list_with_one_section_sign_is_read_whole():
+    head = "# Roadmap: x\n\n## Layer 1\n\n" + "".join(f"### 1.{k} T\n\nDefine it.\n\n" for k in (1, 2, 3, 4))
+    body = "### 1.5 U\n\nUse §1.1, §1.2 and §1.4.\n\n*Needs:* §§1.1–1.2, 1.4.\n"
+    assert needs.report(head + body)[1] == 0
+    assert needs.report(head + body.replace("§§1.1–1.2, 1.4", "§§1.1, 1.2 and 1.4"))[1] == 0
+    # with a single sign a bare number is a number: "§1.1 and 1.4 times" lists §1.1 alone
+    found = needs.targets(head + body.replace("§§1.1–1.2, 1.4.", "§1.1–1.2 and 1.4 times."))[4]
+    assert found.unlisted == ["1.4"]
+    # a section the annotation alone names, and this README has not
+    found = needs.targets(head + "### 1.5 U\n\nDefine U.\n\n*Needs:* §9.9; §§1.1, 8.8.\n")[4]
+    assert (found.unlisted, found.unknown) == ([], ["8.8", "9.9"])
 
 
 PIN, HEAD = "a" * 40, "b" * 40
@@ -156,7 +169,16 @@ def test_a_review_round_is_handed_both_leads(world, tmp_path):  # noqa: F811
     assert ws.extra["library_main"][1] == 1
     ws.workdir = board
     (tmp_path / "lake-manifest.json").write_text(json.dumps({"packages": [{"name": "Lib", "rev": PIN}]}))
-    # switched off, or without a pin, nothing is read
+    # a manifest of the wrong shape is no pin, and never fails the round
+    for bad in ("[]", '{"packages": [null]}', '{"packages": {"Lib": 1}}', "{"):
+        (ws.workdir / "lake-manifest.json").write_text(bad)
+        (tmp_path / "lake-manifest.json").write_text(bad)
+        ws.extra.pop("library_main", None)
+        lane.prepare_library_main(ctx, ws, ws.board / "packages" / job.name / "README.md", ws.scratch / "none.lean")
+        assert "library_main" not in ws.extra
+    (ws.workdir / "lake-manifest.json").unlink()
+    (tmp_path / "lake-manifest.json").write_text(json.dumps({"packages": [{"name": "Lib", "rev": PIN}]}))
+    lane.prepare_library_main(ctx, ws, ws.board / "packages" / job.name / "README.md", ws.scratch / "none.lean")
     cfg.prreview.library_main = False
     ws.extra.pop("library_main")
     lane.prepare_library_main(ctx, ws, ws.board / "packages" / job.name / "README.md", ws.scratch / "none.lean")
