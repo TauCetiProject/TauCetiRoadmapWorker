@@ -1379,7 +1379,8 @@ def parser() -> argparse.ArgumentParser:
                     help="do not have a second agent read each new opening against the rest of its README")
     ov.add_argument("--check-agent", choices=["claude", "codex"], default="",
                     help="the agent that reads the opening (default: the writer's)")
-    ov.add_argument("--check-model", default="", help="its model (default: the writer's; a review model is better)")
+    ov.add_argument("--check-model", default="", help="its model (default: the writer's, or the configured model of the reader's family when "
+                                                               "--check-agent names the other one; a review model is better)")
     ov.add_argument("--yes", action="store_true", help="push the checked READMEs and post the notes (default: "
                                                        "propose only, into the state directory)")
 

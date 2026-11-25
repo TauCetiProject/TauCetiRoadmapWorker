@@ -74,6 +74,24 @@ def test_the_sections_a_target_cites_are_compared_with_its_needs_line():
     assert count == 0 and text.endswith("\n\nNothing found in 4 numbered subsections.\n")
 
 
+def test_an_inline_needs_annotation_and_a_plural_supplier_citation_are_read_as_such():
+    head = "# Roadmap: x\n\n## Layer 1\n\n### 1.1 A\n\nDefine A.\n\n### 1.2 B\n\n"
+    # the annotation after the statement, in its paragraph: what it lists is listed, not cited text
+    assert needs.report(head + "Use §1.1. *Needs:* §1.1.\n")[1] == 0
+    found = needs.targets(head + "Use §1.1 for B.\n*Needs:* Mathlib.\n")[1]
+    assert (found.has_needs, found.unlisted) == (True, ["1.1"])
+    # prose that names the annotation in backticks is not one
+    assert needs.targets(head + "Use §1.1; the `*Needs:*` line of §1.1 is empty.\n")[1].has_needs is False
+    # `Other §§1.1–1.2` is the supplier's range: it neither lists this README's §1.1 nor points forward
+    found = needs.targets(head + "Use §1.1.\n\n*Needs:* OtherRoadmap §§1.1–1.2.\n")[1]
+    assert (found.unlisted, found.later_listed) == (["1.1"], [])
+    later = head + "Define B.\n\n*Needs:* §1.1; ShimuraVarieties §§4.1–4.3, 4.5 and §4.2a.\n\n## Layer 4\n\n" + "".join(
+        f"### 4.{k} T\n\nProse.\n\n" for k in (1, 2, 3, 5))
+    found = needs.targets(later)[1]
+    assert (found.later_listed, found.unknown) == ([], [])
+    assert needs.targets(later.replace("ShimuraVarieties ", "")).__getitem__(1).later_listed == ["4.1", "4.2", "4.3"]
+
+
 PIN, HEAD = "a" * 40, "b" * 40
 AT_PIN = ["TauCeti/Analysis/Sobolev/Basic.lean", "TauCeti/Analysis/Complex/Basic.lean", "README.md"]
 AT_MAIN = AT_PIN + ["TauCeti/Analysis/Complex/Beltrami/Linear.lean", "TauCeti/Analysis/Complex/Beltrami/Basic.lean",
@@ -126,6 +144,18 @@ def test_a_review_round_is_handed_both_leads(world, tmp_path):  # noqa: F811
     text = lane.tools_text(ctx, ws)
     assert "- **The library past the pin**: `" in text and "lists 1 directories" in text
     assert "- **`*Needs:*` lines**: `" in text and "for 3 subsections" in text
+    # the pin is the reviewed tree's: a pull request that pins behind the content repository's main is
+    # compared from its own pin, although the content checkout is at the library's head already
+    (tmp_path / "lake-manifest.json").write_text(json.dumps({"packages": [{"name": "Lib", "rev": HEAD}]}))
+    lane.prepare_library_main(ctx, ws, ws.board / "packages" / job.name / "README.md", ws.scratch / "none.lean")
+    assert ws.extra["library_main"][1] == 0
+    board, ws.workdir = ws.workdir, tmp_path / "pr" / "12"
+    ws.workdir.mkdir(parents=True)
+    (ws.workdir / "lake-manifest.json").write_text(json.dumps({"packages": [{"name": "Lib", "rev": PIN}]}))
+    lane.prepare_library_main(ctx, ws, ws.board / "packages" / job.name / "README.md", ws.scratch / "none.lean")
+    assert ws.extra["library_main"][1] == 1
+    ws.workdir = board
+    (tmp_path / "lake-manifest.json").write_text(json.dumps({"packages": [{"name": "Lib", "rev": PIN}]}))
     # switched off, or without a pin, nothing is read
     cfg.prreview.library_main = False
     ws.extra.pop("library_main")

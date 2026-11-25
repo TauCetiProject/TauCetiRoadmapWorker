@@ -205,20 +205,21 @@ def test_a_proposal_is_built_from_the_agents_opening_and_checked(tmp_path):
     assert (tmp_path / "w" / "run-2.out").is_file()
 
 
-def writer_and_reader(opening, plan, answers):
+def writer_and_reader(opening, plan, answers, exit_code=0):
     """The writer of `agent_writing`, and a reader that answers the k-th reading with `answers[k]` (None:
-    it writes nothing). The reader is the run whose working directory is a `check-<n>` folder."""
+    it writes nothing) and exits with `exit_code`. The reader is the run whose working directory is a
+    `check-<n>` folder; `seen` has its files and, as `argv`, its command."""
     write, seen = agent_writing(opening, plan), []
 
     def launch(argv, cwd=None, **kwargs):
         if not cwd.name.startswith("check-"):
             return write(argv, cwd=cwd, **kwargs)
-        seen.append({p.name: p.read_text(encoding="utf-8") for p in cwd.iterdir() if p.is_file()})
+        seen.append({p.name: p.read_text(encoding="utf-8") for p in cwd.iterdir() if p.is_file()} | {"argv": argv})
         answer = answers[len(seen) - 1]
         if answer is not None:
             (cwd / overview.CHECK_NAME).write_text(json.dumps(answer), encoding="utf-8")
         return SimpleNamespace(stdin=SimpleNamespace(write=lambda s: None, close=lambda: None), stdout=iter(()),
-                               wait=lambda timeout=None: 0, pid=0)
+                               wait=lambda timeout=None: exit_code, pid=0)
     return launch, seen
 
 
@@ -248,6 +249,17 @@ def test_a_second_agent_reads_the_opening_against_the_rest_before_it_is_proposed
                          "the README does not support “It proves Lagrange's theorem.”")):
         launch, seen = writer_and_reader(OPENING, plan, [answer, answer])
         assert overview.propose(*args, agent="claude", model="m", launch=launch, check=True).why == "refused: " + why
+    # A reader that fails after writing its support for one sentence has not read the opening.
+    launch, seen = writer_and_reader(OPENING, plan, [good, good], exit_code=1)
+    got = overview.propose(*args, agent="claude", model="m", launch=launch, check=True)
+    assert got.new == "" and got.why == "refused: the reader of the opening did not finish (exit 1)" and len(seen) == 2
+    # A reader of the other family runs on that family's configured model, not on the writer's.
+    launch, seen = writer_and_reader(OPENING, plan, [good])
+    assert overview.propose(*args, agent="claude", model="m", launch=launch, check=True, check_agent="codex").new
+    assert ctx.cfg.agents.codex_model in seen[0]["argv"] and "m" not in seen[0]["argv"]
+    launch, seen = writer_and_reader(OPENING, plan, [good])
+    assert overview.propose(*args, agent="claude", model="m", launch=launch, check=True, check_agent="claude").new
+    assert "m" in seen[0]["argv"]
     # Without `check` no reader runs.
     launch, seen = writer_and_reader(OPENING, plan, [])
     assert overview.propose(*args, agent="claude", model="m", launch=launch).new and seen == []

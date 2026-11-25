@@ -230,7 +230,8 @@ def unsupported(ctx, workdir: Path, folder: str, new: str, lean: str, attempt: i
     (2026-11-18: an opening said a notion did not depend "on the metric" where the layer proves it for
     any two continuous Riemannian metrics; a referee found it a day later). The reader gets the opening
     and the README without it in a folder of its own (`check-<attempt>`), and writes `check.json`: one
-    entry for each asserting sentence. No answer, or an answer that lists no sentence, is a problem too."""
+    entry for each asserting sentence. No answer, or an answer that lists no sentence, is a problem too,
+    and so is a reader that did not finish: what it wrote before it failed covers part of the opening."""
     cfg, where = ctx.cfg, workdir / f"check-{attempt}"
     if where.exists():
         shutil.rmtree(where)
@@ -250,6 +251,9 @@ def unsupported(ctx, workdir: Path, folder: str, new: str, lean: str, attempt: i
         netjail=cfg.sandbox.netjail, claude_hook=cfg.sandbox.claude_hook, settings_dir=ctx.wdir / "settings"), launch)
     if getattr(result, "limited", False):
         return [], True
+    if not result.ok:
+        return ["the reader of the opening did not finish ("
+                + ("timed out" if result.timed_out else f"exit {result.exit_code}") + ")"], False
     try:
         answer = json.loads((where / CHECK_NAME).read_text(encoding="utf-8"))
         sentences = [x for x in answer["sentences"] if isinstance(x, dict) and str(x.get("sentence") or "").strip()]
@@ -266,8 +270,9 @@ def propose(ctx, workdir: Path, folder: str, path: str, readme: str, lean: str, 
             launch=None, attempts: int = 2, check: bool = False, check_agent: str = "", check_model: str = "") -> Folder:
     """The agent's overview of one README, checked: reordered, direction words fixed, the agent's opening
     and proposals applied, then `rewrite_problems` against the README at the head and, with `check`, a
-    second agent's reading of the opening against the rest (`unsupported`; `check_agent` and
-    `check_model`, else the writer's). Its files stay in `workdir` (the proposed README as
+    second agent's reading of the opening against the rest (`unsupported`; `check_agent`, else the
+    writer's, on `check_model`, else the writer's model for the writer's agent and the configured model
+    of its family for the other). Its files stay in `workdir` (the proposed README as
     `README.proposed.md`)."""
     out = Folder(folder, path, readme)
     try:
@@ -321,8 +326,10 @@ def propose(ctx, workdir: Path, folder: str, path: str, readme: str, lean: str, 
         if problems:
             continue
         if check:
-            problems, limited = unsupported(ctx, workdir, folder, new, lean, attempt, agent=check_agent or agent,
-                                            model=check_model or model, launch=launch)
+            reader = check_agent or agent
+            problems, limited = unsupported(
+                ctx, workdir, folder, new, lean, attempt, agent=reader, launch=launch,
+                model=check_model or (model if reader == agent else ctx.cfg.model_for(reader)))
             if limited:
                 out.why = "the agent that reads the opening is at its usage limit"
                 return out

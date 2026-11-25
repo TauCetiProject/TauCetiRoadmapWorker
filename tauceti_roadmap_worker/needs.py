@@ -7,6 +7,7 @@ no remark on it where a referee later found four such lines. `report` does the c
 numbered subsection of a layer it lists the sections of this README its text cites and its `*Needs:*`
 line does not, saying which are cited only in a Check and which stand later in the README, and the
 later sections a `*Needs:*` line itself lists. They are leads: a section named for contrast is no need.
+The annotation is read where it stands, on a line of its own or after the statement in one paragraph.
 
 A reference counts as this README's when no roadmap name stands before it: "SobolevMapsBetweenManifolds
 §4.2, §4.3" cites another roadmap twice, "§1.2, §2.1" this one.
@@ -24,13 +25,14 @@ REF = re.compile(r"§\s*(" + ID + r")(?:\([a-z0-9]+\))?")
 RANGE = re.compile(r"§\s*(" + ID + r")\s*[–-]\s*§?\s*(" + ID + r")")
 # A roadmap, a library or a source named before a section sign: a word with two capitals (`PDE`,
 # `TeichmullerGeometry`), a backticked name, or a bracketed source key. The chain of references that
-# follows it (", §4.3", "–§6.3", "and §5.1") belongs to it.
+# follows it (", §4.3", "–§6.3", "and §5.1", and after "§§" the bare "–4.6", ", 4.8") belongs to it.
 FOREIGN = re.compile(
     r"(?:\b[A-Z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*|`[^`\n]+`|\[[^\]\n]+\]|\bTau Ceti|\bMathlib)(?:\s+README)?[\s,]*"
-    r"§\s*" + ID + r"(?:\([a-z0-9]+\))?(?:\s*(?:,|–|-|and|to|or)\s*§\s*" + ID + r"(?:\([a-z0-9]+\))?)*")
-NEEDS = re.compile(r"^\*Needs:\*.*?(?=\n\s*\n|\Z)", re.M | re.S)
-# A Check block runs from its label to the next labelled paragraph, the `*Needs:*` line or a heading.
-CHECK = re.compile(r"^\*{1,2}Checks?[:.]?\*{1,2}[:.]?.*?(?=^\*Needs|^\*\*[A-Z]|^#|\Z)", re.M | re.S)
+    r"§+\s*" + ID + r"(?:\([a-z0-9]+\))?(?:\s*(?:,|–|-|and|to|or)\s*(?:§+\s*)?" + ID + r"(?:\([a-z0-9]+\))?)*")
+# To the end of its paragraph. A backtick before it is prose about the annotation, not one.
+NEEDS = re.compile(r"(?<!`)\*Needs:\*.*?(?=\n\s*\n|\Z)", re.S)
+# A Check block runs from its label to the next labelled paragraph or a heading (`*Needs:*` is cut first).
+CHECK = re.compile(r"^\*{1,2}Checks?[:.]?\*{1,2}[:.]?.*?(?=^\*\*[A-Z]|^#|\Z)", re.M | re.S)
 
 
 @dataclass
@@ -71,8 +73,9 @@ def targets(readme: str) -> list[Target]:
     out = []
     for sid, title, body in sections:
         needs = "\n".join(m.group(0) for m in NEEDS.finditer(body))
-        checks = "\n".join(m.group(0) for m in CHECK.finditer(body))
-        rest = CHECK.sub(" ", NEEDS.sub(" ", body))
+        plain = NEEDS.sub("\n\n", body)
+        checks = "\n".join(m.group(0) for m in CHECK.finditer(plain))
+        rest = CHECK.sub(" ", plain)
         listed, _ = _own(needs, ids)
         used, unknown = _own(rest, ids)
         in_checks, unknown_c = _own(checks, ids)

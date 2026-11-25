@@ -871,12 +871,15 @@ class Lane:
     def prepare_library_main(self, ctx: Context, ws: Workspace, readme: Path, lean: Path) -> None:
         """`scratch/library-main.md`: the directories of the library's main branch that hold files the
         pinned tree lacks under a proper name the README uses (`librarymain.report`), so that what the
-        library gained since the pin is a lead the reviewer opens. Off with `[prreview] library_main =
-        false`; best effort, like the citations."""
+        library gained since the pin is a lead the reviewer opens. The pin is the reviewed tree's
+        (`ws.workdir`, the head of a pull request, which can pin an older commit than the content
+        repository's main); a board package has no manifest of its own and takes the content checkout's.
+        Off with `[prreview] library_main = false`; best effort, like the citations."""
         if not getattr(ctx.cfg.prreview, "library_main", True) or ctx.dry_run or ctx.gh is None:
             return
         repo = ctx.cfg.repositories.library
-        pin = librarymain.pinned_rev(ws.content, repo.rsplit("/", 1)[-1])
+        package = repo.rsplit("/", 1)[-1]
+        pin = librarymain.pinned_rev(ws.workdir, package) or librarymain.pinned_rev(ws.content, package)
         if not pin:
             return
         try:

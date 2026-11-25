@@ -1614,10 +1614,11 @@ refuses is never pushed; the agent's output stays in the scratch folder and the 
 That check says the layers kept their words, not that the opening is true to them, and the push carries
 the acceptance with no review. So a second agent, which did not write the opening, then reads it against
 the rest of the README (`prompts/overview-check.md`; `--check-agent`, `--check-model`, by default the
-writer's: name a review model): for each sentence that asserts something it names the subsection or
+writer's, and for a reader of the other family that family's configured model: name a review model): for each sentence that asserts something it names the subsection or
 declaration that supports it, hypotheses, quantifier scope and strength of conclusion compared, in
 `check-<attempt>/check.json`. A sentence it cannot support is sent back to the writer once, then the
-README is refused (`refused: the README does not support “…”`); so is a reader that leaves no answer.
+README is refused (`refused: the README does not support “…”`); so is a reader that leaves no answer or
+does not finish, whatever it wrote first.
 `--no-check` skips the reading. (2026-11-18: an opening said a notion did not depend "on the metric"
 where the layer proves it for any two continuous Riemannian metrics; a referee's report found it the
 next day, on an accepted pull request.)
