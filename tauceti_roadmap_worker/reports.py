@@ -17,10 +17,11 @@ per run (GitHub's search for pull requests, and Forgejo's listing of pull reques
 forgejo` names an instance) for bodies updated since the register's mark, and decides every valid report.
 Only pull requests carry reports: anything else a search returns is ignored.
 
-* a merged pull request counts from anyone (TauCeti merges through bors: a closed pull request whose
-  title starts `[Merged by Bors] - ` is merged); an open pull request only from a login of
-  `[reports] reporters` (GitHub, teams allowed) or `forgejo_reporters`; a pull request closed unmerged
-  never;
+* on GitHub, a merged pull request counts from anyone (TauCeti merges through bors: a closed pull request
+  whose title starts `[Merged by Bors] - ` is merged once `closed_by` is a `merge_bots` account), an open one
+  only from a login of `[reports] reporters` (teams allowed); on Forgejo, whose queue has no account of its
+  own, a pull request counts only from a login of `forgejo_reporters`, open, merged or bors-titled, and no
+  merge is verified; a pull request closed unmerged never counts;
 * a report is one `(roadmap, file, anchor)`, the anchor whitespace-normalised and case-folded: one
   already in the register gains the source (the job gets one comment);
 * a new one is checked against the roadmap repository's main (the file under the active directory,
@@ -230,7 +231,7 @@ class Source:
     open: bool
     updated: str
     body: str = ""
-    bors: bool = False        # closed, titled `[Merged by Bors] - ...`: merged only once its closer is verified
+    bors: bool = False        # closed, titled `[Merged by Bors] - ...`: on GitHub, merged once its closer is verified
     closer: str | None = None # who closed it, when a read of the pull request said so already
 
     @property
@@ -254,8 +255,8 @@ def merged(item: dict) -> bool:
 
 def bors_closed(item: dict) -> bool:
     """Whether a pull request is closed and titled `[Merged by Bors] - ...`, as the merge queue leaves the pull
-    requests it merges. Its author can do the same by hand, so it counts as merged only once the account that
-    closed it is a configured queue account (`verify_merge`)."""
+    requests it merges. Its author can do the same by hand, so on GitHub it counts as merged only once the
+    account that closed it is a configured queue account (`verify_merge`)."""
     return (isinstance(item.get("pull_request"), dict) and not merged(item) and item.get("state") == "closed"
             and str(item.get("title") or "").startswith(BORS))
 
@@ -310,39 +311,23 @@ def fetch_source(ctx, forge: str, url: str) -> Source | str | None:
 
 
 def closer(ctx, source: Source) -> str | None:
-    """The login that closed a pull request ('' when none is found), or None when it cannot be read: GitHub's
-    `closed_by` (one REST request), Forgejo's last `close` event in its timeline (at most three pages)."""
-    r = ctx.cfg.reports
+    """The login that closed a GitHub pull request ('' when none is named), or None when it cannot be read:
+    `closed_by`, one REST request (none when the listing's read of the pull request named it already)."""
     if source.closer is not None:
         return source.closer
-    if source.forge == GITHUB:
-        try:
-            issue = ctx.gh.api(f"repos/{r.library or ctx.cfg.repositories.library}/issues/{source.number}") or {}
-        except GHError:
-            return None
-        return str((issue.get("closed_by") or {}).get("login") or "")
-    transport = getattr(ctx, "transport", None) or fetcher.UrllibTransport(timeout=60, max_bytes=20 << 20)
-    base, repo = r.forgejo.rstrip("/"), r.forgejo_repository or r.library or ctx.cfg.repositories.library
-    found = ""
-    for page in range(1, PAGES + 1):
-        url = f"{base}/api/v1/repos/{quote(repo, safe='/')}/issues/{source.number}/timeline?limit=50&page={page}"
-        try:
-            got = transport.request(url, {"Accept": "application/json"})
-            events = json.loads(got.body.decode("utf-8")) if got.status == 200 else None
-        except (fetcher.FetchError, ValueError):
-            events = None
-        if not isinstance(events, list):
-            return None
-        found = next((str((e.get("user") or {}).get("login") or "") for e in reversed(events)
-                      if isinstance(e, dict) and e.get("type") == "close"), found)
-        if len(events) < 50:
-            return found
-    return None                 # more events than the pages read: a later `close` may be another account's
+    r = ctx.cfg.reports
+    try:
+        issue = ctx.gh.api(f"repos/{r.library or ctx.cfg.repositories.library}/issues/{source.number}")
+    except GHError:
+        return None
+    if not isinstance(issue, dict):
+        return None
+    return str((issue.get("closed_by") or {}).get("login") or "")
 
 
 def verify_merge(ctx, data: dict, run: Run, source: Source) -> bool | None:
-    """Whether a bors-titled pull request was closed by a merge-queue account of its forge (`[reports]
-    merge_bots`, `forgejo_merge_bots`): True, False, or None when that cannot be read now (at most
+    """Whether a bors-titled GitHub pull request was closed by a merge-queue account (`[reports]
+    merge_bots`): True, False, or None when that cannot be read now (at most
     VERIFY_PER_RUN reads a run). A verified merge is kept in the register (`merges`), so each costs one read;
     so is a refusal, for the revision of the pull request it read (`not_merges`: its update time), so pull
     requests already decided never use up the reads a later one needs."""
@@ -357,8 +342,7 @@ def verify_merge(ctx, data: dict, run: Run, source: Source) -> bool | None:
     who = closer(ctx, source)
     if who is None:
         return None
-    bots = ctx.cfg.reports.merge_bots if source.forge == GITHUB else ctx.cfg.reports.forgejo_merge_bots
-    if who.lower() in {b.lower() for b in bots}:
+    if who.lower() in {b.lower() for b in ctx.cfg.reports.merge_bots}:
         known[source.url] = who
         refused.pop(source.url, None)
         run.changed.append(f"{source.url} merged by {who}")
@@ -786,7 +770,17 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
         run.out += [f"reports: {source.url}: {p}; not read" for p in problems]
         if not got:
             continue
-        if source.bors:
+        if source.forge == FORGEJO:
+            # No Forgejo merge is verified (its queue closes as a maintainer's own account): only a listed
+            # Forgejo reporter's pull request counts, open, merged or bors-titled; one closed unmerged never.
+            if not (source.open or source.merged or source.bors):
+                run.out.append(f"reports: {source.url}: {source.what()}; not harvested")
+                continue
+            if not reporter(ctx, source):
+                run.out.append(f"reports: {source.url}: {source.what()} of @{source.author}, who is not a listed "
+                               "Forgejo reporter ([reports] forgejo_reporters); not harvested")
+                continue
+        elif source.bors:
             verdict = verify_merge(ctx, data, run, source)
             if verdict is None:
                 run.out.append(f"reports: {source.url}: titled as a bors merge; who closed it could not be read; left "
@@ -797,10 +791,10 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
                 run.out.append(f"reports: {source.url}: titled as a bors merge, but not closed by a merge-queue account "
                                "([reports] merge_bots); read as a pull request closed unmerged")
             source.merged = verdict
-        if not source.merged and not source.open:
+        if source.forge == GITHUB and not source.merged and not source.open:
             run.out.append(f"reports: {source.url}: {source.what()}; not harvested")
             continue
-        if not source.merged:
+        if source.forge == GITHUB and not source.merged:
             ok = reporter(ctx, source)
             if ok is None:
                 run.out.append(f"reports: {source.url}: may @{source.author} report? Unknown (the reporters' teams "

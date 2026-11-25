@@ -401,29 +401,56 @@ def test_a_failed_register_write_is_recovered_from_the_job_on_the_board():
     assert entry["job"] == job.id and entry["sources"] == [f"{LIBRARY}/pull/1"] and entry["state"] == "open"
 
 
-def test_forgejo_pull_requests_are_harvested_by_their_bors_title():
+def forgejo_item(number, login, title="[Merged by Bors] - feat: x", merged=False, state="closed", **kw):
+    got = item(number, base=f"{FORGEJO}/TauCetiProject/TauCeti", login=login, title=title, state=state, **kw)
+    got["pull_request"] = {"merged": merged, "merged_at": None, "html_url": got["html_url"]}
+    return got
+
+
+def test_forgejo_pull_requests_count_only_from_listed_reporters_whatever_their_title():
+    """No Forgejo merge is verified (the instance has no queue account): a Forgejo pull request counts when its
+    author is a listed Forgejo reporter, open, merged or bors-titled, and never otherwise; no timeline is read."""
     transport = FakeTransport()
     base = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues?type=pulls&state=all&limit=50"
-    forgejo_pr = item(3668, base=f"{FORGEJO}/TauCetiProject/TauCeti", updated="2026-11-23T11:40:44Z")
-    forgejo_pr["pull_request"] = {"merged": False, "merged_at": None, "draft": False,
-                                  "html_url": forgejo_pr["html_url"]}
-    open_one = item(3700, base=f"{FORGEJO}/TauCetiProject/TauCeti", state="open", title="feat: y", login="kim",
-                    body=marker(anchor="diagonal chains"), updated="2026-11-23T11:00:00Z")
-    open_one["pull_request"] = {"merged": False, "merged_at": None}
-    transport.add(f"{base}&page=1", json.dumps([forgejo_pr, open_one]).encode())
+    listed = [forgejo_item(3668, "kim", updated="2026-11-23T11:40:44Z"),
+              forgejo_item(3700, "kim", title="feat: y", state="open", body=marker(anchor="diagonal chains"),
+                           updated="2026-11-23T11:00:00Z"),
+              forgejo_item(3701, "stranger", body=marker(anchor="rank one"), updated="2026-11-23T10:00:00Z"),
+              forgejo_item(3702, "stranger", title="feat: z", merged=True, body=marker(anchor="Two forms"),
+                           updated="2026-11-23T10:00:00Z"),
+              forgejo_item(3703, "kim", title="feat: w", body=marker(anchor="equivalent"),      # closed unmerged
+                           updated="2026-11-23T10:00:00Z")]
+    transport.add(f"{base}&page=1", json.dumps(listed).encode())
     gh = ReportsGH([])
-    timeline = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues/3668/timeline?limit=50&page=1"
-    transport.add(timeline, json.dumps([{"type": "change_title", "user": {"login": "queue"}},
-                                        {"type": "close", "user": {"login": "queue"}}]).encode())
-    ctx = context(gh, transport=transport, forgejo=FORGEJO, forgejo_reporters=["Kim"], forgejo_merge_bots=["queue"])
+    ctx = context(gh, transport=transport, forgejo=FORGEJO, forgejo_reporters=["Kim"])
     out = reports.sync_reports(ctx, now=NOW)
     assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [
         [f"{FORGEJO}/TauCetiProject/TauCeti/pulls/3700"], [f"{FORGEJO}/TauCetiProject/TauCeti/pulls/3668"]]
+    assert not [u for u in transport.requests if "/timeline" in u]
+    assert any("pulls/3702: a merged pull request of @stranger, who is not a listed Forgejo reporter" in x for x in out)
+    assert any("pulls/3703: a pull request closed unmerged; not harvested" in x for x in out)
     assert gh.register()["scanned"]["forgejo"] == "2026-11-23T11:40:44Z" and "2 filed" in out[-2]
     # The next listing asks for what changed since the mark, less the margin.
     transport.add(f"{base}&page=1&since=2026-11-23T11%3A35%3A44Z", b"[]")
     reports.sync_reports(ctx, now=NOW)
     assert transport.requests[-1].endswith("&since=2026-11-23T11%3A35%3A44Z")
+
+
+def test_a_long_forgejo_timeline_never_holds_a_listed_reporters_report():
+    """(v) A bors-titled Forgejo pull request with 151 timeline events was deferred on every sync (each read
+    pages 1-3 again). Nothing reads the timeline now: the listed reporter's report is filed on the first sync."""
+    transport = FakeTransport()
+    base = f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues?type=pulls&state=all&limit=50"
+    transport.add(f"{base}&page=1", json.dumps([forgejo_item(7, "kim")]).encode())
+    for n, events in enumerate(([{"type": "comment", "user": {"login": "x"}}] * 50,) * 3
+                               + ([{"type": "close", "user": {"login": "queue"}}],), start=1):
+        transport.add(f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues/7/timeline?limit=50&page={n}",
+                      json.dumps(events).encode())
+    gh = ReportsGH([])
+    ctx = context(gh, transport=transport, forgejo=FORGEJO, forgejo_reporters=["kim"])
+    reports.sync_reports(ctx, now=NOW)
+    assert [j.inputs["sources"] for j, _s, _p in ctx.board.created] == [[f"{FORGEJO}/TauCetiProject/TauCeti/pulls/7"]]
+    assert gh.register().get("retry", []) == []
 
 
 def test_a_forge_that_does_not_answer_keeps_its_mark_and_the_other_goes_on():
@@ -935,16 +962,6 @@ def test_a_forgejo_listing_that_is_not_whole_is_a_failure(body, headers):
     assert any(line.startswith(f"reports: the Forgejo listing of {FORGEJO} failed") and "HTTP" not in line
                for line in out)
     assert gh.register()["scanned"]["forgejo"] == "2026-11-24T09:00:00Z"
-
-
-def test_a_closer_beyond_the_pages_read_is_unknown_not_refused():
-    transport = FakeTransport()
-    page = json.dumps([{"type": "comment", "user": {"login": "x"}}] * 50).encode()
-    for n in range(1, 11):
-        transport.add(f"{FORGEJO}/api/v1/repos/TauCetiProject/TauCeti/issues/7/timeline?limit=50&page={n}", page)
-    ctx = context(ReportsGH([]), transport=transport, forgejo=FORGEJO)
-    source = reports.Source("forgejo", f"{FORGEJO}/TauCetiProject/TauCeti/pulls/7", "a", False, False, "t", bors=True)
-    assert reports.closer(ctx, source) is None
 
 
 def test_a_queued_source_that_cannot_be_read_is_never_gone():

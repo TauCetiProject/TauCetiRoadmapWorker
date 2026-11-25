@@ -438,15 +438,15 @@ class Reports:
     library: str = ""
     forgejo: str = ""
     forgejo_repository: str = ""
-    # Who may report from an open pull request (a merged pull request counts from anyone, one closed
-    # unmerged never): GitHub logins or "team:<org>/<slug>", and Forgejo logins.
+    # Who may report from an open GitHub pull request (a merged one counts from anyone, one closed unmerged
+    # never): GitHub logins or "team:<org>/<slug>". On Forgejo, whose merges are not verified, a pull request
+    # counts only from these logins (open, merged or bors-titled).
     reporters: list[str] = field(default_factory=list)
     forgejo_reporters: list[str] = field(default_factory=list)
-    # The accounts a merge queue closes merged pull requests as (bors closes them and retitles them `[Merged by
-    # Bors] - ...`, which their author could do too): a bors-titled pull request counts as merged only when one
-    # of these closed it; otherwise it is a pull request closed unmerged.
+    # The accounts GitHub's merge queue closes merged pull requests as (bors closes them and retitles them
+    # `[Merged by Bors] - ...`, which their author could do too): a bors-titled GitHub pull request counts as
+    # merged only when one of these closed it; otherwise it is a pull request closed unmerged.
     merge_bots: list[str] = field(default_factory=lambda: ["tauceti-queue[bot]"])
-    forgejo_merge_bots: list[str] = field(default_factory=list)
     # REPORT jobs filed per run, and per author per run; the rest wait for later runs.
     per_run: int = 5
     per_author: int = 2
@@ -718,8 +718,8 @@ def validate(cfg: Config) -> None:
     if any(not isinstance(a, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", a)
            for a in cfg.reports.forgejo_reporters):
         problems.append("reports.forgejo_reporters must list Forgejo logins")
-    if any(not isinstance(b, str) or not b.strip() for b in cfg.reports.merge_bots + cfg.reports.forgejo_merge_bots):
-        problems.append("reports.merge_bots and reports.forgejo_merge_bots must list logins")
+    if any(not isinstance(b, str) or not b.strip() for b in cfg.reports.merge_bots):
+        problems.append("reports.merge_bots must list logins")
     if cfg.reports.per_run < 0 or cfg.reports.per_author < 0:
         problems.append("reports.per_run and reports.per_author must be 0 or more")
     if cfg.worker.idle_seconds < 30:

@@ -349,19 +349,19 @@ enabled = false
 library = ""
 forgejo = ""            # e.g. "https://git.taucetiproject.org"
 forgejo_repository = ""
-# A merged pull request's reports count from anyone (TauCeti merges through bors: a closed pull request
-# titled `[Merged by Bors] - ...` is merged). Those of an open pull request count only from these: GitHub
-# logins or teams as "team:<org>/<slug>", and Forgejo logins. A pull request closed unmerged never counts.
+# On GitHub, a merged pull request's reports count from anyone (TauCeti merges through bors: a closed pull
+# request titled `[Merged by Bors] - ...` is merged, see merge_bots); those of an open pull request count only
+# from `reporters`: GitHub logins or teams as "team:<org>/<slug>". On Forgejo no merge is verified (the
+# instance's queue closes as a maintainer's own account), so a pull request there counts only from
+# `forgejo_reporters` logins, open, merged or bors-titled. A pull request closed unmerged never counts.
 # Reports travel only in pull requests: an issue's marker is never read.
 reporters = []
 forgejo_reporters = []
-# A pull request bors merged is closed and retitled `[Merged by Bors] - ...`, which its author can also do by
-# hand: it counts as merged only when one of these accounts closed it (GitHub's `closed_by`, one request per pull
-# request; Forgejo's timeline), and is otherwise a pull request closed unmerged. On TauCeti's GitHub the queue
-# closes as `tauceti-queue[bot]`. On the Forgejo instance the queue closes as a maintainer's own account: list
-# it here only if every pull request that account closes with that title is one the queue merged.
+# A GitHub pull request bors merged is closed and retitled `[Merged by Bors] - ...`, which its author can also
+# do by hand: it counts as merged only when one of these accounts closed it (`closed_by`, one request per pull
+# request), and is otherwise a pull request closed unmerged. On TauCeti's GitHub the queue closes as
+# `tauceti-queue[bot]`.
 merge_bots = ["tauceti-queue[bot]"]
-forgejo_merge_bots = []
 # REPORT jobs filed per run, and per author per run; the rest are filed by later runs.
 per_run = 5
 per_author = 2

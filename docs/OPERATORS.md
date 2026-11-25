@@ -1888,17 +1888,20 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    timed out on part of the index), a Forgejo answer that is not a list (an error object, a proxy's page)
    or a page shorter than both its limit and the instance's `X-Total-Count`; the step says the search
    failed and the next run reads the same window again.
-2. A merged pull request counts from anyone; GitHub's `merged_at` and Forgejo's `merged` are merged. A
-   bors merge is a pull request closed and titled `[Merged by Bors] - `, which its author can also do by
-   hand: it counts as merged only when a merge-queue account closed it (`[reports] merge_bots`, default
-   `tauceti-queue[bot]`, read from GitHub's `closed_by`; `forgejo_merge_bots`, read from the last `close`
-   event of the Forgejo timeline, three pages at most: a longer timeline is a closer not read), else it is a pull request closed unmerged (`titled as a bors merge, but
-   not closed by a merge-queue account`); a closer that cannot be read leaves the source for a later run.
-   A verified merge is kept in the register (`merges`), and so is a refusal, for the revision of the pull
-   request it read (`not_merges`: its update time), so each costs one read, at most twenty a run, and pull
-   requests already decided never use up the reads a later one needs. An
-   open pull request counts only from `[reports] reporters` (GitHub logins or `team:<org>/<slug>`,
-   resolved as `[board] target_filers` are) or `forgejo_reporters`; a pull request closed unmerged never.
+2. On GitHub, a merged pull request (`merged_at`) counts from anyone. A bors merge is a pull request closed
+   and titled `[Merged by Bors] - `, which its author can also do by hand: it counts as merged only when a
+   merge-queue account closed it (`[reports] merge_bots`, default `tauceti-queue[bot]`, read from GitHub's
+   `closed_by`), else it is a pull request closed unmerged (`titled as a bors merge, but not closed by a
+   merge-queue account`); a closer that cannot be read leaves the source for a later run. A verified merge
+   is kept in the register (`merges`), and so is a refusal, for the revision of the pull request it read
+   (`not_merges`: its update time), so each costs one read, at most twenty a run, and pull requests already
+   decided never use up the reads a later one needs. An open pull request counts only from
+   `[reports] reporters` (GitHub logins or `team:<org>/<slug>`, resolved as `[board] target_filers` are).
+   On Forgejo no merge is verified: the instance's queue closes as a maintainer's own account, so who closed
+   a pull request says nothing. A Forgejo pull request counts only when its author is in
+   `[reports] forgejo_reporters`, open, merged or bors-titled (`... of @<login>, who is not a listed Forgejo
+   reporter ([reports] forgejo_reporters); not harvested` otherwise), and no timeline is read. A pull
+   request closed unmerged never counts, on either forge.
 3. A report is its roadmap, file and anchor (whitespace runs as one space, case folded). The register
    keeps what each of its sources says now (`evidence`: kind, effect, declarations, by source): the
    report's declarations are those its sources name now, and its kind and effect those of the source

@@ -208,10 +208,11 @@ checkout, submits a PR to the board, and the intake advances the state.
     the worker, and the declarations that refute and replace it. With `[reports] enabled`, `board sync`
     searches the library's pull requests once per forge per run (GitHub, and Forgejo when configured)
     and files one
-    `REPORT-<Leaf>~k` per new report: from a merged pull request whoever wrote it (a bors merge, a
-    closed pull request titled `[Merged by Bors] - `, counts when a configured merge-queue account closed
-    it), from an open pull request only when its author is in `[reports] reporters`, from a pull request
-    closed unmerged never. The roadmap, file and quoted text (whitespace normalised, case folded) are one
+    `REPORT-<Leaf>~k` per new report: on GitHub, from a merged pull request whoever wrote it (a bors
+    merge, a closed pull request titled `[Merged by Bors] - `, counts when a configured merge-queue account
+    closed it), from an open pull request only when its author is in `[reports] reporters`; on Forgejo,
+    where no merge is verified, only from an author in `forgejo_reporters`; from a pull request closed
+    unmerged never. The roadmap, file and quoted text (whitespace normalised, case folded) are one
     report whatever its sources, and what each source says now (an edited description replaces its own
     evidence) is what the report and its open job carry; a report whose text main no longer
     holds is recorded as fixed and files nothing, and an open report is fixed, its job done, once its
@@ -368,6 +369,10 @@ Agents fetch what they need themselves, within rules:
 - The two-operator pilot: two operators, four targets, one week, with the resulting PRs compared
   with the hand-run campaign on review rounds needed and reviewer findings per PR.
 - The weekly digest issue of open `needs-references` requests.
+- Verifying a Forgejo merge. The instance's merge queue closes pull requests as a maintainer's own
+  account, so who closed a bors-titled pull request says nothing there: a Forgejo pull request's reports
+  count only from a listed Forgejo reporter, whatever its title, and a merged report from anyone else
+  on Forgejo is not harvested.
 - The lanes of roadmap reports: a read-only triage lane that confirms or rejects each `REPORT` job
   against the roadmap and the library (setting the register's `confirmed` and `rejected`), and a
   correction lane that batches a roadmap's confirmed reports into one pull request on the roadmap
