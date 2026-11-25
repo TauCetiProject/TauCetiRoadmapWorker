@@ -2134,10 +2134,11 @@ checked against the main it was built on (its report names that commit), however
 since. A kept run is checked against one observation of its own pull request, read once per attempt:
 by its recorded number, or, when an earlier attempt pushed and lost the answer to the pull request it
 opened, by its branch (in any state). A read that fails decides nothing: the attempt fails and the run is
-kept for the next. A pull request other than the one the job names, or one whose head is not the commit
-the run pushed (somebody pushed on its branch), supersedes the run: it is dropped, nothing of it is
-submitted, and the next round starts afresh (waiting, while that pull request is open, as for any other
-that edits the folder). At the run's commit, an open pull request is the run's own (taken up if its answer
+kept for the next. A pull request other than the one the job names supersedes the run. One whose head is
+not the commit the run pushed (somebody pushed on its branch) blocks the job for a human: nothing of the
+run is submitted for a head it did not check, and a fresh run could not reuse the branch. The human
+finishes the correction on that pull request (merged, its reports leave main and are fixed) and closes
+the job. At the run's commit, an open pull request is the run's own (taken up if its answer
 was lost); a merged one, or one closed unmerged, is that effect completed, never a reason to drop the run:
 the content effects are settled (a closed pull request is not labelled), and the outcomes and `Pull
 request: #N` still reach the board, so the next sync fixes the reports (merged) or frees them (closed;

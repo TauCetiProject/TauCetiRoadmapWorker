@@ -191,8 +191,10 @@ class CorrectionLane(Lane):
         """A kept run against one observation of its own content pull request (`observe`): by its recorded
         number, or, when an earlier attempt pushed and lost the answer to the pull request it opened, by its
         branch. Everything is decided from that one record, and `Lane.reconcile` is left only the board part:
-        - a pull request other than the one the job names, or whose head is not the commit the run pushed
-          (somebody pushed on its branch), supersedes the run: it is dropped, and the next round starts afresh;
+        - a pull request other than the one the job names supersedes the run (it is dropped); one whose head is
+          not the commit the run pushed (somebody pushed on its branch) blocks the job for a human (LaneBlocked):
+          its outcomes are never submitted for a head the run did not check, and a fresh run could not reuse
+          the branch;
         - open, at the run's commit: the run's (taken up when its answer was lost); the submission goes on;
         - merged or closed unmerged, at the run's commit: the content effect completed (`ended`), and the board
           submission goes on, so the register records the pull request.
@@ -205,7 +207,12 @@ class CorrectionLane(Lane):
             if named and named != number:
                 return f"the job is now on #{named}, the run was for #{number}"
             if kept.get("sha") and head != kept["sha"]:
-                return f"#{number} is at {head[:7] or 'an unknown head'}, not the {kept['sha'][:7]} the run pushed"
+                # Not the run's to finish, nor to start again: a fresh run's branch of the same name would be
+                # refused (it exists), and the pull request now holds somebody else's work.
+                raise LaneBlocked(f"#{number} on `{ctx.cfg.repositories.content}` is at {head[:7] or 'an unknown head'}, "
+                                  f"not the {kept['sha'][:7]} this correction pushed: somebody else changed it, so this "
+                                  "run's outcomes are not submitted. A human finishes the correction on that pull "
+                                  "request (merged, its reports leave main and are fixed) and closes this job.")
             if pr.get("state") == "closed":
                 ended(ctx, job, pr)
             else:

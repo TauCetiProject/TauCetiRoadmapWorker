@@ -650,7 +650,7 @@ def test_a_kept_run_whose_answer_was_lost_is_decided_by_one_observation_of_its_p
     """(u, aa) An earlier attempt pushed and opened the pull request, and lost the answer. The pull request of its
     branch, open, merged or closed since, is the run's own only at the commit the run pushed: then its content
     effects are taken up (no admission check, no second pull request of the branch). A head somebody else moved
-    supersedes the run, so its stale outcomes are never submitted for a head it did not check."""
+    blocks the job for a human, so the run's stale outcomes are never submitted for a head it did not check."""
     monkeypatch.setenv("TAUCETI_PROJECT_STATE", str(tmp_path / "state"))
     ctx = Context(cfg=example_config(), gh=None, board=FakeBoard(), claims=None, worker_id="w1", operator="alice",
                   agent="codex", model="m")
@@ -672,16 +672,19 @@ def test_a_kept_run_whose_answer_was_lost_is_decided_by_one_observation_of_its_p
             return super().api(path, paginate)
     monkeypatch.setattr(lane_correction, "open_pull_requests", lambda ctx: pytest.fail("an admission check ran"))
     ctx = dataclasses.replace(ctx, gh=Lost())
+    if outcome == "superseded":
+        with pytest.raises(LaneBlocked, match=f"#61 on `TauCetiProject/TauCetiRoadmap` is at {head[:7]}, not the "
+                                              f"{KEPT[:7]} this correction pushed"):
+            lane_for(job).reconcile(job, ctx, read_pending(ctx, job))
+        assert ctx.gh.reads == 1 and not ctx.gh.writes
+        assert "content-pull-request" in read_pending(ctx, job)["outstanding"]       # nothing taken up
+        return
     dropped = lane_for(job).reconcile(job, ctx, read_pending(ctx, job))
     entry = read_pending(ctx, job)
     assert ctx.gh.reads == 1 and not ctx.gh.writes
-    if outcome == "superseded":
-        assert dropped == f"#61 is at {head[:7]}, not the {KEPT[:7]} the run pushed"
-        assert "content-pull-request" in entry["outstanding"]
-    else:
-        assert dropped == "" and entry["content"]["pr"] == 61
-        assert entry["outstanding"] == (["content-labels", "push", "pull-request", "submitted"] if outcome == "adopted"
-                                        else ["push", "pull-request", "submitted"])
+    assert dropped == "" and entry["content"]["pr"] == 61
+    assert entry["outstanding"] == (["content-labels", "push", "pull-request", "submitted"] if outcome == "adopted"
+                                    else ["push", "pull-request", "submitted"])
 
 
 @needs_git
