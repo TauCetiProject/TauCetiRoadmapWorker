@@ -203,7 +203,7 @@ def test_a_round_with_a_stub_agent_submits_the_triage(live, tmp_path, monkeypatc
         (task.workdir / TRIAGE).write_text(triage(head=head))
         return agents.AgentResult(exit_code=0, seconds=1.0)
     monkeypatch.setattr(agents, "run_agent", agent)
-    gh = FakeGH()
+    gh = IssueGH("")                                      # the job's issue, with no prose
     ctx = dataclasses.replace(ctx, gh=gh, transport=FakeTransport())
     job = report_job()
 
@@ -672,3 +672,23 @@ def test_a_later_round_reads_the_earlier_rounds_and_their_issues(ctx):
                              "body": "Round 2: the rank-one case is excluded on line 3."}]
     people, _later = lane_report.ReportLane.notes(job, ctx)
     assert people.index(f"on #7 (`{JOB}`)") < people.index("Round 2: the rank-one")
+
+
+def test_a_triage_never_runs_on_inputs_it_could_not_read(ctx):
+    """Family 4: the job's issue, or an earlier round's comments, not read is a failed round, not empty data."""
+    class Down(FakeGH):
+        def api(self, path, paginate=False):
+            raise GHError(f"GET {path}: HTTP 502")
+    job = report_job()
+    with pytest.raises(lane_report.LaneError, match="could not be read"):
+        lane_report.ReportLane.prose(job, dataclasses.replace(ctx, gh=Down()))
+
+    class Flaky(FakeBoard):
+        def comments(self, number):
+            if number == 7:
+                raise GHError("GET comments: HTTP 502")
+            return []
+    later = new_job(JOB.replace("~1", "~2"), inputs={**job.inputs, "previous": [{"job": JOB, "issue": 7}]})
+    later.number = 9
+    with pytest.raises(lane_report.LaneError, match="the comments of #7 could not be read"):
+        lane_report.ReportLane.notes(later, dataclasses.replace(ctx, board=Flaky()))

@@ -165,32 +165,36 @@ class ReportLane(Lane):
 
     @staticmethod
     def prose(job: Job, ctx: Context) -> str:
-        """The reporter's prose, as the board quoted it in the job's issue ('' when it has none or the issue
-        cannot be read)."""
+        """The reporter's prose, as the board quoted it in the job's issue ('' when it has none). An issue that
+        cannot be read fails the round (LaneError, tried again): a triage never runs on part of its inputs."""
         if ctx.gh is None:
             return ""
         try:
-            issue = ctx.gh.api(f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}") or {}
-        except GHError:
-            return ""
+            issue = ctx.gh.api(f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}")
+        except GHError as exc:
+            raise LaneError(f"the job's issue #{job.number} could not be read ({str(exc).splitlines()[0][:120]})") from exc
+        if not isinstance(issue, dict):
+            raise LaneError(f"the job's issue #{job.number} could not be read (no issue in the answer)")
         return reports.quoted_prose(issue.get("body") or "")
 
     @staticmethod
     def notes(job: Job, ctx: Context) -> tuple[str, list[str]]:
         """(what people other than the board wrote on the issues of the report's earlier rounds and on the job's
-        own, oldest round first (an answer to an earlier `needs-human` triage), as one text; the board's own notes of later sources and revisions, `Reported
-        again in ...` and `Revised in ...`). Empty when the issue cannot be read."""
+        own, oldest round first (an answer to an earlier `needs-human` triage), as one text; the board's own
+        notes of later sources and revisions, `Reported again in ...` and `Revised in ...`). An issue whose
+        comments cannot be read fails the round (LaneError, tried again): a later round's human answer is the
+        reason it runs."""
         bots = {b.lower() for b in ctx.cfg.board.bot_logins}
         issues = [(int(p["issue"]), str(p.get("job") or "")) for p in previous(job) if p.get("issue")]
         people, board_notes = [], []
         for number, name in issues + ([(job.number, "")] if job.number else []):
             try:
                 comments = ctx.board.comments(number)
-            except (GHError, AttributeError):
-                if number == job.number:
-                    return "", []
-                people.append(f"(the issue of `{name}`, #{number}, could not be read)")
-                continue
+            except GHError as exc:
+                raise LaneError(f"the comments of #{number} could not be read ({str(exc).splitlines()[0][:120]})") \
+                    from exc
+            except AttributeError:            # a board without comments (a dry run's stand-in)
+                comments = []
             for c in comments or []:
                 who, body = ((c.get("user") or {}).get("login") or ""), str(c.get("body") or "")
                 if who.lower() not in bots:

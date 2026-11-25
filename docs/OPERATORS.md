@@ -2007,7 +2007,8 @@ directory) and the quoted text in it, with the same whitespace rule as the harve
 around it to the job's scratch; a text no longer there blocks the job (`board sync` records it fixed and
 closes it), and so does a roadmap now under the completed directory (a human's). It reads the reporter's
 prose back from the job's issue (the block the board quoted), the comments people other than the board
-wrote on the job, and looks each declaration the report names up in the pinned Tau Ceti (a declaration of
+wrote on the job and on the issues of the report's earlier rounds (an issue or comments it cannot read fail
+the round, which is tried again: a triage never runs on part of its inputs), and looks each declaration the report names up in the pinned Tau Ceti (a declaration of
 its last component, with its file and line, or none: a name newer than the pin is read in the pull request
 the report comes from, as data). It never runs Lean, waits for no source (what it cannot read goes under
 `## Missing`) and changes neither checkout. Its report, `packages/<Leaf>/reports/REPORT-<Leaf>~k.md`,
