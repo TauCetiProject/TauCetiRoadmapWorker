@@ -50,10 +50,11 @@ class PullGH:
 def sync(tmp_path, monkeypatch):
     monkeypatch.setattr(intake, "open_roadmap_prs", lambda ctx: [PR])
 
-    def run(gh, board, maintainers=(OWNER,), approval=""):
+    def run(gh, board, maintainers=(OWNER,), approval="", handed=()):
         cfg = example_config()
         cfg.replies.maintainer_logins = list(maintainers)
         cfg.prreview.approval_label = approval
+        cfg.prreview.handed_over_prs = list(handed)
         return intake.sync_pull_requests(SimpleNamespace(cfg=cfg, gh=gh, board=board, state=tmp_path))
     return run
 
@@ -86,6 +87,22 @@ def test_a_review_awaiting_its_author_takes_the_approval_label_off(sync):
     gh = PullGH(labels=("awaiting-review", "ai-found-no-errors", ready))
     sync(gh, FakeBoard(), approval=ready)
     assert gh.writes == []
+
+
+def test_a_pull_request_handed_to_the_maintainers_keeps_the_approval_label_and_gets_no_gate_job(sync):
+    ready = "awaiting-human-approval"
+    gh, board = PullGH(reviews=[REVIEW], labels=("awaiting-author", "ai-found-no-errors", ready)), FakeBoard()
+    out = sync(gh, board, approval=ready, handed=(905,))
+    assert gh.writes == [("DELETE", f"{LABELS}/awaiting-author", {})] and board.created == []
+    assert "#905 Foo: handed over by an operator (prreview.handed_over_prs)" in out
+    assert not [line for line in out if "awaiting-author" in line or "GATE" in line]
+    # With no such label on it there is nothing to write; another pull request's number changes nothing.
+    gh = PullGH(reviews=[REVIEW], labels=("awaiting-review", ready))
+    sync(gh, FakeBoard(), approval=ready, handed=(905,))
+    assert gh.writes == []
+    gh, board = PullGH(reviews=[REVIEW], labels=("awaiting-review", ready)), FakeBoard()
+    sync(gh, board, approval=ready, handed=(9,))
+    assert ("DELETE", f"{LABELS}/{ready}", {}) in gh.writes and len(board.created) == 1
 
 
 def test_without_the_login_configured_the_owners_review_stays_a_reply(sync):

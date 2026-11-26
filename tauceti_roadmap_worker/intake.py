@@ -1728,7 +1728,9 @@ def sync_pull_requests(ctx) -> list[str]:
     review repairs it: `repairing_review`; none for a completed roadmap revised in place:
     `revises_completed`), and held pull requests back to draft. With `[prreview] enabled`, the
     acceptance label (`[prreview] label`) and the approval label come off a pull request on which a
-    review that points out errors waits for an answer (`errors_hold`); this step never adds them. Each
+    review that points out errors waits for an answer (`errors_hold`); this step never adds them. A pull
+    request an operator handed to the maintainers (`[prreview] handed_over_prs`) loses the
+    awaiting-author label and gets no reply label and no GATE job: its approval label stands. Each
     pull request, its reviews, issue comments and inline comments are read `[board] graphql_batch` at a
     time by GraphQL (`prbatch.PullReader`; REST for the rest)."""
     cfg, out = ctx.cfg, []
@@ -1759,6 +1761,17 @@ def sync_pull_requests(ctx) -> list[str]:
                                           awaiting_review=r.awaiting_review, maintainers=set(r.maintainer_logins),
                                           maintainer_prefix=r.maintainer_review_prefix, owner=p["owner"])
         have = {label["name"] for label in data.get("labels", [])}
+        if number in cfg.prreview.handed_over_prs:
+            # An operator handed it to the maintainers (`[prreview] handed_over_prs`): the approval label
+            # (`deplabels` keeps it on) says what it waits for, so the label of a review awaiting its
+            # author comes off, no reply label is written and no gate round is filed.
+            try:
+                if r.awaiting_author in have:
+                    ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(r.awaiting_author, safe='')}")
+            except GHError as exc:
+                out.append(f"#{number}: labels on {repo} not changed ({exc})")
+            out.append(f"#{number} {p['name']}: handed over by an operator (prreview.handed_over_prs)")
+            continue
         if want == r.awaiting_author and cfg.prreview.approval_label:
             # a review its author has yet to answer: a human approval is no longer all it needs
             # (`deplabels`, which keeps that label, would take it off only at its next run)
@@ -3179,7 +3192,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                 ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
                 out.append(f"#{number}: {p.label} removed ({asked or errors})")
                 labelled = label_on[number] = False
-                if p.approval_label and p.approval_label in entry.get("labels", []):
+                if p.approval_label and p.approval_label in entry.get("labels", []) and number not in p.handed_over_prs:
                     ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.approval_label, safe='')}")
                     out.append(f"#{number}: {p.approval_label} removed ({p.label} is off)")
             except GHError as exc:
@@ -3301,7 +3314,7 @@ def sync_pr_reviews(ctx) -> list[str]:
                 ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
                 label_on[number] = False
                 out.append(f"#{number}: {p.label} removed ({reason})")
-                if p.approval_label and p.approval_label in entry.get("labels", []):
+                if p.approval_label and p.approval_label in entry.get("labels", []) and number not in p.handed_over_prs:
                     # no accepted head, so a human approval is not all it needs: `roadmaps
                     # dependency-labels`, which keeps this label, would take it off only at its next run
                     ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.approval_label, safe='')}")
@@ -3353,7 +3366,7 @@ def sync_pr_reviews(ctx) -> list[str]:
             elif labelled and (not state or errors):
                 ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.label, safe='')}")
                 out.append(f"#{number}: {p.label} removed (aggregate: {errors or note})")
-                if p.approval_label and p.approval_label in entry.get("labels", []):
+                if p.approval_label and p.approval_label in entry.get("labels", []) and number not in p.handed_over_prs:
                     ctx.gh.write("DELETE", f"repos/{repo}/issues/{number}/labels/{quote(p.approval_label, safe='')}")
                     out.append(f"#{number}: {p.approval_label} removed ({p.label} is off)")
             elif state and errors:

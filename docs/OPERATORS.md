@@ -929,6 +929,7 @@ an operator files by hand at an accepted head (inputs `operator_check`) is not c
 | `authors` | `[]` | only these authors' pull requests (empty: everyone's) |
 | `skip_authors` | `[]` | never these authors' pull requests |
 | `operator_prs` | `[]` | pull request numbers whose review rounds an operator files by hand (a serial chain over a many-folder pull request); `board sync` files none for them |
+| `handed_over_prs` | `[]` | pull request numbers an operator handed to the maintainers without the acceptance label (they merge it on their own reading): the approval label is on them until an approving review stands, `board sync` takes `awaiting-author` off them and files no gate round for them (the approval label, below) |
 | `aggregate_prs` | `[]` | aggregate pull requests: each carries, to merge in one piece, roadmap folders that other open pull requests (its members) add and are reviewed in. An aggregate is left out of everything done roadmap by roadmap (no review round, no overlap fact, no merge-order link, no layout request), and carries `label` exactly when every roadmap folder it adds holds, at its head, the files a member holds at a head the AI review accepts; while a member's review is being finished the aggregate's label is left as it is. While the aggregate is accepted, the intake keeps on it a housekeeping note that records the git tree of each folder (`tauceti-roadmap-aggregate`): a folder that no other open pull request carries stays accepted while it holds recorded files, so the members can be closed once the aggregate is accepted. Only records by the pool, the maintainers and the listed comment reviewers count. A folder that changes after its member is closed is covered again only through a pull request of its own (reopen the member, or open a new one). The index of open roadmap pull requests keeps the aggregates apart (`aggregates`, never in `prs`), with their heads in its mirror, so that a roadmap whose member was closed in the aggregate's favour is still found: `roadmaps list` lists each aggregate after the pull requests, with the roadmaps it alone carries marked `(only here)`, and `roadmaps grep`, `show` (`--pr` the aggregate's number too) and `resolve` read such a roadmap at the aggregate's head, labelled `#N (aggregate)`. A brief says so when the index has an aggregate, so that a reviewer reads such a supplier there instead of reporting it as existing nowhere; merge order, dependency checks, overlap facts and labels still leave aggregates out |
 | `late_authors` | `[]` | authors whose pull requests' reviews a worker takes only after every other job it could take |
 | `late_except` | `[]` | pull request numbers of those authors that keep their ordinary place (the ones other roadmaps wait for) |
@@ -1479,6 +1480,18 @@ sync` takes the label off in the write that puts `awaiting-author` on a pull req
 write that takes the acceptance label off (`#N: <label> removed (ai-found-no-errors is off)`); it
 never adds it. Create the label on the content repository beforehand to give it a colour and a
 description.
+
+**A pull request handed to the maintainers.** Sometimes the maintainers decide to merge a pull request
+on their own reading, without waiting for the AI review to accept it (a family of roadmaps that many
+contributors wait for, say). Listing its number in `[prreview] handed_over_prs` says so on the labels:
+the run puts the approval label on it whatever else it carries or waits for (`#N: <label> added (handed
+over by an operator: prreview.handed_over_prs)`) and takes it off only once an approving review stands
+(`(it is approved)`) or it merges; `board sync` takes `awaiting-author` off it, writes no reply label,
+files no gate round for its reviews (`#N <name>: handed over by an operator
+(prreview.handed_over_prs)`), and leaves its approval label alone when the acceptance label goes. The
+setting does not stop the review rounds (`operator_prs` does, for rounds the operator files) and gives
+no acceptance label: what the reviews found stays on the pull request for whoever approves it. Take
+the number out of the list to return the pull request to the ordinary rules.
 
 An open pull request whose head ref GitHub does not have (`refs/pull/N/head` missing: its head
 repository was deleted, or the ref was never written) is read from GitHub's test merge of it

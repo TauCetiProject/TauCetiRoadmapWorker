@@ -47,6 +47,10 @@ reviewer requests changes, it is not in the merge queue, and it does not conflic
 (`merge_states`, read afresh for the pull requests the rest admits). A pull
 request GitHub gave no answer for, or whose mergeability it had not computed after `TRIES` readings,
 keeps the label as it is. Merged pull requests lose it.
+
+A pull request an operator handed to the maintainers (`[prreview] handed_over_prs`) is the exception:
+the maintainers merge it on their own reading, without the acceptance label, so the approval label is
+on it whatever else it carries or waits for, until an approving review stands or it merges.
 """
 
 from __future__ import annotations
@@ -147,6 +151,9 @@ def merge_states(gh, repo: str, numbers, *, batch: int = BATCH) -> dict[int, dic
                     out[n] = node
         wanted = [n for n in wanted if out[n] is None or out[n].get("mergeable") == "UNKNOWN"]
     return out
+
+
+HANDED = "handed over by an operator: prreview.handed_over_prs"
 
 
 def only_approval(node: dict | None) -> tuple[bool | None, str]:
@@ -396,9 +403,13 @@ def _approval(ctx, prs: list[dict], free: dict[int, bool | None], approval: str,
     repo, accept, author = ctx.cfg.repositories.content, ctx.cfg.prreview.label, ctx.cfg.replies.awaiting_author
     verdicts: dict[int, tuple[bool | None, str]] = {}
     ask = []
+    handed = set(ctx.cfg.prreview.handed_over_prs)
     for p in prs:
         number = p["pr"]
-        if accept not in p.get("labels", []):
+        if number in handed:
+            # an operator handed it to the maintainers: their approval is all it is given to wait for
+            verdicts[number] = (False, "it is approved") if p.get("approved") else (True, HANDED)
+        elif accept not in p.get("labels", []):
             verdicts[number] = (False, f"it does not carry {accept}")
         elif author and author in p.get("labels", []):
             verdicts[number] = (False, f"it carries {author}")
@@ -418,7 +429,7 @@ def _approval(ctx, prs: list[dict], free: dict[int, bool | None], approval: str,
         number, labelled = p["pr"], approval in p.get("labels", [])
         ready, why = verdicts[number]
         if ready and not labelled:
-            write("POST", number, f"{accept}, waits for nothing, and no approving review yet", approval)
+            write("POST", number, why or f"{accept}, waits for nothing, and no approving review yet", approval)
         elif ready is False and labelled:
             write("DELETE", number, why, approval)
         elif ready is None and (labelled or number in ask):
