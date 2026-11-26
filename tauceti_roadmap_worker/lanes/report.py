@@ -170,8 +170,14 @@ class ReportLane(Lane):
         # The digest of the report the brief states: decided here for a run whose agent reads this brief, and kept
         # in the run's record from its first save on (`keep_run`), so a resumed run (a submission that stopped,
         # finished without the agent) is stamped with the digest of the brief its agent read, at any stop.
+        # A Suggested.lean report's digest includes the pinned statement as this checkout has it.
         kept = (read_pending(ctx, job) or {}).get("brief") or {}
-        ws.extra["brief"] = {"evidence": kept.get("evidence") or reports.evidence_digest(job.inputs)}
+        statement = reports.statement_digest(text, report.anchor) if report.file == "Suggested.lean" else ""
+        if statement is None and not kept.get("evidence"):
+            raise LaneBlocked(f"`{report.anchor}` is not declared exactly once in `{place}` on `{cfg.project.branch}` "
+                              f"({head[:7]}): the statement it names cannot be located; a human answers")
+        ws.extra["brief"] = {"evidence": kept.get("evidence") or reports.evidence_digest({**job.inputs,
+                                                                                          "statement": statement})}
         ws.extra.update(head=head, report=report, place=place, folder=folder, spans=spans, anchor_file=anchor_file,
                         readme=folder / "README.md", prose=self.prose(job, ctx), history=history,
                         job_notes=(shown(people, job.inputs.get("asked"), NOTES_LIMIT, history), later),

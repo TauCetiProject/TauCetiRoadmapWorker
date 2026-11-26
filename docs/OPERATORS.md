@@ -1951,7 +1951,14 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    is at that version (a late report of the old snapshot), and files the next round, after the rounds it
    follows (`previous`), once main is at another; a version not read decides nothing. A pin fixed because
    its name left main keeps the rule above. The triage lane
-   (#142) uses it: this half records it only. A `README.md` report's anchor is a verbatim quote: a
+   (#142) uses it: the digest a triage carries includes the statement its checkout had (the lane blocks a
+   pin it cannot locate once), so a correction that lands while the triage runs makes the verdict stale;
+   the triage record keeps the statement it judged (`statement`); and a `confirmed` (or `needs-human`)
+   report whose statement on main is no longer the judged one is triaged again: its next round is filed
+   (`restated`: the verdict and statement judged), with nothing assumed fixed. That round's `rejected` (the
+   pin is right as now written) after a `confirmed` is recorded `fixed` (`"corrected": true`): the pin was
+   wrong and was corrected, where `rejected` would say it never was. Main is the read the anchor check
+   makes already; a pin not located decides nothing. A `README.md` report's anchor is a verbatim quote: a
    correction that leaves the quoted words intact (a hypothesis added in the next sentence, say) is not
    seen, and a human asks for another triage (`triage again`).
 5. Every `open` or `confirmed` report whose anchor has left main becomes `fixed`; its job is set done with

@@ -1026,3 +1026,140 @@ def test_a_kept_run_with_no_recorded_digest_is_triaged_again(live, tmp_path, mon
     result = lane_for(job).run(job, dataclasses.replace(ctx, gh=IssueGH(""), transport=FakeTransport()))
     assert result.status == "failed" and result.detail.startswith("agent exited 1")     # the agent ran
     assert lane_base.read_pending(ctx, job) is None
+
+
+# --- review round 8 -----------------------------------------------------------------------------------------------
+
+PIN = "TauCetiRoadmap/QuadraticFormInvariants/Suggested.lean"
+WRONG = "import Mathlib\n\ntheorem square_root_sq (x : ℝ) : Real.sqrt (x ^ 2) = x := by\n  sorry\n"
+RIGHT = WRONG.replace("(x : ℝ) :", "(x : ℝ) (hx : 0 ≤ x) :")
+PIN_TRIAGE = TRIAGE
+
+
+def pin_report(**over):
+    return reports.parse(marker(file="Suggested.lean", anchor="square_root_sq", kind="missing-hypothesis", **over))[0][0]
+
+
+def pin_job(state="done", closed=True, **inputs):
+    r = pin_report()
+    job = new_job(JOB, inputs={"roadmap": r.roadmap, "file": r.file, "roadmap_sha": r.roadmap_sha, "anchor": r.anchor,
+                               "kind": r.kind, "effect": r.effect, "refutes": list(r.refutes),
+                               "replaces": list(r.replaces), "sources": [f"{LIBRARY}/pull/6903"], "place": "active",
+                               **inputs})
+    job.number, job.state, job.closed = 7, state, closed
+    return job
+
+
+def pin_digest(text):
+    r = pin_report()
+    return reports.evidence_digest({"file": r.file, "anchor": r.anchor, "kind": r.kind, "effect": r.effect,
+                                    "refutes": list(r.refutes), "replaces": list(r.replaces),
+                                    "statement": reports.statement_digest(text, "square_root_sq")})
+
+
+def pin_register(gh, state="open", **extra):
+    entry = reports.new_entry(pin_report(), JOB, state, f"{LIBRARY}/pull/6903") | extra
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+
+
+def pin_gh(main_text, ctx):
+    gh = ReportsGH([], main={PIN: main_text})
+    gh.api = (lambda api: lambda path, paginate=False: {"number": 7, "body": ctx.gh.body}
+              if path.endswith("/issues/7") else api(path, paginate))(gh.api)
+    return gh
+
+
+def test_a_confirmed_pin_corrected_on_main_with_its_name_kept_is_triaged_again(ctx):
+    """(jj) `square_root_sq` was confirmed (missing `0 ≤ x`), then corrected on main by adding the hypothesis and
+    keeping the name. The anchor never leaves main, so the report would stay confirmed for ever: the board sees the
+    statement changed since it was judged and files the next round."""
+    gh = pin_gh(WRONG, ctx)
+    gh.main[PIN_TRIAGE] = triage("confirmed", digest=pin_digest(WRONG))
+    pin_register(gh)
+    sync = context(gh, jobs=[pin_job()])
+    reports.sync_reports(sync, now=NOW)
+    e = entry_of(gh)
+    assert e["state"] == "confirmed" and e["triage"]["statement"] == reports.statement_digest(WRONG, "square_root_sq")
+    gh.main[PIN] = RIGHT                                 # the correction lands, the name kept
+    out = reports.sync_reports(sync, now=NOW)
+    [(new, state, preamble)] = sync.board.created
+    e = entry_of(gh)
+    assert new.id == JOB.replace("~1", "~2") and state == "available" and e["job"] == new.id and e["state"] == "open"
+    assert new.inputs["restated"] == {"verdict": "confirmed",
+                                      "statement": reports.statement_digest(WRONG, "square_root_sq")}
+    assert preamble.startswith(f"Triaged again: the statement of `square_root_sq` changed on main since the triage "
+                               f"of `{JOB}` judged it (`confirmed`).")
+    assert any(f"reports: {JOB}: the pinned statement changed since it was judged; filed {new.id}" in x for x in out)
+    sync.board.jobs.append(new)
+    reports.sync_reports(sync, now=NOW)
+    assert len(sync.board.created) == 1                   # filed once
+
+
+def test_the_next_rounds_rejection_of_a_corrected_pin_is_recorded_as_fixed(ctx):
+    """A round filed because a confirmed pin's statement changed, triaged `rejected` (right as now written): the
+    pin was wrong and is corrected, so the register says `fixed`, not "never an error"."""
+    later = JOB.replace("~1", "~2")
+    gh = pin_gh(RIGHT, ctx)
+    gh.main[TRIAGE.replace("~1", "~2")] = triage("rejected", job=later, digest=pin_digest(RIGHT))
+    pin_register(gh, job=later)
+    job = pin_job(restated={"verdict": "confirmed", "statement": reports.statement_digest(WRONG, "square_root_sq")})
+    job.id, job.round = later, 2
+    reports.sync_reports(context(gh, jobs=[job]), now=NOW)
+    e = entry_of(gh)
+    assert e["state"] == "fixed" and e["triage"]["verdict"] == "rejected" and e["triage"]["corrected"] is True
+
+
+def test_a_verdict_on_a_pin_corrected_while_its_triage_ran_is_not_recorded(ctx):
+    """(jj, in flight) The triage read the wrong statement; the correction landed before the verdict was recorded.
+    The verdict's digest includes the statement it read, so it is stale: the next round is filed."""
+    gh = pin_gh(RIGHT, ctx)
+    gh.main[PIN_TRIAGE] = triage("confirmed", digest=pin_digest(WRONG))
+    pin_register(gh)
+    sync = context(gh, jobs=[pin_job()])
+    reports.sync_reports(sync, now=NOW)
+    e = entry_of(gh)
+    assert e["state"] == "open" and e["job"] == JOB.replace("~1", "~2") and e["triages"][-1]["verdict"] == "confirmed"
+
+
+def test_a_pin_that_cannot_be_located_decides_nothing(ctx):
+    gh = pin_gh(WRONG + "\ntheorem square_root_sq : True := trivial\n", ctx)     # declared twice
+    gh.main[PIN_TRIAGE] = triage("confirmed", digest=pin_digest(WRONG))
+    pin_register(gh)
+    sync = context(gh, jobs=[pin_job()])
+    reports.sync_reports(sync, now=NOW)
+    assert entry_of(gh)["state"] == "open" and "triage" not in entry_of(gh) and sync.board.created == []
+
+
+@needs_git
+def test_the_lane_briefs_a_pin_with_the_digest_of_its_statement(live, tmp_path, monkeypatch):
+    ctx, _board_origin = live
+    commit(tmp_path / "origin-content", {PIN: WRONG, README: TEXT}, "the roadmap")
+    job = pin_job(state="available", closed=False)
+    ws = lane_for(job).prepare(job, dataclasses.replace(ctx, gh=IssueGH("")))
+    assert ws.extra["brief"] == {"evidence": pin_digest(WRONG)}
+
+
+@needs_git
+def test_the_lane_blocks_a_pin_it_cannot_locate(live, tmp_path):
+    ctx, _board_origin = live
+    commit(tmp_path / "origin-content", {PIN: WRONG + "\ntheorem square_root_sq : True := trivial\n", README: TEXT},
+           "the roadmap")
+    job = pin_job(state="available", closed=False)
+    with pytest.raises(LaneBlocked, match="is not declared exactly once"):
+        lane_for(job).prepare(job, dataclasses.replace(ctx, gh=IssueGH("")))
+
+
+def test_a_later_round_does_not_inherit_the_request_or_restatement_of_its_predecessor(ctx):
+    """A round filed for another reason never carries the comment id or the restatement of the round before it."""
+    gh = EventsGH(issue_body=ctx.gh.body, reopened=False)
+    gh.main[TRIAGE] = triage("needs-human")
+    needs_human_entry(gh)
+    job = report_job(state="done")
+    job.closed = True
+    job.inputs.update(asked=1, restated={"verdict": "confirmed", "statement": "0" * 12})
+    sync = context(gh, jobs=[job])
+    sync.board.threads = asked(job, ASK)
+    reports.sync_reports(sync, now=NOW)
+    [(new, _s, _p)] = sync.board.created
+    assert new.inputs["asked"] == 4242 and "restated" not in new.inputs
