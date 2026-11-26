@@ -212,13 +212,14 @@ checkout, submits a PR to the board, and the intake advances the state.
     merge, a closed pull request titled `[Merged by Bors] - `, counts when a configured merge-queue account
     closed it), from an open pull request only when its author is in `[reports] reporters`; on Forgejo,
     where no merge is verified, only from an author in `forgejo_reporters`; from a pull request closed
-    unmerged never. The roadmap, file and quoted text (whitespace normalised, case folded) are one
+    unmerged never. The roadmap, file and quoted text (whitespace normalised, case kept) are one
     report whatever its sources, and what each source says now (an edited description replaces its own
     evidence) is what the report and its open job carry; a report whose text main no longer
     holds is recorded as fixed and files nothing, and an open report is fixed, its job done, once its
     text leaves main. A source that reports the same at another snapshot of the roadmap has said it again.
     A `Suggested.lean` report's anchor is a declaration's name, which a correction usually keeps: the
-    entry records the digest of that declaration's statement when its job is filed, for the triage lane's
+    entry records the digest of the file up to the end of that declaration when its job is filed (any edit
+    above the pin counts as a change: never a missed correction, sometimes one more triage), for the triage lane's
     upkeep; a `README.md` correction that leaves the quoted words intact is not seen. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
     `rejected`, `fixed`), which the library's workers read so as not to report one twice. A read that is
     not whole (an incomplete search, an error object or a cut page of a listing, a register GitHub does not

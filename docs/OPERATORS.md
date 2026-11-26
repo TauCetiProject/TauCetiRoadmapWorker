@@ -1902,7 +1902,9 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    `[reports] forgejo_reporters`, open, merged or bors-titled (`... of @<login>, who is not a listed Forgejo
    reporter ([reports] forgejo_reporters); not harvested` otherwise), and no timeline is read. A pull
    request closed unmerged never counts, on either forge.
-3. A report is its roadmap, file and anchor (whitespace runs as one space, case folded). The register
+3. A report is its roadmap, file and anchor (whitespace runs as one space, case kept: Lean names are
+   case-sensitive, so the pins `Foo` and `foo` are two reports; a register written before this rule, of
+   which none exists outside tests, would need its anchors' case restored by hand). The register
    keeps what each of its sources says now (`evidence`: kind, effect, declarations, by source): the
    report's declarations are those its sources name now, and its kind and effect those of the source
    revised last. A new source is added (logged `already reported (REPORT-<Leaf>~k, open); source added`);
@@ -1936,9 +1938,16 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    recorded, so the next run sees it as revised still.
    A `Suggested.lean` report's anchor is a declaration's name, which a correction of the pin usually keeps,
    so its leaving main says little. The entry records the digest of that declaration's statement as main
-   had it when the job was filed (`statement`: `reports.statement_digest`, from the declaring line and the
-   attributes above it to the next command, comments left out, whitespace runs as one space; nothing when
-   the name is declared nowhere or twice), from the read of main the filing makes anyway. The triage lane
+   had it when the job was filed (`statement`: `reports.statement_digest`, the exact bytes of the file from
+   its first byte to the end of the declaration, nothing normalised; nothing when the name is declared
+   nowhere or twice), from the read of main the filing makes anyway. Everything that can change how Lean
+   reads the pin (its own text, and the `variable`s, `include`s, `open`s, notations, options and earlier
+   definitions before it) is in that prefix, so no change of what it states goes unseen; in return, any edit
+   above a pin in its file, or in its text, counts as a change and costs that pin one more triage round.
+   The declaration is located in the text with comments and string literals blanked (a declaration keyword
+   at the start of a line, then the name as written or with its namespaces; its end is the next command at
+   the start of a line): blanking can hide a command line, never make one, so a mislocated end hashes more,
+   and a name not found once is not located and decides nothing. The triage lane
    (#142) uses it: this half records it only. A `README.md` report's anchor is a verbatim quote: a
    correction that leaves the quoted words intact (a hypothesis added in the next sentence, say) is not
    seen, and a human asks for another triage (`triage again`).
@@ -2299,6 +2308,13 @@ reach) is not built yet.
 * **The configuration and the prompts** are CODEOWNERS-protected; changes go through review.
 
 ## Known limits of this version
+
+* **A `Suggested.lean` pin is re-triaged by any edit above it in its file.** Its statement digest covers the
+  file up to the end of the pin, so an edit that changes nothing it states (a comment, another theorem
+  before it) files one more triage round for every confirmed pin after it in that file; that round says
+  "still wrong" or "right as written". A name declared more than once in a file under the same written
+  name and full name cannot be located, and decides nothing. A `README.md` correction that leaves the
+  quoted words intact is not seen; a human asks with `triage again`.
 
 * The harness runs standalone; running the lanes as TauCetiWorker `only=` kinds, with its quota
   pacing, dashboard and Bubble sandbox, is the intended integration.

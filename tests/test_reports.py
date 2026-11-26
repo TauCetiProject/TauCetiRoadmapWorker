@@ -56,7 +56,7 @@ def test_a_valid_marker_is_read_and_its_unknown_fields_ignored():
     r = found[0]
     assert (r.roadmap, r.file, r.roadmap_sha, r.kind, r.effect) == ("QuadraticFormInvariants", "README.md", SHA,
                                                                    "false-statement", "worked-around")
-    assert r.anchor == "Two forms of rank one" and r.identity[2] == "two forms of rank one"
+    assert r.anchor == "Two forms of rank one" and r.identity[2] == "Two forms of rank one"
     assert r.refutes == ("TauCeti.exists_rankOne_equivalent_not_diagonalChain",)
 
 
@@ -275,7 +275,7 @@ def test_open_pull_requests_count_only_from_listed_reporters_and_issues_never():
 
 
 def test_the_same_report_from_two_sources_is_one_job_with_both_sources():
-    other = marker(anchor="two forms of RANK one  are equivalent iff their diagonal chains are")
+    other = marker(anchor="Two forms of rank one  are\n equivalent iff their diagonal chains are")     # spacing only
     gh = ReportsGH([item(1), item(2, body=other, updated="2026-11-24T10:05:00Z")])
     ctx = context(gh)
     out = reports.sync_reports(ctx, now=NOW)
@@ -1202,30 +1202,34 @@ def test_the_statement_digest_finds_the_declaring_occurrence_only(name, found):
     assert (reports.statement_digest(LEAN_TEXT, name) is not None) is found
 
 
-def test_the_statement_digest_follows_the_statement_and_only_it():
+def test_the_statement_digest_follows_the_statement_and_errs_towards_changing():
     d = reports.statement_digest(LEAN_TEXT, "square_root_sq")
     fixed = LEAN_TEXT.replace("(x : ℝ) : Real.sqrt (x ^ 2) = x := by", "(x : ℝ) (hx : 0 ≤ x) : Real.sqrt (x ^ 2) = x := by")
     assert reports.statement_digest(fixed, "square_root_sq") != d                     # the correction keeps the name
-    spaced = LEAN_TEXT.replace("theorem square_root_sq (x : ℝ)", "theorem  square_root_sq\n    (x : ℝ)")
-    assert reports.statement_digest(spaced, "square_root_sq") == d                    # whitespace is not a change
-    commented = LEAN_TEXT.replace("-- uses `square_root_sq`", "-- relies on `square_root_sq`")
-    assert reports.statement_digest(commented, "square_root_sq") == d                 # nor is a comment
     other = LEAN_TEXT.replace("lemma uses_it (x : ℝ)", "lemma uses_it (y : ℝ)")
-    assert reports.statement_digest(other, "square_root_sq") == d                     # nor the next declaration
+    assert reports.statement_digest(other, "square_root_sq") == d                     # what follows it is none of it
+    spaced = LEAN_TEXT.replace("theorem square_root_sq (x : ℝ)", "theorem  square_root_sq\n    (x : ℝ)")
+    assert reports.statement_digest(spaced, "square_root_sq") != d                    # any edit up to it: one more
+    commented = LEAN_TEXT.replace("-- uses `square_root_sq`", "-- relies on `square_root_sq`")
+    assert reports.statement_digest(commented, "square_root_sq") != d                 # triage, never a missed change
     twice = LEAN_TEXT + "\ntheorem square_root_sq : True := trivial\n"
     assert reports.statement_digest(twice, "square_root_sq") is None                  # declared twice: not located
 
 
-def test_the_statement_digest_finds_a_declaration_with_its_attribute_on_the_same_line():
-    text = ("@[simp] theorem first : 1 = 1 := rfl\n"
-            "@[simp, norm_cast] protected theorem second (n : ℕ) : n = n := rfl\n"
-            "theorem third : 2 = 2 := rfl\n")
-    one, two, three = (reports.statement_digest(text, n) for n in ("first", "second", "third"))
-    assert one and two and three and len({one, two, three}) == 3
-    # the one-line declaration above is not taken for an attribute line of the next one
-    assert reports.statement_digest(text.replace("1 = 1", "0 = 0"), "second") == two
-    assert reports.statement_digest(text.replace("(n : ℕ)", "(n : ℤ)"), "second") != two
-    assert reports.statement_digest(text.replace("n = n", "n + 0 = n"), "third") == three
+def test_a_keyword_in_a_comment_or_a_string_never_ends_the_pin_early():
+    """Blanking hides comment and string text when locating, so a column-0 keyword there neither ends the pin
+    (its whole text is hashed) nor is taken for a declaration."""
+    text = ("theorem pin : s = \"x\n"
+            "theorem fake : q\" := by\n"
+            "  /-\n"
+            "theorem also_fake : r := sorry\n"
+            "  -/\n"
+            "  sorry\n\n"
+            "theorem after : True := trivial\n")
+    d = reports.statement_digest(text, "pin")
+    assert d and reports.statement_digest(text.replace("  sorry\n\n", "  rfl\n\n"), "pin") != d
+    assert reports.statement_digest(text, "fake") is None and reports.statement_digest(text, "also_fake") is None
+    assert reports.statement_digest(text.replace("True := trivial", "1 = 1 := rfl"), "pin") == d
 
 
 def test_a_suggested_lean_report_records_the_statement_it_was_filed_against():
@@ -1235,3 +1239,54 @@ def test_a_suggested_lean_report_records_the_statement_it_was_filed_against():
     reports.sync_reports(ctx, now=NOW)
     [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
     assert e["statement"] == reports.statement_digest(LEAN_TEXT, "square_root_sq")
+
+
+# --- review round 9 -----------------------------------------------------------------------------------------------
+
+PIN_PATH = "TauCetiRoadmap/QuadraticFormInvariants/Suggested.lean"
+
+
+def test_two_pins_whose_names_differ_only_in_case_are_two_reports():
+    """(kk) Lean names are case-sensitive: `Foo` and `foo` are two reports, and removing one fixes only it."""
+    both = "import Mathlib\n\ntheorem Foo : False := by\n  sorry\n\ntheorem foo : (1 : Nat) = 2 := by\n  sorry\n"
+    gh = ReportsGH([item(1, body=marker(file="Suggested.lean", anchor="Foo")),
+                    item(2, body=marker(file="Suggested.lean", anchor="foo", refutes=["TauCeti.other"]))],
+                   main={PIN_PATH: both})
+    ctx = context(gh)
+    reports.sync_reports(ctx, now=NOW)
+    assert len(ctx.board.created) == 2
+    for job, _s, _p in ctx.board.created:
+        job.number, job.state = 500 + int(job.inputs["sources"][0].rsplit("/", 1)[1]), "available"
+        ctx.board.jobs.append(job)
+    gh.main[PIN_PATH] = both.replace("theorem Foo : False := by\n  sorry\n", "")
+    reports.sync_reports(ctx, now=NOW)
+    states = {e["anchor"]: e["state"] for e in gh.register()["roadmaps"]["QuadraticFormInvariants"]}
+    assert states == {"Foo": "fixed", "foo": "open"}
+
+
+SECTION = ("import Mathlib\n\nsection\nvariable (x : ℝ) (hx : True)\ninclude hx\n\n"
+           "theorem square_root_sq : Real.sqrt (x ^ 2) = x := by\n  sorry\nend\n")
+
+
+@pytest.mark.parametrize("before, after", [
+    (SECTION, SECTION.replace("(hx : True)", "(hx : 0 ≤ x)")),                                    # (ll) context
+    ("theorem literal_length : (\"a--b\").length = 3 := by sorry\n",
+     "theorem literal_length : (\"a--b\").length = 4 := by sorry\n"),                               # (mm) `--`
+    ("theorem literal_length : (\"a/-b\").length = 3 := by sorry\n",
+     "theorem literal_length : (\"a/-b\").length = 4 := by sorry\n"),                               # (mm) `/-`
+    ("theorem literal_length : (\"a  b\").length = 3 := by sorry\n",
+     "theorem literal_length : (\"a b\").length = 3 := by sorry\n"),                                # (mm) spaces
+    ("open Real\n\ntheorem t : sqrt 4 = 2 := by sorry\n", "open NNReal\n\ntheorem t : sqrt 4 = 2 := by sorry\n"),
+    ("def c : ℕ := 1\n\ntheorem t : c = 2 := by sorry\n", "def c : ℕ := 2\n\ntheorem t : c = 2 := by sorry\n"),
+], ids=["section variable", "literal --", "literal /-", "literal spaces", "open", "an earlier definition"])
+def test_the_statement_digest_changes_whenever_what_precedes_or_makes_the_pin_changes(before, after):
+    """(ll, mm) The digest is of the file's exact bytes up to the end of the located declaration: anything that can
+    change how Lean reads the pin precedes it or is in it, so no such change goes unseen."""
+    name = "square_root_sq" if "square_root_sq" in before else ("literal_length" if "literal" in before else "t")
+    assert reports.statement_digest(before, name) is not None
+    assert reports.statement_digest(before, name) != reports.statement_digest(after, name)
+
+
+def test_what_follows_the_pin_is_no_change_of_it():
+    text = "theorem t : 1 = 2 := by sorry\n\ntheorem u : 2 = 3 := by sorry\n"
+    assert reports.statement_digest(text, "t") == reports.statement_digest(text.replace("2 = 3", "3 = 4"), "t")

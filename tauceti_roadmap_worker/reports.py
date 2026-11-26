@@ -22,7 +22,7 @@ Only pull requests carry reports: anything else a search returns is ignored.
   only from a login of `[reports] reporters` (teams allowed); on Forgejo, whose queue has no account of its
   own, a pull request counts only from a login of `forgejo_reporters`, open, merged or bors-titled, and no
   merge is verified; a pull request closed unmerged never counts;
-* a report is one `(roadmap, file, anchor)`, the anchor whitespace-normalised and case-folded: one
+* a report is one `(roadmap, file, anchor)`, the anchor whitespace-normalised with its case kept: one
   already in the register gains the source (the job gets one comment);
 * a new one is checked against the roadmap repository's main (the file under the active directory,
   else under the completed one: blobs read by GraphQL, `prbatch.blob_texts`): an anchor still there
@@ -103,7 +103,9 @@ def normalise(text: str) -> str:
 
 
 def anchor_key(anchor: str) -> str:
-    return normalise(anchor).casefold()
+    """A report's anchor as its identity compares it: whitespace runs as one space, case kept (Lean names are
+    case-sensitive, and so is a quote)."""
+    return normalise(anchor)
 
 
 def _names(data: dict, key: str, limit: int | None = MAX_NAMES) -> tuple[tuple[str, ...], str]:
@@ -650,41 +652,50 @@ LEAN_COMMAND = re.compile(rf"^(?:@\[|namespace\b|section\b|end\b|open\b|variable
                           rf"attribute\b|#|{LEAN_MODIFIERS}{LEAN_KEYWORD}\b|noncomputable\s+section\b)")
 
 
-def without_comments(text: str) -> str:
-    """Lean text with its comments (`-- ...`, and `/- ... -/` nested, docstrings included) blanked, line breaks
-    kept: what a name written in a comment can never be mistaken for."""
-    out, depth, i = [], 0, 0
-    while i < len(text):
+def blanked(text: str) -> str:
+    """Lean text with its comments (`-- ...`, `/- ... -/` nested, docstrings included) and string literals blanked,
+    line breaks kept, to locate a declaration only. Blanking turns characters into spaces: it can hide a command
+    line (a declaring line: not located; an end: more is hashed) but never make one, so a misread (a `'"'`
+    taken for a string, say) never hashes less."""
+    out, depth, i, n = [], 0, 0, len(text)
+    while i < n:
         two = text[i:i + 2]
         if two == "/-":
-            depth, i = depth + 1, i + 2
-            out.append("  ")
+            depth, step = depth + 1, 2
         elif depth and two == "-/":
-            depth, i = depth - 1, i + 2
-            out.append("  ")
-        elif not depth and two == "--":
-            end = text.find("\n", i)
-            end = len(text) if end < 0 else end
-            out.append(" " * (end - i))
-            i = end
+            depth, step = depth - 1, 2
+        elif depth:
+            step = 1
+        elif two == "--":
+            step = (text.find("\n", i) % (n + 1) if "\n" in text[i:] else n) - i
+        elif text[i] == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            step = min(j + 1, n) - i
         else:
-            out.append(text[i] if not depth or text[i] == "\n" else " ")
+            out.append(text[i])
             i += 1
+            continue
+        out.append("".join(c if c == "\n" else " " for c in text[i:i + step]))
+        i += step
     return "".join(out)
 
 
 def statement_digest(text: str | None, name: str) -> str | None:
-    """The digest of the declaration `name` in a Suggested.lean text: from its declaring line (a declaration
-    keyword at the start of a line, after attributes written on that line and `private`, `protected`,
-    `noncomputable`, `partial`, `unsafe` or `nonrec`, then the name), with the attribute lines (`@[...]`) right above it, to the next command at the start of a line
-    (a declaration, an attribute, `namespace`, `section`, `end`, `open`, `variable`, ...) or the end of the file;
-    comments and docstrings left out, whitespace runs as one space. The name is matched as written or with the
-    `namespace` blocks around it (`end` closes the last one). None when the text is not read, or the name is
-    declared nowhere or more than once: nothing is guessed. Textual, not a parse of Lean: a change of whitespace,
-    of a comment or of another declaration is no change of it."""
+    """The digest of a Suggested.lean file up to the end of the declaration `name`: its exact bytes from the file's
+    first byte to the line after the declaration ends, nothing normalised or left out. Anything that can change
+    how Lean reads the declaration (its own text, and the `variable`, `include`, `open`, notation, options and
+    earlier definitions before it) is in that prefix, so a change of what the pin states always changes the
+    digest; an edit above it that changes nothing of it changes the digest too, which costs one more triage.
+    Located in blanked text (`blanked`): the declaring line is a declaration keyword at the start of a line, after
+    attributes and `private`, `protected`, `noncomputable`, `partial`, `unsafe` or `nonrec`, then the name, as
+    written or with the `namespace` blocks around it (`end` closes the last one); its end is the next command at
+    the start of a line, or the end of the file. None when the text is not read, or the name is declared nowhere
+    or more than once: nothing is guessed."""
     if text is None or not name:
         return None
-    lines = without_comments(text).split("\n")
+    lines = blanked(text).split("\n")
     blocks: list[list[str]] = []
     hits = []
     for i, line in enumerate(lines):
@@ -700,12 +711,9 @@ def statement_digest(text: str | None, name: str) -> str | None:
                 hits.append(i)
     if len(hits) != 1:
         return None
-    start = hits[0]
-    while start > 0 and lines[start - 1].startswith("@[") and not LEAN_DECLARES.match(lines[start - 1]):
-        start -= 1
     end = next((j for j in range(hits[0] + 1, len(lines)) if LEAN_COMMAND.match(lines[j])), len(lines))
-    body = " ".join(" ".join(lines[start:end]).split())
-    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:12]
+    prefix = "\n".join(text.split("\n")[:end])
+    return hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:12]
 
 
 def statement_on(cfg, texts: dict, ref: str, report_or_entry, roadmap: str = "") -> str | None:
