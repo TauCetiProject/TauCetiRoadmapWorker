@@ -1927,11 +1927,21 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    not is no report (`the anchor is not in the file at <sha7> either; not a report`). A file that could not
    be read decides nothing (`main could not be read; left for a later run`). A fixed report whose anchor is
    back on main is filed again, as the next round, when it is said again: by a new source, or by a known
-   source whose marker was revised (an author may edit an old pull request's description to report it).
+   source whose marker was revised (an author may edit an old pull request's description to report it;
+   rereading the roadmap and reporting the same claim at another `roadmap_sha` is a revision too: each
+   source's evidence keeps the snapshot it read, which is no part of the claim).
    A known source that says what it said already reopens nothing, or every old pull request listed again
    would reopen every fix reverted meanwhile. One table decides every case (`reports.decide`); a revised
    marker for a fixed report whose main cannot be read is left for a later run, its revision not yet
    recorded, so the next run sees it as revised still.
+   A `Suggested.lean` report's anchor is a declaration's name, which a correction of the pin usually keeps,
+   so its leaving main says little. The entry records the digest of that declaration's statement as main
+   had it when the job was filed (`statement`: `reports.statement_digest`, from the declaring line and the
+   attributes above it to the next command, comments left out, whitespace runs as one space; nothing when
+   the name is declared nowhere or twice), from the read of main the filing makes anyway. The triage lane
+   (#142) uses it: this half records it only. A `README.md` report's anchor is a verbatim quote: a
+   correction that leaves the quoted words intact (a hypothesis added in the next sentence, say) is not
+   seen, and a human asks for another triage (`triage again`).
 5. Every `open` or `confirmed` report whose anchor has left main becomes `fixed`; its job is set done with
    one comment and closed (`REPORT-<Leaf>~k: the anchor is gone from <roadmap>/<file> on main; fixed, job
    done`). The label and the close are two writes: a REPORT job that is done but whose issue is still open

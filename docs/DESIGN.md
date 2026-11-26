@@ -216,7 +216,10 @@ checkout, submits a PR to the board, and the intake advances the state.
     report whatever its sources, and what each source says now (an edited description replaces its own
     evidence) is what the report and its open job carry; a report whose text main no longer
     holds is recorded as fixed and files nothing, and an open report is fixed, its job done, once its
-    text leaves main. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
+    text leaves main. A source that reports the same at another snapshot of the roadmap has said it again.
+    A `Suggested.lean` report's anchor is a declaration's name, which a correction usually keeps: the
+    entry records the digest of that declaration's statement when its job is filed, for the triage lane's
+    upkeep; a `README.md` correction that leaves the quoted words intact is not seen. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
     `rejected`, `fixed`), which the library's workers read so as not to report one twice. A read that is
     not whole (an incomplete search, an error object or a cut page of a listing, a register GitHub does not
     serve) is a failed read: it moves no mark and decides nothing, and the next run reads again. The job's text

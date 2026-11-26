@@ -236,7 +236,7 @@ def test_a_merged_bors_pull_request_files_one_job_and_the_register_records_it():
                      "evidence": {f"{LIBRARY}/pull/6903": {
                          "kind": "false-statement", "effect": "worked-around",
                          "refutes": ["TauCeti.exists_rankOne_equivalent_not_diagonalChain"],
-                         "replaces": ["TauCeti.diagonalChain_iff_equivalent_of_two_le"]}}}
+                         "replaces": ["TauCeti.diagonalChain_iff_equivalent_of_two_le"], "roadmap_sha": SHA}}}
     assert gh.register()["version"] == 1 and gh.register()["scanned"] == {"github": "2026-11-24T10:00:00Z"}
     assert gh.queries == ['repo:TauCetiProject/TauCeti is:pr "tauceti-roadmap-report:v1" in:body']
     # The next run searches from the mark, finds the same source recorded, and writes nothing.
@@ -1064,13 +1064,15 @@ def test_a_fixed_report_its_own_source_reports_again_is_filed_as_the_next_round(
 
 
 def _said(state, said):
-    """(entry or None, url, report) for a cell of `decide`'s table."""
+    """(entry or None, url, report) for a cell of `decide`'s table. `revised` is a changed field; `reread` is the
+    same claim reported at another snapshot of the roadmap (only `roadmap_sha` changed), a revision too."""
     first = reports.parse(marker())[0][0]
-    other = reports.parse(marker(kind="missing-hypothesis"))[0][0]
+    other = {"revised": reports.parse(marker(kind="missing-hypothesis"))[0][0],
+             "reread": reports.parse(marker(roadmap_sha="b" * 40))[0][0]}
     if state is None:
         return None, f"{LIBRARY}/pull/1", first
     entry = reports.new_entry(first, "REPORT-QuadraticFormInvariants~1", state, f"{LIBRARY}/pull/1")
-    return entry, f"{LIBRARY}/pull/{2 if said == 'new' else 1}", other if said == "revised" else first
+    return entry, f"{LIBRARY}/pull/{2 if said == 'new' else 1}", other.get(said, first)
 
 
 @pytest.mark.parametrize("state, said, place, then, action", [
@@ -1089,6 +1091,9 @@ def _said(state, said):
     *[(st, sd, "absent", None, "defer") for st, sd in ((None, "new"), ("fixed", "new"), ("fixed", "revised"))],
 ])
 def test_one_table_decides_every_report(state, said, place, then, action):
+    if said == "revised":                                 # (ii) a reread snapshot decides as a revision does
+        entry, url, report = _said(state, "reread")
+        assert reports.decide(entry, url, report, place, then) == action
     """(gg) Every cell of `decide`'s table that can occur."""
     entry, url, report = _said(state, said)
     assert reports.decide(entry, url, report, place, then) == action
@@ -1135,3 +1140,86 @@ def test_a_fixed_report_revised_while_its_anchor_is_still_gone_records_the_revis
     reports.sync_reports(ctx, now=NOW)
     [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
     assert ctx.board.created == [] and e["state"] == "fixed" and e["kind"] == "missing-hypothesis"
+
+
+
+# --- review round 8 -----------------------------------------------------------------------------------------------
+
+def test_a_fixed_report_its_own_source_rereports_at_a_new_snapshot_is_filed():
+    """(ii) The same defect is back; #1's author rereads the roadmap and changes only `roadmap_sha`."""
+    fixed = reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1", "fixed",
+                              f"{LIBRARY}/pull/1")
+    gh = ReportsGH([item(1, body=marker(roadmap_sha="b" * 40))])
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [fixed]}})
+    ctx = context(gh, jobs=[Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1,
+                                number=40, state="done", closed=True)])
+    reports.sync_reports(ctx, now=NOW)
+    assert [j.id for j, _s, _p in ctx.board.created] == ["REPORT-QuadraticFormInvariants~2"]
+    [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert e["evidence"][f"{LIBRARY}/pull/1"]["roadmap_sha"] == "b" * 40
+
+
+def test_a_reread_snapshot_of_an_open_report_tells_the_job_nothing_new():
+    entry = reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1", "open",
+                              f"{LIBRARY}/pull/1")
+    gh = ReportsGH([item(1, body=marker(roadmap_sha="b" * 40))])
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+    job = Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1, number=40, state="available")
+    ctx = context(gh, jobs=[job])
+    reports.sync_reports(ctx, now=NOW)
+    assert ctx.board.posted == [] and ctx.board.created == []
+    assert gh.register()["roadmaps"]["QuadraticFormInvariants"][0]["evidence"][f"{LIBRARY}/pull/1"]["roadmap_sha"] \
+        == "b" * 40
+
+
+LEAN_TEXT = """import Mathlib
+
+namespace QuadraticFormInvariants
+
+/-- The square root of a square. -/
+@[simp]
+theorem square_root_sq (x : ℝ) : Real.sqrt (x ^ 2) = x := by
+  -- uses `square_root_sq` of the library, see `theorem square_root_sq` there
+  sorry
+
+/- theorem square_root_sq (x : ℝ) : 0 = 0 := sorry -/
+
+lemma uses_it (x : ℝ) : Real.sqrt (x ^ 2) = x := square_root_sq x
+
+end QuadraticFormInvariants
+
+private noncomputable def helper : ℕ := 0
+"""
+
+
+@pytest.mark.parametrize("name, found", [
+    ("square_root_sq", True), ("QuadraticFormInvariants.square_root_sq", True), ("helper", True),
+    ("uses_it", True), ("missing", False), ("Other.square_root_sq", False),
+])
+def test_the_statement_digest_finds_the_declaring_occurrence_only(name, found):
+    assert (reports.statement_digest(LEAN_TEXT, name) is not None) is found
+
+
+def test_the_statement_digest_follows_the_statement_and_only_it():
+    d = reports.statement_digest(LEAN_TEXT, "square_root_sq")
+    fixed = LEAN_TEXT.replace("(x : ℝ) : Real.sqrt (x ^ 2) = x := by", "(x : ℝ) (hx : 0 ≤ x) : Real.sqrt (x ^ 2) = x := by")
+    assert reports.statement_digest(fixed, "square_root_sq") != d                     # the correction keeps the name
+    spaced = LEAN_TEXT.replace("theorem square_root_sq (x : ℝ)", "theorem  square_root_sq\n    (x : ℝ)")
+    assert reports.statement_digest(spaced, "square_root_sq") == d                    # whitespace is not a change
+    commented = LEAN_TEXT.replace("-- uses `square_root_sq`", "-- relies on `square_root_sq`")
+    assert reports.statement_digest(commented, "square_root_sq") == d                 # nor is a comment
+    other = LEAN_TEXT.replace("lemma uses_it (x : ℝ)", "lemma uses_it (y : ℝ)")
+    assert reports.statement_digest(other, "square_root_sq") == d                     # nor the next declaration
+    twice = LEAN_TEXT + "\ntheorem square_root_sq : True := trivial\n"
+    assert reports.statement_digest(twice, "square_root_sq") is None                  # declared twice: not located
+
+
+def test_a_suggested_lean_report_records_the_statement_it_was_filed_against():
+    path = "TauCetiRoadmap/QuadraticFormInvariants/Suggested.lean"
+    gh = ReportsGH([item(1, body=marker(file="Suggested.lean", anchor="square_root_sq"))], main={path: LEAN_TEXT})
+    ctx = context(gh)
+    reports.sync_reports(ctx, now=NOW)
+    [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert e["statement"] == reports.statement_digest(LEAN_TEXT, "square_root_sq")

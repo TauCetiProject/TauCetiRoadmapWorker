@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -479,9 +480,11 @@ EVIDENCE = ("kind", "effect", "refutes", "replaces")
 
 
 def evidence_of(report: Report) -> dict:
-    """What a source says of a report beyond its identity: its kind, effect and declarations."""
+    """What a source says of a report beyond its identity: its kind, effect and declarations, and the snapshot of
+    the roadmap it read (`roadmap_sha`: a source that rereads the roadmap and reports the same at another snapshot
+    has said it again; the snapshot is no part of the claim, so it is not one of the entry's fields, EVIDENCE)."""
     return {"kind": report.kind, "effect": report.effect, "refutes": list(report.refutes),
-            "replaces": list(report.replaces)}
+            "replaces": list(report.replaces), "roadmap_sha": report.roadmap_sha}
 
 
 def new_entry(report: Report, job: str, state: str, url: str) -> dict:
@@ -523,8 +526,8 @@ UNREAD = object()        # `decide` before the roadmap on main is read
 
 def decide(entry: dict | None, url: str, report: Report, place=UNREAD, then=None) -> str:
     """What a valid report from the source `url` does, by one table: the register's entry for it (none, or its
-    state), what the source says (new: not among the entry's sources; same: its recorded evidence; revised:
-    anything else), and where the anchor stands on main (`place`: active or completed, "absent", None when main
+    state), what the source says (new: not among the entry's sources; same: its recorded evidence, the snapshot it
+    read included; revised: anything else), and where the anchor stands on main (`place`: active or completed, "absent", None when main
     could not be read; UNREAD before it is read) and, when absent there, at the commit the source read
     (`then`, likewise).
 
@@ -638,6 +641,84 @@ def paths(cfg, report_or_roadmap, file: str = "") -> tuple[str, str]:
     roadmap = getattr(report_or_roadmap, "roadmap", report_or_roadmap)
     file = file or report_or_roadmap.file
     return (f"{cfg.roadmap.active_dir}/{roadmap}/{file}", f"{cfg.roadmap.completed_dir}/{roadmap}/{file}")
+
+
+LEAN_KEYWORD = r"(?:theorem|lemma|def|abbrev|instance|structure|class|inductive|axiom|opaque)"
+LEAN_MODIFIERS = r"(?:(?:private|protected|noncomputable|partial|unsafe|nonrec)\s+)*"
+LEAN_DECLARES = re.compile(rf"^{LEAN_MODIFIERS}{LEAN_KEYWORD}\s+([^\s(:{{\[]+)")
+LEAN_COMMAND = re.compile(rf"^(?:@\[|namespace\b|section\b|end\b|open\b|variable\b|universe\b|set_option\b|"
+                          rf"attribute\b|#|{LEAN_MODIFIERS}{LEAN_KEYWORD}\b|noncomputable\s+section\b)")
+
+
+def without_comments(text: str) -> str:
+    """Lean text with its comments (`-- ...`, and `/- ... -/` nested, docstrings included) blanked, line breaks
+    kept: what a name written in a comment can never be mistaken for."""
+    out, depth, i = [], 0, 0
+    while i < len(text):
+        two = text[i:i + 2]
+        if two == "/-":
+            depth, i = depth + 1, i + 2
+            out.append("  ")
+        elif depth and two == "-/":
+            depth, i = depth - 1, i + 2
+            out.append("  ")
+        elif not depth and two == "--":
+            end = text.find("\n", i)
+            end = len(text) if end < 0 else end
+            out.append(" " * (end - i))
+            i = end
+        else:
+            out.append(text[i] if not depth or text[i] == "\n" else " ")
+            i += 1
+    return "".join(out)
+
+
+def statement_digest(text: str | None, name: str) -> str | None:
+    """The digest of the declaration `name` in a Suggested.lean text: from its declaring line (a declaration
+    keyword at the start of a line, after `private`, `protected`, `noncomputable`, `partial`, `unsafe` or `nonrec`,
+    then the name), with the attribute lines (`@[...]`) right above it, to the next command at the start of a line
+    (a declaration, an attribute, `namespace`, `section`, `end`, `open`, `variable`, ...) or the end of the file;
+    comments and docstrings left out, whitespace runs as one space. The name is matched as written or with the
+    `namespace` blocks around it (`end` closes the last one). None when the text is not read, or the name is
+    declared nowhere or more than once: nothing is guessed. Textual, not a parse of Lean: a change of whitespace,
+    of a comment or of another declaration is no change of it."""
+    if text is None or not name:
+        return None
+    lines = without_comments(text).split("\n")
+    blocks: list[list[str]] = []
+    hits = []
+    for i, line in enumerate(lines):
+        if m := re.match(r"^namespace\s+(\S+)", line):
+            blocks.append(m.group(1).split("."))
+        elif re.match(r"^(?:noncomputable\s+)?section\b", line):
+            blocks.append([])
+        elif re.match(r"^end\b", line) and blocks:
+            blocks.pop()
+        elif m := LEAN_DECLARES.match(line):
+            written = m.group(1).removeprefix("_root_.")
+            if name in (written, ".".join([p for b in blocks for p in b] + [written])):
+                hits.append(i)
+    if len(hits) != 1:
+        return None
+    start = hits[0]
+    while start > 0 and lines[start - 1].startswith("@["):
+        start -= 1
+    end = next((j for j in range(hits[0] + 1, len(lines)) if LEAN_COMMAND.match(lines[j])), len(lines))
+    body = " ".join(" ".join(lines[start:end]).split())
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:12]
+
+
+def statement_on(cfg, texts: dict, ref: str, report_or_entry, roadmap: str = "") -> str | None:
+    """The statement digest of a Suggested.lean report's anchor in the file at `ref` (the active file, else the
+    completed one, as `texts` holds them); None for a README.md report, or one not read or not located."""
+    file = getattr(report_or_entry, "file", None) or report_or_entry.get("file")
+    anchor = getattr(report_or_entry, "anchor", None) or report_or_entry.get("anchor", "")
+    if file != "Suggested.lean":
+        return None
+    for path in paths(cfg, roadmap or report_or_entry, file):
+        if texts.get((ref, path)) is not None:
+            return statement_digest(texts[(ref, path)], anchor)
+    return None
 
 
 def holds(text: str | None, anchor: str) -> bool:
@@ -783,7 +864,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             if url not in entry.setdefault("sources", []):
                 entry["sources"].append(url)
             if url not in evidence and isinstance(recorded.get(url), dict):
-                evidence[url] = {k: recorded[url].get(k) for k in EVIDENCE}
+                evidence[url] = {k: recorded[url].get(k) for k in (*EVIDENCE, "roadmap_sha") if k in recorded[url]}
             elif url not in evidence:
                 lost.append(url)
         entry["kind"], entry["effect"] = report.kind, report.effect
@@ -976,6 +1057,12 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             entry = new_entry(report, job.id, "open", source.url)
             data["roadmaps"].setdefault(report.roadmap, []).append(entry)
             known[report.identity] = entry
+        # A Suggested.lean report's anchor is a declaration's name, which a correction usually keeps: the entry
+        # records the statement it was filed against (main as this run read it), for the triage's upkeep.
+        statement = statement_on(cfg, texts, branch, report)
+        entry.pop("statement", None)
+        if statement:
+            entry["statement"] = statement
         run.changed.append(f"{job.id} filed" + (" (back on main)" if reopened else ""))
 
     # 5. Reports whose anchor has left main are fixed; a job set done whose issue a failed write left open is
