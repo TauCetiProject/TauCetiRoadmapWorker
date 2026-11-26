@@ -17,8 +17,17 @@
   other hosts: ask for the text (the `needs-references.toml` request below). The operator supplies
   it, and it stays on the operator's machine.
 - The texts the roadmap's `sources.toml` already records are in the worker's sources cache, each
-  as a line-numbered extraction (page markers `=== page N ===`): __SOURCE_TEXTS__
-  Quote locators against these files and cite a passage as `<source id> line N`.
+  as a line-numbered extraction (page markers `=== page N ===`, where N counts the pages of the
+  file from 1: a position in the document, not the number printed on the page): __SOURCE_TEXTS__
+  Check locators against these files. A line number of an extraction is a working reference, for
+  your notes and for a report's witness (`<source id> line N`): it names a place in a file only the
+  worker has. In the roadmap itself (the README, a docstring of `Suggested.lean`, `sources.toml`) a
+  source is cited by what a reader holding the published or arXiv version can find: the theorem,
+  definition, lemma or equation number, or the section; a page only by the number printed on it,
+  read from the page's own text (its running head or foot), never taken from a page marker: a
+  journal article that begins on page 417 has that page under `=== page 1 ===`, and a cover sheet or
+  front matter shifts every marker. Where no printed number can be read, cite the theorem, section
+  or equation alone. Never write `line N` or `lines N–M` of a source there.
 - OCR of image-only scans on this worker: __OCR__. A `local:` answer names a file the operator holds
   in `[sources] local_dirs`: `sources fetch <that file name>` reads it (a `.txt` file is the text
   itself), and the worker lists it above when the manifest records it.
@@ -64,5 +73,5 @@
   for at most once more; so a renamed key never brings a text, it only delays the job.
 - Sources stay on the operator's machine: never copy a source file or its extracted text into the
   repository you work in (not into the package folder, not into a report), and never paste a
-  passage. Quote locators (`<source id> line N`, a theorem or page number); a fenced block of more
+  passage. Quote locators (a theorem or page number; in a report also `<source id> line N`); a fenced block of more
   than 40 lines that is neither Lean nor a table is refused at submission.

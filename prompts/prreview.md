@@ -128,7 +128,9 @@ requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned l
    a boundary case asks an implementer for nothing: a small correction that says so and offers the
    smallest repair (mark it as a sanity check, or state the comparison it stands for, or move it to
    the README as a Check), never "prove it in place" and never a deletion of a statement the author
-   kept as a sanity check.
+   kept as a sanity check. Then the downstream-use check (the section of that name below): the
+   statements the roadmap exists for, clause by clause, against the README, the Lean file and the
+   suppliers as they are now.
 8. **The pull request's text.** Read the title and the description's prose against the folder's
    change in `__PR_TEXT__` and against the head. A sentence the head contradicts is a finding, and so
    is a change a reader must know of that the text does not state: whether it adds a roadmap or
@@ -210,6 +212,8 @@ requests at their heads: __SIBLINGS__; the merge order `__ORDER__`; the pinned l
 <!-- include: sections/gaps-and-order.md -->
 
 <!-- include: sections/adversarial.md -->
+
+<!-- include: sections/downstream.md -->
 
 <!-- include: sections/defect-classes.md -->
 
