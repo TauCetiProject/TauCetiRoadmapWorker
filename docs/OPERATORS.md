@@ -1954,7 +1954,7 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    (#142) uses it: the digest a triage carries includes the version its checkout had (`git rev-parse
    HEAD:<file>`, the id GitHub's `oid` gives the sync for the same bytes, whatever their line ends), so a
    correction that lands while the triage runs makes the verdict stale; the triage record keeps the version
-   it judged (`statement`), and a `rejected` keeps it as the version found right (`right`); a `confirmed`
+   it judged (`statement`), from which the version found right is read (`judged_right`); a `confirmed`
    (or `needs-human`) report whose file on main is at another version is triaged again: its next round is
    filed with nothing assumed fixed. Whether a `rejected` (the pin is right as now written) records a correction
    is read from the entry's own history (`reports.corrected`): among the verdicts of the rounds since the
@@ -1966,7 +1966,10 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    in the query that reads the file for the anchor check; a version not read decides nothing. A `README.md` report's anchor is a verbatim quote: a
    correction that leaves the quoted words intact (a hypothesis added in the next sentence, say) is not
    seen, and a human asks for another triage (`triage again`).
-5. Every `open` or `confirmed` report whose anchor has left main becomes `fixed`; its job is set done with
+5. Every `open` or `confirmed` report whose anchor has left main becomes `fixed`; from this step on, each
+   step takes its reports from the register as they are when it acts, never from a list made before an
+   earlier step changed them, so a report this step fixes is neither given a merged verdict nor triaged
+   again by the same run; its job is set done with
    one comment and closed (`REPORT-<Leaf>~k: the anchor is gone from <roadmap>/<file> on main; fixed, job
    done`). The label and the close are two writes: a REPORT job that is done but whose issue is still open
    (a close that failed) is closed by the next run (`done, but its issue was open; closed`).

@@ -1107,7 +1107,7 @@ def test_the_next_rounds_rejection_of_a_corrected_pin_is_recorded_as_fixed(ctx):
     reports.sync_reports(context(gh, jobs=[job]), now=NOW)
     e = entry_of(gh)
     assert e["state"] == "fixed" and e["triage"]["verdict"] == "rejected" and e["triage"]["corrected"] is True
-    assert e["right"] == blob_id(RIGHT)                    # (qq) the version it was found right at
+    assert reports.judged_right(e) == blob_id(RIGHT)       # (qq) the version it was found right at
 
 
 def test_a_verdict_on_a_pin_corrected_while_its_triage_ran_is_not_recorded(ctx):
@@ -1256,3 +1256,60 @@ def test_a_late_report_of_a_corrected_pins_old_snapshot_keeps_it_fixed(ctx):
     reports.sync_reports(sync, now=NOW)
     e = entry_of(gh)
     assert sync.board.created == [] and e["state"] == "fixed" and f"{LIBRARY}/pull/9" in e["sources"]
+
+
+# --- review round 11: each step acts on the entry's state as it is when the step acts -----------------------------
+
+OTHER_ONLY = "import Mathlib\n\ntheorem other : True := trivial\n"         # the pin removed, the file kept
+
+
+def test_a_pin_fixed_by_removal_is_not_triaged_again_in_the_same_sync(ctx):
+    """(ss) Fixed by removal, then `restated`: the declaration is gone but its file stays (at a new version). The
+    removal fixes it; `restated` must not then reopen it against an anchor that is gone."""
+    gh = pin_gh(WRONG, ctx)
+    gh.main[PIN_TRIAGE] = triage("confirmed", digest=pin_digest(WRONG))
+    pin_register(gh)
+    sync = context(gh, jobs=[pin_job()])
+    reports.sync_reports(sync, now=NOW)
+    assert entry_of(gh)["state"] == "confirmed"
+    gh.main[PIN] = OTHER_ONLY
+    reports.sync_reports(sync, now=NOW)
+    assert entry_of(gh)["state"] == "fixed" and sync.board.created == []
+
+
+def test_a_pin_fixed_by_removal_takes_no_verdict_merged_in_the_same_sync(ctx):
+    """Fixed by removal, then record-triage: a verdict merged for the job is not recorded over `fixed`."""
+    gh = pin_gh(OTHER_ONLY, ctx)
+    gh.main[PIN_TRIAGE] = triage("confirmed", digest=pin_digest(WRONG))
+    pin_register(gh)
+    sync = context(gh, jobs=[pin_job()])
+    reports.sync_reports(sync, now=NOW)
+    e = entry_of(gh)
+    assert e["state"] == "fixed" and "triage" not in e and sync.board.created == []
+
+
+@pytest.mark.parametrize("main, rounds", [(WRONG, 0), (RIGHT, 1)], ids=["same version", "another version"])
+def test_a_verdict_recorded_in_a_sync_is_restated_by_it_only_if_stale(ctx, main, rounds):
+    """Record-triage, then `restated` (and a stale verdict's next round, then `restated`): the verdict recorded at
+    the version it read files nothing more; one judged on a replaced version files exactly one round."""
+    gh = pin_gh(main, ctx)
+    gh.main[PIN_TRIAGE] = triage("confirmed", digest=pin_digest(WRONG))
+    pin_register(gh)
+    sync = context(gh, jobs=[pin_job()])
+    reports.sync_reports(sync, now=NOW)
+    assert len(sync.board.created) == rounds
+    assert entry_of(gh)["state"] == ("confirmed" if not rounds else "open")
+
+
+def test_a_recurrence_filed_in_a_sync_is_not_asked_again_by_it(ctx):
+    """Recurrence filing, then ask-again: a fixed report filed again in step 4 has a new current job, so the old
+    job's `triage again` comment files nothing more in the same run."""
+    gh = EventsGH(issue_body=ctx.gh.body, reopened=False)
+    register_with(gh, state="fixed", triage={"job": JOB, "verdict": "rejected", "report": TRIAGE})
+    gh.search = [item(5, body=marker(roadmap_sha="b" * 40))]            # a source says it again; it is back on main
+    job = report_job(state="done")
+    job.closed = True
+    sync = context(gh, jobs=[job])
+    sync.board.threads = asked(job, ASK)
+    reports.sync_reports(sync, now=NOW)
+    assert [j.id for j, _s, _p in sync.board.created] == [JOB.replace("~1", "~2")]
