@@ -4,6 +4,7 @@ the register `board sync` keeps (reports.py), and the safety of a job kind no la
 import base64
 import copy
 import datetime as dt
+import hashlib
 import json
 import re
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from tauceti_roadmap_worker import board, cli, intake, reports, watch, worker
+from tauceti_roadmap_worker import board, cli, intake, prbatch, reports, watch, worker
 from tauceti_roadmap_worker.board import Board, Job, new_job
 from tauceti_roadmap_worker.gh import GHError
 from tauceti_roadmap_worker.lanes import Context
@@ -147,6 +148,12 @@ def item(number: int, body: str = BODY, login: str = "tauceti-ai-for-science", s
             **({"pull_request": {"merged_at": None, "html_url": f"{base}/{kind}/{number}"}} if pull else {})}
 
 
+def blob_id(text: str) -> str:
+    """The git blob id of a file whose bytes are `text` in UTF-8, as GitHub's `oid` and `git rev-parse` give it."""
+    data = text.encode("utf-8")
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
 class ReportsGH:
     """GitHub for the reports step: the issue search of the library, the board's register by the contents
     API, the roadmap repository's files by GraphQL blobs (at `main` and at full commits)."""
@@ -189,7 +196,7 @@ class ReportsGH:
         for alias, expr in re.findall(r'(b\d+): object\(expression: ("(?:[^"\\]|\\.)*")\)', query):
             ref, _, path = json.loads(expr).partition(":")
             text = self.main.get(path) if ref == "main" else self.at.get((ref, path))
-            out[alias] = None if text is None else {"text": text, "isTruncated": False}
+            out[alias] = None if text is None else {"text": text, "isTruncated": False, "oid": blob_id(text)}
         return {"repository": out}
 
     def write(self, method, path, payload=None):
@@ -1174,71 +1181,13 @@ def test_a_reread_snapshot_of_an_open_report_tells_the_job_nothing_new():
         == "b" * 40
 
 
-LEAN_TEXT = """import Mathlib
-
-namespace QuadraticFormInvariants
-
-/-- The square root of a square. -/
-@[simp]
-theorem square_root_sq (x : ℝ) : Real.sqrt (x ^ 2) = x := by
-  -- uses `square_root_sq` of the library, see `theorem square_root_sq` there
-  sorry
-
-/- theorem square_root_sq (x : ℝ) : 0 = 0 := sorry -/
-
-lemma uses_it (x : ℝ) : Real.sqrt (x ^ 2) = x := square_root_sq x
-
-end QuadraticFormInvariants
-
-private noncomputable def helper : ℕ := 0
-"""
-
-
-@pytest.mark.parametrize("name, found", [
-    ("square_root_sq", True), ("QuadraticFormInvariants.square_root_sq", True), ("helper", True),
-    ("uses_it", True), ("missing", False), ("Other.square_root_sq", False),
-])
-def test_the_statement_digest_finds_the_declaring_occurrence_only(name, found):
-    assert (reports.statement_digest(LEAN_TEXT, name) is not None) is found
-
-
-def test_the_statement_digest_follows_the_statement_and_errs_towards_changing():
-    d = reports.statement_digest(LEAN_TEXT, "square_root_sq")
-    fixed = LEAN_TEXT.replace("(x : ℝ) : Real.sqrt (x ^ 2) = x := by", "(x : ℝ) (hx : 0 ≤ x) : Real.sqrt (x ^ 2) = x := by")
-    assert reports.statement_digest(fixed, "square_root_sq") != d                     # the correction keeps the name
-    other = LEAN_TEXT.replace("lemma uses_it (x : ℝ)", "lemma uses_it (y : ℝ)")
-    assert reports.statement_digest(other, "square_root_sq") == d                     # what follows it is none of it
-    spaced = LEAN_TEXT.replace("theorem square_root_sq (x : ℝ)", "theorem  square_root_sq\n    (x : ℝ)")
-    assert reports.statement_digest(spaced, "square_root_sq") != d                    # any edit up to it: one more
-    commented = LEAN_TEXT.replace("-- uses `square_root_sq`", "-- relies on `square_root_sq`")
-    assert reports.statement_digest(commented, "square_root_sq") != d                 # triage, never a missed change
-    twice = LEAN_TEXT + "\ntheorem square_root_sq : True := trivial\n"
-    assert reports.statement_digest(twice, "square_root_sq") is None                  # declared twice: not located
-
-
-def test_a_keyword_in_a_comment_or_a_string_never_ends_the_pin_early():
-    """Blanking hides comment and string text when locating, so a column-0 keyword there neither ends the pin
-    (its whole text is hashed) nor is taken for a declaration."""
-    text = ("theorem pin : s = \"x\n"
-            "theorem fake : q\" := by\n"
-            "  /-\n"
-            "theorem also_fake : r := sorry\n"
-            "  -/\n"
-            "  sorry\n\n"
-            "theorem after : True := trivial\n")
-    d = reports.statement_digest(text, "pin")
-    assert d and reports.statement_digest(text.replace("  sorry\n\n", "  rfl\n\n"), "pin") != d
-    assert reports.statement_digest(text, "fake") is None and reports.statement_digest(text, "also_fake") is None
-    assert reports.statement_digest(text.replace("True := trivial", "1 = 1 := rfl"), "pin") == d
-
-
 def test_a_suggested_lean_report_records_the_statement_it_was_filed_against():
     path = "TauCetiRoadmap/QuadraticFormInvariants/Suggested.lean"
-    gh = ReportsGH([item(1, body=marker(file="Suggested.lean", anchor="square_root_sq"))], main={path: LEAN_TEXT})
+    gh = ReportsGH([item(1, body=marker(file="Suggested.lean", anchor="square_root_sq"))], main={path: PIN_TEXT})
     ctx = context(gh)
     reports.sync_reports(ctx, now=NOW)
     [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
-    assert e["statement"] == reports.statement_digest(LEAN_TEXT, "square_root_sq")
+    assert e["statement"] == blob_id(PIN_TEXT)            # the file's version: its git blob id
 
 
 # --- review round 9 -----------------------------------------------------------------------------------------------
@@ -1264,29 +1213,74 @@ def test_two_pins_whose_names_differ_only_in_case_are_two_reports():
     assert states == {"Foo": "fixed", "foo": "open"}
 
 
-SECTION = ("import Mathlib\n\nsection\nvariable (x : ℝ) (hx : True)\ninclude hx\n\n"
-           "theorem square_root_sq : Real.sqrt (x ^ 2) = x := by\n  sorry\nend\n")
+
+
+
+# --- review round 10 ----------------------------------------------------------------------------------------------
+
+PIN_TEXT = "import Mathlib\n\ntheorem square_root_sq (x : ℝ) : Real.sqrt (x ^ 2) = x := by\n  sorry\n"
 
 
 @pytest.mark.parametrize("before, after", [
-    (SECTION, SECTION.replace("(hx : True)", "(hx : 0 ≤ x)")),                                    # (ll) context
-    ("theorem literal_length : (\"a--b\").length = 3 := by sorry\n",
-     "theorem literal_length : (\"a--b\").length = 4 := by sorry\n"),                               # (mm) `--`
-    ("theorem literal_length : (\"a/-b\").length = 3 := by sorry\n",
-     "theorem literal_length : (\"a/-b\").length = 4 := by sorry\n"),                               # (mm) `/-`
-    ("theorem literal_length : (\"a  b\").length = 3 := by sorry\n",
-     "theorem literal_length : (\"a b\").length = 3 := by sorry\n"),                                # (mm) spaces
-    ("open Real\n\ntheorem t : sqrt 4 = 2 := by sorry\n", "open NNReal\n\ntheorem t : sqrt 4 = 2 := by sorry\n"),
-    ("def c : ℕ := 1\n\ntheorem t : c = 2 := by sorry\n", "def c : ℕ := 2\n\ntheorem t : c = 2 := by sorry\n"),
-], ids=["section variable", "literal --", "literal /-", "literal spaces", "open", "an earlier definition"])
-def test_the_statement_digest_changes_whenever_what_precedes_or_makes_the_pin_changes(before, after):
-    """(ll, mm) The digest is of the file's exact bytes up to the end of the located declaration: anything that can
-    change how Lean reads the pin precedes it or is in it, so no such change goes unseen."""
-    name = "square_root_sq" if "square_root_sq" in before else ("literal_length" if "literal" in before else "t")
-    assert reports.statement_digest(before, name) is not None
-    assert reports.statement_digest(before, name) != reports.statement_digest(after, name)
+    ('theorem literal_length : (r#"a"\ntheorem fake\nb"#).length = 0 := by sorry\n',
+     'theorem literal_length : (r#"a"\ntheorem fake\nb"#).length = 17 := by sorry\n'),                     # (oo)
+    (PIN_TEXT, PIN_TEXT.replace("(x : ℝ) :", "(x : ℝ) (hx : 0 ≤ x) :")),
+    (PIN_TEXT, PIN_TEXT + "\ntheorem after : True := trivial\n"),
+    (PIN_TEXT, PIN_TEXT.replace("\n", "\r\n")),
+], ids=["raw string", "hypothesis", "anything after it", "line endings"])
+def test_a_pins_version_is_its_files_blob_and_any_change_changes_it(before, after):
+    """(oo) No boundary is located: a `Suggested.lean` report's version is its file's git blob id at main, so every
+    change of the file, a correction inside a raw string included, is a new version."""
+    cfg = example_config()
+    oids = {}
+    for text in (before, after):
+        gh = ReportsGH([], main={PIN_PATH: text})
+        prbatch.blob_texts(gh, "o/r", [("main", PIN_PATH)], 4, oids=oids)
+        assert oids[("main", PIN_PATH)] == blob_id(text)
+        assert reports.statement_on(cfg, oids, "main", {"file": "Suggested.lean", "anchor": "x"},
+                                    "QuadraticFormInvariants") == blob_id(text)
+    assert blob_id(before) != blob_id(after)
 
 
-def test_what_follows_the_pin_is_no_change_of_it():
-    text = "theorem t : 1 = 2 := by sorry\n\ntheorem u : 2 = 3 := by sorry\n"
-    assert reports.statement_digest(text, "t") == reports.statement_digest(text.replace("2 = 3", "3 = 4"), "t")
+def settled(state, right):
+    entry = reports.new_entry(reports.parse(marker(file="Suggested.lean", anchor="square_root_sq"))[0][0],
+                              "REPORT-QuadraticFormInvariants~2", state, f"{LIBRARY}/pull/1")
+    entry["right"] = right
+    return entry
+
+
+@pytest.mark.parametrize("state", ["fixed", "rejected"])
+@pytest.mark.parametrize("main, action", [("same", "settled"), ("other", "file")])
+def test_a_settled_pin_is_looked_at_again_only_at_a_version_not_judged_right(state, main, action):
+    """(qq) A pin a triage found right at a version (rejected, or fixed by a correction) and a new source: at that
+    same version it is only recorded (a late report of the old snapshot); at another it is the next round."""
+    entry = settled(state, blob_id(PIN_TEXT))
+    report = reports.parse(marker(file="Suggested.lean", anchor="square_root_sq"))[0][0]
+    version = blob_id(PIN_TEXT) if main == "same" else blob_id(PIN_TEXT + "\n")
+    want = action if action == "file" else ("add to fixed" if state == "fixed" else "add")
+    assert reports.decide(entry, f"{LIBRARY}/pull/9", report) == "read main"
+    assert reports.decide(entry, f"{LIBRARY}/pull/9", report, "active", None, version) == want
+    assert reports.decide(entry, f"{LIBRARY}/pull/9", report, "active", None, None) == "defer"
+
+
+def test_a_late_report_of_a_corrected_pins_old_snapshot_files_nothing_and_a_regression_files_a_round():
+    """(qq) Through sync: the pin was found right at the current version; a second pull request reports its old
+    snapshot: recorded, no round. Then the file changes (a regression) and a source says it again: the next
+    round is filed, after the rounds it follows (`previous`)."""
+    entry = settled("fixed", blob_id(PIN_TEXT))
+    gh = ReportsGH([item(9, body=marker(file="Suggested.lean", anchor="square_root_sq"))], main={PIN_PATH: PIN_TEXT})
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+    old = Job("REPORT-QuadraticFormInvariants~2", "report", "QuadraticFormInvariants", 2, number=41, state="done",
+              closed=True, inputs={"previous": [{"job": "REPORT-QuadraticFormInvariants~1", "issue": 40}]})
+    ctx = context(gh, jobs=[old])
+    reports.sync_reports(ctx, now=NOW)
+    [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert ctx.board.created == [] and e["state"] == "fixed" and f"{LIBRARY}/pull/9" in e["sources"]
+    gh.main[PIN_PATH] = PIN_TEXT.replace("(x : ℝ) :", "(x : ℝ) (hx : True) :")             # a regression
+    gh.search = [item(9, body=marker(file="Suggested.lean", anchor="square_root_sq", roadmap_sha="b" * 40))]
+    reports.sync_reports(ctx, now=NOW)
+    [(job, _s, _p)] = ctx.board.created
+    assert job.id == "REPORT-QuadraticFormInvariants~3"
+    assert job.inputs["previous"] == [{"job": "REPORT-QuadraticFormInvariants~1", "issue": 40},
+                                      {"job": "REPORT-QuadraticFormInvariants~2", "issue": 41}]

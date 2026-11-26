@@ -526,7 +526,7 @@ def restate(entry: dict) -> None:
 UNREAD = object()        # `decide` before the roadmap on main is read
 
 
-def decide(entry: dict | None, url: str, report: Report, place=UNREAD, then=None) -> str:
+def decide(entry: dict | None, url: str, report: Report, place=UNREAD, then=None, version=None) -> str:
     """What a valid report from the source `url` does, by one table: the register's entry for it (none, or its
     state), what the source says (new: not among the entry's sources; same: its recorded evidence, the snapshot it
     read included; revised: anything else), and where the anchor stands on main (`place`: active or completed, "absent", None when main
@@ -546,7 +546,14 @@ def decide(entry: dict | None, url: str, report: Report, place=UNREAD, then=None
     | none, or fixed             | new or revised | absent; absent at sha   | not a report                    |
     | none, or fixed             | new or revised | absent; sha unreadable  | defer                           |
 
-    A fixed report is reported again by a new source or a revised marker, whoever's: those are the only ways a
+    | fixed or rejected pin, judged right at version R (`right`) | new or revised | there, version R | add (record)  |
+    | fixed or rejected pin, judged right at version R | new or revised | there, another version   | file the next round |
+    | fixed or rejected pin, judged right at version R | new or revised | there, version unread    | defer         |
+    | rejected pin, judged right at version R          | new or revised | absent                   | add or revise |
+
+    A pin (a Suggested.lean report) a triage found right is looked at again by its file's version, not by its
+    name, which a correction keeps: a late report of the old snapshot changes nothing, a new version is the next
+    round. A fixed report is reported again by a new source or a revised marker, whoever's: those are the only ways a
     report is said again. A source that says what it said already reopens nothing, or every old pull request
     listed again (a comment, a label) would reopen every fix that was reverted meanwhile."""
     if entry is None:
@@ -555,10 +562,22 @@ def decide(entry: dict | None, url: str, report: Report, place=UNREAD, then=None
         said = "new"
     else:
         said = "same" if (entry.get("evidence") or {}).get(url) == evidence_of(report) else "revised"
-    if entry is not None and entry.get("state") != "fixed":
+    settled = entry is not None and entry.get("state") in ("fixed", "rejected") and entry.get("right") \
+        and entry.get("file") == "Suggested.lean"
+    if entry is not None and entry.get("state") != "fixed" and not (settled and said != "same"):
         return {"new": "add", "same": "nothing", "revised": "revise"}[said]
     if said == "same":
         return "nothing"
+    if settled and place not in (UNREAD, None, "absent"):
+        # Judged right at version `right`: at that version nothing has changed since; at another, the pin may be
+        # wrong again, whatever its name says.
+        if version is None:
+            return "defer"
+        if version == entry["right"]:
+            return "add to fixed" if entry["state"] == "fixed" else {"new": "add", "revised": "revise"}[said]
+        return "file"
+    if settled and entry["state"] == "rejected" and place == "absent":
+        return {"new": "add", "revised": "revise"}[said]
     if place is UNREAD:
         return "read main"
     if place is None:
@@ -645,88 +664,14 @@ def paths(cfg, report_or_roadmap, file: str = "") -> tuple[str, str]:
     return (f"{cfg.roadmap.active_dir}/{roadmap}/{file}", f"{cfg.roadmap.completed_dir}/{roadmap}/{file}")
 
 
-LEAN_KEYWORD = r"(?:theorem|lemma|def|abbrev|instance|structure|class|inductive|axiom|opaque)"
-LEAN_MODIFIERS = r"(?:(?:private|protected|noncomputable|partial|unsafe|nonrec)\s+)*"
-LEAN_DECLARES = re.compile(rf"^(?:@\[[^\]]*\]\s*)*{LEAN_MODIFIERS}{LEAN_KEYWORD}\s+([^\s(:{{\[]+)")
-LEAN_COMMAND = re.compile(rf"^(?:@\[|namespace\b|section\b|end\b|open\b|variable\b|universe\b|set_option\b|"
-                          rf"attribute\b|#|{LEAN_MODIFIERS}{LEAN_KEYWORD}\b|noncomputable\s+section\b)")
-
-
-def blanked(text: str) -> str:
-    """Lean text with its comments (`-- ...`, `/- ... -/` nested, docstrings included) and string literals blanked,
-    line breaks kept, to locate a declaration only. Blanking turns characters into spaces: it can hide a command
-    line (a declaring line: not located; an end: more is hashed) but never make one, so a misread (a `'"'`
-    taken for a string, say) never hashes less."""
-    out, depth, i, n = [], 0, 0, len(text)
-    while i < n:
-        two = text[i:i + 2]
-        if two == "/-":
-            depth, step = depth + 1, 2
-        elif depth and two == "-/":
-            depth, step = depth - 1, 2
-        elif depth:
-            step = 1
-        elif two == "--":
-            step = (text.find("\n", i) % (n + 1) if "\n" in text[i:] else n) - i
-        elif text[i] == '"':
-            j = i + 1
-            while j < n and text[j] != '"':
-                j += 2 if text[j] == "\\" else 1
-            step = min(j + 1, n) - i
-        else:
-            out.append(text[i])
-            i += 1
-            continue
-        out.append("".join(c if c == "\n" else " " for c in text[i:i + step]))
-        i += step
-    return "".join(out)
-
-
-def statement_digest(text: str | None, name: str) -> str | None:
-    """The digest of a Suggested.lean file up to the end of the declaration `name`: its exact bytes from the file's
-    first byte to the line after the declaration ends, nothing normalised or left out. Anything that can change
-    how Lean reads the declaration (its own text, and the `variable`, `include`, `open`, notation, options and
-    earlier definitions before it) is in that prefix, so a change of what the pin states always changes the
-    digest; an edit above it that changes nothing of it changes the digest too, which costs one more triage.
-    Located in blanked text (`blanked`): the declaring line is a declaration keyword at the start of a line, after
-    attributes and `private`, `protected`, `noncomputable`, `partial`, `unsafe` or `nonrec`, then the name, as
-    written or with the `namespace` blocks around it (`end` closes the last one); its end is the next command at
-    the start of a line, or the end of the file. None when the text is not read, or the name is declared nowhere
-    or more than once: nothing is guessed."""
-    if text is None or not name:
-        return None
-    lines = blanked(text).split("\n")
-    blocks: list[list[str]] = []
-    hits = []
-    for i, line in enumerate(lines):
-        if m := re.match(r"^namespace\s+(\S+)", line):
-            blocks.append(m.group(1).split("."))
-        elif re.match(r"^(?:noncomputable\s+)?section\b", line):
-            blocks.append([])
-        elif re.match(r"^end\b", line) and blocks:
-            blocks.pop()
-        elif m := LEAN_DECLARES.match(line):
-            written = m.group(1).removeprefix("_root_.")
-            if name in (written, ".".join([p for b in blocks for p in b] + [written])):
-                hits.append(i)
-    if len(hits) != 1:
-        return None
-    end = next((j for j in range(hits[0] + 1, len(lines)) if LEAN_COMMAND.match(lines[j])), len(lines))
-    prefix = "\n".join(text.split("\n")[:end])
-    return hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:12]
-
-
-def statement_on(cfg, texts: dict, ref: str, report_or_entry, roadmap: str = "") -> str | None:
-    """The statement digest of a Suggested.lean report's anchor in the file at `ref` (the active file, else the
-    completed one, as `texts` holds them); None for a README.md report, or one not read or not located."""
+def statement_on(cfg, oids: dict, ref: str, report_or_entry, roadmap: str = "") -> str | None:
+    """The version of a Suggested.lean report's file at `ref`: its git blob id (GitHub's `oid`, as `oids` holds
+    them; the active file, else the completed one), which changes with every change of the file and is computed
+    by git on both sides, from the same bytes. None for a README.md report, or a file not read."""
     file = getattr(report_or_entry, "file", None) or report_or_entry.get("file")
-    anchor = getattr(report_or_entry, "anchor", None) or report_or_entry.get("anchor", "")
     if file != "Suggested.lean":
         return None
-    for path in paths(cfg, roadmap or report_or_entry, file):
-        if texts.get((ref, path)) is not None:
-            return statement_digest(texts[(ref, path)], anchor)
-    return None
+    return next((oids[(ref, p)] for p in paths(cfg, roadmap or report_or_entry, file) if oids.get((ref, p))), None)
 
 
 def holds(text: str | None, anchor: str) -> bool:
@@ -987,7 +932,8 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
     wanted = {(branch, p) for _s, rep in candidates for p in paths(cfg, rep)}
     wanted |= {(branch, p) for (roadmap, file, _a), _e in settle for p in paths(cfg, roadmap, file)}
     content, batch = cfg.repositories.content, cfg.board.graphql_batch
-    texts = prbatch.blob_texts(ctx.gh, content, sorted(wanted), batch) if wanted else {}
+    oids: dict[tuple[str, str], str] = {}               # the files' versions, from the same queries
+    texts = prbatch.blob_texts(ctx.gh, content, sorted(wanted), batch, oids=oids) if wanted else {}
     places = {id(rep): where(texts, branch, paths(cfg, rep), rep.anchor) for _s, rep in candidates}
     earlier = {(rep.roadmap_sha, p) for _s, rep in candidates if places[id(rep)] == "absent" for p in paths(cfg, rep)}
     if earlier:
@@ -1003,7 +949,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
         entry = known.get(report.identity)    # one a candidate before it in this run may have made
         place = places[id(report)]
         then = where(texts, report.roadmap_sha, paths(cfg, report), report.anchor) if place == "absent" else None
-        action = decide(entry, source.url, report, place, then)
+        action = decide(entry, source.url, report, place, then, statement_on(cfg, oids, branch, report))
         what = f"{report.roadmap} {report.file}"
         if action in ("nothing", "add", "revise"):
             known_source(ctx, run, jobs, entry, report, source, action)
@@ -1045,6 +991,11 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             "kind": report.kind, "effect": report.effect, "refutes": list(report.refutes),
             "replaces": list(report.replaces), "sources": [source.url], "evidence": {source.url: evidence_of(report)},
             "place": place})
+        prior = jobs.get(str((entry or {}).get("job") or ""))
+        if prior is not None and (entry or {}).get("right"):
+            # A pin judged right, at a new version: the rounds it follows, whose verdicts its outcome is read with.
+            job.inputs["previous"] = [p for p in prior.inputs.get("previous", []) if isinstance(p, dict)] + [
+                {"job": prior.id, "issue": prior.number}]
         state = "blocked" if place == "completed" else "available"
         filed.append(job.id)
         per_author[author] = per_author.get(author, 0) + 1
@@ -1067,7 +1018,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             known[report.identity] = entry
         # A Suggested.lean report's anchor is a declaration's name, which a correction usually keeps: the entry
         # records the statement it was filed against (main as this run read it), for the triage's upkeep.
-        statement = statement_on(cfg, texts, branch, report)
+        statement = statement_on(cfg, oids, branch, report)
         entry.pop("statement", None)
         if statement:
             entry["statement"] = statement

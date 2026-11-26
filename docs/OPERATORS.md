@@ -1937,17 +1937,16 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    marker for a fixed report whose main cannot be read is left for a later run, its revision not yet
    recorded, so the next run sees it as revised still.
    A `Suggested.lean` report's anchor is a declaration's name, which a correction of the pin usually keeps,
-   so its leaving main says little. The entry records the digest of that declaration's statement as main
-   had it when the job was filed (`statement`: `reports.statement_digest`, the exact bytes of the file from
-   its first byte to the end of the declaration, nothing normalised; nothing when the name is declared
-   nowhere or twice), from the read of main the filing makes anyway. Everything that can change how Lean
-   reads the pin (its own text, and the `variable`s, `include`s, `open`s, notations, options and earlier
-   definitions before it) is in that prefix, so no change of what it states goes unseen; in return, any edit
-   above a pin in its file, or in its text, counts as a change and costs that pin one more triage round.
-   The declaration is located in the text with comments and string literals blanked (a declaration keyword
-   at the start of a line, then the name as written or with its namespaces; its end is the next command at
-   the start of a line): blanking can hide a command line, never make one, so a mislocated end hashes more,
-   and a name not found once is not located and decides nothing. The triage lane
+   so its leaving main says little. A pin is judged by its file's version instead: the git blob id of
+   `Suggested.lean` at main (GitHub's `oid`, asked in the same GraphQL query that reads the file; the lane
+   takes the same id from its checkout with `git rev-parse`), so both sides name the exact bytes git stores,
+   and every change of the file is a new version. No declaration is located: the anchor's presence is the
+   same whitespace-normalised substring check as a quote's. The entry records the version its job was filed
+   at (`statement`). A pin a triage found right (a `rejected`, or a correction recorded `fixed`) keeps the
+   version it was found right at (`right`); a new or revised source for it is then only recorded while main
+   is at that version (a late report of the old snapshot), and files the next round, after the rounds it
+   follows (`previous`), once main is at another; a version not read decides nothing. A pin fixed because
+   its name left main keeps the rule above. The triage lane
    (#142) uses it: this half records it only. A `README.md` report's anchor is a verbatim quote: a
    correction that leaves the quoted words intact (a hypothesis added in the next sentence, say) is not
    seen, and a human asks for another triage (`triage again`).
@@ -2309,11 +2308,10 @@ reach) is not built yet.
 
 ## Known limits of this version
 
-* **A `Suggested.lean` pin is re-triaged by any edit above it in its file.** Its statement digest covers the
-  file up to the end of the pin, so an edit that changes nothing it states (a comment, another theorem
-  before it) files one more triage round for every confirmed pin after it in that file; that round says
-  "still wrong" or "right as written". A name declared more than once in a file under the same written
-  name and full name cannot be located, and decides nothing. A `README.md` correction that leaves the
+* **Any edit of a roadmap's `Suggested.lean` re-triages its pins.** A pin's version is its whole file's, so
+  any change of the file (a comment, another theorem, a reformatting) files one more triage round for each
+  report against that file holding a `confirmed` or open `needs-human` verdict, once per version of the
+  file; that round says "still wrong" or "right as written". A `README.md` correction that leaves the
   quoted words intact is not seen; a human asks with `triage again`.
 
 * The harness runs standalone; running the lanes as TauCetiWorker `only=` kinds, with its quota

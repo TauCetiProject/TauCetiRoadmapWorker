@@ -461,13 +461,15 @@ def tree_entries(gh, repo: str, wanted: list[tuple[str, str]], batch: int) -> di
     return out
 
 
-def blob_texts(gh, repo: str, wanted: list[tuple[str, str]], batch: int) -> dict[tuple[str, str], str | None]:
+def blob_texts(gh, repo: str, wanted: list[tuple[str, str]], batch: int,
+               oids: dict | None = None) -> dict[tuple[str, str], str | None]:
     """The text of each file at each commit (`wanted`: (commit, path) pairs), four times `batch` pairs
     per GraphQL query (`object(expression:) { ... on Blob { text isTruncated } }`); a text GraphQL cut
     short is read whole by REST. None for a file that is not there (or not text); a pair of a batch
     whose query failed, and one REST could not read, is left out. A pair the object cache holds
     (`use_cache`) is answered from it; one of a batch whose query failed is not kept there, even when
-    REST read it."""
+    REST read it. With `oids`, the same queries also ask each blob's git object id (`oid`), put there by pair: a
+    file's exact bytes as git stores them, never decoded."""
     out: dict[tuple[str, str], str | None] = {}
     if not wanted:
         return out
@@ -477,7 +479,8 @@ def blob_texts(gh, repo: str, wanted: list[tuple[str, str]], batch: int) -> dict
         owner, name = repo.split("/", 1)
         for chunk in chunks(pending, max(batch, 1) * 4):
             fields = " ".join(f"b{i}: object(expression: {json.dumps(f'{sha}:{path}')}) "
-                              "{ ... on Blob { text isTruncated } }" for i, (sha, path) in enumerate(chunk))
+                              f"{{ ... on Blob {{ {'oid ' if oids is not None else ''}text isTruncated }} }}"
+                              for i, (sha, path) in enumerate(chunk))
             try:
                 data = gh.graphql(f"query($owner: String!, $name: String!) {{ repository(owner: $owner, "
                                   f"name: $name) {{ {fields} }} }}", owner=owner, name=name)
@@ -489,6 +492,8 @@ def blob_texts(gh, repo: str, wanted: list[tuple[str, str]], batch: int) -> dict
                 if f"b{i}" not in nodes:
                     continue
                 node = nodes[f"b{i}"]
+                if oids is not None and isinstance(node, dict) and isinstance(node.get("oid"), str):
+                    oids[pair] = node["oid"]
                 if not isinstance(node, dict):
                     out[pair] = None
                 elif not node.get("isTruncated"):
