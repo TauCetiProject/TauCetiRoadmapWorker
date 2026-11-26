@@ -260,6 +260,16 @@ brief, never a failed round):
   occurs nowhere in the pinned Mathlib and Tau Ceti sources (its additive or multiplicative twin
   counts), or a `TauCetiRoadmap.<Name>.x` that roadmap's Suggested.lean does not have. These are
   leads for the agent, never gates;
+* `scratch/needs.md` (module `needs`): for each numbered `###` subsection of the README, the sections
+  of the README its text cites and its `*Needs:*` line does not list, those cited in a Check only,
+  the later sections a `*Needs:*` line lists, and cited numbers the README does not have. A
+  reference after a roadmap's name (`Other §4.2, §4.3`) is that roadmap's. Computed from the text, no
+  network; leads, since a section named for contrast is no need;
+* `scratch/library-main.md` (module `librarymain`, `[prreview] library_main`): the directories of the
+  library's main branch that hold Lean files the pinned tree lacks under a proper name the README
+  uses (a capitalised word inside a sentence: Beltrami, Sobolev), those where a name's files are
+  mostly new first, thirty at most. The roadmap is checked at its pins, so what the library gained
+  since is otherwise invisible to a review; the reviewer reports it for the human reviewers;
 * `scratch/overlaps.md`: `roadmaps overlaps` on the roadmap (module `overlaps`), what neither main nor
   one pull request shows. It lists the other open pull requests that change the same roadmap folder,
   with whether each pair of heads merges (`git merge-tree --write-tree`, git 2.38 or later; "not
@@ -935,6 +945,7 @@ an operator files by hand at an accepted head (inputs `operator_check`) is not c
 | `late_except` | `[]` | pull request numbers of those authors that keep their ordinary place (the ones other roadmaps wait for) |
 | `parent_roadmaps` | `[]` | roadmap folders that carry sub-roadmaps below them yet are roadmaps in their own right: their README stays under review instead of being read as a family index |
 | `library_search` | `true` | before a PR review, ask Loogle and LeanSearch about every declaration of the roadmap's `Suggested.lean` and hand the reviewer `scratch/library-matches.md` (leads for targets Mathlib or Tau Ceti already prove under another name) |
+| `library_main` | `true` | before a PR review, compare the tree of the library's main branch with the pinned tree (two reads of the Git tree API, kept in the state directory by commit) and hand the reviewer `scratch/library-main.md`: the directories that hold files the pin lacks under a proper name the README uses. What main provides past the pin is reported for the human reviewers, never as a finding against the pinned text |
 | `max_folders` | `10` | a pull request editing more roadmap folders than this is a chore and not reviewed, unless it adds the README.md of every one of them |
 | `small_change_lines` | `150` | a re-review whose folder changed by at most this many lines (insertions plus deletions) since the head the previous review read is incremental |
 | `diff_cap_lines` | `2000` | lines of the folder's diff since that head the reviewer gets in `changes.md` |
@@ -1613,6 +1624,18 @@ checked against the one at the head (`layout.rewrite_problems`): it may differ o
 opening, (b) the order of the top-level sections, (c) a `## How to read the build` section gone whole,
 (d) direction-word swaps inside the scope, the supplier contracts and the guide. A README the check
 refuses is never pushed; the agent's output stays in the scratch folder and the line says why.
+
+That check says the layers kept their words, not that the opening is true to them, and the push carries
+the acceptance with no review. So a second agent, which did not write the opening, then reads it against
+the rest of the README (`prompts/overview-check.md`; `--check-agent`, `--check-model`, by default the
+writer's, and for a reader of the other family that family's configured model: name a review model): for each sentence that asserts something it names the subsection or
+declaration that supports it, hypotheses, quantifier scope and strength of conclusion compared, in
+`check-<attempt>/check.json`. A sentence it cannot support is sent back to the writer once, then the
+README is refused (`refused: the README does not support “…”`); so is a reader that leaves no answer or
+does not finish, whatever it wrote first.
+`--no-check` skips the reading. (2026-11-18: an opening said a notion did not depend "on the metric"
+where the layer proves it for any two continuous Riemannian metrics; a referee's report found it the
+next day, on an accepted pull request.)
 
 Without `--yes` nothing is pushed: each README's proposal is written to
 `<state>/overviews/pr-<N>/<folder>/README.proposed.md` (beside it the README at the head, the agent's

@@ -964,7 +964,7 @@ def _rule_ids() -> re.Pattern:
 
 
 PRIVATE_FILE = re.compile(
-    r"(?<![\w.-])(?:gate\.md|gate\.json|changes\.md|pull-request\.md|overlaps\.md|library-matches\.md|reviews\.md|"
+    r"(?<![\w.-])(?:gate\.md|gate\.json|changes\.md|pull-request\.md|overlaps\.md|library-matches\.md|library-main\.md|needs\.md|reviews\.md|"
     r"answered\.json|repair-report\.md|needs-references\.toml|brief(?:-[\w-]+)?\.md)(?!\w)"
     r"|\bscratch/|\bjob folder\b|\bthe\s+(?:worker's\s+)?brief\b|/home/|/tmp/|/Users/", re.IGNORECASE)
 JOB_ID = re.compile(r"\b(?:PRREVIEW|GATE|REV|RT|FIX|PORT|PKG|DESIGN|TARGET|ERRATA)-[A-Z][\w~-]*")

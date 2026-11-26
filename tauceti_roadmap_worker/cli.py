@@ -732,7 +732,8 @@ def overview_cmd(args) -> int:
     model = args.model or (cfg.agents.codex_model if agent == "codex" else cfg.agents.claude_model)
     lines = overview.run(ctx, numbers=args.pr, authors=args.author, pool=args.pool, write=write, pace=args.pace,
                          limit=args.limit, accepted_only=args.accepted_only, listing=args.list, force=args.force,
-                         agent=agent, model=model, report=lambda line: print(line, flush=True))
+                         agent=agent, model=model, report=lambda line: print(line, flush=True),
+                         check=not args.no_check, check_agent=args.check_agent, check_model=args.check_model)
     return 1 if any(line.startswith("stopped") or ": not pushed:" in line for line in lines) else 0
 
 
@@ -1374,6 +1375,12 @@ def parser() -> argparse.ArgumentParser:
     ov.add_argument("--force", action="store_true", help="also a pull request that carries an overview record")
     ov.add_argument("--agent", choices=["claude", "codex"], default="claude")
     ov.add_argument("--model", default="", help="default: the configured model of the agent")
+    ov.add_argument("--no-check", action="store_true",
+                    help="do not have a second agent read each new opening against the rest of its README")
+    ov.add_argument("--check-agent", choices=["claude", "codex"], default="",
+                    help="the agent that reads the opening (default: the writer's)")
+    ov.add_argument("--check-model", default="", help="its model (default: the writer's, or the configured model of the reader's family when "
+                                                               "--check-agent names the other one; a review model is better)")
     ov.add_argument("--yes", action="store_true", help="push the checked READMEs and post the notes (default: "
                                                        "propose only, into the state directory)")
 

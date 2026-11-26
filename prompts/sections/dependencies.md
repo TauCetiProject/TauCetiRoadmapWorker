@@ -70,12 +70,24 @@ head of its open pull request where this brief gives you that head. Check every 
 at the pins, not on a newer Mathlib or Tau Ceti. Before you report a citation or a declaration as
 missing, confirm that the copy you searched is that main, that head or that pin.
 
+**The library past the pin.** The pin decides what this roadmap's Lean file may use. It does not
+decide what is duplicated: the library's main branch may have gained, since the pin, something this
+roadmap states as a target or takes from a roadmap that is still a pull request. When the tools list
+`scratch/library-main.md`, open the likely directories it names, on the library's main branch. What
+main provides past the pin is never cited as if the pin had it, and never a finding against the
+pinned text: name the declaration and its file in your report (a review: under `## For the human
+reviewers`), with the target that would be dropped or the supplier citation it would replace when the
+pin moves. A dependency on an open pull request for something main already has is the case that
+matters most: the roadmap then waits for a merge it does not need.
+
 A notion this roadmap needs from a roadmap later in the order is stated here as a target instead
 (the notion moves down), and the move is recorded in your report. Never add a `*Needs:*` line, a
 supplier-table row or a "Supplied by" citation of a later roadmap. Cite suppliers by roadmap name
 and section or target, never by pull-request number. What another roadmap plans is imported, never
 planned again; an extension in an existing roadmap's direction is "<that roadmap>, Part II", whose
-introduction says where the base roadmap stops.
+introduction says where the base roadmap stops. Until that Part II is on main, an open pull
+request or a package on the board, it owns nothing: write "outside this roadmap; planned as <that
+roadmap>, Part II" and what it would still need that no roadmap owns, never "Part II owns …".
 
 Check the direction mechanically after your edits:
 

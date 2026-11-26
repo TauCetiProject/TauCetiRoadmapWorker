@@ -336,6 +336,7 @@ class PRReview:
     late_except: list[int] = field(default_factory=list)
     parent_roadmaps: list[str] = field(default_factory=list)  # roadmaps that carry sub-roadmaps yet are roadmaps themselves (reviewed), not family indexes
     library_search: bool = True      # ask Loogle and LeanSearch about every declaration of the roadmap's Lean file for the reviewer (`scratch/library-matches.md`)
+    library_main: bool = True        # list for the reviewer what the library's main branch holds past the pin under the README's proper names (`scratch/library-main.md`)
     # A pull request that edits more roadmap folders than this is a chore and is not reviewed, unless
     # it adds the README.md of every one of them (a bundle of new roadmaps).
     max_folders: int = 10
