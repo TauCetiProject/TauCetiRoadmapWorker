@@ -199,6 +199,57 @@ checkout, submits a PR to the board, and the intake advances the state.
     text is not that text (edited since, or reviewed before the record) gets one incremental check
     round of the text, at most `[prreview] text_per_run` a run, the pull requests that wait for
     nothing first (OPERATORS.md, "AI review of every roadmap pull request").
+11. `report` — what the library found wrong in a roadmap. A Tau Ceti worker that meets a wrong
+    roadmap statement (false, short of a hypothesis, an unprovable pin, a wrong definition, a circular
+    route, a renamed declaration) proves what it can and leaves a roadmap report in the body of its pull
+    request on the library (never in an issue): a `### Roadmap report` section and a marker
+    `<!--tauceti-roadmap-report:v1 {...}-->` naming the roadmap, the file (`README.md` or
+    `Suggested.lean`), the commit it read, the quoted text that is wrong, the kind, whether it blocked
+    the worker, and the declarations that refute and replace it. With `[reports] enabled`, `board sync`
+    searches the library's pull requests once per forge per run (GitHub, and Forgejo when configured)
+    and files one
+    `REPORT-<Leaf>~k` per new report: on GitHub, from a merged pull request whoever wrote it (a bors
+    merge, a closed pull request titled `[Merged by Bors] - `, counts when a configured merge-queue account
+    closed it), from an open pull request only when its author is in `[reports] reporters`; on Forgejo,
+    where no merge is verified, only from an author in `forgejo_reporters`; from a pull request closed
+    unmerged never. The roadmap, file and quoted text (whitespace normalised, case kept) are one
+    report whatever its sources, and what each source says now (an edited description replaces its own
+    evidence) is what the report and its open job carry; a report whose text main no longer
+    holds is recorded as fixed and files nothing, and an open report is fixed, its job done, once its
+    text leaves main. A source that reports the same at another snapshot of the roadmap has said it again.
+    A `Suggested.lean` report's anchor is a declaration's name, which a correction usually keeps: the
+    report is judged by its file's version (the git blob id at main), the one its last recorded verdict
+    read; any change of the file is a new version (never a missed correction,
+    sometimes one more triage), and a late report of a version found right files nothing; a triage's digest
+    includes the version it read, and a confirmed pin whose file changed on main is triaged again (a later
+    `rejected` of another version than a `confirmed` in its history records it `fixed`: corrected, not
+    "never an error"); a `README.md` correction that leaves the quoted words intact is not seen. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
+    `rejected`, `fixed`), which the library's workers read so as not to report one twice. A read that is
+    not whole (an incomplete search, an error object or a cut page of a listing, a register GitHub does not
+    serve) is a failed read: it moves no mark and decides nothing, and the next run reads again. The job's text
+    is the board's own; the worker's prose is quoted as data. The lane triages the report, read-only, on
+    the review models: its agent reads the validated report, the reported file on the content
+    repository's main with the quoted text located in it, the reporter's prose quoted as data, the pull
+    request it comes from, and each declaration the report names, looked up in the pinned Tau Ceti (a
+    declaration newer than the pin is read in that pull request, as data, and the verdict never rests on
+    a name alone). It answers `confirmed` (the roadmap is wrong as reported; the triage states the
+    correction, with its evidence), `rejected` (the statement is right as written, the anchor does not
+    say what the report claims, or the "error" is a choice the roadmap may make) or `needs-human` (what is
+    missing to settle it). The triage is a report in the packages tree that the intake merges: it closes
+    the job whatever the verdict, and the next `board sync` records the verdict in the register (with the correction, or a pointer to the triage), only while the reported
+    text is still on main: a report whose text has left main is `fixed` whatever its triage said. A job a
+    human closes with no verdict records the report as `rejected`. A text no longer on main, and a roadmap
+    moved under the completed directory (where no lane works), block the job before its agent runs. A
+    job id is triaged once: its one merged submission (its triage file on the board's main) is the
+    submission it waits on, which the intake finishes from any state but done; a worker never runs a job
+    whose triage is on main, and the intake refuses a second triage of it. The finished job is closed and
+    stays closed: the board reads no reopen. A triage asked again is a comment on the finished job with a
+    line `triage again`, which `board sync` turns into the report's next round once (the comment's id in
+    its spec); that round reads the earlier rounds' triages and what people wrote on their issues. A
+    verdict is bound to the evidence it judged: the worker writes the digest of the report its brief
+    stated into the triage (a stopped submission finished later keeps it), and a verdict on evidence a source revised since is not recorded; the report's
+    next round is filed instead. A verdict recorded is never undone by a later revision: the job is told,
+    and a human asks again if it matters.
 
 Lanes are the `work --only` kinds, so an operator can pin a worker to reviewing, to porting, or
 let `--loop` pick.
@@ -244,7 +295,9 @@ Agents fetch what they need themselves, within rules:
   each design and package; `review` jobs refuse a claim from the same operator. A single-operator
   project sets `[review] separation = "agent"`: the authoring operator may then review when the
   reviewing agent and model differ from the authoring ones recorded for the job, and the intake
-  applies the same test. Projects with several operators keep `separation = "operator"`.
+  applies the same test. Projects with several operators keep `separation = "operator"`. The triage of
+  a roadmap report has no author to be independent of: the reporter is an agent of another project,
+  recorded nowhere in the claims namespace, so any operator may take it.
 - Every prompt carries the untrusted-text rule and the fetch rules.
   - Agents get a minimal environment with no GitHub token; the worker makes every GitHub write
     itself.
@@ -334,7 +387,12 @@ Agents fetch what they need themselves, within rules:
    board's pull requests: the pinned "Review queue" issue lists them, each pull request's first
    comment is the brief, and a review is a comment in the shape the brief gives.
 4. Review and merge the roadmap PR; comments on it feed the `gate` lane automatically.
-5. Maintain `tauceti-roadmap.toml` and the prompts (CODEOWNERS-protected).
+5. Settle a report the triage left as `needs-human` (or one against a completed roadmap, where no lane
+   works): answer on the job's issue in a comment with a line `triage again` for the report's next triage
+   round, or correct the roadmap with a pull request (the report is fixed once the quoted text leaves
+   main); a rejected report is asked again the same way. Until the correction lane exists, a confirmed report is also
+   corrected by hand.
+6. Maintain `tauceti-roadmap.toml` and the prompts (CODEOWNERS-protected).
 
 ## 8. Not done
 
@@ -343,6 +401,13 @@ Agents fetch what they need themselves, within rules:
 - The two-operator pilot: two operators, four targets, one week, with the resulting PRs compared
   with the hand-run campaign on review rounds needed and reviewer findings per PR.
 - The weekly digest issue of open `needs-references` requests.
+- Verifying a Forgejo merge. The instance's merge queue closes pull requests as a maintainer's own
+  account, so who closed a bors-titled pull request says nothing there: a Forgejo pull request's reports
+  count only from a listed Forgejo reporter, whatever its title, and a merged report from anyone else
+  on Forgejo is not harvested.
+- The correction lane of roadmap reports: a lane that batches a roadmap's confirmed reports (the
+  register's `confirmed` entries, each with its correction and its triage) into one pull request on the
+  roadmap repository, which the pull-request review, the gate lane and a human merge take from there.
 
 ## 9. Decisions
 

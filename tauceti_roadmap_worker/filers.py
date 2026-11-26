@@ -7,6 +7,8 @@ and kept in the state directory for an hour. A token that cannot read the organi
 Actions token of the board's workflow) falls back to the last list it read, then to
 `board/filers.json` in the board repository, which every run that can read the team keeps up to
 date. When the filers cannot be resolved at all, nothing is closed: the issue waits, with a warning.
+The same lists decide who may leave a roadmap report from an open pull request (`[reports]
+reporters`, read by `reports.py`).
 """
 
 from __future__ import annotations
@@ -94,10 +96,12 @@ def publish(ctx, team: str, members: list[str]) -> None:
 
 
 def refresh(ctx) -> list[str]:
-    """Read every configured team through the API and publish `board/filers.json` when it changed,
+    """Read every configured team (of the target filers, and of `[reports] reporters` when reports are
+    enabled) through the API and publish `board/filers.json` when it changed,
     whether or not a target is waiting (so a token that cannot read the team always has a list)."""
     out = []
-    for entry in ctx.cfg.board.target_filers:
+    reporters = ctx.cfg.reports.reporters if ctx.cfg.reports.enabled else []
+    for entry in dict.fromkeys([*ctx.cfg.board.target_filers, *reporters]):
         if entry.startswith("team:"):
             members, where = team_members(ctx, entry[5:], fresh=True)
             out.append(f"filers {entry[5:]}: {len(members)} member(s) ({where})" if members is not None
@@ -105,12 +109,14 @@ def refresh(ctx) -> list[str]:
     return out
 
 
-def allowed(ctx, login: str) -> tuple[bool | None, str]:
-    """(True | False | None, note): whether `login` may file targets; None when the filers cannot
-    be resolved (then nothing is decided)."""
-    entries = list(ctx.cfg.board.target_filers)
-    if not entries:
-        return True, "anyone may file targets"
+def allowed(ctx, login: str, entries: list[str] | None = None) -> tuple[bool | None, str]:
+    """(True | False | None, note): whether `login` may file targets (or is in `entries`, another list
+    of the same form, which never means anyone when empty); None when the filers cannot be resolved
+    (then nothing is decided)."""
+    if entries is None:
+        entries = list(ctx.cfg.board.target_filers)
+        if not entries:
+            return True, "anyone may file targets"
     who, notes = (login or "").lower(), []
     for entry in entries:
         if not entry.startswith("team:"):
