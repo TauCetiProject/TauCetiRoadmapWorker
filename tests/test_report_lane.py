@@ -1086,8 +1086,6 @@ def test_a_confirmed_pin_corrected_on_main_with_its_name_kept_is_triaged_again(c
     [(new, state, preamble)] = sync.board.created
     e = entry_of(gh)
     assert new.id == JOB.replace("~1", "~2") and state == "available" and e["job"] == new.id and e["state"] == "open"
-    assert new.inputs["restated"] == {"verdict": "confirmed",
-                                      "statement": reports.statement_digest(WRONG, "square_root_sq")}
     assert preamble.startswith(f"Triaged again: the statement of `square_root_sq` changed on main since the triage "
                                f"of `{JOB}` judged it (`confirmed`).")
     assert any(f"reports: {JOB}: the pinned statement changed since it was judged; filed {new.id}" in x for x in out)
@@ -1102,8 +1100,9 @@ def test_the_next_rounds_rejection_of_a_corrected_pin_is_recorded_as_fixed(ctx):
     later = JOB.replace("~1", "~2")
     gh = pin_gh(RIGHT, ctx)
     gh.main[TRIAGE.replace("~1", "~2")] = triage("rejected", job=later, digest=pin_digest(RIGHT))
-    pin_register(gh, job=later)
-    job = pin_job(restated={"verdict": "confirmed", "statement": reports.statement_digest(WRONG, "square_root_sq")})
+    pin_register(gh, job=later, triages=[{"job": JOB, "verdict": "confirmed", "report": TRIAGE,
+                                          "statement": reports.statement_digest(WRONG, "square_root_sq")}])
+    job = pin_job(previous=[{"job": JOB, "issue": 7}])
     job.id, job.round = later, 2
     reports.sync_reports(context(gh, jobs=[job]), now=NOW)
     e = entry_of(gh)
@@ -1150,16 +1149,74 @@ def test_the_lane_blocks_a_pin_it_cannot_locate(live, tmp_path):
         lane_for(job).prepare(job, dataclasses.replace(ctx, gh=IssueGH("")))
 
 
-def test_a_later_round_does_not_inherit_the_request_or_restatement_of_its_predecessor(ctx):
-    """A round filed for another reason never carries the comment id or the restatement of the round before it."""
+def test_a_later_round_does_not_inherit_the_request_of_its_predecessor(ctx):
+    """A round never carries the comment id that asked for the round before it."""
     gh = EventsGH(issue_body=ctx.gh.body, reopened=False)
     gh.main[TRIAGE] = triage("needs-human")
     needs_human_entry(gh)
     job = report_job(state="done")
     job.closed = True
-    job.inputs.update(asked=1, restated={"verdict": "confirmed", "statement": "0" * 12})
+    job.inputs.update(asked=1)
     sync = context(gh, jobs=[job])
     sync.board.threads = asked(job, ASK)
     reports.sync_reports(sync, now=NOW)
     [(new, _s, _p)] = sync.board.created
-    assert new.inputs["asked"] == 4242 and "restated" not in new.inputs
+    assert new.inputs["asked"] == 4242
+
+
+# --- review round 9 -----------------------------------------------------------------------------------------------
+
+STRONGER = WRONG.replace("(x : ℝ) :", "(x : ℝ) (hx : 1 ≤ x) :")
+
+
+def test_a_correction_check_that_goes_stale_still_records_the_corrected_pin_as_fixed(ctx):
+    """(nn) Round 1 confirms the wrong `square_root_sq`; main adds `0 ≤ x`; round 2 (the correction check) runs while
+    main strengthens it to `1 ≤ x`, so round 2 is stale and round 3 is filed; round 3 rejects the pin as now written.
+    The entry's own history says the pin was confirmed wrong on another statement: it is fixed."""
+    def finished(job_id, text, verdict, digest_of):
+        job = pin_job()
+        job.id, job.round = job_id, int(job_id.rsplit("~", 1)[1])
+        gh.main[TRIAGE.replace("~1", "~" + job_id.rsplit("~", 1)[1])] = triage(verdict, job=job_id, digest=pin_digest(digest_of))
+        return job
+    gh = pin_gh(WRONG, ctx)
+    pin_register(gh)
+    sync = context(gh, jobs=[finished(JOB, WRONG, "confirmed", WRONG)])
+    reports.sync_reports(sync, now=NOW)
+    assert entry_of(gh)["state"] == "confirmed"
+    gh.main[PIN] = RIGHT
+    reports.sync_reports(sync, now=NOW)                    # round 2: the statement changed since it was judged
+    [(r2, _s, _p)] = sync.board.created
+    two = finished(r2.id, RIGHT, "rejected", RIGHT)
+    two.inputs = {**r2.inputs}
+    sync.board.jobs.append(two)
+    gh.main[PIN] = STRONGER                                # changed again while round 2 ran: round 2 is stale
+    reports.sync_reports(sync, now=NOW)
+    r3 = sync.board.created[-1][0]
+    assert r3.id == JOB.replace("~1", "~3") and entry_of(gh)["state"] == "open"
+    three = finished(r3.id, STRONGER, "rejected", STRONGER)
+    three.inputs = {**r3.inputs}
+    sync.board.jobs.append(three)
+    reports.sync_reports(sync, now=NOW)
+    e = entry_of(gh)
+    assert e["state"] == "fixed" and e["triage"]["job"] == r3.id and e["triage"]["corrected"] is True
+
+
+S1, S2 = "1" * 12, "2" * 12
+
+
+@pytest.mark.parametrize("file, history, statement, corrected", [
+    ("Suggested.lean", [{"job": JOB, "verdict": "confirmed", "statement": S1}], S2, True),        # corrected since
+    ("Suggested.lean", [{"job": JOB, "verdict": "confirmed", "statement": S1}], S1, False),       # a human overturns
+    ("Suggested.lean", [{"job": JOB, "verdict": "needs-human", "statement": S1}], S2, False),     # never confirmed
+    ("Suggested.lean", [{"job": JOB, "verdict": "confirmed", "statement": S1, "judged": "x"}], S2, False),   # stale
+    ("Suggested.lean", [{"job": JOB, "verdict": "confirmed", "by": "hand"}], S2, False),
+    ("Suggested.lean", [{"job": "REPORT-QuadraticFormInvariants~0", "verdict": "confirmed", "statement": S1}], S2,
+     False),                                                                                        # before a fresh filing
+    ("Suggested.lean", [], S2, False),
+    ("README.md", [{"job": JOB, "verdict": "confirmed"}], None, False),                              # a human overturns
+], ids=["corrected", "overturned", "needs-human", "stale", "by hand", "an earlier filing", "no history", "README"])
+def test_whether_a_rejection_is_a_correction_is_read_from_the_entrys_own_history(file, history, statement, corrected):
+    later = new_job(JOB.replace("~1", "~3"), inputs={"previous": [{"job": JOB, "issue": 7},
+                                                                  {"job": JOB.replace("~1", "~2"), "issue": 8}]})
+    entry = {"file": file, "triages": history}
+    assert reports.corrected(entry, later, statement) is corrected

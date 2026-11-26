@@ -1351,7 +1351,7 @@ def record_triage(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: 
         if verdict == "needs-human":
             entry["triage"] = record
             line = f"{job.id}: triage needs a human; recorded, the report stays open"
-        elif verdict == "rejected" and (job.inputs.get("restated") or {}).get("verdict") == "confirmed":
+        elif verdict == "rejected" and corrected(entry, job, statement):
             # A pin confirmed wrong, corrected since (its statement changed), and now right as written: fixed.
             entry["state"], entry["triage"] = "fixed", record | {"corrected": True}
             line = f"{job.id}: triage rejected the corrected pin; recorded as fixed"
@@ -1368,11 +1368,27 @@ def record_triage(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: 
     return changed
 
 
+def corrected(entry: dict, job: board.Job, statement: str | None) -> bool:
+    """Whether a `rejected` verdict of `job` on the pinned statement `statement` records a correction (the report
+    is `fixed`) rather than an error that never was: read from the entry's own history, never from context a
+    round carries. True when, among the verdicts recorded since the report was last filed afresh (the rounds the
+    job's spec names, `previous`, and the job itself), one is a `confirmed` on another statement. A README.md
+    report has no statement digest: a rejection after a confirmation is a human's overturn, and stays `rejected`;
+    so is one of a pin whose statement is the one confirmed. A stale verdict (`judged`) or one by hand counts
+    for nothing."""
+    if entry.get("file") != "Suggested.lean" or not statement:
+        return False
+    rounds = {job.id, *(str(p.get("job") or "") for p in job.inputs.get("previous", []) if isinstance(p, dict))}
+    return any(t.get("job") in rounds and t.get("verdict") == "confirmed" and not t.get("by") and "judged" not in t
+               and t.get("statement") and t["statement"] != statement
+               for t in [*entry.get("triages", []), entry.get("triage") or {}] if isinstance(t, dict))
+
+
 def restated(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: str) -> None:
     """`sync_reports`: a Suggested.lean report whose verdict (`confirmed`, or `needs-human` with the report open) is
     recorded for its current job, and whose pinned statement on main is no longer the one that verdict judged (a
-    correction that kept the declaration's name), is triaged again: its next round is filed, with what was judged
-    (`restated`). Nothing is assumed fixed, and no verdict stands on a statement it never read. Main as this run
+    correction that kept the declaration's name), is triaged again: its next round is filed. Nothing is assumed
+    fixed (whether its rejection then records a correction is read from the history: `corrected`), and no verdict stands on a statement it never read. Main as this run
     read it for the anchor check, no other read; a pin not located decides nothing."""
     for (roadmap, _file, _a), entry in settle:
         job, triage = jobs.get(str(entry.get("job") or "")), entry.get("triage") or {}
@@ -1387,7 +1403,7 @@ def restated(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: str) 
         if ctx.dry_run:
             run.out.append(f"reports: {line} (dry run: no round filed)")
             continue
-        new = next_round(ctx, jobs, entry, job, restated={"verdict": triage["verdict"], "statement": judged}, lead=(
+        new = next_round(ctx, jobs, entry, job, lead=(
             f"Triaged again: the statement of `{entry['anchor']}` changed on main since the triage of `{job.id}` "
             f"judged it (`{triage['verdict']}`). This round reads it as it now stands."))
         if new is None:
@@ -1474,8 +1490,7 @@ def ask_again(ctx, run: Run, jobs: dict, known: dict) -> None:
         run.out.append(f"reports: {job.id}: a human asked for another triage; filed {new.id} (#{new.number})")
 
 
-def next_round(ctx, jobs: dict, entry: dict, job: board.Job, lead: str, asked: int = 0,
-               restated: dict | None = None) -> board.Job | None:
+def next_round(ctx, jobs: dict, entry: dict, job: board.Job, lead: str, asked: int = 0) -> board.Job | None:
     """The report's next REPORT round after `job`, filed `state:available` (the board files a title once, and
     a round filed by a run whose register write failed is taken back from its spec, so nothing is filed
     twice). Its spec is the register entry's, with the rounds before it (`previous`) and the comment that
@@ -1491,10 +1506,9 @@ def next_round(ctx, jobs: dict, entry: dict, job: board.Job, lead: str, asked: i
     k = max(board.parse_job_id(j.id).round for j in jobs.values() if j.name == name) + 1
     earlier = [p for p in job.inputs.get("previous", []) if isinstance(p, dict)] + [{"job": job.id,
                                                                                       "issue": job.number}]
-    inherited = {key: v for key, v in job.inputs.items() if key not in ("asked", "restated")}     # this round's own
+    inherited = {key: v for key, v in job.inputs.items() if key != "asked"}     # the request is this round's own
     new = board.new_job(board.make_id("report", name, k), inputs={**inherited, **project(entry), "previous": earlier,
-                                                                  **({"asked": asked} if asked else {}),
-                                                                  **({"restated": restated} if restated else {})})
+                                                                  **({"asked": asked} if asked else {})})
     report = report_of(new)
     if report is None:
         return None

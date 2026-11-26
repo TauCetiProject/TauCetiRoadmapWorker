@@ -222,7 +222,8 @@ checkout, submits a PR to the board, and the intake advances the state.
     read; any change of the file is a new version (never a missed correction,
     sometimes one more triage), and a late report of a version found right files nothing; a triage's digest
     includes the statement it read, and a confirmed pin whose statement changed on main is triaged again
-    (a `rejected` then records it `fixed`: corrected, not "never an error"); a `README.md` correction that leaves the quoted words intact is not seen. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
+    (a later `rejected` of another statement than a `confirmed` in its history records it `fixed`:
+    corrected, not "never an error"); a `README.md` correction that leaves the quoted words intact is not seen. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
     `rejected`, `fixed`), which the library's workers read so as not to report one twice. A read that is
     not whole (an incomplete search, an error object or a cut page of a listing, a register GitHub does not
     serve) is a failed read: it moves no mark and decides nothing, and the next run reads again. The job's text

@@ -1955,9 +1955,13 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    pin it cannot locate once), so a correction that lands while the triage runs makes the verdict stale;
    the triage record keeps the statement it judged (`statement`); and a `confirmed` (or `needs-human`)
    report whose statement on main is no longer the judged one is triaged again: its next round is filed
-   (`restated`: the verdict and statement judged), with nothing assumed fixed. That round's `rejected` (the
-   pin is right as now written) after a `confirmed` is recorded `fixed` (`"corrected": true`): the pin was
-   wrong and was corrected, where `rejected` would say it never was. Main is the read the anchor check
+   with nothing assumed fixed. Whether a `rejected` (the pin is right as now written) records a correction
+   is read from the entry's own history (`reports.corrected`): among the verdicts of the rounds since the
+   report was last filed afresh (the round and the rounds its spec names under `previous`), a `confirmed`
+   on another statement makes it `fixed` (`"corrected": true`), whatever path filed the rounds in between
+   (a statement changed, a stale verdict, `triage again`, a recovery). A `rejected` of the statement that
+   was confirmed is a human's overturn and stays `rejected`; so does every rejection of a `README.md`
+   report, which has no statement digest; stale verdicts and ones by hand count for nothing. Main is the read the anchor check
    makes already; a pin not located decides nothing. A `README.md` report's anchor is a verbatim quote: a
    correction that leaves the quoted words intact (a hypothesis added in the next sentence, say) is not
    seen, and a human asks for another triage (`triage again`).
