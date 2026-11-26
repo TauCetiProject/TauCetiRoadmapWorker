@@ -645,7 +645,7 @@ def paths(cfg, report_or_roadmap, file: str = "") -> tuple[str, str]:
 
 LEAN_KEYWORD = r"(?:theorem|lemma|def|abbrev|instance|structure|class|inductive|axiom|opaque)"
 LEAN_MODIFIERS = r"(?:(?:private|protected|noncomputable|partial|unsafe|nonrec)\s+)*"
-LEAN_DECLARES = re.compile(rf"^{LEAN_MODIFIERS}{LEAN_KEYWORD}\s+([^\s(:{{\[]+)")
+LEAN_DECLARES = re.compile(rf"^(?:@\[[^\]]*\]\s*)*{LEAN_MODIFIERS}{LEAN_KEYWORD}\s+([^\s(:{{\[]+)")
 LEAN_COMMAND = re.compile(rf"^(?:@\[|namespace\b|section\b|end\b|open\b|variable\b|universe\b|set_option\b|"
                           rf"attribute\b|#|{LEAN_MODIFIERS}{LEAN_KEYWORD}\b|noncomputable\s+section\b)")
 
@@ -675,8 +675,8 @@ def without_comments(text: str) -> str:
 
 def statement_digest(text: str | None, name: str) -> str | None:
     """The digest of the declaration `name` in a Suggested.lean text: from its declaring line (a declaration
-    keyword at the start of a line, after `private`, `protected`, `noncomputable`, `partial`, `unsafe` or `nonrec`,
-    then the name), with the attribute lines (`@[...]`) right above it, to the next command at the start of a line
+    keyword at the start of a line, after attributes written on that line and `private`, `protected`,
+    `noncomputable`, `partial`, `unsafe` or `nonrec`, then the name), with the attribute lines (`@[...]`) right above it, to the next command at the start of a line
     (a declaration, an attribute, `namespace`, `section`, `end`, `open`, `variable`, ...) or the end of the file;
     comments and docstrings left out, whitespace runs as one space. The name is matched as written or with the
     `namespace` blocks around it (`end` closes the last one). None when the text is not read, or the name is
@@ -701,7 +701,7 @@ def statement_digest(text: str | None, name: str) -> str | None:
     if len(hits) != 1:
         return None
     start = hits[0]
-    while start > 0 and lines[start - 1].startswith("@["):
+    while start > 0 and lines[start - 1].startswith("@[") and not LEAN_DECLARES.match(lines[start - 1]):
         start -= 1
     end = next((j for j in range(hits[0] + 1, len(lines)) if LEAN_COMMAND.match(lines[j])), len(lines))
     body = " ".join(" ".join(lines[start:end]).split())

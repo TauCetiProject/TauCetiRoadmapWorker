@@ -1216,6 +1216,18 @@ def test_the_statement_digest_follows_the_statement_and_only_it():
     assert reports.statement_digest(twice, "square_root_sq") is None                  # declared twice: not located
 
 
+def test_the_statement_digest_finds_a_declaration_with_its_attribute_on_the_same_line():
+    text = ("@[simp] theorem first : 1 = 1 := rfl\n"
+            "@[simp, norm_cast] protected theorem second (n : ℕ) : n = n := rfl\n"
+            "theorem third : 2 = 2 := rfl\n")
+    one, two, three = (reports.statement_digest(text, n) for n in ("first", "second", "third"))
+    assert one and two and three and len({one, two, three}) == 3
+    # the one-line declaration above is not taken for an attribute line of the next one
+    assert reports.statement_digest(text.replace("1 = 1", "0 = 0"), "second") == two
+    assert reports.statement_digest(text.replace("(n : ℕ)", "(n : ℤ)"), "second") != two
+    assert reports.statement_digest(text.replace("n = n", "n + 0 = n"), "third") == three
+
+
 def test_a_suggested_lean_report_records_the_statement_it_was_filed_against():
     path = "TauCetiRoadmap/QuadraticFormInvariants/Suggested.lean"
     gh = ReportsGH([item(1, body=marker(file="Suggested.lean", anchor="square_root_sq"))], main={path: LEAN_TEXT})
