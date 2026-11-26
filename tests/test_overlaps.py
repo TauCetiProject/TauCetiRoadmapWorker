@@ -628,6 +628,33 @@ def test_an_unanswered_merge_state_keeps_the_approval_label_and_no_label_means_n
     assert not gh.writes and not gh.merge_asked and not [line for line in out if READY in line]
 
 
+def test_a_pull_request_handed_to_the_maintainers_carries_the_approval_label_until_it_is_approved(tmp_path,
+                                                                                                   monkeypatch):
+    def new(name):
+        return {f"TauCetiRoadmap/{name}/README.md": f"# Roadmap: {name}\n"}
+    cfg, _index = build(tmp_path, monkeypatch, [MAIN], [(90, "amy", 0, new("A")), (91, "amy", 0, new("B")),
+                                                         (92, "amy", 0, new("C")), (93, "amy", 0, new("D"))],
+                        bodies={91: "Depends on #44."})
+    gh = build.gh
+    cfg.prreview.handed_over_prs = [90, 91, 92]
+    for pr in gh.listed:                              # none carries the acceptance label
+        got = pr["number"]
+        pr["labels"]["nodes"] = {90: [], 91: [{"name": cfg.replies.awaiting_author}, {"name": READY}],
+                                 92: [{"name": READY}], 93: [{"name": READY}]}[got]
+        pr["isDraft"] = got == 91
+        pr["reviewDecision"] = "APPROVED" if got == 92 else "REVIEW_REQUIRED"
+    gh.states.update({44: {"state": "open"}})
+    monkeypatch.setattr(deplabels, "PAUSE", 0)
+    out = deplabels.run(SimpleNamespace(cfg=cfg, gh=gh), DEPS, READY)
+    # #90 gets it, #91 keeps it though it waits, is a draft and carries awaiting-author; an approved one and
+    # one that is not in the list follow the ordinary rules.
+    assert named_writes(gh, READY) == [("DELETE", 92), ("DELETE", 93), ("POST", 90)]
+    assert f"#90: {READY} added ({deplabels.HANDED})" in out and f"#92: {READY} removed (it is approved)" in out
+    assert f"#93: {READY} removed (it does not carry {cfg.prreview.label})" in out
+    assert not [line for line in out if line.startswith(f"#91: {READY}")]
+    assert named_writes(gh, DEPS) == [("POST", 91)] and not gh.merge_asked     # their merge state is not read
+
+
 def block(*items):
     return ("<!-- depends-on -->\n**Depends on** (suppliers still open; they merge first):\n"
             + "".join(f"- [ ] {item}\n" for item in items) + "<!-- /depends-on -->")

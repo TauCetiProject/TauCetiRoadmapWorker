@@ -4222,6 +4222,15 @@ def test_operator_prs_and_parent_roadmaps_parse_and_are_checked():
             config.parse(f'[project]\nname = "P"\n[prreview]\n{bad}\n', "x.toml")
 
 
+def test_handed_over_prs_parse_and_are_checked():
+    parsed = config.parse('[project]\nname = "P"\n[prreview]\nhanded_over_prs = [617]\n', "x.toml").prreview
+    assert parsed.handed_over_prs == [617]
+    assert config.parse('[project]\nname = "P"\n', "x.toml").prreview.handed_over_prs == []
+    for bad in ("handed_over_prs = [0]", 'handed_over_prs = ["617"]', "handed_over_prs = [true]"):
+        with pytest.raises(config.ConfigError, match=re.escape("prreview.handed_over_prs")):
+            config.parse(f'[project]\nname = "P"\n[prreview]\n{bad}\n', "x.toml")
+
+
 # --- rounds that end without another review: P3-only repairs, findings outside the folder ----------------
 
 def carried_file(job, record, status="needs_changes"):
