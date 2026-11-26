@@ -2014,8 +2014,11 @@ the report comes from, as data). It never runs Lean, waits for no source (what i
 opens `Triage (<agent>) of REPORT-<Leaf>~k at <sha7 of main>` and `Verdict: confirmed | rejected |
 needs-human`, then `## Statement`, `## Evidence` (for a verdict that settles the report) and
 `## Correction`, `## Reason` or `## Missing`; the worker adds `Evidence: <digest>` as its second line (the
-digest of the report its brief stated; a submission that stopped and is finished by a later attempt without
-the agent keeps the digest its first attempt wrote, so a report revised meanwhile files the next round),
+digest of the report its brief stated, kept in the run's record from its first save on, whatever stopped
+it: a lease lost before or after the report was stamped, a refused push, a failed pull request, a crash
+after the record was written. A submission finished by a later attempt without the agent is stamped from
+that record, so a report revised meanwhile files the next round; a run kept by older code with no digest
+recorded is discarded and triaged again),
 and it is submitted as a board pull request. The intake merges it
 and comments `Triage: <verdict> (<path>)` (for `needs-human`, `Needs a human: ...` with what the triage
 lacks quoted and how to ask again), sets the job done and closes it, whatever the verdict. The note is

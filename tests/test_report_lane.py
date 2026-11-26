@@ -962,3 +962,67 @@ def test_a_resumed_triage_keeps_the_digest_of_the_brief_its_agent_read(live, tmp
     assert reports.parse_triage(pushed)["digest"] == briefed
     # What the sync then does with it: the digest is the entry's only when nothing was revised.
     assert (reports.evidence_digest(job.inputs) == briefed) is (not revised)
+
+
+# --- review round 7 -----------------------------------------------------------------------------------------------
+
+@needs_git
+@pytest.mark.parametrize("stop", ["lease lost before finish", "lease lost at the pull request"])
+@pytest.mark.parametrize("revised", [False, True], ids=["evidence unchanged", "evidence revised"])
+def test_a_run_kept_at_any_stop_resumes_with_the_digest_of_its_brief(live, tmp_path, monkeypatch, stop, revised):
+    """(hh) A lease lost before `finish` keeps the agent's report as it wrote it, with no digest; one lost at a later
+    write keeps the stamped one. Either way the run's record holds the digest of the brief its agent read, from the
+    first save on, and the resumed run is stamped with it: never left unstamped, never re-hashed."""
+    from tauceti_roadmap_worker import claims
+    from tauceti_roadmap_worker.lanes import base as lane_base
+    ctx, _board_origin = live
+    commit(tmp_path / "origin-content", {README: TEXT}, "the roadmap")
+    fork, fork_repo = tmp_path / "fork.git", "alice/" + ctx.cfg.repositories.packages_repo().split("/")[1]
+    gitops.git(tmp_path, "init", "-q", "--bare", str(fork))
+    origin_url = gitops.url
+    monkeypatch.setattr(gitops, "url", lambda repo: fork.as_uri() if repo == fork_repo else origin_url(repo))
+    monkeypatch.setattr(lane_base.Lane, "sleep", staticmethod(lambda s: None))
+    runs = []
+
+    def agent(task, base_env=None):
+        runs.append(1)
+        head = gitops.git(task.workdir.parent / "content", "rev-parse", "HEAD").strip()[:7]
+        (task.workdir / TRIAGE).write_text(triage("rejected", head=head, digest=""))
+        return agents.AgentResult(exit_code=0, seconds=1.0)
+    monkeypatch.setattr(agents, "run_agent", agent)
+
+    class Fenced(IssueGH):
+        lost = True
+
+        def write(self, method, path, payload=None):
+            if self.lost and stop.endswith("pull request") and path.endswith("/pulls"):
+                raise claims.LeaseLost("the lease was lost: another owner holds it")
+            return super().write(method, path, payload)
+    gh = Fenced("")
+    if stop.endswith("before finish"):
+        gh.fence = lambda: (_ for _ in ()).throw(claims.LeaseLost("the lease was lost: no renewal succeeded"))
+    ctx = dataclasses.replace(ctx, gh=gh, transport=FakeTransport())
+    job = report_job()
+    briefed = reports.evidence_digest(job.inputs)
+    assert lane_for(job).run(job, ctx).status == "lease-lost"
+    assert lane_base.read_pending(ctx, job)["brief"] == {"evidence": briefed}
+    if revised:
+        job.inputs.update(kind="missing-hypothesis", refutes=["TauCeti.other_counterexample"])
+    gh.lost, gh.fence = False, None
+    assert lane_for(job).run(job, ctx).status == "submitted" and runs == [1]
+    pushed = gitops.git(fork, "show", f"w1/REPORT-QuadraticFormInvariants_r1:{TRIAGE}")
+    assert reports.parse_triage(pushed)["digest"] == briefed
+
+
+@needs_git
+def test_a_kept_run_with_no_recorded_digest_is_triaged_again(live, tmp_path, monkeypatch):
+    """A run kept by older code records no digest: it is discarded and the agent runs again on the brief."""
+    from tauceti_roadmap_worker.lanes import base as lane_base
+    ctx, _board_origin = live
+    commit(tmp_path / "origin-content", {README: TEXT}, "the roadmap")
+    job = report_job()
+    lane_base.write_pending(ctx, job, {"issue": job.number, "tries": 1, "error": "lease lost"})
+    monkeypatch.setattr(agents, "run_agent", lambda *a, **k: agents.AgentResult(exit_code=1, seconds=1.0))
+    result = lane_for(job).run(job, dataclasses.replace(ctx, gh=IssueGH(""), transport=FakeTransport()))
+    assert result.status == "failed" and result.detail.startswith("agent exited 1")     # the agent ran
+    assert lane_base.read_pending(ctx, job) is None

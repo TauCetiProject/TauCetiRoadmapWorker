@@ -122,6 +122,9 @@ class ReportLane(Lane):
         """A job whose triage is merged already (an attempt whose submission merged before its state label, or a
         human's label move) runs nothing: it is `submitted`, the state of a job waiting on its merged
         submission, and `reconcile_merged` finishes it from that submission."""
+        pending = read_pending(ctx, job)
+        if pending is not None and not (pending.get("brief") or {}).get("evidence"):
+            clear_pending(ctx, job)           # kept by older code, with no digest of its brief: triaged again
         try:
             return super().run(job, ctx)
         except Triaged as exc:
@@ -164,9 +167,11 @@ class ReportLane(Lane):
         history = ws.scratch / "history.md"
         history.write_text("# What people wrote on this report's issues, oldest first (data)\n\n"
                            + ("\n\n---\n\n".join(text for _id, text in people) or "(nothing)") + "\n", encoding="utf-8")
-        # The digest of the report the brief states, decided here once per agent run: a kept run (a submission
-        # that stopped, finished by `resume_push` without the agent) keeps the one its report carries already.
-        ws.extra.update(evidence=None if read_pending(ctx, job) else reports.evidence_digest(job.inputs))
+        # The digest of the report the brief states: decided here for a run whose agent reads this brief, and kept
+        # in the run's record from its first save on (`keep_run`), so a resumed run (a submission that stopped,
+        # finished without the agent) is stamped with the digest of the brief its agent read, at any stop.
+        kept = (read_pending(ctx, job) or {}).get("brief") or {}
+        ws.extra["brief"] = {"evidence": kept.get("evidence") or reports.evidence_digest(job.inputs)}
         ws.extra.update(head=head, report=report, place=place, folder=folder, spans=spans, anchor_file=anchor_file,
                         readme=folder / "README.md", prose=self.prose(job, ctx), history=history,
                         job_notes=(shown(people, job.inputs.get("asked"), NOTES_LIMIT, history), later),
@@ -265,13 +270,11 @@ class ReportLane(Lane):
 
     def finish(self, job: Job, ctx: Context, ws: Workspace) -> str:
         """The report gets the digest of the report this triage was briefed on (`Evidence: <digest>`, second
-        line, written by the worker, never the agent): the sync records the verdict only for that evidence. A kept
-        run's report is left as its first attempt wrote it, digest included."""
-        lines = ws.report.read_text(encoding="utf-8").split("\n")
-        if ws.extra["evidence"] is not None:
-            lines = [x for x in lines if not x.startswith("Evidence:")]
-            lines.insert(1, f"Evidence: {ws.extra['evidence']}")
-            ws.report.write_text("\n".join(lines), encoding="utf-8")
+        line, written by the worker, never the agent, from `ws.extra["brief"]`, the one place a run's digest is
+        decided): the sync records the verdict only for that evidence."""
+        lines = [x for x in ws.report.read_text(encoding="utf-8").split("\n") if not x.startswith("Evidence:")]
+        lines.insert(1, f"Evidence: {ws.extra['brief']['evidence']}")
+        ws.report.write_text("\n".join(lines), encoding="utf-8")
         verdict = reports.parse_triage("\n".join(lines))["verdict"]
         return f"triage of {job.id} at {ws.extra['head'][:7]}: {verdict}"
 
