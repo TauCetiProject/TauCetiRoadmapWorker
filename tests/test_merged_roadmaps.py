@@ -111,7 +111,8 @@ def test_board_sync_prunes_the_merge_order_only_when_asked(tmp_path, monkeypatch
     fake = SimpleNamespace(**{n: step(n) for n in (
         "sync_targets", "sync_states", "sync_expired", "sync_leases", "sync_pull_requests", "sync_pr_reviews",
         "repark_capped", "sync_origins", "note_gap_registry_blocks", "prune_order", "supersede_waiting_gates")})
-    for module, name in ((cli.filers, "refresh"), (cli.boardpr, "review_queue"), (cli.errata, "sync_errata")):
+    for module, name in ((cli.filers, "refresh"), (cli.boardpr, "review_queue"), (cli.errata, "sync_errata"),
+                         (cli.reports, "sync_reports")):
         monkeypatch.setattr(module, name, step(name))
     cfg = example_config()
     cfg.repositories.claims = ""
@@ -119,7 +120,7 @@ def test_board_sync_prunes_the_merge_order_only_when_asked(tmp_path, monkeypatch
         calls.clear()
         args = cli.parser().parse_args(argv)
         assert cli._board_steps(args, cfg, SimpleNamespace(), fake, write=False) == 0
-        assert (calls[0] == ("prune_order", False)) is pruned and len(calls) == 13 + pruned
+        assert (calls[0] == ("prune_order", False)) is pruned and len(calls) == 14 + pruned
         assert ("supersede_waiting_gates", False) in calls
     with pytest.raises(SystemExit, match="--prune-order goes with `board sync`"):
         cli.board_cmd(cli.parser().parse_args(["board", "intake", "--prune-order"]))

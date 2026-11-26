@@ -58,6 +58,7 @@ from . import (
     prbatch,
     prompts,
     references,
+    reports,
     sources,
     watch, throttle
 )
@@ -1225,7 +1226,7 @@ def _board_steps(args, cfg, ctx, intake, write: bool, lock=None) -> int:
                  ("max rounds", lambda: intake.repark_capped(ctx)), ("origins", lambda: intake.sync_origins(ctx)),
                  ("gap registry", lambda: intake.note_gap_registry_blocks(ctx)),
                  ("review queue", lambda: boardpr.review_queue(ctx, yes=write)),
-                 ("errata", lambda: errata.sync_errata(ctx, shared))]
+                 ("errata", lambda: errata.sync_errata(ctx, shared)), ("reports", lambda: reports.sync_reports(ctx))]
         if args.prune_order:      # only when asked: a deliberate, one-off clean-up of the merge order
             steps.insert(0, ("merge order prune", lambda: intake.prune_order(ctx, yes=write)))
         failed = []

@@ -90,8 +90,8 @@ reference_answerers = []
 dispatch = true
 dispatch_workflow = "board.yml"
 human_first = true
-priority = ["GATE", "PORT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN", "REV-DESIGN",
-            "DESIGN", "TARGET", "ERRATA"]
+priority = ["GATE", "PORT", "CORRECT", "FIX-RT", "PRREVIEW", "RT", "FIX-PKG", "REV-PKG", "PKG", "FIX-DESIGN",
+            "REV-DESIGN", "DESIGN", "TARGET", "REPORT", "ERRATA"]
 # `board sync` reads the open roadmap pull requests (each with its reviews, issue comments and inline
 # comments) and the verdicts of finished pull-request reviews by GraphQL, this many pull requests per
 # query, from GraphQL's own hourly budget rather than four REST requests per pull request. A pull
@@ -191,8 +191,9 @@ timeout_minutes = 360
 # the model per family and leave the family to the worker. Reviews run only on the review models,
 # whichever family a worker runs; a worker pinned with --model to another model skips them (one
 # pinned with --agent only picks the family). Authoring lanes keep the family defaults above. Errata
-# jobs (the mistakes in a roadmap's sources) and reviews of roadmap pull requests (PRREVIEW) run on
-# the review models unless [agents.lanes.errata] or [agents.lanes.prreview] names others.
+# jobs (the mistakes in a roadmap's sources), reviews of roadmap pull requests (PRREVIEW) and the triage
+# of roadmap reports (REPORT) run on the review models unless [agents.lanes.errata], [agents.lanes.prreview]
+# or [agents.lanes.report] names others.
 [agents.lanes.review]
 codex_model = "gpt-6-astra"
 claude_model = "fable"
@@ -331,6 +332,51 @@ repair_merges_base = true
 # finding and accepts no head with one; every push gate (and `tauceti-roadmap gate`) runs the scan as
 # it runs the other Lean scans. false = the count stays 0.
 statement_hygiene = true
+
+[reports]
+# Roadmap reports: a Tau Ceti worker that finds a roadmap statement wrong (false, short of a hypothesis, a
+# pin that cannot be proved, a wrong definition, a circular route, a renamed declaration) leaves a marker
+# `<!--tauceti-roadmap-report:v1 {...}-->` and a `### Roadmap report` section in the body of its pull
+# request on the library. When enabled, `board sync` searches the library's pull requests once per forge
+# per run for bodies changed since its last mark, checks each report against the
+# roadmap on the content repository's main, and files a REPORT-<Leaf>~k job per new report (the same
+# roadmap, file and quoted text count once, whatever the source); a report whose text main no longer
+# holds is recorded as fixed, and an open report whose text leaves main is fixed and its job done. It
+# keeps `reports/register.json` on the board, which the library's workers read. The `report` lane triages
+# each REPORT job (confirmed, rejected or needs a human), and the next sync records its verdict in the
+# register. Off by default.
+enabled = false
+# The library on GitHub (empty: [repositories] library), and on Forgejo: the instance's base URL (empty:
+# GitHub only) and the repository there (empty: the same OWNER/NAME). Forgejo is read without a token.
+library = ""
+forgejo = ""            # e.g. "https://git.taucetiproject.org"
+forgejo_repository = ""
+# On GitHub, a merged pull request's reports count from anyone (TauCeti merges through bors: a closed pull
+# request titled `[Merged by Bors] - ...` is merged, see merge_bots); those of an open pull request count only
+# from `reporters`: GitHub logins or teams as "team:<org>/<slug>". On Forgejo no merge is verified (the
+# instance's queue closes as a maintainer's own account), so a pull request there counts only from
+# `forgejo_reporters` logins, open, merged or bors-titled. A pull request closed unmerged never counts.
+# Reports travel only in pull requests: an issue's marker is never read.
+reporters = []
+forgejo_reporters = []
+# A GitHub pull request bors merged is closed and retitled `[Merged by Bors] - ...`, which its author can also
+# do by hand: it counts as merged only when one of these accounts closed it (`closed_by`, one request per pull
+# request), and is otherwise a pull request closed unmerged. On TauCeti's GitHub the queue closes as
+# `tauceti-queue[bot]`.
+merge_bots = ["tauceti-queue[bot]"]
+# REPORT jobs filed per run, and per author per run; the rest are filed by later runs.
+per_run = 5
+per_author = 2
+# Corrections: `board sync` files one CORRECT-<Leaf>~k job per roadmap whose confirmed reports no correction
+# holds yet (all of them, batched: two pull requests editing one README conflict), and the `correction` lane
+# applies them on the roadmap's folder on main, runs the push gate and opens a pull request on the content
+# repository, which the pull-request review, the gate lane and a human merge take from there. A roadmap that
+# an open pull request already edits waits until that pull request merges or closes. Off by default: a
+# project may harvest and triage reports without automatic corrections.
+corrections = false
+# A correction pull request closed unmerged frees its reports for the next round, unless it carries this
+# label: its reports are then recorded as rejected and never corrected again.
+stop_label = "no-correction"
 
 [sources]
 # Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through

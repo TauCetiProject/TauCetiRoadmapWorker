@@ -1677,7 +1677,7 @@ class Lane:
     def drop_worktree(self, ctx: Context, ws: Workspace) -> None:
         """After a submission, the lane's roadmap worktree (pr/<Name>, port/<Name>) goes: the next
         round that needs it checks it out again, its Lake packages a link to the shared copy."""
-        if ws.workdir != ws.board and ws.workdir.parent.name in ("pr", "port") and ws.workdir.is_dir():
+        if ws.workdir != ws.board and ws.workdir.parent.name in ("pr", "port", "correct") and ws.workdir.is_dir():
             from .pr import remove_worktree
             remove_worktree(ws.content, ws.workdir)
 
@@ -1935,7 +1935,11 @@ def keep_run(ctx: Context, job: Job, ws: Workspace, entry: dict) -> None:
     """The run a record finishes, kept where fresh checkouts cannot lose it: the job's deliverables
     in the board checkout (copied to `jobs/<JOB>/pending-push/board/`), and the commit in the content
     worktree (a bundle beside them, and a ref in the content checkout, so it survives the worktree).
-    A record that names no content commit gets the worktree's."""
+    A record that names no content commit gets the worktree's. What a lane recorded of the brief its agent read
+    (`ws.extra["brief"]`) goes into the record when it is first written, and stays: a resumed run takes it from
+    there, never from a brief rendered again."""
+    if ws.extra.get("brief"):
+        entry.setdefault("brief", dict(ws.extra["brief"]))
     keep = ws.job_dir / PENDING_DIR
     shutil.rmtree(keep, ignore_errors=True)
     (keep / "board").mkdir(parents=True, exist_ok=True)

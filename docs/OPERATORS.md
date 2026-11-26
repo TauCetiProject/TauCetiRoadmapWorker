@@ -565,6 +565,13 @@ events, a holding state wins (`done`, `blocked`, `needs-references`, `submitted`
 carries a machine-readable spec in an HTML comment; the rest of the issue is for humans and is never
 read as an instruction.
 
+`REPORT-<Leaf>~k` jobs stand outside the graph: `board sync` files them from the library's roadmap
+reports ("Roadmap reports" below), the `report` lane triages them, and nothing follows them. So do
+`CORRECT-<Leaf>~k` jobs, which `board sync` files from confirmed reports with `[reports] corrections`: the
+`correction` lane opens one roadmap pull request per job, which the pull-request review and gate rounds
+then follow as any other. The origin upkeep skips both kinds, and `board resume` does not count them among
+a roadmap's jobs. `status` lists them with the others.
+
 ## Lanes
 
 | Kind | Reads | Writes | Who may take it | Checked before submission |
@@ -578,6 +585,8 @@ read as an instruction.
 | fix (red team) | the round's pass reports | commits pushed to the board PR's branch | its owner | a section for every finding of the round's passes, the package's gates, elaboration, the targeted build in a roadmap checkout |
 | port | the merged, red-teamed package | branch `roadmap/<kebab-name>` on the operator's fork, the roadmap PR; the merge-order file when it places the roadmap | anyone | commit made, full gate with build, synopsis |
 | gate | every review and comment no reply has acknowledged | commits on the PR branch, a reply recording what it answers, labels | the PR branch owner | finding sections, clean tree, full gate with build (its dependency check never reads a roadmap on the content repository's main as an upward supplier), head check |
+| report | the REPORT job's validated report, the reported file on main with the quoted text located, the reporter's prose (quoted as data), the declarations it names looked up in the pinned Tau Ceti, people's comments on the job (data) | `packages/<Leaf>/reports/REPORT-<Leaf>~k.md`: `Triage (<agent>) of <JOB> at <sha7>`, `Verdict: confirmed \| rejected \| needs-human` | anyone (the reporter is another project's agent: nothing to be independent of) | header naming the job and the main read, a verdict, `## Evidence` and the section the verdict needs (`## Correction`, `## Reason`, `## Missing`), checkouts untouched |
+| correction | the job's confirmed reports (each with the text that is wrong located on main, its triage's correction and the triage itself), the roadmap folder on main, the pinned libraries, the open roadmap PRs | a commit on `roadmap/<leaf>-correction-<k>` of the operator's fork, the roadmap PR (labels `[roadmap] pr_label`, awaiting-review; a draft as `[roadmap] open_as_draft`); on the board `reports/CORRECT-<Leaf>~k.md` | anyone; parked while another open PR edits the folder | header naming the job and the main read, an outcome per report with what changed or why declined, a title `<Name>: ...` and a revision summary when anything is applied, a commit only then, nothing outside the folder, the push gate with the targeted build |
 | prreview | one roadmap folder of a roadmap PR's head (read-only; any author), its title and description quoted as data, the worker's gate with build at that head; for a re-review, the previous report and the change since the head it read | one comment on the roadmap PR, the `ai-found-no-errors` label (on once every folder of the head accepts and no review that points out errors waits for an answer, off when this one blocks); on the board its report and `reports/PRREVIEW-<Leaf>~k.json`; on a pool author's PR, after a review asking changes, the repair pushed onto its branch and the reply | any operator but the PR's author (with `separation = "agent"`, the author's operator too, on the review models) | verdict schema naming the PR, head and folder, report header, an acceptance's adversarial table, no P1/P2 finding and a passing gate on an acceptance, checkout untouched; an incremental re-review accounts for every earlier finding |
 
 **What `Suggested.lean` holds.** It is the roadmap's acceptance test, not an API catalogue: the
@@ -1729,6 +1738,13 @@ another family installed takes a review its default family may not take with tha
 `"family"` that is what makes it independent, under `"agent"` another agent and model can be, and
 under `"operator"` it changes nothing (the operator is the same), so the review is skipped as before. A fix worker's own acceptance never counts.
 
+The triage of a roadmap report (`REPORT-<Leaf>~k`) has no separation rule: the reporter is an agent of
+another project (a Tau Ceti worker), whose operator is recorded nowhere in the claims namespace, so there
+is no author to compare with, and any operator may take it. A correction (`CORRECT-<Leaf>~k`) is an
+authoring job: its pull request is opened by its operator from that operator's fork, so the pull-request
+review of it already refuses that operator (the review's `owner` is the pull request's author; under
+`separation = "agent"`, as for any pull request, the author's operator reviews on the review models).
+
 Under `separation = "agent"` a pinned red-team pass (`[redteam] passes` with a `model`) can only be run
 by that agent and model, and it is independent of the package, of each of the package's fix rounds and
 of the red-team fix before it. A worker running a pinned pass's agent and model therefore takes none of
@@ -1769,7 +1785,11 @@ tauceti-roadmap --conf $CONF board sync --yes      # targets → TARGET jobs; on
                                                    # with [prreview] enabled: a PRREVIEW job per
                                                    # roadmap folder and new head of every open roadmap
                                                    # PR, ai-found-no-errors upkeep;
-                                                   # the errata register (submitted ERRATA jobs → done)
+                                                   # the errata register (submitted ERRATA jobs → done);
+                                                   # with [reports] enabled: REPORT jobs from the
+                                                   # library's roadmap reports, reports/register.json;
+                                                   # with [reports] corrections: CORRECT jobs, and
+                                                   # the corrections' pull requests followed
 tauceti-roadmap --conf $CONF board sync --prune-order --yes   # first remove from the merge order every
                                                    # roadmap on the content repository's main
 tauceti-roadmap --conf $CONF board intake --yes    # take in submissions (designs and packages stay open
@@ -1886,6 +1906,316 @@ got furthest, not the older one: the twin an open submission pull request names 
 parked one, else the oldest; the kept twin takes over the closed twin's pull request and state
 (`submitted` while its submission is open, `claimed` while its lease is live), and the job's lease
 is left alone (it is keyed by the job id, so it belongs to the worker on the kept twin).
+
+### Roadmap reports
+
+A Tau Ceti worker that finds a roadmap statement wrong leaves a report in the body of its pull request
+on the library (reports travel only in pull requests: a marker in an issue is never read): a
+`### Roadmap report` section in prose and, per report (at most five a body), one marker line
+
+```text
+<!--tauceti-roadmap-report:v1 {"roadmap":"QuadraticFormInvariants","file":"README.md","roadmap_sha":"<40 hex>","anchor":"...","kind":"false-statement","effect":"worked-around","refutes":["TauCeti...."],"replaces":["TauCeti...."]}-->
+```
+
+`roadmap` is the folder under the active directory (`/`-separated when nested), `file` is `README.md` or
+`Suggested.lean`, `roadmap_sha` the commit of the roadmap repository the worker read (40 lowercase hex
+digits), `anchor` the declaration's name or a verbatim quote of the statement (at most 300 characters as
+written), `kind` one of `false-statement`, `missing-hypothesis`, `unprovable-pin`, `wrong-definition`,
+`circular-dependency`, `stale-name`, `effect` `blocked` or `worked-around`, and `refutes` and `replaces` at
+most ten declaration names each (each at most 200 characters, non-empty parts joined by single dots, none
+holding whitespace, a backtick, `<`, `>` or `@`). No value is trimmed or case-folded before it is checked:
+these are the rules the worker's checker and the review runner apply, so a marker they accept is
+harvested. A marker that does not decode (for any reason, nesting deep enough to exhaust the decoder
+included) or validate is logged and skipped; the others of the body still count; unknown fields are
+ignored. The board alone harvests a valid marker with no `### Roadmap report` section (its job then has no
+prose), so a missing heading never loses a report. A body the reader cannot read at all is logged and
+passed (`its body could not be read (<error>); passed`), so no pull request's text can stop the harvest.
+
+With `[reports] enabled` (off by default), every `board sync` ends with the reports step:
+
+1. One search per forge, of the pull requests updated in its window: from the mark the register keeps,
+   less five minutes, to now. GitHub's search (`repo:<library> is:pr "tauceti-roadmap-report:v1" in:body
+   updated:<from>..<to>`, oldest change first, at most three pages of 100); with `[reports] forgejo`, the
+   instance's listing of pull requests (`type=pulls`, `since` and `before`, three pages of 50, no token;
+   not filtered by keyword, since Forgejo's keyword search ignores `before`, so every body is read).
+   GitHub's search is fuzzy: every hit is read again by parsing its body, and one that is not a pull
+   request is ignored. A window with more results than its pages is halved: the run reads what it got,
+   and the next run reads the earlier half (`more github results between <from> and <to> than 3 pages;
+   the next run reads them to <mid>`), halving again until a window fits; a window that fits moves the
+   mark to its end, and the window after it starts there exactly (it is past the search index's lag). So
+   dense updates and ties cannot hold the mark, on either forge, whatever order the listing has; only more
+   than three pages updated within one second are passed with a warning (`some may be missed`).
+   A read that is not whole is a failed read and moves no mark: GitHub's `incomplete_results` (its search
+   timed out on part of the index), a Forgejo answer that is not a list (an error object, a proxy's page)
+   or a page shorter than both its limit and the instance's `X-Total-Count`; the step says the search
+   failed and the next run reads the same window again.
+2. On GitHub, a merged pull request (`merged_at`) counts from anyone. A bors merge is a pull request closed
+   and titled `[Merged by Bors] - `, which its author can also do by hand: it counts as merged only when a
+   merge-queue account closed it (`[reports] merge_bots`, default `tauceti-queue[bot]`, read from GitHub's
+   `closed_by`), else it is a pull request closed unmerged (`titled as a bors merge, but not closed by a
+   merge-queue account`); a closer that cannot be read leaves the source for a later run. A verified merge
+   is kept in the register (`merges`), and so is a refusal, for the revision of the pull request it read
+   (`not_merges`: its update time), so each costs one read, at most twenty a run, and pull requests already
+   decided never use up the reads a later one needs. An open pull request counts only from
+   `[reports] reporters` (GitHub logins or `team:<org>/<slug>`, resolved as `[board] target_filers` are).
+   On Forgejo no merge is verified: the instance's queue closes as a maintainer's own account, so who closed
+   a pull request says nothing. A Forgejo pull request counts only when its author is in
+   `[reports] forgejo_reporters`, open, merged or bors-titled (`... of @<login>, who is not a listed Forgejo
+   reporter ([reports] forgejo_reporters); not harvested` otherwise), and no timeline is read. A pull
+   request closed unmerged never counts, on either forge.
+3. A report is its roadmap, file and anchor (whitespace runs as one space, case kept: Lean names are
+   case-sensitive, so the pins `Foo` and `foo` are two reports; a register written before this rule, of
+   which none exists outside tests, would need its anchors' case restored by hand). The register
+   keeps what each of its sources says now (`evidence`: kind, effect, declarations, by source): the
+   report's declarations are those its sources name now, and its kind and effect those of the source
+   revised last. A new source is added (logged `already reported (REPORT-<Leaf>~k, open); source added`);
+   a source whose description was edited replaces its own evidence, so a declaration it corrected away is
+   dropped unless another source still names it (`evidence revised (refutes; ...)`). The register is the
+   one source of truth: every run rewrites the spec of each open REPORT job from its entry where they
+   differ (kind, effect, declarations, sources and each source's evidence: `spec rewritten from the
+   register`), so what a triage reads converges whatever happened in between (an edit, a later source, a write that
+   failed half-way). The spec holds the declarations of all the sources, so their number has no
+   per-marker limit there. The job hears of a new source or an edit in one comment, `Reported again in
+   <url>` or `Revised in <url>: now ...`, posted once (the job's comments are read first); the finished
+   job of a rejected report, or of one its triage left to a human, gets the same comment, saying that a
+   comment with a line `triage again` has the report triaged again.
+4. A new one is checked against the roadmap repository's main: the file under the active directory, else
+   under the completed one, read as GraphQL blobs (one query for up to sixty files, no REST request unless
+   a file is too large for GraphQL), the anchor sought in it with whitespace normalised. Still there: a
+   `REPORT-<Leaf>~k` job is filed (`state:available`; `state:blocked` under the completed directory, with
+   a note that it needs a human), at most `[reports] per_run` a run and `per_author` per author per run
+   (`left for a later run ([reports] per_run)`). Not there: the same file at `roadmap_sha` is read; an
+   anchor that was there then is recorded `fixed` with no job (`recorded as fixed, no job`), one that was
+   not is no report (`the anchor is not in the file at <sha7> either; not a report`). A file that could not
+   be read decides nothing (`main could not be read; left for a later run`). A fixed report whose anchor is
+   back on main is filed again, as the next round, when it is said again: by a new source, or by a known
+   source whose marker was revised (an author may edit an old pull request's description to report it;
+   rereading the roadmap and reporting the same claim at another `roadmap_sha` is a revision too: each
+   source's evidence keeps the snapshot it read, which is no part of the claim).
+   A known source that says what it said already reopens nothing, or every old pull request listed again
+   would reopen every fix reverted meanwhile. One table decides every case (`reports.decide`); a revised
+   marker for a fixed report whose main cannot be read is left for a later run, its revision not yet
+   recorded, so the next run sees it as revised still.
+   A `Suggested.lean` report's anchor is a declaration's name, which a correction of the pin usually keeps,
+   so its leaving main says little. A pin is judged by its file's version instead: the git blob id of
+   `Suggested.lean` at main (GitHub's `oid`, asked in the same GraphQL query that reads the file; the lane
+   takes the same id from its checkout with `git rev-parse`), so both sides name the exact bytes git stores,
+   and every change of the file is a new version. No declaration is located: the anchor's presence is the
+   same whitespace-normalised substring check as a quote's. The version a pin was last judged right at is
+   read from its recorded verdicts, never stored (`reports.judged_right`): the last verdict recorded decides
+   (a stale one counts for nothing); a rejection, one recorded as a correction included, gives the version
+   it read, and a `confirmed`, a `needs-human` or a job closed by hand gives none. While a pin has such a
+   version, a new or revised source for it is only recorded while main
+   is at that version (a late report of the old snapshot), and files the next round, after the rounds it
+   follows (`previous`), once main is at another; a version not read decides nothing. A pin fixed because
+   its name left main keeps the rule above. The triage lane
+   (#142) uses it: the digest a triage carries includes the version its checkout had (`git rev-parse
+   HEAD:<file>`, the id GitHub's `oid` gives the sync for the same bytes, whatever their line ends), so a
+   correction that lands while the triage runs makes the verdict stale; the triage record keeps the version
+   it judged (`statement`), from which the version found right is read (`judged_right`); a `confirmed`
+   (or `needs-human`) report whose file on main is at another version is triaged again: its next round is
+   filed with nothing assumed fixed. Whether a `rejected` (the pin is right as now written) records a correction
+   is read from the entry's own history (`reports.corrected`): among the verdicts of the rounds since the
+   report was last filed afresh (the round and the rounds its spec names under `previous`), a `confirmed`
+   at another version makes it `fixed` (`"corrected": true`), whatever path filed the rounds in between
+   (a statement changed, a stale verdict, `triage again`, a recovery). A `rejected` of the version that
+   was confirmed is a human's overturn and stays `rejected`; so does every rejection of a `README.md`
+   report, which has no version; stale verdicts and ones by hand count for nothing. The version is asked
+   in the query that reads the file for the anchor check; a version not read decides nothing. A `README.md` report's anchor is a verbatim quote: a
+   correction that leaves the quoted words intact (a hypothesis added in the next sentence, say) is not
+   seen, and a human asks for another triage (`triage again`).
+5. Every `open` or `confirmed` report whose anchor has left main becomes `fixed`; from this step on, each
+   step takes its reports from the register as they are when it acts, never from a list made before an
+   earlier step changed them, so a report this step fixes is neither given a merged verdict nor triaged
+   again by the same run; its job is set done with
+   one comment and closed (`REPORT-<Leaf>~k: the anchor is gone from <roadmap>/<file> on main; fixed, job
+   done`). The label and the close are two writes: a REPORT job that is done but whose issue is still open
+   (a close that failed) is closed by the next run (`done, but its issue was open; closed`).
+
+The step ends with `reports: N source(s) read, R report(s) recorded already, F filed, X fixed[, L left for a
+later run]`. The job's issue is written by the board from the validated fields: the roadmap and file, the
+kind and effect, the anchor and the declarations as inline code, the commit read and a link to each
+source; the worker's prose (the `### Roadmap report` section, at most 2,000 characters) is quoted in a code
+block behind a fence longer than any it holds, with no HTML comment left in it, so nothing harvested can
+mention anyone, link an issue, close its quoting or carry a marker the board reads.
+
+The register, `reports/register.json` on the board's main, is the step's only state (the hosted workflow
+keeps none between runs; a register GitHub does not serve, for any reason but a 404, skips the step): `{"version": 1, "roadmaps": {"<roadmap>": [{"job", "file", "anchor", "kind",
+"effect", "state", "sources", "refutes", "replaces", "evidence"}]}, "scanned": {"github": ...,
+"forgejo": ...}, "merges": {"<url>": "<closer>"}, "not_merges": {"<url>": "<updated>"}, "retry": [{"url",
+"forge"}]}` (`scanned` also holds `<forge>-until`, the end of a narrowed window, and `<forge>-exact`), the
+states `open`, `confirmed`, `rejected` and `fixed` (a fixed report recorded without a job has `"job": ""`).
+The library's workers read it so as not to report one thing twice. It is written in one commit when a
+report changed, when a window was narrowed, or when a forge's mark is a day behind; a mark left in memory
+only costs the next search a few more hits, all of them recorded already. A source a run leaves for later
+(a cap, an unreadable file or closer, a team it could not read) never holds the mark: it is queued by its
+URL (`retry`), and every run reads up to twenty queued sources again by their number, oldest first (one
+REST request each on GitHub, which also names who closed it); one that cannot be read now goes to the back
+of the queue, and one its forge no longer has leaves it. Queued sources come before newer ones, so the caps
+on filing serve them first. No set of undecided sources can keep a later one from being read, and no stream
+of new ones can keep a queued one waiting. A job that a run filed without writing the register (the write failed) is recorded
+from its spec by the next run: a first report as a new entry, a later round of a report (a recurrence) as
+that entry's new round, so it is never filed twice. Each source keeps its own evidence in that recovery:
+the register's where it has it, else the spec's (the spec carries every source's evidence, `evidence`,
+rewritten from the register with the rest); a source neither records is queued to be read again
+(`retry`), and the job's union of declarations is never taken as any source's statement. With
+`--yes` absent, the step logs every decision with `would file ... (dry run)` and writes nothing.
+
+A run costs the board's budget the read of the register, the listing of `kind:report` jobs (from the
+listing the sync holds already), one read per bors-titled source not decided yet (at most twenty a run,
+once per revision), up to twenty reads of queued sources, a read of a job's comments before each note,
+and its writes; the search (one to three pages; a narrowed window adds runs, not pages)
+comes from GitHub's search budget (30 a minute), the reads of main from GraphQL's, Forgejo nothing.
+To turn it on: set `[reports] enabled = true`, the
+reporters, and `forgejo` if the library has pull requests there; create the label `kind:report` on the
+board beforehand to give it a colour (GitHub creates it on the first job otherwise). A team in
+`reporters` is read as the target filers' teams are, `board/filers.json` included. Workers of an older
+version do not read a `REPORT-` id and leave such a job alone.
+
+**Triage.** The `report` lane (`work --only report`; on the review models unless `[agents.lanes.report]`
+names others; stage `REPORT` of `[board] priority`, before `ERRATA`) takes an available REPORT job. Before
+its agent runs, the worker finds the reported file on the content repository's main (under the active
+directory) and the quoted text in it, with the same whitespace rule as the harvest, and writes the lines
+around it to the job's scratch; a text no longer there blocks the job (`board sync` records it fixed and
+closes it), and so does a roadmap now under the completed directory (a human's). It reads the reporter's
+prose back from the job's issue (the block the board quoted), the comments people other than the board
+wrote on the job and on the issues of the report's earlier rounds (an issue or comments it cannot read fail
+the round, which is tried again: a triage never runs on part of its inputs), and looks each declaration the report names up in the pinned Tau Ceti (a declaration of
+its last component, with its file and line, or none: a name newer than the pin is read in the pull request
+the report comes from, as data). It never runs Lean, waits for no source (what it cannot read goes under
+`## Missing`) and changes neither checkout. Its report, `packages/<Leaf>/reports/REPORT-<Leaf>~k.md`,
+opens `Triage (<agent>) of REPORT-<Leaf>~k at <sha7 of main>` and `Verdict: confirmed | rejected |
+needs-human`, then `## Statement`, `## Evidence` (for a verdict that settles the report) and
+`## Correction`, `## Reason` or `## Missing`; the worker adds `Evidence: <digest>` as its second line (the
+digest of the report its brief stated, kept in the run's record from its first save on, whatever stopped
+it: a lease lost before or after the report was stamped, a refused push, a failed pull request, a crash
+after the record was written. A submission finished by a later attempt without the agent is stamped from
+that record, so a report revised meanwhile files the next round; a run kept by older code with no digest
+recorded is discarded and triaged again),
+and it is submitted as a board pull request. The intake merges it
+and comments `Triage: <verdict> (<path>)` (for `needs-human`, `Needs a human: ...` with what the triage
+lacks quoted and how to ask again), sets the job done and closes it, whatever the verdict. The note is
+posted once (the job's comments are read first) before the state label, so a completion that stops
+half-way leaves the job unfinished and the next intake does the rest. A job id is triaged once: its triage
+file on the board's main is written only by its one merged submission, so that submission is the one the
+job waits on, whatever order the worker's `state:submitted` label, the merge and the completion's writes
+came in. The intake finishes a REPORT job from its merged triage in any state but `done` (a worker's label
+that lands after the merge and the completion, a label write that failed, a human's move), and refuses a
+second submission of a job whose triage is on main; a worker given such a job runs nothing and sets it
+`submitted` (`... is on the board's main already`). A merged triage whose report cannot be read leaves the
+job unfinished; a later intake finishes it. The triage reads the report as its sources say it now (the
+board sync rewrites an open job's spec from the register every run) and the board's own notes of later
+sources and revisions.
+
+The next `board sync` records the verdict, after it has recorded what left main: a report still `open`
+whose text is still on main becomes `confirmed` or `rejected`, with `"triage": {"job", "verdict",
+"report", "head", "correction" | "reason"}` (the section kept to 2,000 characters; the whole triage is
+`report` in the packages repository), logged `REPORT-<Leaf>~k: triage confirmed; recorded`; a
+`needs-human` verdict is recorded once and the report stays `open`. The verdict is the job's triage on
+main, read once the job is done or closed, whatever its state label, and only for the evidence it judged:
+the worker writes `Evidence: <digest>` into the triage, the digest of the report as its brief stated it
+(file, anchor, kind, effect and declarations; not the sources), and the intake refuses a triage without
+one. A source revised after the brief was written makes the register entry's digest another: the verdict is
+not recorded, the job gets `Not recorded: this triage judged the report as it stood when its brief was
+written ...`, the triage is kept under `triages` with `judged` and `now`, and the report's next round is
+filed (as a request to triage again files it). A verdict already recorded is never undone by a later
+revision: the finished job gets the `Revised in ...` note with how to ask for another triage, and a human
+decides. A job closed with no triage on main
+(closed by hand, or set done by hand) makes the report `rejected`, `"triage": {"job", "verdict":
+"rejected", "by": "hand"}`.
+
+A REPORT job is triaged once and then closed, and the board reads no reopen: an open issue of a job that is
+done, or whose verdict the register records (a close that failed, or a human's reopen), is closed
+(`finished, but its issue was open; closed`). To have a report triaged again, a person whose association
+`[sources] answer_associations` allows comments on the finished job with a line `triage again` (a new
+comment, or an edit of one), with whatever the next round should know. `board sync` reads the comments of
+the register entry's current job, once it is finished with its verdict recorded, whenever the issue's
+`updated_at` in the listing it holds is not the one of its last read (`asked_seen`; GitHub moves it when a
+comment is written or edited, checked read-only on 2026-11-25), and the first such request files the report's next round: `REPORT-<Leaf>~(k+1)`,
+`state:available`, its spec the register's with `asked: <comment id>` and `previous: [{"job", "issue"}]`
+naming the earlier rounds (the lane reads their triages on the board's main and the comments people wrote
+on their issues). The entry moves to the new round with the earlier triage kept under `triages`, and the
+old issue gets `Triaged again as #N (...), as asked in <comment>`. The old job is no longer the entry's,
+so its comments are never read for a request again: each round is asked for once, and a round filed by a
+run whose register write then failed is taken back from its spec, never filed twice. The new round's brief
+quotes the comment that asked for it first, then the other comments, newest first, within 6,000
+characters, and names `history.md` in its scratch, which holds every comment of every round, oldest
+first. A report whose text has left main is `fixed`
+whatever its triage said, and a `confirmed` one
+becomes `fixed` when its correction merges. A report fixed and then reported again gets a new job and
+loses the triage of the old one.
+
+**Corrections.** With `[reports] corrections = true` (off by default; harvesting and triage need only
+`enabled`), the same step files one `CORRECT-<Leaf>~k` per roadmap whose `confirmed` reports, with their
+text still on main under the active directory, no correction holds: all of them in one job (logged
+`filed CORRECT-<Leaf>~k (#N) for n confirmed report(s) of <roadmap>`), each report then carrying
+`"correction": {"job": ...}` in the register. A roadmap with a correction job open, or whose correction
+pull request is open, files none (`... wait for the next correction (...)`): reports confirmed meanwhile
+join the next round. The `correction` lane (`work --only correction`; an authoring lane, on the family
+defaults; stage `CORRECT`, right after `PORT`) first reads every open pull request of the content
+repository with every path it changes, from GitHub at that moment (one GraphQL query per 50 open pull
+requests; GraphQL names a renamed file by its new path only, so a pull request with a renamed file, or
+with over 100 files, is read again by REST, which gives the old path too), never from the host's index of
+open roadmap pull requests, which may be half an hour old and leaves out a pull request whose head it could
+not fetch; if any of it cannot be read, the round fails and nothing is opened. When another open pull
+request changes a file in the roadmap's folder (a rename out of it included, wherever it moves the file),
+the job is parked as `state:blocked` with `waits_for` in
+its spec and a comment naming the pull request (a wait that cannot be recorded in the spec parks nothing:
+the round fails and is tried again), and `board sync` makes it available again once every one of them is
+merged or closed. Otherwise the worker checks out main in a worktree on `roadmap/<leaf>-correction-<k>`,
+writes the reports to correct to the job's scratch (each with the text that is wrong, the lines where it
+stands, the correction its triage stated and the path of the triage on the board), and its agent applies
+each as the smallest change of the folder's `README.md` and `Suggested.lean` (the roadmap as a record: no
+layer or item removed or renumbered; a corrected pin must elaborate at the pins, and a Tau Ceti declaration
+newer than the pin is never imported or named in `Suggested.lean`, only cited in the README's prose), or
+declines it with its reason, commits, and writes `packages/<Leaf>/reports/CORRECT-<Leaf>~k.md`: first line
+`Correction (<agent>) of CORRECT-<Leaf>~k at <sha7>`, one `## REPORT-<Leaf>~k — applied | declined`
+section per report, and, when anything is applied, `## Title` (`<Name>: ...`), `## Summary` (the three
+paragraphs of a revision's summary block) and `## Checks`. The push gate runs as on a gate round (the
+targeted build, the text gates, the dependency check, nothing outside the folder). The worker then pushes
+the branch to the operator's fork (it must be new), opens the pull request against the project branch (a
+draft as `[roadmap] open_as_draft` says) with the summary block, each report it answers (the text that was
+wrong, the correction, a link to the triage on the board, the REPORT job and the library's pull requests),
+those it declined, the validation paragraph and the marker the board's upkeep of roadmap pull requests reads,
+labels it `[roadmap] pr_label` and awaiting-review, and adds `Pull request: #N` to the report it submits to
+the board. The push and the pull request are effects of the job's record: a run that stops after either
+finishes on the next attempt without running the agent again, a second push or a second pull request,
+checked against the main it was built on (its report names that commit), however far main has moved
+since. A kept run is checked against one observation of its own pull request, read once per attempt:
+by its recorded number, or, when an earlier attempt pushed and lost the answer to the pull request it
+opened, by its branch (in any state). A read that fails decides nothing: the attempt fails and the run is
+kept for the next. A pull request other than the one the job names supersedes the run. One whose head is
+not the commit the run pushed (somebody pushed on its branch) blocks the job for a human: nothing of the
+run is submitted for a head it did not check, and a fresh run could not reuse the branch. The human
+finishes the correction on that pull request (merged, its reports leave main and are fixed) and closes
+the job. At the run's commit, an open pull request is the run's own (taken up if its answer
+was lost); a merged one, or one closed unmerged, is that effect completed, never a reason to drop the run:
+the content effects are settled (a closed pull request is not labelled), and the outcomes and `Pull
+request: #N` still reach the board, so the next sync fixes the reports (merged) or frees them (closed;
+rejected with the stop label). A kept run with no pull request yet is admitted again before it opens one.
+The labels are an effect too, so a label write that fails is made by the next attempt. A
+correction whose every report is declined opens no pull request. The intake merges the report as any
+submission (refusing one whose applied correction names no pull request its author opened).
+
+The next `board sync` records what the correction did: `"correction": {"job", "pr"}` for an applied report,
+`{"job", "declined": <reason>}` for a declined one (never tried again), `{"job", "by": "hand"}` for the
+reports of a job closed by hand before it opened a pull request (a human's way of saying: do not correct
+these automatically). It reads each correction pull request still open (one REST request each): merged,
+its reports become `fixed` (`"merged": true`; a corrected pin may keep the name the report quoted, which
+then never leaves main); closed unmerged, they are freed for the next round, the closed attempt kept under
+`corrections`, unless the pull request carries `[reports] stop_label` (default `no-correction`), which
+records them `rejected`. A correction job whose reports are all settled meanwhile (corrected by hand) is
+closed as done, and a correction job that is done but whose issue a failed write left open is closed. A
+correction job filed by a run whose register write failed is attached again to its confirmed reports
+(those no correction holds), before anything else, so no second round is filed beside its pull request.
+A report that comes back to main after it was fixed starts a new round with its earlier triage and
+correction kept as history (`triages`, `corrections`): neither holds back the new round's correction. A
+request to triage a report again (`triage again`) while its correction has not ended (its job available,
+blocked or running, or its pull request open) waits: the job says so once (`Asked again: ...`), the
+register keeps the request (`asked_waiting`), and the next round is filed once the correction has ended
+(merged, closed, declined or closed by hand), so a correction never loses the report it follows.
+The pull request itself is reviewed by the pull-request review, which never runs under
+the operator who opened it (its author), answered by gate rounds of that operator, and merged by a human.
 
 ### The board workflow
 
@@ -2188,10 +2518,40 @@ reach) is not built yet.
   awaiting-author and creates its GATE job, and the gate lane answers it with its inline comments.
   Every other comment of that login on its own drafts stays a reply; the gate lane's replies open
   with `Fixed in`, never with the prefix.
+* **A `REPORT` job**: a Tau Ceti worker found a roadmap statement wrong (the job quotes it, names the
+  declarations that refute and replace it, and links the pull request). A triage worker settles most of
+  them; the register records its verdict. A triage that could not settle it (`needs-human`) closes its
+  job with a comment quoting what is missing: answer in a comment on the issue that has a line `triage
+  again` (the issue stays closed; reopening it does nothing), and `board sync` files the report's next
+  triage round, which reads your comment as data (a rejected report is asked again the same way; a
+  confirmed one whose correction is still under way waits until that correction ends). You meet one in
+  `state:blocked` when the roadmap is under the completed directory, where no lane works. Either way you may also correct the roadmap with a pull request on the roadmap repository
+  (`board sync` closes the job once the quoted text is gone from main), or close an open job with a
+  comment saying why the report is wrong (the register records it as rejected, so the library's workers do
+  not file it again). With `[reports] corrections` on, a confirmed report is corrected by a `CORRECT` job;
+  otherwise, or when the correction declined it, by a hand-written pull request from the correction in the
+  register and in its triage under `packages/`.
+* **A correction pull request** (opened by the `correction` lane): review it as any roadmap pull request;
+  the gate lane answers your comments. Merge it, and its reports become `fixed`. Close it unmerged, and its
+  reports are corrected again in the next round; label it `no-correction` (`[reports] stop_label`) before
+  or when closing it, and they are recorded as rejected instead. A `CORRECT` job parked in `state:blocked`
+  waits for the open pull request its comment names, and moves on by itself once that one is merged or
+  closed; close the job by hand before it opens a pull request to keep its reports from being corrected
+  automatically.
 * **The configuration and the prompts** are CODEOWNERS-protected; changes go through review.
 
 ## Known limits of this version
 
+* **Any edit of a roadmap's `Suggested.lean` re-triages its pins.** A pin's version is its whole file's, so
+  any change of the file (a comment, another theorem, a reformatting) files one more triage round for each
+  report against that file holding a `confirmed` or open `needs-human` verdict, once per version of the
+  file; that round says "still wrong" or "right as written". A `README.md` correction that leaves the
+  quoted words intact is not seen; a human asks with `triage again`.
+
+* A correction whose roadmap another open pull request edits waits for that pull request; the board does
+  not relay the corrections onto it as a review. Under the reply rules a comment by the correction's
+  operator counts as the author's side when that operator opened the other pull request or is in its
+  pool, so such a relay would sometimes read as the author's own reply.
 * The harness runs standalone; running the lanes as TauCetiWorker `only=` kinds, with its quota
   pacing, dashboard and Bubble sandbox, is the intended integration.
 * Two workers of the branch owner may run a red-team fix and a gate round on the same pull request
