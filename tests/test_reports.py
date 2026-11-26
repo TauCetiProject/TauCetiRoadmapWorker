@@ -1039,3 +1039,99 @@ def test_a_recovered_source_with_no_recorded_evidence_is_read_again():
     [entry] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
     assert entry["evidence"] == {} and entry["refutes"] == list(report.refutes)
     assert sorted(gh.closer_reads) == [1, 2]                 # queued, and read again by number in the same run
+
+
+# --- review round 7 -----------------------------------------------------------------------------------------------
+
+def test_a_fixed_report_its_own_source_reports_again_is_filed_as_the_next_round():
+    """(gg) Round 1 came from #1, and its anchor left main (fixed). The anchor is back, and #1's author edits its
+    marker to report it again (another kind and witness): that is the report said again, so round 2 is filed, as it
+    is when a new pull request says it."""
+    fixed = reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1", "fixed",
+                              f"{LIBRARY}/pull/1")
+    gh = ReportsGH([item(1, body=marker(kind="missing-hypothesis", refutes=["TauCeti.newWitness"]))])
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [fixed]}})
+    old = Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1, number=40, state="done",
+              closed=True)
+    ctx = context(gh, jobs=[old])
+    reports.sync_reports(ctx, now=NOW)
+    [(job, state, _p)] = ctx.board.created
+    assert job.id == "REPORT-QuadraticFormInvariants~2" and state == "available"
+    [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert e["state"] == "open" and e["job"] == job.id and e["kind"] == "missing-hypothesis"
+    assert e["sources"] == [f"{LIBRARY}/pull/1"] and e["evidence"][f"{LIBRARY}/pull/1"]["refutes"] == ["TauCeti.newWitness"]
+
+
+def _said(state, said):
+    """(entry or None, url, report) for a cell of `decide`'s table."""
+    first = reports.parse(marker())[0][0]
+    other = reports.parse(marker(kind="missing-hypothesis"))[0][0]
+    if state is None:
+        return None, f"{LIBRARY}/pull/1", first
+    entry = reports.new_entry(first, "REPORT-QuadraticFormInvariants~1", state, f"{LIBRARY}/pull/1")
+    return entry, f"{LIBRARY}/pull/{2 if said == 'new' else 1}", other if said == "revised" else first
+
+
+@pytest.mark.parametrize("state, said, place, then, action", [
+    *[(st, sd, pl, None, act) for st in ("open", "confirmed", "rejected")
+      for sd, act in (("new", "add"), ("same", "nothing"), ("revised", "revise"))
+      for pl in (reports.UNREAD, "active", "absent", None)],
+    *[("fixed", "same", pl, None, "nothing") for pl in (reports.UNREAD, "active", "absent", None)],
+    *[(st, sd, reports.UNREAD, None, "read main") for st, sd in ((None, "new"), ("fixed", "new"), ("fixed", "revised"))],
+    *[(st, sd, None, None, "defer") for st, sd in ((None, "new"), ("fixed", "new"), ("fixed", "revised"))],
+    *[(st, sd, pl, None, "file") for st, sd in ((None, "new"), ("fixed", "new"), ("fixed", "revised"))
+      for pl in ("active", "completed")],
+    (None, "new", "absent", "active", "record fixed"),
+    ("fixed", "new", "absent", "active", "add to fixed"),
+    ("fixed", "revised", "absent", "active", "add to fixed"),
+    *[(st, sd, "absent", "absent", "not a report") for st, sd in ((None, "new"), ("fixed", "new"), ("fixed", "revised"))],
+    *[(st, sd, "absent", None, "defer") for st, sd in ((None, "new"), ("fixed", "new"), ("fixed", "revised"))],
+])
+def test_one_table_decides_every_report(state, said, place, then, action):
+    """(gg) Every cell of `decide`'s table that can occur."""
+    entry, url, report = _said(state, said)
+    assert reports.decide(entry, url, report, place, then) == action
+
+
+def test_a_revised_marker_for_a_fixed_report_waits_on_an_unreadable_main_and_is_filed_later():
+    fixed = reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1", "fixed",
+                              f"{LIBRARY}/pull/1")
+    gh = ReportsGH([item(1, body=marker(kind="missing-hypothesis"))], main={})
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [fixed]}})
+    real = gh.graphql
+    gh.graphql = lambda *a, **k: (_ for _ in ()).throw(GHError("graphql: HTTP 502"))
+    ctx = context(gh, jobs=[Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1, number=40,
+                                state="done", closed=True)])
+    reports.sync_reports(ctx, now=NOW)
+    [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert ctx.board.created == [] and e["state"] == "fixed" and e["kind"] == "false-statement"     # nothing recorded
+    gh.graphql, gh.main = real, {README: "intro\n- Two forms of rank one are equivalent iff their diagonal chains are."}
+    reports.sync_reports(ctx, now=NOW)
+    assert [j.id for j, _s, _p in ctx.board.created] == ["REPORT-QuadraticFormInvariants~2"]
+
+
+def test_a_fixed_report_whose_source_says_the_same_again_reopens_nothing():
+    fixed = reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1", "fixed",
+                              f"{LIBRARY}/pull/1")
+    gh = ReportsGH([item(1)])                              # the anchor is back on main; #1 is listed again unchanged
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [fixed]}})
+    ctx = context(gh, jobs=[Job("REPORT-QuadraticFormInvariants~1", "report", "QuadraticFormInvariants", 1, number=40,
+                                state="done", closed=True)])
+    reports.sync_reports(ctx, now=NOW)
+    assert ctx.board.created == [] and gh.register()["roadmaps"]["QuadraticFormInvariants"][0]["state"] == "fixed"
+
+
+def test_a_fixed_report_revised_while_its_anchor_is_still_gone_records_the_revision_only():
+    fixed = reports.new_entry(reports.parse(marker())[0][0], "REPORT-QuadraticFormInvariants~1", "fixed",
+                              f"{LIBRARY}/pull/1")
+    gh = ReportsGH([item(1, body=marker(kind="missing-hypothesis"))], main={README: "rewritten"},
+                   at={(SHA, README): "- Two forms of rank one are equivalent iff their diagonal chains are."})
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [fixed]}})
+    ctx = context(gh)
+    reports.sync_reports(ctx, now=NOW)
+    [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
+    assert ctx.board.created == [] and e["state"] == "fixed" and e["kind"] == "missing-hypothesis"

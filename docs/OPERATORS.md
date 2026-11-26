@@ -1926,7 +1926,12 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    anchor that was there then is recorded `fixed` with no job (`recorded as fixed, no job`), one that was
    not is no report (`the anchor is not in the file at <sha7> either; not a report`). A file that could not
    be read decides nothing (`main could not be read; left for a later run`). A fixed report whose anchor is
-   back on main is filed again, as the next round.
+   back on main is filed again, as the next round, when it is said again: by a new source, or by a known
+   source whose marker was revised (an author may edit an old pull request's description to report it).
+   A known source that says what it said already reopens nothing, or every old pull request listed again
+   would reopen every fix reverted meanwhile. One table decides every case (`reports.decide`); a revised
+   marker for a fixed report whose main cannot be read is left for a later run, its revision not yet
+   recorded, so the next run sees it as revised still.
 5. Every `open` or `confirmed` report whose anchor has left main becomes `fixed`; its job is set done with
    one comment and closed (`REPORT-<Leaf>~k: the anchor is gone from <roadmap>/<file> on main; fixed, job
    done`). The label and the close are two writes: a REPORT job that is done but whose issue is still open

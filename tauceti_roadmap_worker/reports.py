@@ -518,6 +518,55 @@ def restate(entry: dict) -> None:
         entry[key] = list(dict.fromkeys(names))
 
 
+UNREAD = object()        # `decide` before the roadmap on main is read
+
+
+def decide(entry: dict | None, url: str, report: Report, place=UNREAD, then=None) -> str:
+    """What a valid report from the source `url` does, by one table: the register's entry for it (none, or its
+    state), what the source says (new: not among the entry's sources; same: its recorded evidence; revised:
+    anything else), and where the anchor stands on main (`place`: active or completed, "absent", None when main
+    could not be read; UNREAD before it is read) and, when absent there, at the commit the source read
+    (`then`, likewise).
+
+    | entry                      | source         | anchor on main          | action                          |
+    | open, confirmed, rejected  | new            | (not read)              | add (the job is told)           |
+    | open, confirmed, rejected  | same           | (not read)              | nothing                         |
+    | open, confirmed, rejected  | revised        | (not read)              | revise (the job is told)        |
+    | fixed                      | same           | (not read)              | nothing                         |
+    | none, or fixed             | new or revised | not read yet            | read main                       |
+    | none, or fixed             | new or revised | unreadable              | defer (nothing recorded)        |
+    | none, or fixed             | new or revised | there                   | file (round 1, or the next)     |
+    | none                       | new            | absent; there at its sha| record fixed, no job            |
+    | fixed                      | new or revised | absent; there at its sha| add to the fixed report         |
+    | none, or fixed             | new or revised | absent; absent at sha   | not a report                    |
+    | none, or fixed             | new or revised | absent; sha unreadable  | defer                           |
+
+    A fixed report is reported again by a new source or a revised marker, whoever's: those are the only ways a
+    report is said again. A source that says what it said already reopens nothing, or every old pull request
+    listed again (a comment, a label) would reopen every fix that was reverted meanwhile."""
+    if entry is None:
+        said = "new"
+    elif url not in entry.get("sources", []):
+        said = "new"
+    else:
+        said = "same" if (entry.get("evidence") or {}).get(url) == evidence_of(report) else "revised"
+    if entry is not None and entry.get("state") != "fixed":
+        return {"new": "add", "same": "nothing", "revised": "revise"}[said]
+    if said == "same":
+        return "nothing"
+    if place is UNREAD:
+        return "read main"
+    if place is None:
+        return "defer"
+    if place != "absent":
+        return "file"
+    if then is None:
+        return "defer"
+    if then == "absent":
+        return "not a report"
+    return "record fixed" if entry is None else "add to fixed"
+
+
 def add_source(entry: dict, report: Report, url: str) -> list[str]:
     return revise(entry, url, report)
 
@@ -835,15 +884,12 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
                 continue
         for report in got:
             entry = known.get(report.identity)
-            if entry is not None and source.url in entry.get("sources", []):
-                recorded += 1
-                changed = revise(entry, source.url, report)
-                if changed:
-                    revised(ctx, run, jobs, entry, source, changed)
-            elif entry is not None and entry.get("state") != "fixed":
-                add_more(ctx, run, jobs, entry, report, source)
-            else:
+            action = decide(entry, source.url, report)
+            if action == "read main":
                 candidates.append((source, report))
+            else:
+                recorded += action != "add"
+                known_source(ctx, run, jobs, entry, report, source, action)
 
     # 3. The roadmap on main, for the candidates and the reports still to settle; at the commit the worker
     #    read, for a candidate whose anchor main no longer holds.
@@ -865,39 +911,37 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
     for job in jobs.values():
         rounds[job.name] = max(rounds.get(job.name, 0), board.parse_job_id(job.id).round)
     for source, report in candidates:
-        entry = known.get(report.identity)
-        if entry is not None and source.url in entry.get("sources", []):
-            continue                          # two markers of one body with one identity
+        entry = known.get(report.identity)    # one a candidate before it in this run may have made
         place = places[id(report)]
+        then = where(texts, report.roadmap_sha, paths(cfg, report), report.anchor) if place == "absent" else None
+        action = decide(entry, source.url, report, place, then)
         what = f"{report.roadmap} {report.file}"
-        if entry is not None and entry.get("state") != "fixed":
-            add_more(ctx, run, jobs, entry, report, source)       # filed by a candidate before it in this run
+        if action in ("nothing", "add", "revise"):
+            known_source(ctx, run, jobs, entry, report, source, action)
             continue
-        if place is None:
-            run.out.append(f"reports: {source.url}: {what}: main could not be read; left for a later run")
+        if action == "defer":
+            run.out.append(f"reports: {source.url}: {what}: " + ("main could not be read" if place is None else
+                                                                 "the commit it read could not be read")
+                           + "; left for a later run")
             run.deferred[source.url] = source
             continue
-        if place == "absent":
-            then = where(texts, report.roadmap_sha, paths(cfg, report), report.anchor)
-            if then is None:
-                run.out.append(f"reports: {source.url}: {what}: the commit it read could not be read; left for a "
-                               "later run")
-                run.deferred[source.url] = source
-            elif then == "absent":
-                run.out.append(f"reports: {source.url}: {what}: the anchor is not in the file at "
-                               f"{report.roadmap_sha[:7]} either; not a report")
-            elif entry is not None:
-                add_source(entry, report, source.url)
-                run.changed.append(f"{source.url} added to a fixed report")
-                run.out.append(f"reports: {source.url}: {what}: fixed already ({entry.get('job') or 'no job'}); "
-                               "source added")
-            else:
-                entry = new_entry(report, "", "fixed", source.url)
-                data["roadmaps"].setdefault(report.roadmap, []).append(entry)
-                known[report.identity] = entry
-                run.changed.append(f"{what} recorded as fixed")
-                run.out.append(f"reports: {source.url}: {what}: the anchor is no longer on main; recorded as fixed, "
-                               "no job")
+        if action == "not a report":
+            run.out.append(f"reports: {source.url}: {what}: the anchor is not in the file at "
+                           f"{report.roadmap_sha[:7]} either; not a report")
+            continue
+        if action == "add to fixed":
+            add_source(entry, report, source.url)
+            run.changed.append(f"{source.url} added to a fixed report")
+            run.out.append(f"reports: {source.url}: {what}: fixed already ({entry.get('job') or 'no job'}); "
+                           "source recorded")
+            continue
+        if action == "record fixed":
+            entry = new_entry(report, "", "fixed", source.url)
+            data["roadmaps"].setdefault(report.roadmap, []).append(entry)
+            known[report.identity] = entry
+            run.changed.append(f"{what} recorded as fixed")
+            run.out.append(f"reports: {source.url}: {what}: the anchor is no longer on main; recorded as fixed, "
+                           "no job")
             continue
         author = (source.forge, source.author.lower())
         if len(filed) >= r.per_run or per_author.get(author, 0) >= r.per_author:
@@ -1033,6 +1077,17 @@ def revised(ctx, run: Run, jobs: dict, entry: dict, source: Source, changed: lis
 def close_issue(ctx, job: board.Job) -> None:
     ctx.gh.write("PATCH", f"repos/{ctx.cfg.repositories.board_repo()}/issues/{job.number}", {"state": "closed"})
     job.closed = True
+
+
+def known_source(ctx, run: Run, jobs: dict, entry: dict, report: Report, source: Source, action: str) -> None:
+    """`decide`'s actions on an entry that is not fixed: a new source is added, a revised one revised (each told to
+    the job), one that says what it said changes nothing."""
+    if action == "add":
+        add_more(ctx, run, jobs, entry, report, source)
+    elif action == "revise":
+        changed = revise(entry, source.url, report)
+        if changed:
+            revised(ctx, run, jobs, entry, source, changed)
 
 
 def add_more(ctx, run: Run, jobs: dict, entry: dict, report: Report, source: Source) -> None:
