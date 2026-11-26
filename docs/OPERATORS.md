@@ -1951,18 +1951,19 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    is at that version (a late report of the old snapshot), and files the next round, after the rounds it
    follows (`previous`), once main is at another; a version not read decides nothing. A pin fixed because
    its name left main keeps the rule above. The triage lane
-   (#142) uses it: the digest a triage carries includes the statement its checkout had (the lane blocks a
-   pin it cannot locate once), so a correction that lands while the triage runs makes the verdict stale;
-   the triage record keeps the statement it judged (`statement`); and a `confirmed` (or `needs-human`)
-   report whose statement on main is no longer the judged one is triaged again: its next round is filed
-   with nothing assumed fixed. Whether a `rejected` (the pin is right as now written) records a correction
+   (#142) uses it: the digest a triage carries includes the version its checkout had (`git rev-parse
+   HEAD:<file>`, the id GitHub's `oid` gives the sync for the same bytes, whatever their line ends), so a
+   correction that lands while the triage runs makes the verdict stale; the triage record keeps the version
+   it judged (`statement`), and a `rejected` keeps it as the version found right (`right`); a `confirmed`
+   (or `needs-human`) report whose file on main is at another version is triaged again: its next round is
+   filed with nothing assumed fixed. Whether a `rejected` (the pin is right as now written) records a correction
    is read from the entry's own history (`reports.corrected`): among the verdicts of the rounds since the
    report was last filed afresh (the round and the rounds its spec names under `previous`), a `confirmed`
-   on another statement makes it `fixed` (`"corrected": true`), whatever path filed the rounds in between
-   (a statement changed, a stale verdict, `triage again`, a recovery). A `rejected` of the statement that
+   at another version makes it `fixed` (`"corrected": true`), whatever path filed the rounds in between
+   (a statement changed, a stale verdict, `triage again`, a recovery). A `rejected` of the version that
    was confirmed is a human's overturn and stays `rejected`; so does every rejection of a `README.md`
-   report, which has no statement digest; stale verdicts and ones by hand count for nothing. Main is the read the anchor check
-   makes already; a pin not located decides nothing. A `README.md` report's anchor is a verbatim quote: a
+   report, which has no version; stale verdicts and ones by hand count for nothing. The version is asked
+   in the query that reads the file for the anchor check; a version not read decides nothing. A `README.md` report's anchor is a verbatim quote: a
    correction that leaves the quoted words intact (a hypothesis added in the next sentence, say) is not
    seen, and a human asks for another triage (`triage again`).
 5. Every `open` or `confirmed` report whose anchor has left main becomes `fixed`; its job is set done with

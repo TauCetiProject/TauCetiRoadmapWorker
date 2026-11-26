@@ -1104,8 +1104,8 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
 
     # 6. Triage verdicts, only for reports still open whose anchor main still holds; then the finished jobs
     #    left open (closed), and the requests to triage again (the report's next round).
-    triaged = record_triage(ctx, run, jobs, settle, texts, branch)
-    restated(ctx, run, jobs, settle, texts, branch)
+    triaged = record_triage(ctx, run, jobs, settle, texts, branch, oids)
+    restated(ctx, run, jobs, settle, oids, branch)
     close_finished(ctx, run, jobs, known)
     ask_again(ctx, run, jobs, known)
 
@@ -1231,7 +1231,7 @@ EVIDENCE_FIELDS = ("file", "anchor", "kind", "effect", "refutes", "replaces", "s
 def evidence_digest(fields: dict) -> str:
     """The digest of the report a verdict judges: its file, anchor (as `anchor_key` compares it), kind, effect and
     declarations, from a register entry or a REPORT job's spec alike, and for a Suggested.lean report the digest
-    of the pinned statement it names (`statement`, `statement_digest`: its name alone says nothing of it). Not its
+    of the pinned file it names (`statement`: its version, `statement_on`; its name alone says nothing). Not its
     sources: a later source that says the same changes nothing a triage decided."""
     data = {k: anchor_key(str(fields.get(k) or "")) if k == "anchor" else
             [str(x) for x in fields.get(k) or []] if k in ("refutes", "replaces") else str(fields.get(k) or "")
@@ -1286,7 +1286,7 @@ def triage_record(cfg, job: board.Job, text: str) -> dict:
             key: body if len(body) <= TRIAGE_KEEP else body[:TRIAGE_KEEP] + " [...]"}
 
 
-def record_triage(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: str) -> int:
+def record_triage(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: str, oids: dict) -> int:
     """`sync_reports`: the verdicts of triaged REPORT jobs into the register. A report still `open`, whose
     anchor main still holds (read this run), takes the verdict of its job's triage once the job is finished
     (`done`) or closed: the triage on the board's main is that job's one triage (a job id is triaged once),
@@ -1316,9 +1316,9 @@ def record_triage(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: 
         key = ("main", triage_path(cfg, job))
         if key not in found:
             continue                          # not read: the next run tries again
-        statement = statement_on(cfg, texts, branch, entry, roadmap)
+        statement = statement_on(cfg, oids, branch, entry, roadmap)
         if entry.get("file") == "Suggested.lean" and statement is None:
-            continue                          # the pin is declared nowhere or twice: nothing is decided
+            continue                          # the pin's file version was not read: nothing is decided
         text = found[key]
         verdict = parse_triage(text)["verdict"] if text else ""
         judged, now = (parse_triage(text)["digest"] if text else ""), evidence_digest({**entry, "statement": statement})
@@ -1362,6 +1362,8 @@ def record_triage(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: 
             entry["state"] = "rejected"
             entry["triage"] = {"job": job.id, "verdict": "rejected", "by": "hand"}
             line = f"{job.id}: closed by hand with no triage verdict; recorded as rejected"
+        if verdict == "rejected" and statement:
+            entry["right"] = statement        # the version a triage found the pin right at (`decide`)
         changed += 1
         run.changed.append(line.split(";")[0])
         run.out.append(f"reports: {line}" + (" (dry run: not written)" if ctx.dry_run else ""))
@@ -1384,19 +1386,19 @@ def corrected(entry: dict, job: board.Job, statement: str | None) -> bool:
                for t in [*entry.get("triages", []), entry.get("triage") or {}] if isinstance(t, dict))
 
 
-def restated(ctx, run: Run, jobs: dict, settle: list, texts: dict, branch: str) -> None:
+def restated(ctx, run: Run, jobs: dict, settle: list, oids: dict, branch: str) -> None:
     """`sync_reports`: a Suggested.lean report whose verdict (`confirmed`, or `needs-human` with the report open) is
     recorded for its current job, and whose pinned statement on main is no longer the one that verdict judged (a
     correction that kept the declaration's name), is triaged again: its next round is filed. Nothing is assumed
     fixed (whether its rejection then records a correction is read from the history: `corrected`), and no verdict stands on a statement it never read. Main as this run
-    read it for the anchor check, no other read; a pin not located decides nothing."""
+    read it for the anchor check, no other read; a version not read decides nothing."""
     for (roadmap, _file, _a), entry in settle:
         job, triage = jobs.get(str(entry.get("job") or "")), entry.get("triage") or {}
         if (entry.get("file") != "Suggested.lean" or job is None or triage.get("job") != job.id or triage.get("by")
                 or triage.get("verdict") not in ("confirmed", "needs-human")):
             continue
         judged = triage.get("statement") or entry.get("statement")
-        now = statement_on(ctx.cfg, texts, branch, entry, roadmap)
+        now = statement_on(ctx.cfg, oids, branch, entry, roadmap)
         if not judged or now is None or now == judged:
             continue
         line = f"{job.id}: the pinned statement changed since it was judged"

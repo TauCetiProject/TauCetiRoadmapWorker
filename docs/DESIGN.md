@@ -221,9 +221,9 @@ checkout, submits a PR to the board, and the intake advances the state.
     report is judged by its file's version (the git blob id at main), the one its last recorded verdict
     read; any change of the file is a new version (never a missed correction,
     sometimes one more triage), and a late report of a version found right files nothing; a triage's digest
-    includes the statement it read, and a confirmed pin whose statement changed on main is triaged again
-    (a later `rejected` of another statement than a `confirmed` in its history records it `fixed`:
-    corrected, not "never an error"); a `README.md` correction that leaves the quoted words intact is not seen. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
+    includes the version it read, and a confirmed pin whose file changed on main is triaged again (a later
+    `rejected` of another version than a `confirmed` in its history records it `fixed`: corrected, not
+    "never an error"); a `README.md` correction that leaves the quoted words intact is not seen. The board keeps every report in `reports/register.json` (`open`, `confirmed`,
     `rejected`, `fixed`), which the library's workers read so as not to report one twice. A read that is
     not whole (an incomplete search, an error object or a cut page of a listing, a register GitHub does not
     serve) is a failed read: it moves no mark and decides nothing, and the next run reads again. The job's text

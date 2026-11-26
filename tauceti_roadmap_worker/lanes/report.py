@@ -170,12 +170,11 @@ class ReportLane(Lane):
         # The digest of the report the brief states: decided here for a run whose agent reads this brief, and kept
         # in the run's record from its first save on (`keep_run`), so a resumed run (a submission that stopped,
         # finished without the agent) is stamped with the digest of the brief its agent read, at any stop.
-        # A Suggested.lean report's digest includes the pinned statement as this checkout has it.
+        # A Suggested.lean report's digest includes its file's version: git's blob id of the bytes it stores, the
+        # id the sync gets from GitHub (`oid`), never a hash of text as Python reads it.
         kept = (read_pending(ctx, job) or {}).get("brief") or {}
-        statement = reports.statement_digest(text, report.anchor) if report.file == "Suggested.lean" else ""
-        if statement is None and not kept.get("evidence"):
-            raise LaneBlocked(f"`{report.anchor}` is not declared exactly once in `{place}` on `{cfg.project.branch}` "
-                              f"({head[:7]}): the statement it names cannot be located; a human answers")
+        statement = (gitops.git(ws.content, "rev-parse", f"HEAD:{place}").strip()
+                     if report.file == "Suggested.lean" and not kept.get("evidence") else "")
         ws.extra["brief"] = {"evidence": kept.get("evidence") or reports.evidence_digest({**job.inputs,
                                                                                           "statement": statement})}
         ws.extra.update(head=head, report=report, place=place, folder=folder, spans=spans, anchor_file=anchor_file,

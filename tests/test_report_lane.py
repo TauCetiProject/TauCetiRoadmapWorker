@@ -19,7 +19,7 @@ from tauceti_roadmap_worker.paths import HERE
 
 from .fakes import FakeBoard, FakeGH, FakeIssuesGH, FakeTransport, example_config
 from .test_checkout import commit, live, needs_git  # noqa: F401 - the shared fixture
-from .test_reports import ANCHOR, BODY, LIBRARY, NOW, ReportsGH, context, item, marker
+from .test_reports import ANCHOR, BODY, LIBRARY, NOW, ReportsGH, blob_id, context, item, marker
 
 SHA = "abc1234" + "0" * 33
 JOB = "REPORT-QuadraticFormInvariants~1"
@@ -1054,7 +1054,7 @@ def pin_digest(text):
     r = pin_report()
     return reports.evidence_digest({"file": r.file, "anchor": r.anchor, "kind": r.kind, "effect": r.effect,
                                     "refutes": list(r.refutes), "replaces": list(r.replaces),
-                                    "statement": reports.statement_digest(text, "square_root_sq")})
+                                    "statement": blob_id(text)})
 
 
 def pin_register(gh, state="open", **extra):
@@ -1080,7 +1080,7 @@ def test_a_confirmed_pin_corrected_on_main_with_its_name_kept_is_triaged_again(c
     sync = context(gh, jobs=[pin_job()])
     reports.sync_reports(sync, now=NOW)
     e = entry_of(gh)
-    assert e["state"] == "confirmed" and e["triage"]["statement"] == reports.statement_digest(WRONG, "square_root_sq")
+    assert e["state"] == "confirmed" and e["triage"]["statement"] == blob_id(WRONG)
     gh.main[PIN] = RIGHT                                 # the correction lands, the name kept
     out = reports.sync_reports(sync, now=NOW)
     [(new, state, preamble)] = sync.board.created
@@ -1101,12 +1101,13 @@ def test_the_next_rounds_rejection_of_a_corrected_pin_is_recorded_as_fixed(ctx):
     gh = pin_gh(RIGHT, ctx)
     gh.main[TRIAGE.replace("~1", "~2")] = triage("rejected", job=later, digest=pin_digest(RIGHT))
     pin_register(gh, job=later, triages=[{"job": JOB, "verdict": "confirmed", "report": TRIAGE,
-                                          "statement": reports.statement_digest(WRONG, "square_root_sq")}])
+                                          "statement": blob_id(WRONG)}])
     job = pin_job(previous=[{"job": JOB, "issue": 7}])
     job.id, job.round = later, 2
     reports.sync_reports(context(gh, jobs=[job]), now=NOW)
     e = entry_of(gh)
     assert e["state"] == "fixed" and e["triage"]["verdict"] == "rejected" and e["triage"]["corrected"] is True
+    assert e["right"] == blob_id(RIGHT)                    # (qq) the version it was found right at
 
 
 def test_a_verdict_on_a_pin_corrected_while_its_triage_ran_is_not_recorded(ctx):
@@ -1121,10 +1122,11 @@ def test_a_verdict_on_a_pin_corrected_while_its_triage_ran_is_not_recorded(ctx):
     assert e["state"] == "open" and e["job"] == JOB.replace("~1", "~2") and e["triages"][-1]["verdict"] == "confirmed"
 
 
-def test_a_pin_that_cannot_be_located_decides_nothing(ctx):
-    gh = pin_gh(WRONG + "\ntheorem square_root_sq : True := trivial\n", ctx)     # declared twice
+def test_a_pins_version_not_read_decides_nothing(ctx):
+    gh = pin_gh(WRONG, ctx)
     gh.main[PIN_TRIAGE] = triage("confirmed", digest=pin_digest(WRONG))
     pin_register(gh)
+    gh.graphql = lambda *a, **k: (_ for _ in ()).throw(GHError("graphql: HTTP 502"))
     sync = context(gh, jobs=[pin_job()])
     reports.sync_reports(sync, now=NOW)
     assert entry_of(gh)["state"] == "open" and "triage" not in entry_of(gh) and sync.board.created == []
@@ -1140,13 +1142,23 @@ def test_the_lane_briefs_a_pin_with_the_digest_of_its_statement(live, tmp_path, 
 
 
 @needs_git
-def test_the_lane_blocks_a_pin_it_cannot_locate(live, tmp_path):
-    ctx, _board_origin = live
-    commit(tmp_path / "origin-content", {PIN: WRONG + "\ntheorem square_root_sq : True := trivial\n", README: TEXT},
-           "the roadmap")
+def test_a_crlf_pin_gives_the_lane_and_the_sync_one_version(live, tmp_path):  # noqa: F811
+    """(pp) A Suggested.lean committed with CRLF line ends: the lane takes its version from git (`rev-parse`), the
+    sync from GitHub's `oid` of the same blob; both are git's id of the stored bytes, so a verdict on unchanged
+    evidence is recorded, not stale for ever."""
+    live_ctx, _board_origin = live
+    crlf = WRONG.replace("\n", "\r\n")
+    commit(tmp_path / "origin-content", {PIN: crlf, README: TEXT}, "the roadmap")
     job = pin_job(state="available", closed=False)
-    with pytest.raises(LaneBlocked, match="is not declared exactly once"):
-        lane_for(job).prepare(job, dataclasses.replace(ctx, gh=IssueGH("")))
+    ws = lane_for(job).prepare(job, dataclasses.replace(live_ctx, gh=IssueGH("")))
+    assert ws.extra["brief"] == {"evidence": pin_digest(crlf)}
+    from types import SimpleNamespace
+    gh = pin_gh(crlf, SimpleNamespace(gh=SimpleNamespace(body="")))
+    gh.main[PIN_TRIAGE] = triage("confirmed", digest=ws.extra["brief"]["evidence"])
+    pin_register(gh)
+    sync = context(gh, jobs=[pin_job()])
+    reports.sync_reports(sync, now=NOW)
+    assert entry_of(gh)["state"] == "confirmed" and sync.board.created == []
 
 
 def test_a_later_round_does_not_inherit_the_request_of_its_predecessor(ctx):
@@ -1214,9 +1226,33 @@ S1, S2 = "1" * 12, "2" * 12
      False),                                                                                        # before a fresh filing
     ("Suggested.lean", [], S2, False),
     ("README.md", [{"job": JOB, "verdict": "confirmed"}], None, False),                              # a human overturns
-], ids=["corrected", "overturned", "needs-human", "stale", "by hand", "an earlier filing", "no history", "README"])
+    ("Suggested.lean", [{"job": JOB, "verdict": "confirmed", "statement": S1},
+                        {"job": JOB.replace("~1", "~2"), "verdict": "rejected", "statement": S2, "corrected": True},
+                        {"job": JOB.replace("~1", "~2"), "verdict": "confirmed", "statement": "3" * 12}], "4" * 12,
+     True),                                                  # fixed, regressed, confirmed again, corrected again
+], ids=["corrected", "overturned", "needs-human", "stale", "by hand", "an earlier filing", "no history", "README",
+        "corrected again"])
 def test_whether_a_rejection_is_a_correction_is_read_from_the_entrys_own_history(file, history, statement, corrected):
     later = new_job(JOB.replace("~1", "~3"), inputs={"previous": [{"job": JOB, "issue": 7},
                                                                   {"job": JOB.replace("~1", "~2"), "issue": 8}]})
     entry = {"file": file, "triages": history}
     assert reports.corrected(entry, later, statement) is corrected
+
+
+def test_a_late_report_of_a_corrected_pins_old_snapshot_keeps_it_fixed(ctx):
+    """(qq) Through sync, after the correction check recorded the pin fixed at the corrected version: a second pull
+    request reports the old snapshot; main is still that version, so the source is recorded and no round filed."""
+    later = JOB.replace("~1", "~2")
+    gh = pin_gh(RIGHT, ctx)
+    gh.main[TRIAGE.replace("~1", "~2")] = triage("rejected", job=later, digest=pin_digest(RIGHT))
+    pin_register(gh, job=later, triages=[{"job": JOB, "verdict": "confirmed", "report": TRIAGE,
+                                          "statement": blob_id(WRONG)}])
+    job = pin_job(previous=[{"job": JOB, "issue": 7}])
+    job.id, job.round = later, 2
+    sync = context(gh, jobs=[job])
+    reports.sync_reports(sync, now=NOW)
+    assert entry_of(gh)["state"] == "fixed"
+    gh.search = [item(9, body=marker(file="Suggested.lean", anchor="square_root_sq", kind="missing-hypothesis"))]
+    reports.sync_reports(sync, now=NOW)
+    e = entry_of(gh)
+    assert sync.board.created == [] and e["state"] == "fixed" and f"{LIBRARY}/pull/9" in e["sources"]
