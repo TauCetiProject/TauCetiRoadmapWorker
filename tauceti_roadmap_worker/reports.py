@@ -546,7 +546,7 @@ def decide(entry: dict | None, url: str, report: Report, place=UNREAD, then=None
     | none, or fixed             | new or revised | absent; absent at sha   | not a report                    |
     | none, or fixed             | new or revised | absent; sha unreadable  | defer                           |
 
-    | fixed or rejected pin, judged right at version R (`right`) | new or revised | there, version R | add (record)  |
+    | fixed or rejected pin, judged right at version R (`judged_right`) | new or revised | there, version R | add   |
     | fixed or rejected pin, judged right at version R | new or revised | there, another version   | file the next round |
     | fixed or rejected pin, judged right at version R | new or revised | there, version unread    | defer         |
     | rejected pin, judged right at version R          | new or revised | absent                   | add or revise |
@@ -562,18 +562,18 @@ def decide(entry: dict | None, url: str, report: Report, place=UNREAD, then=None
         said = "new"
     else:
         said = "same" if (entry.get("evidence") or {}).get(url) == evidence_of(report) else "revised"
-    settled = entry is not None and entry.get("state") in ("fixed", "rejected") and entry.get("right") \
-        and entry.get("file") == "Suggested.lean"
+    right = judged_right(entry) if entry is not None else None
+    settled = entry is not None and entry.get("state") in ("fixed", "rejected") and right is not None
     if entry is not None and entry.get("state") != "fixed" and not (settled and said != "same"):
         return {"new": "add", "same": "nothing", "revised": "revise"}[said]
     if said == "same":
         return "nothing"
     if settled and place not in (UNREAD, None, "absent"):
-        # Judged right at version `right`: at that version nothing has changed since; at another, the pin may be
+        # Last judged right at version `right`: at it nothing has changed since; at another, the pin may be
         # wrong again, whatever its name says.
         if version is None:
             return "defer"
-        if version == entry["right"]:
+        if version == right:
             return "add to fixed" if entry["state"] == "fixed" else {"new": "add", "revised": "revise"}[said]
         return "file"
     if settled and entry["state"] == "rejected" and place == "absent":
@@ -589,6 +589,19 @@ def decide(entry: dict | None, url: str, report: Report, place=UNREAD, then=None
     if then == "absent":
         return "not a report"
     return "record fixed" if entry is None else "add to fixed"
+
+
+def judged_right(entry: dict) -> str | None:
+    """The version of a Suggested.lean pin's file a triage last judged it right at, while that judgement stands:
+    read from the entry's verdicts in the order they were recorded (`triages`, then `triage`). The last one
+    recorded decides, a stale one (`judged`: never recorded as a verdict) counting for nothing: a rejection (one
+    recorded as a correction included) gives the version it read; a `confirmed` or `needs-human`, or a job closed
+    by hand (nobody judged a version), gives none."""
+    if entry.get("file") != "Suggested.lean":
+        return None
+    history = [t for t in [*entry.get("triages", []), entry.get("triage")] if isinstance(t, dict) and "judged" not in t]
+    last = history[-1] if history else {}
+    return last.get("statement") or None if last.get("verdict") == "rejected" and not last.get("by") else None
 
 
 def add_source(entry: dict, report: Report, url: str) -> list[str]:
@@ -992,7 +1005,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             "replaces": list(report.replaces), "sources": [source.url], "evidence": {source.url: evidence_of(report)},
             "place": place})
         prior = jobs.get(str((entry or {}).get("job") or ""))
-        if prior is not None and (entry or {}).get("right"):
+        if prior is not None and entry is not None and judged_right(entry):
             # A pin judged right, at a new version: the rounds it follows, whose verdicts its outcome is read with.
             job.inputs["previous"] = [p for p in prior.inputs.get("previous", []) if isinstance(p, dict)] + [
                 {"job": prior.id, "issue": prior.number}]
@@ -1016,12 +1029,7 @@ def sync_reports(ctx, now: dt.datetime | None = None) -> list[str]:
             entry = new_entry(report, job.id, "open", source.url)
             data["roadmaps"].setdefault(report.roadmap, []).append(entry)
             known[report.identity] = entry
-        # A Suggested.lean report's anchor is a declaration's name, which a correction usually keeps: the entry
-        # records the statement it was filed against (main as this run read it), for the triage's upkeep.
-        statement = statement_on(cfg, oids, branch, report)
-        entry.pop("statement", None)
-        if statement:
-            entry["statement"] = statement
+
         run.changed.append(f"{job.id} filed" + (" (back on main)" if reopened else ""))
 
     # 5. Reports whose anchor has left main are fixed; a job set done whose issue a failed write left open is

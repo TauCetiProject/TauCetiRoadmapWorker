@@ -1181,15 +1181,6 @@ def test_a_reread_snapshot_of_an_open_report_tells_the_job_nothing_new():
         == "b" * 40
 
 
-def test_a_suggested_lean_report_records_the_statement_it_was_filed_against():
-    path = "TauCetiRoadmap/QuadraticFormInvariants/Suggested.lean"
-    gh = ReportsGH([item(1, body=marker(file="Suggested.lean", anchor="square_root_sq"))], main={path: PIN_TEXT})
-    ctx = context(gh)
-    reports.sync_reports(ctx, now=NOW)
-    [e] = gh.register()["roadmaps"]["QuadraticFormInvariants"]
-    assert e["statement"] == blob_id(PIN_TEXT)            # the file's version: its git blob id
-
-
 # --- review round 9 -----------------------------------------------------------------------------------------------
 
 PIN_PATH = "TauCetiRoadmap/QuadraticFormInvariants/Suggested.lean"
@@ -1245,7 +1236,7 @@ def test_a_pins_version_is_its_files_blob_and_any_change_changes_it(before, afte
 def settled(state, right):
     entry = reports.new_entry(reports.parse(marker(file="Suggested.lean", anchor="square_root_sq"))[0][0],
                               "REPORT-QuadraticFormInvariants~2", state, f"{LIBRARY}/pull/1")
-    entry["right"] = right
+    entry["triage"] = {"job": "REPORT-QuadraticFormInvariants~2", "verdict": "rejected", "statement": right}
     return entry
 
 
@@ -1284,3 +1275,49 @@ def test_a_late_report_of_a_corrected_pins_old_snapshot_files_nothing_and_a_regr
     assert job.id == "REPORT-QuadraticFormInvariants~3"
     assert job.inputs["previous"] == [{"job": "REPORT-QuadraticFormInvariants~1", "issue": 40},
                                       {"job": "REPORT-QuadraticFormInvariants~2", "issue": 41}]
+
+
+# --- review round 11 ----------------------------------------------------------------------------------------------
+
+R = "r" * 40
+
+
+@pytest.mark.parametrize("history, right", [
+    ([{"job": "J~1", "verdict": "rejected", "statement": R}], R),
+    ([{"job": "J~1", "verdict": "rejected", "statement": R}, {"job": "J~2", "verdict": "confirmed", "statement": R}],
+     None),                                                         # a human's counterexample overturned it
+    ([{"job": "J~1", "verdict": "rejected", "statement": R, "corrected": True}], R),           # fixed by correction
+    ([{"job": "J~1", "verdict": "rejected", "statement": R}, {"job": "J~2", "verdict": "needs-human",
+                                                               "statement": R}], None),
+    ([{"job": "J~1", "verdict": "rejected", "statement": R}, {"job": "J~2", "verdict": "rejected", "by": "hand"}],
+     None),                                                         # closed by hand: nobody judged a version
+    ([{"job": "J~1", "verdict": "rejected", "statement": R}, {"job": "J~2", "verdict": "confirmed",
+                                                               "statement": "s" * 40, "judged": "x", "now": "y"}],
+     R),                                                            # a stale verdict was never recorded
+    ([{"job": "J~1", "verdict": "confirmed", "statement": R}], None),
+    ([], None),
+    ([{"job": "J~1", "verdict": "rejected"}], None),                # no version read (a README report)
+], ids=["rejected", "then confirmed", "corrected", "then needs-human", "then by hand", "then stale", "confirmed",
+        "none", "no version"])
+def test_the_version_a_pin_was_last_judged_right_at_is_read_from_its_history(history, right):
+    """(rr) In order of recording, the last verdict validly recorded decides: a rejection gives the version it read,
+    anything else none. Stale records count for nothing; a job closed by hand judged no version."""
+    entry = {"file": "Suggested.lean", "triages": history[:-1], **({"triage": history[-1]} if history else {})}
+    assert reports.judged_right(entry) == right
+
+
+def test_a_pin_confirmed_after_its_rejection_reopens_when_it_comes_back_at_that_version():
+    """(rr) Rejected at R, then confirmed at R on a human's request; the file is removed (fixed) and restored at R,
+    and a source says it again: the confirmation stands, so the next round is filed."""
+    entry = reports.new_entry(reports.parse(marker(file="Suggested.lean", anchor="square_root_sq"))[0][0],
+                              "REPORT-QuadraticFormInvariants~2", "fixed", f"{LIBRARY}/pull/1")
+    entry["triages"] = [{"job": "REPORT-QuadraticFormInvariants~1", "verdict": "rejected", "statement": blob_id(PIN_TEXT)}]
+    entry["triage"] = {"job": "REPORT-QuadraticFormInvariants~2", "verdict": "confirmed", "statement": blob_id(PIN_TEXT)}
+    gh = ReportsGH([item(1, body=marker(file="Suggested.lean", anchor="square_root_sq", roadmap_sha="b" * 40))],
+                   main={PIN_PATH: PIN_TEXT})
+    gh.files[reports.REGISTER] = json.dumps({"version": 1, "scanned": {"github": "2026-11-24T09:00:00Z"},
+                                             "roadmaps": {"QuadraticFormInvariants": [entry]}})
+    ctx = context(gh, jobs=[Job("REPORT-QuadraticFormInvariants~2", "report", "QuadraticFormInvariants", 2,
+                                number=41, state="done", closed=True)])
+    reports.sync_reports(ctx, now=NOW)
+    assert [j.id for j, _s, _p in ctx.board.created] == ["REPORT-QuadraticFormInvariants~3"]

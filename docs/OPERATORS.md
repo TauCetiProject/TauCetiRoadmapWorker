@@ -1941,9 +1941,11 @@ With `[reports] enabled` (off by default), every `board sync` ends with the repo
    `Suggested.lean` at main (GitHub's `oid`, asked in the same GraphQL query that reads the file; the lane
    takes the same id from its checkout with `git rev-parse`), so both sides name the exact bytes git stores,
    and every change of the file is a new version. No declaration is located: the anchor's presence is the
-   same whitespace-normalised substring check as a quote's. The entry records the version its job was filed
-   at (`statement`). A pin a triage found right (a `rejected`, or a correction recorded `fixed`) keeps the
-   version it was found right at (`right`); a new or revised source for it is then only recorded while main
+   same whitespace-normalised substring check as a quote's. The version a pin was last judged right at is
+   read from its recorded verdicts, never stored (`reports.judged_right`): the last verdict recorded decides
+   (a stale one counts for nothing); a rejection, one recorded as a correction included, gives the version
+   it read, and a `confirmed`, a `needs-human` or a job closed by hand gives none. While a pin has such a
+   version, a new or revised source for it is only recorded while main
    is at that version (a late report of the old snapshot), and files the next round, after the rounds it
    follows (`previous`), once main is at another; a version not read decides nothing. A pin fixed because
    its name left main keeps the rule above. The triage lane
