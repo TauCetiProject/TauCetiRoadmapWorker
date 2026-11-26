@@ -460,10 +460,12 @@ def work_once(base: Context, only: tuple[str, ...] | None, job_id: str = "", ord
     (`noted` keeps which pauses were logged). A worker that is the overflow for a kind (`work
     --overflow`, `held_back`) leaves the jobs of that kind that have not waited long enough, silently;
     a job named with `job_id` is taken whatever its wait, and looked for again when the listing does
-    not show it yet (`named_job`)."""
+    not show it yet (`named_job`). A job of a kind no lane takes (`board.NO_LANE`: roadmap reports) is
+    never a candidate, named or not."""
     jobs = base.board.list_jobs(("available",), tuple(only) if only else None)
     if job_id:
         jobs = named_job(base, job_id, only, jobs, log)
+    jobs = [j for j in jobs if j.kind not in board.NO_LANE]
     waiting = 0
     if not job_id and base.overflow:
         kept = [j for j in jobs if not held_back(base, j)]

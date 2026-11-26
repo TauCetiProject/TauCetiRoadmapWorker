@@ -332,6 +332,40 @@ repair_merges_base = true
 # it runs the other Lean scans. false = the count stays 0.
 statement_hygiene = true
 
+[reports]
+# Roadmap reports: a Tau Ceti worker that finds a roadmap statement wrong (false, short of a hypothesis, a
+# pin that cannot be proved, a wrong definition, a circular route, a renamed declaration) leaves a marker
+# `<!--tauceti-roadmap-report:v1 {...}-->` and a `### Roadmap report` section in the body of its pull
+# request on the library. When enabled, `board sync` searches the library's pull requests once per forge
+# per run for bodies changed since its last mark, checks each report against the
+# roadmap on the content repository's main, and files a REPORT-<Leaf>~k job per new report (the same
+# roadmap, file and quoted text count once, whatever the source); a report whose text main no longer
+# holds is recorded as fixed, and an open report whose text leaves main is fixed and its job done. It
+# keeps `reports/register.json` on the board, which the library's workers read. No lane takes REPORT jobs
+# yet: a human answers them. Off by default.
+enabled = false
+# The library on GitHub (empty: [repositories] library), and on Forgejo: the instance's base URL (empty:
+# GitHub only) and the repository there (empty: the same OWNER/NAME). Forgejo is read without a token.
+library = ""
+forgejo = ""            # e.g. "https://git.taucetiproject.org"
+forgejo_repository = ""
+# On GitHub, a merged pull request's reports count from anyone (TauCeti merges through bors: a closed pull
+# request titled `[Merged by Bors] - ...` is merged, see merge_bots); those of an open pull request count only
+# from `reporters`: GitHub logins or teams as "team:<org>/<slug>". On Forgejo no merge is verified (the
+# instance's queue closes as a maintainer's own account), so a pull request there counts only from
+# `forgejo_reporters` logins, open, merged or bors-titled. A pull request closed unmerged never counts.
+# Reports travel only in pull requests: an issue's marker is never read.
+reporters = []
+forgejo_reporters = []
+# A GitHub pull request bors merged is closed and retitled `[Merged by Bors] - ...`, which its author can also
+# do by hand: it counts as merged only when one of these accounts closed it (`closed_by`, one request per pull
+# request), and is otherwise a pull request closed unmerged. On TauCeti's GitHub the queue closes as
+# `tauceti-queue[bot]`.
+merge_bots = ["tauceti-queue[bot]"]
+# REPORT jobs filed per run, and per author per run; the rest are filed by later runs.
+per_run = 5
+per_author = 2
+
 [sources]
 # Hosts that are refused outright (pirate mirrors). The sandbox proxy refuses them as well, through
 # the bundled deny list. A leading dot covers every subdomain.

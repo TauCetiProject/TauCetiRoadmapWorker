@@ -438,6 +438,31 @@ class PRReview:
 
 
 @dataclass
+class Reports:
+    # Roadmap reports: the markers Tau Ceti workers leave in the library's pull requests and issues when a
+    # roadmap statement is wrong. With `enabled`, `board sync` harvests them (one search per forge per
+    # run), files a REPORT job per new report and keeps `reports/register.json` on the board (`reports`).
+    enabled: bool = False
+    # The library on GitHub (empty: `[repositories] library`), and on Forgejo: the instance's base URL
+    # (empty: GitHub only) and the repository there (empty: the same OWNER/NAME).
+    library: str = ""
+    forgejo: str = ""
+    forgejo_repository: str = ""
+    # Who may report from an open GitHub pull request (a merged one counts from anyone, one closed unmerged
+    # never): GitHub logins or "team:<org>/<slug>". On Forgejo, whose merges are not verified, a pull request
+    # counts only from these logins (open, merged or bors-titled).
+    reporters: list[str] = field(default_factory=list)
+    forgejo_reporters: list[str] = field(default_factory=list)
+    # The accounts GitHub's merge queue closes merged pull requests as (bors closes them and retitles them
+    # `[Merged by Bors] - ...`, which their author could do too): a bors-titled GitHub pull request counts as
+    # merged only when one of these closed it; otherwise it is a pull request closed unmerged.
+    merge_bots: list[str] = field(default_factory=lambda: ["tauceti-queue[bot]"])
+    # REPORT jobs filed per run, and per author per run; the rest wait for later runs.
+    per_run: int = 5
+    per_author: int = 2
+
+
+@dataclass
 class Worker:
     # Seconds a `--loop` worker sleeps when no job is eligible; every poll is a board listing on the
     # operator's GitHub quota. After a failure, and once the board answers a job the worker parked
@@ -507,6 +532,7 @@ class Config:
     claims: Claims = field(default_factory=Claims)
     review: Review = field(default_factory=Review)
     prreview: PRReview = field(default_factory=PRReview)
+    reports: Reports = field(default_factory=Reports)
     path: str = ""
     warnings: list[str] = field(default_factory=list)
     overlay_path: str = ""
@@ -695,6 +721,22 @@ def validate(cfg: Config) -> None:
     if any(not isinstance(a, str) or not re.fullmatch(r"[A-Z][A-Za-z0-9]*(/[A-Z][A-Za-z0-9]*)*", a)
            for a in cfg.prreview.parent_roadmaps):
         problems.append("prreview.parent_roadmaps must list roadmap folder names")
+    for key in ("library", "forgejo_repository"):
+        value = getattr(cfg.reports, key)
+        if value and not REPO_RE.match(value):
+            problems.append(f"reports.{key} must be OWNER/NAME, got {value!r}")
+    if cfg.reports.forgejo and not re.fullmatch(r"https://[A-Za-z0-9.-]+(:\d+)?/?", cfg.reports.forgejo):
+        problems.append("reports.forgejo must be the https base URL of a Forgejo instance")
+    if any(not isinstance(a, str) or not re.fullmatch(rf"{login}|team:{login}/[A-Za-z0-9_.-]+", a)
+           for a in cfg.reports.reporters):
+        problems.append("reports.reporters must list GitHub logins or team:<org>/<slug>")
+    if any(not isinstance(a, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", a)
+           for a in cfg.reports.forgejo_reporters):
+        problems.append("reports.forgejo_reporters must list Forgejo logins")
+    if any(not isinstance(b, str) or not b.strip() for b in cfg.reports.merge_bots):
+        problems.append("reports.merge_bots must list logins")
+    if cfg.reports.per_run < 0 or cfg.reports.per_author < 0:
+        problems.append("reports.per_run and reports.per_author must be 0 or more")
     if cfg.worker.idle_seconds < 30:
         problems.append("worker.idle_seconds must be at least 30")
     if cfg.worker.writes_per_minute < 0 or cfg.worker.writes_per_hour < 0:

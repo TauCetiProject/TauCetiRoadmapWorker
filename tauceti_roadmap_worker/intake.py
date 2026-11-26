@@ -300,6 +300,8 @@ def intake(ctx, number: int, yes: bool = False, pr: dict | None = None, shared=N
         return f"#{number}: not open"
     if job.state in ("done", "blocked", "needs-references"):
         problems.append(f"{job.id} is {job.state}")
+    if job.kind in board.NO_LANE:
+        problems.append(f"{job.id} is a {job.kind} job, which no lane takes and no submission answers")
     problems += admission_problems(ctx, job, pr, sub, jobs, shared)
     files, listed = submission_files(ctx, repo, number, pr)
     problems += listed
@@ -659,12 +661,13 @@ def note_gap_registry_blocks(ctx) -> list[str]:
 
 def sync_origins(ctx) -> list[str]:
     """`board sync`: an open job that does not say where its roadmap came from gets the origin of its
-    roadmap (a target a human filed, `target:<issue>`, or an import, `explorer:<job>`) recorded."""
+    roadmap (a target a human filed, `target:<issue>`, or an import, `explorer:<job>`) recorded. A job
+    no lane takes (a roadmap report) is ranked by nobody and left alone."""
     jobs = ctx.board.all_jobs()
     known = board.origins(jobs)
     out = []
     for job in jobs:
-        if job.state == "done" or board.own_origin(job) or not known.get(job.name):
+        if job.state == "done" or job.kind in board.NO_LANE or board.own_origin(job) or not known.get(job.name):
             continue
         job.inputs["origin"] = known[job.name]
         ctx.board.update_spec(job)
@@ -756,7 +759,7 @@ def port_resuming_red_team(last: Job, jobs: list[Job]) -> Job:
 
 def resume_roadmap(ctx, name: str, jobs: list[Job], yes: bool) -> str:
     cfg = ctx.cfg
-    mine = [j for j in jobs if j.name == name and j.kind != "errata"]
+    mine = [j for j in jobs if j.name == name and j.kind not in ("errata", "report")]
     if not mine:
         return "no job on the board"
     held = [j for j in mine if j.state != "done"]
